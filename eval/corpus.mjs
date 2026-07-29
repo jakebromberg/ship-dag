@@ -15,6 +15,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { complexityTier } from './lib/tier.mjs';
+import { isMain } from '../scripts/lib/is-main.mjs';
 
 const TIERS = ['mechanical', 'normal', 'complex'];
 
@@ -161,4 +162,4 @@ function main(argv) {
   process.stderr.write(`corpus: ${corpus.entries.length} entries across ${opts.repos.length} repos\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2));
+if (isMain(import.meta.url)) main(process.argv.slice(2));

@@ -44,6 +44,7 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import { isMain } from './lib/is-main.mjs';
 
 const LIST_LIMIT = 1000; // gh issue list cap; we warn if we hit it rather than truncate silently.
 
@@ -312,4 +313,4 @@ function main(argv) {
 }
 
 // Only run the CLI when invoked directly, not when imported by the test.
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2));
+if (isMain(import.meta.url)) main(process.argv.slice(2));

@@ -15,6 +15,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { REPO_TESTS } from './repo-tests.mjs';
+import { isMain } from '../scripts/lib/is-main.mjs';
 
 // The executables each language's suite needs on PATH. Kept minimal and pure so
 // resolveGatable() is unit-testable without touching the host.
@@ -96,4 +97,4 @@ function main() {
   process.exit(ready ? 0 : 1);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (isMain(import.meta.url)) main();

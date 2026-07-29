@@ -43,6 +43,7 @@
 //   node emit-config.mjs <spec.json> > config.json
 
 import { readFileSync } from 'node:fs';
+import { isMain } from './lib/is-main.mjs';
 
 /**
  * A filename/branch-safe slug from an issue title, or `issue-<number>` when the
@@ -139,11 +140,7 @@ export function buildConfig(spec) {
 
 // ---- CLI -----------------------------------------------------------------
 
-function isMain() {
-  return import.meta.url === `file://${process.argv[1]}`;
-}
-
-if (isMain()) {
+if (isMain(import.meta.url)) {
   const arg = process.argv[2];
   if (!arg) {
     console.error('Usage: emit-config.mjs <spec.json|->');
