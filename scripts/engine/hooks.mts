@@ -2,8 +2,9 @@
 //
 // Loaded by run.mts via loadYamlConfig(..., { hooksOverride }). Worktree lifecycle
 // comes from the reusable deriveWorktreeHooks (claude-orchestrator A2): for each
-// issue it locates the repo's checkout under ~/Developer/WXYC, forks a branch off
-// that repo's OWN base branch (derived from origin/HEAD, so wxyc-ios-64's
+// issue it locates the repo's checkout under the org checkout root (reposDir,
+// resolved from the environment by reposDirFromEnv — see below), forks a branch
+// off that repo's OWN base branch (derived from origin/HEAD, so a repo on
 // `master` is honored, not assumed `main`), and creates the worktree in the
 // sibling <repo>-worktrees/ directory. Per-repo CI + the merge-step base branch
 // come from the `repos:` map that emit-config.mjs writes into the config.
@@ -21,12 +22,16 @@
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { reposDirFromEnv } from "./repos-dir.mjs";
 
 const CO_HOME = process.env.CO_HOME || "/Users/jake/Developer/claude-orchestrator";
 const coreUrl = pathToFileURL(path.join(CO_HOME, "dist/src/index.js")).href;
 const { deriveWorktreeHooks } = await import(coreUrl);
 
-const worktree = deriveWorktreeHooks(); // ~/Developer/WXYC, per-repo base from origin/HEAD
+// reposDir = SHIP_DAG_REPOS_DIR ?? SHIP_DAG_PROJECT_ROOT ?? engine default. Passing
+// undefined when neither is set preserves deriveWorktreeHooks's own default, so a
+// run that sets no env var is unchanged. Per-repo base branch is still origin/HEAD.
+const worktree = deriveWorktreeHooks({ reposDir: reposDirFromEnv() });
 
 const hooksOverride = {
   ...worktree,

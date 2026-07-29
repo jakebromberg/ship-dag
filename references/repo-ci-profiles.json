@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-repo base branch + local-CI command profiles for /ship-dag's engine-invocation path (SKILL.md step 4). emit-config.mjs turns the profile for each ready-wave repo into the config's repos: map (baseBranch + postSessionCheck). Keys are owner/repo. baseBranch defaults to main when a repo is absent here; commands default to none (the wave lands with no post-session check — emit-config warns). Keep commands aligned with each repo's CLAUDE.md CI. wxyc-ios-64 is master, not main.",
+  "_comment": "Per-repo base branch + local-CI command profiles for /ship-dag's engine-invocation path (SKILL.md step 4). emit-config.mjs turns the profile for each ready-wave repo into the config's repos: map (baseBranch + postSessionCheck). Keys are owner/repo. baseBranch defaults to main when a repo is absent here; commands default to none (the wave lands with no post-session check — emit-config warns). Keep commands aligned with each repo's own CI (its CLAUDE.md / workflow); they run through a shell from the worktree root, so a `cd <subdir> && …` prefix and shell constructs are fine. Set baseBranch explicitly for a repo whose default branch is not main (e.g. an iOS repo on master).",
   "profiles": {
     "WXYC/library-metadata-lookup": {
       "baseBranch": "main",
@@ -63,6 +63,14 @@
       "baseBranch": "master",
       "commands": [
         "xcodebuild test -scheme WXYC -destination 'platform=iOS Simulator,name=iPhone 15' -quiet"
+      ]
+    },
+    "daisysguide/backend": {
+      "baseBranch": "main",
+      "commands": [
+        "deno test --allow-env --allow-read --allow-write scripts/migration-tests/",
+        "deno test --allow-read scripts/workflow-tests/",
+        "cd supabase/functions || exit 1; test_files=\"\"; for dir in */; do if [ -f \"$dir/test.ts\" ]; then test_files=\"$test_files $dir/test.ts\"; elif [ -d \"$dir/__tests__\" ]; then test_files=\"$test_files $dir/__tests__\"; fi; done; for f in _shared/*.test.ts; do [ -f \"$f\" ] && test_files=\"$test_files $f\"; done; for f in */v*/test.ts; do [ -f \"$f\" ] && test_files=\"$test_files $f\"; done; if [ -n \"$test_files\" ]; then deno test --allow-all --ignore='**/integration-test.ts' $test_files; fi"
       ]
     }
   }
