@@ -1,0 +1,69 @@
+{
+  "_comment": "Per-repo base branch + local-CI command profiles for /ship-dag's engine-invocation path (SKILL.md step 4). emit-config.mjs turns the profile for each ready-wave repo into the config's repos: map (baseBranch + postSessionCheck). Keys are owner/repo. baseBranch defaults to main when a repo is absent here; commands default to none (the wave lands with no post-session check — emit-config warns). Keep commands aligned with each repo's CLAUDE.md CI. wxyc-ios-64 is master, not main.",
+  "profiles": {
+    "WXYC/library-metadata-lookup": {
+      "baseBranch": "main",
+      "commands": [
+        "ruff check .",
+        "ruff format --check .",
+        "pytest -m 'not pg and not external_api and not stack and not slow' -q"
+      ]
+    },
+    "WXYC/request-o-matic": {
+      "baseBranch": "main",
+      "commands": [
+        "ruff check .",
+        "ruff format --check .",
+        "pytest -m 'not pg and not external_api and not stack and not slow' -q"
+      ]
+    },
+    "WXYC/semantic-index": {
+      "baseBranch": "main",
+      "commands": [
+        "ruff check .",
+        "ruff format --check .",
+        "pytest -m 'not pg and not external_api and not stack and not slow' -q"
+      ]
+    },
+    "WXYC/Backend-Service": {
+      "baseBranch": "main",
+      "commands": [
+        "npm ci --no-audit --no-fund --prefer-offline",
+        "npm run lint",
+        "npm run typecheck",
+        "npm test"
+      ]
+    },
+    "WXYC/dj-site": {
+      "baseBranch": "main",
+      "commands": [
+        "npm ci --no-audit --no-fund --prefer-offline",
+        "npm run lint",
+        "npm run typecheck",
+        "npm test"
+      ]
+    },
+    "WXYC/wxyc-shared": {
+      "baseBranch": "main",
+      "commands": [
+        "npm ci --no-audit --no-fund --prefer-offline",
+        "npm run build",
+        "npm test"
+      ]
+    },
+    "WXYC/wxyc-canary": {
+      "baseBranch": "main",
+      "commands": [
+        "npm ci --no-audit --no-fund --prefer-offline",
+        "npm run build",
+        "npm test"
+      ]
+    },
+    "WXYC/wxyc-ios-64": {
+      "baseBranch": "master",
+      "commands": [
+        "xcodebuild test -scheme WXYC -destination 'platform=iOS Simulator,name=iPhone 15' -quiet"
+      ]
+    }
+  }
+}
