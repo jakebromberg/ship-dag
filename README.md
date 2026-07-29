@@ -48,3 +48,4 @@ The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [cl
 | `scripts/telemetry.mjs` | Per-issue run records (model-assignment efficacy). |
 | `references/` | CI profiles, model/effort matrix, escalation policy, review + eval schemas. |
 | `eval/` | Offline eval harness for the model-assignment study. |
+| `docs/` | [Field report](./docs/field-report.md) from the first production run, plus a runnable anonymized [telemetry sample](./docs/examples/run-sample.jsonl). |
