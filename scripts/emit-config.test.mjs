@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { deriveSlug, buildConfig, unknownCiRepos } from './emit-config.mjs';
 
 // A minimal well-formed spec the ready-wave hands the emitter.
@@ -144,4 +145,30 @@ test('output serializes to valid JSON (which the YAML loader parses)', () => {
   const c = buildConfig(spec());
   const round = JSON.parse(JSON.stringify(c));
   assert.deepEqual(round, c);
+});
+
+// The bundled repo-ci-profiles.json must carry a real CI profile for every repo
+// /ship-dag is expected to ship — otherwise emit-config warns and the wave lands
+// unverified (no post-session check). This guards the daisyguide generalization:
+// a spec built from the on-disk profile for daisysguide/backend must be
+// fully-covered (unknownCiRepos empty) and carry executable post-session commands.
+test('repo-ci-profiles.json makes daisysguide/backend a known-CI repo (no unverified wave)', () => {
+  const profiles = JSON.parse(
+    // Resolve relative to THIS file, not cwd — validation runs the suite via a
+    // scripts/**/*.test.mjs glob whose working directory isn't guaranteed.
+    readFileSync(new URL('../references/repo-ci-profiles.json', import.meta.url), 'utf-8'),
+  ).profiles;
+  const repo = 'daisysguide/backend';
+  const s = spec({
+    repo,
+    repos: { [repo]: profiles[repo] },
+    issues: [{ number: 397, repo, digest: 'revenuecat-webhook mapper' }],
+  });
+  assert.deepEqual(unknownCiRepos(s), []);
+  const built = buildConfig(s).repos[repo];
+  assert.equal(built.baseBranch, 'main');
+  assert.ok(
+    built.postSessionCheck?.commands?.length > 0,
+    'daisysguide/backend must carry executable CI commands',
+  );
 });

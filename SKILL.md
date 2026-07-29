@@ -32,11 +32,11 @@ Issue set — one of:
 **Org/repo resolution** (no silent org guess):
 1. A fully-qualified `owner/repo#N` always wins.
 2. Otherwise infer the repo from the current working directory: `gh repo view --json nameWithOwner -q .nameWithOwner`.
-3. Otherwise use `--org O` with the bare `repo`. If none of these resolve, **stop and ask** — do not default to an arbitrary org. (The user's active checkouts are under `…/WXYC/`, but ship-dag never assumes it.)
+3. Otherwise use `--org O` with the bare `repo`. If none of these resolve, **stop and ask** — do not default to an arbitrary org. ship-dag never assumes a particular org: the org checkout root (the dir holding repo siblings) is derived from the resolved repo's checkout — the parent of `git rev-parse --show-toplevel` — and can be overridden with `SHIP_DAG_REPOS_DIR` (see step 4).
 
 The issue set may span repositories. Every node is keyed on its **composite ref** (`owner/repo#N`, or a bare `N` only in a single-repo run), so the same number in two repos stays two distinct nodes and a cross-repo dependency edge is honored end to end. A wave that crosses a repo boundary triggers the cutover gate in step 7.
 
-All refs handed to sibling skills (`/review-loop`, `/cleanup`) must be **fully-qualified `owner/repo#N`** — those default to org `WXYC` and hardcode a `…/WXYC/<repo>/` path, so a bare ref would resolve wrong.
+Hand refs to `/review-loop` as **fully-qualified `owner/repo#N`**: it infers a default org for a bare `repo#N` and looks for the checkout as a sibling of the current working tree (falling back to `gh repo clone`), so a fully-qualified ref keeps it on the right repo. `/cleanup` is org-agnostic — it operates on the current repo's `git worktree list` and detects the default branch dynamically — so it needs no special qualification, but passing it the same fully-qualified ref is harmless.
 
 Flags:
 - `--block-on correctness,security` (default) — finding categories that block auto-merge. See `references/review-schema.md`.
@@ -74,13 +74,14 @@ Fan out **one `Agent{model:"haiku"}` per ready issue, all in a single message** 
 
 The parallel **implement** work is delegated to the **claude-orchestrator engine** — per-repo worktrees + CI, per-issue model/effort, and its default `mergePolicy: "none"` (implement each issue in its own worktree, run that repo's CI, open a PR, then **STOP** — never merge). The **Opus review gate stays here**, as a ship-dag pass over the PRs the engine opens. `CO_HOME` points at the engine checkout (default `/Users/me/Developer/claude-orchestrator`, the same core import as step 1).
 
-**a. Emit the engine config.** Build a ready-wave spec (JSON): for each **cleared** issue `{ number, repo, ref, title, complexity, model?, effort?, digest, extraDirs? }` — carry triage's `complexity` (the engine derives effort from it); set `model`/`effort` only where triage or the rubric overrides. Add `repos` from `references/repo-ci-profiles.json` for the wave's distinct repos (each `{ baseBranch, commands }`; a repo absent there defaults to `main` + no CI — emit-config warns); `name: "ship-dag-<runId>"`; an absolute per-run `stateDir` **outside any repo** (e.g. `${XDG_STATE_HOME:-$HOME/.local/state}/ship-dag/engine/<runId>`); `projectRoot` = the org checkout root (`/Users/me/Developer/WXYC`); `promptTemplate` = `$SD/scripts/engine/prompt.md`. Then:
+**a. Emit the engine config.** Build a ready-wave spec (JSON): for each **cleared** issue `{ number, repo, ref, title, complexity, model?, effort?, digest, extraDirs? }` — carry triage's `complexity` (the engine derives effort from it); set `model`/`effort` only where triage or the rubric overrides. Add `repos` from `references/repo-ci-profiles.json` for the wave's distinct repos (each `{ baseBranch, commands }`; a repo absent there defaults to `main` + no CI — emit-config warns); `name: "ship-dag-<runId>"`; an absolute per-run `stateDir` **outside any repo** (e.g. `${XDG_STATE_HOME:-$HOME/.local/state}/ship-dag/engine/<runId>`); `projectRoot` = the org checkout root `$PROJECT_ROOT`, derived once as `PROJECT_ROOT="${SHIP_DAG_REPOS_DIR:-$(dirname "$(git rev-parse --show-toplevel)")}"` — the parent of the target repo's checkout in the sibling layout; set `SHIP_DAG_REPOS_DIR` to override (e.g. a meta-repo root like `/Users/me/Developer/daisyguide`); `promptTemplate` = `$SD/scripts/engine/prompt.md`. Then:
 `node "$SD/scripts/emit-config.mjs" spec.json > "$STATE/config.json"`. Every ready-wave issue is independent, so emit-config gives each `dependsOn: []` — one flat wave the engine runs fully in parallel.
 
 **b. Invoke the engine.** Export `CO=${CO_HOME:-/Users/me/Developer/claude-orchestrator}` once. Preview first (read-only, no side effects — the analog of `--dry-run`):
 `SHIP_DAG_CONFIG="$STATE/config.json" CO_HOME="$CO" npx --prefix "$CO" tsx "$SD/scripts/engine/run.mts" wave --plan`
 then run it:
-`SHIP_DAG_CONFIG="$STATE/config.json" SHIP_DAG_PROJECT_ROOT="/Users/me/Developer/WXYC" CO_HOME="$CO" npx --prefix "$CO" tsx "$SD/scripts/engine/run.mts" wave --parallel K`.
+`SHIP_DAG_CONFIG="$STATE/config.json" SHIP_DAG_PROJECT_ROOT="$PROJECT_ROOT" CO_HOME="$CO" npx --prefix "$CO" tsx "$SD/scripts/engine/run.mts" wave --parallel K`.
+`SHIP_DAG_PROJECT_ROOT` also feeds the worktree layer's repos dir (via `reposDirFromEnv`'s fallback in `hooks.mts`), so this single env var keeps both the `--detach` respawn root and the per-repo worktrees under `$PROJECT_ROOT` — no WXYC path is assumed. Export `SHIP_DAG_REPOS_DIR` explicitly only if the two must differ.
 
 **c. Read the report.** The engine writes `<stateDir>/state/reports/<id>.json`. Each row is keyed on the composite **`ref`** (`owner/repo#N`) — the disambiguator for same-numbered cross-repo issues — plus `number`, `status`, `prUrl`, `prNumber`. A `succeeded` row means the engine ran that repo's CI green before opening the PR (`retryOnCheckFailure` retried once, else the row is `failed`), so treat it as `ciStatus: "pass"` and map its `ref`→`prNumber` (branch via `gh pr view <PR> --json headRefName` if the review needs it). A `failed`/`blocked` row (no PR) is an implement stall → **HITL point B** (step 5).
 
