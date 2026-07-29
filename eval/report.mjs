@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs';
 import { setStats } from './lib/jaccard.mjs';
 import { scoreCost } from './lib/score.mjs';
 import { mcnemar, bootstrapCI } from '../scripts/lib/stats.mjs';
+import { isMain } from '../scripts/lib/is-main.mjs';
 
 const isGated = (m) => m.bucket === 'gated' || m.testStatus === 'gated-failed';
 
@@ -99,4 +100,4 @@ function main(argv) {
   process.stdout.write(`${renderReport(variants)}\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2));
+if (isMain(import.meta.url)) main(process.argv.slice(2));

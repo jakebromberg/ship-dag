@@ -23,6 +23,7 @@
 // Run tests: node --test "skills/ship-dag/eval/**/*.test.mjs"
 
 import { readFileSync } from 'node:fs';
+import { isMain } from '../scripts/lib/is-main.mjs';
 
 // Each mutator flips a token to a behavior-changing counterpart. `re()` returns a
 // FRESH /g regex per call (a stateful lastIndex must never be shared). Operator
@@ -189,4 +190,4 @@ function main(argv) {
   process.stdout.write(applyMutant(source, target));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2));
+if (isMain(import.meta.url)) main(process.argv.slice(2));

@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { buildScorecard } from './lib/score.mjs';
 import { writeResults } from './lib/results.mjs';
+import { isMain } from '../scripts/lib/is-main.mjs';
 
 function readSource(src) {
   if (!src || src === '-') return readFileSync(0, 'utf8');
@@ -33,4 +34,4 @@ function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2));
+if (isMain(import.meta.url)) main(process.argv.slice(2));
