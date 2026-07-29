@@ -1,0 +1,49 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# ship-dag has no dependencies of its own (no package.json) — the suite is pure
+# `node --test`. Its one runtime dependency is the claude-orchestrator topo-sort
+# core: scripts/plan-waves.mjs does a top-level `await import(<CO_HOME>/dist/src/
+# index.js)`, and plan-waves.test.mjs imports it, so the suite cannot load without
+# that repo present. claude-orchestrator commits its dist/ (no build step needed),
+# but the committed dist imports zod, so its runtime deps must still be installed.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    env:
+      # Track claude-orchestrator's default branch — a fresh consumer clone, and
+      # useful integration signal if its core API drifts. Pin to a tag/SHA here
+      # if you ever need reproducibility over currency.
+      CO_REF: main
+      CO_HOME: ${{ github.workspace }}/.claude-orchestrator
+    steps:
+      - name: Check out ship-dag
+        uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Check out claude-orchestrator (topo-sort core)
+        uses: actions/checkout@v4
+        with:
+          repository: jakebromberg/claude-orchestrator
+          ref: ${{ env.CO_REF }}
+          path: .claude-orchestrator
+
+      - name: Install claude-orchestrator runtime deps (dist is committed; no build)
+        working-directory: .claude-orchestrator
+        run: npm ci --ignore-scripts
+
+      - name: Run tests
+        run: node --test 'scripts/**/*.test.mjs' 'eval/**/*.test.mjs'
