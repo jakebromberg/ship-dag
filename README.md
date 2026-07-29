@@ -1,5 +1,7 @@
 # ship-dag
 
+[![tests](https://github.com/jakebromberg/ship-dag/actions/workflows/tests.yml/badge.svg)](https://github.com/jakebromberg/ship-dag/actions/workflows/tests.yml)
+
 A [Claude Code](https://claude.com/claude-code) skill that ships a dependency DAG of already-filed GitHub issues to `main`, **one wave at a time**. Each issue flows through the cheapest capable subagent — Haiku triage, Sonnet implement, Opus review — and lands via rebase-and-merge, **auto-merged on green**. The main agent owns everything human-facing and stateful (DAG discovery, the ready-set, the HITL gates, the dependency-ordered merge queue); the expensive parallel implement→review work fans out to subagents.
 
 The premise: a well-specced issue Sonnet-implements and survives the Opus gate cleanly. When that premise breaks — an ambiguous spec, a blocking finding, a CI/merge failure — that break is the signal to stop and grill the human.
@@ -32,6 +34,8 @@ ln -s ~/Developer/ship-dag ~/.claude/skills/ship-dag
 ```bash
 node --test 'scripts/**/*.test.mjs' 'eval/**/*.test.mjs'
 ```
+
+The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [claude-orchestrator](https://github.com/jakebromberg/claude-orchestrator) with its deps installed (`npm ci` there — `dist/` is committed, no build). CI ([`.github/workflows/tests.yml`](./.github/workflows/tests.yml)) does exactly this on every push and PR, across Node 22 and 24.
 
 ## Layout
 
