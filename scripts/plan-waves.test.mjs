@@ -11,6 +11,10 @@ import { planWaves, readySet, bodyEdges, fetchSpec } from './plan-waves.mjs';
 
 // A fake `gh` runner: branches on argv so fetchSpec is testable without network.
 // Records every invocation on `.calls` so tests can assert repo routing.
+// `fixtures.blockedBy` (optional) maps a "repo#number" key to the array of ref
+// strings the native `dependencies/blocked_by` endpoint would return for that
+// node; a node with no entry (or when `fixtures.blockedBy` is omitted entirely)
+// gets `[]`, matching a repo with no native dependencies configured.
 function fakeGh(fixtures) {
   const calls = [];
   const run = (argv) => {
@@ -22,6 +26,11 @@ function fakeGh(fixtures) {
       return JSON.stringify(fixtures.issues[n]);
     }
     if (argv[0] === 'api' && argv[1] === 'graphql') return JSON.stringify(fixtures.graphql);
+    if (argv[0] === 'api' && /\/dependencies\/blocked_by$/.test(argv[1])) {
+      const m = argv[1].match(/^repos\/(.+)\/issues\/(\d+)\/dependencies\/blocked_by$/);
+      const key = m ? `${m[1]}#${m[2]}` : '';
+      return JSON.stringify((fixtures.blockedBy && fixtures.blockedBy[key]) || []);
+    }
     throw new Error('unexpected gh call: ' + argv.join(' '));
   };
   run.calls = calls;
@@ -247,4 +256,80 @@ test('fetchSpec keeps a cross-repo sub-issue keyed on its own repo', () => {
   assert.deepEqual(spec.nodes[0].repo, 'other/repo');
   // The body was fetched from the sub-issue's own repo.
   assert.ok(gh.calls.some((a) => a.join(' ').startsWith('issue view 10 --repo other/repo')));
+});
+
+// ---- fetchSpec: native issue-dependency ("blocked_by") merge -------------
+
+test('fetchSpec has no native-dependency calls fail a repo where none are configured', () => {
+  // The fake runner answers the dependencies call with [] whenever a test
+  // doesn't populate `fixtures.blockedBy` — same as a repo with no native
+  // dependency graph configured. Existing prose-only behavior is unaffected.
+  const gh = fakeGh({
+    list: [{ number: 5 }],
+    issues: { 5: { number: 5, title: 'a', labels: [], body: 'Blocked by #6', state: 'OPEN' } },
+  });
+  const spec = fetchSpec('o/r', { label: 'ship' }, gh);
+  assert.deepEqual(spec.edges, [{ blocked: 'o/r#5', blockedBy: 'o/r#6' }]);
+});
+
+test('fetchSpec merges a native blocked_by pointing at an open out-of-set issue as an external blocker', () => {
+  // #5 has no prose dependency, but natively lists #99 (never fetched — out of
+  // scope and still open) as a blocker. Missing this is the dangerous failure
+  // direction: #5 must land in `blocked (external)`, not in wave 1.
+  const gh = fakeGh({
+    list: [{ number: 5 }],
+    issues: { 5: { number: 5, title: 'a', labels: [], body: 'no prose deps here', state: 'OPEN' } },
+    blockedBy: { 'o/r#5': ['o/r#99'] },
+  });
+  const spec = fetchSpec('o/r', { label: 'ship' }, gh);
+  assert.deepEqual(spec.edges, [{ blocked: 'o/r#5', blockedBy: 'o/r#99' }]);
+  const { waves, blocked } = planWaves(spec);
+  assert.deepEqual(waves, []);
+  assert.deepEqual(blocked, [{ ref: 'o/r#5', missing: ['o/r#99'], reason: 'external' }]);
+});
+
+test('fetchSpec resolves a native blocked_by against a closed issue into done, not an external block', () => {
+  const gh = fakeGh({
+    list: [{ number: 5 }],
+    issues: {
+      5: { number: 5, title: 'a', labels: [], body: '', state: 'OPEN' },
+      3: { state: 'CLOSED' },
+    },
+    blockedBy: { 'o/r#5': ['o/r#3'] },
+  });
+  const spec = fetchSpec('o/r', { label: 'ship' }, gh);
+  assert.deepEqual(spec.done, ['o/r#3']);
+  const { waves, blocked } = planWaves(spec);
+  assert.deepEqual(waves, [['o/r#5']]);
+  assert.deepEqual(blocked, []);
+});
+
+test('fetchSpec dedupes a native/prose duplicate edge', () => {
+  // #5's body says "Blocked by #6" AND #6 is also its native blocker — the same
+  // pair from two sources must collapse to one edge, not double up in the DAG.
+  const gh = fakeGh({
+    list: [{ number: 5 }, { number: 6 }],
+    issues: {
+      5: { number: 5, title: 'a', labels: [], body: 'Blocked by #6', state: 'OPEN' },
+      6: { number: 6, title: 'b', labels: [], body: '', state: 'OPEN' },
+    },
+    blockedBy: { 'o/r#5': ['o/r#6'] },
+  });
+  const spec = fetchSpec('o/r', { label: 'ship' }, gh);
+  assert.deepEqual(spec.edges, [{ blocked: 'o/r#5', blockedBy: 'o/r#6' }]);
+});
+
+test('fetchSpec tolerates a native blocked_by call failing (unconfigured/no access)', () => {
+  const gh = fakeGh({
+    list: [{ number: 5 }],
+    issues: { 5: { number: 5, title: 'a', labels: [], body: '', state: 'OPEN' } },
+  });
+  const throwingGh = (argv) => {
+    if (argv[0] === 'api' && /\/dependencies\/blocked_by$/.test(argv[1])) {
+      throw new Error('HTTP 404: Not Found');
+    }
+    return gh(argv);
+  };
+  const spec = fetchSpec('o/r', { label: 'ship' }, throwingGh);
+  assert.deepEqual(spec.edges, []);
 });
