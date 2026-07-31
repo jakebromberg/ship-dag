@@ -133,13 +133,35 @@ export function planWaves(spec) {
 const REF_TOKEN = '(?:[\\w.-]+/[\\w.-]+)?#\\d+';
 // A contiguous "#a, owner/repo#b and #c" run of them.
 const REF_LIST = `${REF_TOKEN}(?:\\s*(?:,|and)\\s*${REF_TOKEN})*`;
+// A line that is nothing but a "Blocked by" / "Depends on" heading — an
+// optional markdown `#` prefix, the phrase, and an optional trailing colon —
+// e.g. "## Blocked by" or plain "Depends on:". No ref may follow on the same
+// line; that's the adjacent-clause form the first pass above already handles.
+const DEP_HEADING_RE = /^#{0,6}\s*(?:blocked by|depends on)\s*:?\s*$/i;
+// A markdown bullet line: "- " or "* " followed by the rest (the ref plus any
+// "— annotation").
+const BULLET_RE = /^\s*[-*]\s+(.*)$/;
+// An already-resolved annotation on a heading-list bullet ("#877 — RESOLVED,
+// merged in #900") — a stale reference to a since-closed blocker, not a live
+// edge, so its bullet is skipped rather than emitted.
+const RESOLVED_RE = /\bresolved\b/i;
 
 /**
  * Extract dependency edges from an issue body. Handles multi-issue clauses
  * ("Blocked by #12, #13 and #14"), the reverse direction ("Blocks #20"), and
- * cross-repo references ("Blocked by owner/repo#3"). Bare `#N` refs are
- * qualified to the citing issue's own repo; `owner/repo#N` refs are kept as-is.
- * Pure — no I/O — so it is unit-tested directly.
+ * cross-repo references ("Blocked by owner/repo#3") — refs adjacent to the
+ * phrase, all on one line. Also handles the common heading-plus-bulleted-list
+ * layout, where the refs live one per bullet under their own heading line:
+ *   ## Blocked by
+ *   - WXYC/Backend-Service#877 — Epic C …
+ *   - WXYC/Backend-Service#878 — Epic D …
+ * A heading's bullets are scanned until a blank line or a non-bullet line
+ * (typically the next heading) ends the list; a bullet annotated as already
+ * resolved ("— RESOLVED …") is skipped since it no longer names a live
+ * blocker. Bare `#N` refs are qualified to the citing issue's own repo;
+ * `owner/repo#N` refs are kept as-is. Output is deduped on the `blocked
+ * |blockedBy` pair, since the adjacent-clause and heading-list forms can name
+ * the same edge. Pure — no I/O — so it is unit-tested directly.
  *
  * @param {number|{number:number,repo?:string}} citing  the issue the body belongs to
  * @param {string} body
@@ -151,7 +173,7 @@ export function bodyEdges(citing, body) {
   const text = body || '';
   const edges = [];
   const tokens = new RegExp(REF_TOKEN, 'g');
-  // Forward: this issue depends on those.
+  // Forward: this issue depends on those (adjacent-clause form).
   for (const m of text.matchAll(new RegExp(`(?:blocked by|depends on)\\s+(${REF_LIST})`, 'gi'))) {
     for (const r of m[1].matchAll(tokens)) {
       edges.push({ blocked: selfRef, blockedBy: normalizeDep(r[0], cite) });
@@ -163,7 +185,22 @@ export function bodyEdges(citing, body) {
       edges.push({ blocked: normalizeDep(r[0], cite), blockedBy: selfRef });
     }
   }
-  return edges;
+  // Forward: a "Blocked by" / "Depends on" heading followed by a bulleted list.
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!DEP_HEADING_RE.test(lines[i].trim())) continue;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const line = lines[j];
+      if (!line.trim()) break; // blank line ends the list
+      const bullet = line.match(BULLET_RE);
+      if (!bullet) break; // non-bullet line (e.g. the next heading) ends the list
+      if (RESOLVED_RE.test(bullet[1])) continue; // stale bullet — no live edge
+      for (const r of bullet[1].matchAll(tokens)) {
+        edges.push({ blocked: selfRef, blockedBy: normalizeDep(r[0], cite) });
+      }
+    }
+  }
+  return dedupeEdges(edges);
 }
 
 // ---- gh wrapper (injectable for tests) ----------------------------------
