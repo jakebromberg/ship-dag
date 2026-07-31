@@ -173,6 +173,57 @@ function realRunGh(args) {
 }
 
 /**
+ * Native GitHub issue-dependency ("blocked by") edges for one node, in the same
+ * `{blocked, blockedBy}` ref shape `bodyEdges` emits. This is a separate feature
+ * from body prose — many issues declare a blocker through the dependency graph
+ * without ever mentioning it in text, and missing that edge is the dangerous
+ * failure direction (a genuinely-blocked issue reported as ready). Tolerates a
+ * repo where native dependencies aren't configured, or aren't visible to the
+ * token: any failure, or a non-array result, yields no edges rather than
+ * aborting the fetch — mirroring how the closed-dep resolution below tolerates
+ * an unreadable ref.
+ *
+ * @param {{number:number, repo:string}} node
+ * @param {(argv:string[]) => string} runGh
+ * @returns {Array<{blocked:string, blockedBy:string}>}
+ */
+function nativeBlockedByEdges(node, runGh) {
+  const selfRef = refOf({ number: node.number, repo: node.repo });
+  let deps;
+  try {
+    deps = JSON.parse(runGh([
+      'api', `repos/${node.repo}/issues/${node.number}/dependencies/blocked_by`,
+      '--jq', '[.[] | "\\(.repository.full_name)#\\(.number)"]',
+    ]));
+  } catch {
+    return []; // unconfigured, unavailable, or no access → no edges from this source
+  }
+  if (!Array.isArray(deps)) return [];
+  return deps.map((d) => ({ blocked: selfRef, blockedBy: d }));
+}
+
+/**
+ * Dedupe edges on the `blocked|blockedBy` composite key, preserving first-seen
+ * order. Native and prose edges can name the same pair (a blocker declared both
+ * in the dependency graph and in text), and `toTopoNodes` does not dedupe, so a
+ * duplicate would otherwise propagate into the core as a repeated dep entry.
+ *
+ * @param {Array<{blocked:string, blockedBy:string}>} edges
+ * @returns {Array<{blocked:string, blockedBy:string}>}
+ */
+function dedupeEdges(edges) {
+  const seen = new Set();
+  const out = [];
+  for (const e of edges) {
+    const key = `${e.blocked}|${e.blockedBy}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
+
+/**
  * Build a spec by querying GitHub. `runGh(argv) -> string` is injectable so the
  * fetch logic (edge parsing, closed-dependency → done resolution) is testable
  * without hitting the network.
@@ -245,14 +296,20 @@ export function fetchSpec(repo, { epic, label }, runGh = realRunGh) {
       refCount: new Set(refs).size,
     });
     edges.push(...bodyEdges({ number: iss.number, repo: o.repo }, body));
+    edges.push(...nativeBlockedByEdges(o, runGh));
   }
+  // Native and prose can name the same pair; dedupe before the DAG ever sees
+  // it (`toTopoNodes` does not dedupe). Doing this before step 3 also means the
+  // closed-dep→done resolution classifies each native blocker for free: open
+  // in-set → a wave edge, closed → done, open out-of-set/unreadable → external.
+  const uniqueEdges = dedupeEdges(edges);
 
   // 3. Resolve dependency refs that aren't open nodes: a closed/merged one is
   //    DONE (satisfied), so it must not be mistaken for an unshippable external
   //    blocker. Each dep is viewed in *its own* repo (parsed from the ref),
   //    falling back to the epic/label repo for a bare ref.
   const done = [];
-  const depCandidates = new Set(edges.map((e) => e.blockedBy).filter((d) => !openRefs.has(d)));
+  const depCandidates = new Set(uniqueEdges.map((e) => e.blockedBy).filter((d) => !openRefs.has(d)));
   for (const depRef of depCandidates) {
     const depRepo = repoOfRef(depRef) || repo;
     const depNum = depRef.slice(depRef.indexOf('#') + 1);
@@ -265,7 +322,7 @@ export function fetchSpec(repo, { epic, label }, runGh = realRunGh) {
     if (state === 'CLOSED') done.push(depRef);
   }
 
-  return { repo, nodes, edges, done };
+  return { repo, nodes, edges: uniqueEdges, done };
 }
 
 // ---- CLI ----------------------------------------------------------------
