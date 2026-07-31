@@ -26,10 +26,15 @@ function fakeGh(fixtures) {
       return JSON.stringify(fixtures.issues[n]);
     }
     if (argv[0] === 'api' && argv[1] === 'graphql') return JSON.stringify(fixtures.graphql);
-    if (argv[0] === 'api' && /\/dependencies\/blocked_by$/.test(argv[1])) {
-      const m = argv[1].match(/^repos\/(.+)\/issues\/(\d+)\/dependencies\/blocked_by$/);
+    if (argv[0] === 'api' && argv.some((a) => /\/dependencies\/blocked_by$/.test(a))) {
+      // `gh api --paginate --jq '… | "\(.repository.full_name)#\(.number)"'`
+      // emits raw refs, one per line, concatenated across pages — not a JSON
+      // array. The path arg moves when flags like --paginate precede it, so we
+      // find it by shape rather than fixed index.
+      const pathArg = argv.find((a) => /\/dependencies\/blocked_by$/.test(a));
+      const m = pathArg.match(/^repos\/(.+)\/issues\/(\d+)\/dependencies\/blocked_by$/);
       const key = m ? `${m[1]}#${m[2]}` : '';
-      return JSON.stringify((fixtures.blockedBy && fixtures.blockedBy[key]) || []);
+      return ((fixtures.blockedBy && fixtures.blockedBy[key]) || []).join('\n');
     }
     throw new Error('unexpected gh call: ' + argv.join(' '));
   };
@@ -223,6 +228,38 @@ test('bodyEdges heading-list scan stops at a blank line', () => {
   assert.deepEqual(bodyEdges(cite, body), [{ blocked: 'o/r#5', blockedBy: 'o/r#1' }]);
 });
 
+test('bodyEdges captures a heading list separated from the heading by a blank line', () => {
+  // The markdownlint-standard layout (MD022/MD032) puts a blank line between a
+  // heading and its list; a leading blank BEFORE the first bullet must not end
+  // the scan. (A blank AFTER a bullet still ends it — see the test above.)
+  const cite = { number: 5, repo: 'o/r' };
+  const body = ['## Blocked by', '', '- #877', '- #878'].join('\n');
+  assert.deepEqual(bodyEdges(cite, body), [
+    { blocked: 'o/r#5', blockedBy: 'o/r#877' },
+    { blocked: 'o/r#5', blockedBy: 'o/r#878' },
+  ]);
+});
+
+test('bodyEdges captures a heading list under a heading with a trailing count/note', () => {
+  // Real headings carry counts and parentheticals ("### Blocked by (2)"); the
+  // heading matcher must tolerate trailing text that is not a ref.
+  const cite = { number: 7, repo: 'o/r' };
+  const body = ['### Blocked by (2)', '- #5', '- #6'].join('\n');
+  assert.deepEqual(bodyEdges(cite, body), [
+    { blocked: 'o/r#7', blockedBy: 'o/r#5' },
+    { blocked: 'o/r#7', blockedBy: 'o/r#6' },
+  ]);
+});
+
+test('bodyEdges keeps a live heading-list bullet whose prose merely contains the word "resolved"', () => {
+  // The stale-bullet skip must key on a real status marker ("— RESOLVED"), not
+  // any occurrence of the word; dropping a live blocker is the dangerous
+  // direction (issue reported ready while blocked).
+  const cite = { number: 7, repo: 'o/r' };
+  const body = ['## Blocked by', '- #5 — blocks the resolved-tickets export view'].join('\n');
+  assert.deepEqual(bodyEdges(cite, body), [{ blocked: 'o/r#7', blockedBy: 'o/r#5' }]);
+});
+
 test('bodyEdges dedupes when the adjacent-clause and heading-list forms overlap', () => {
   const cite = { number: 5, repo: 'o/r' };
   const body = ['Blocked by #1.', '', '## Blocked by', '- #1', '- #2'].join('\n');
@@ -380,13 +417,29 @@ test('fetchSpec dedupes a native/prose duplicate edge', () => {
   assert.deepEqual(spec.edges, [{ blocked: 'o/r#5', blockedBy: 'o/r#6' }]);
 });
 
+test('fetchSpec fetches native blocked_by with --paginate so >30 blockers are not truncated', () => {
+  // GitHub REST returns 30 items/page; without --paginate an issue with more
+  // than 30 native blockers is silently truncated — the dangerous direction.
+  const gh = fakeGh({
+    list: [{ number: 5 }],
+    issues: { 5: { number: 5, title: 'a', labels: [], body: '', state: 'OPEN' } },
+    blockedBy: { 'o/r#5': [] },
+  });
+  fetchSpec('o/r', { label: 'ship' }, gh);
+  const nativeCall = gh.calls.find(
+    (a) => a[0] === 'api' && a.some((x) => /\/dependencies\/blocked_by$/.test(x)),
+  );
+  assert.ok(nativeCall, 'a native blocked_by call was made');
+  assert.ok(nativeCall.includes('--paginate'), 'the native call passes --paginate');
+});
+
 test('fetchSpec tolerates a native blocked_by call failing (unconfigured/no access)', () => {
   const gh = fakeGh({
     list: [{ number: 5 }],
     issues: { 5: { number: 5, title: 'a', labels: [], body: '', state: 'OPEN' } },
   });
   const throwingGh = (argv) => {
-    if (argv[0] === 'api' && /\/dependencies\/blocked_by$/.test(argv[1])) {
+    if (argv[0] === 'api' && argv.some((a) => /\/dependencies\/blocked_by$/.test(a))) {
       throw new Error('HTTP 404: Not Found');
     }
     return gh(argv);

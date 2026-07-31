@@ -133,18 +133,23 @@ export function planWaves(spec) {
 const REF_TOKEN = '(?:[\\w.-]+/[\\w.-]+)?#\\d+';
 // A contiguous "#a, owner/repo#b and #c" run of them.
 const REF_LIST = `${REF_TOKEN}(?:\\s*(?:,|and)\\s*${REF_TOKEN})*`;
-// A line that is nothing but a "Blocked by" / "Depends on" heading — an
-// optional markdown `#` prefix, the phrase, and an optional trailing colon —
-// e.g. "## Blocked by" or plain "Depends on:". No ref may follow on the same
-// line; that's the adjacent-clause form the first pass above already handles.
-const DEP_HEADING_RE = /^#{0,6}\s*(?:blocked by|depends on)\s*:?\s*$/i;
+// A heading line that opens a "Blocked by" / "Depends on" bulleted list: an
+// optional markdown `#` prefix, the phrase, then any trailing text that is NOT
+// a ref — a colon, a count ("### Blocked by (2)"), a parenthetical note. A ref
+// on the same line (`#` present) means the adjacent-clause form the first pass
+// already handles, so `[^#]` excludes it and this heading pass stays out of the
+// way.
+const DEP_HEADING_RE = /^#{0,6}\s*(?:blocked by|depends on)\b[^#]*$/i;
 // A markdown bullet line: "- " or "* " followed by the rest (the ref plus any
 // "— annotation").
 const BULLET_RE = /^\s*[-*]\s+(.*)$/;
 // An already-resolved annotation on a heading-list bullet ("#877 — RESOLVED,
 // merged in #900") — a stale reference to a since-closed blocker, not a live
-// edge, so its bullet is skipped rather than emitted.
-const RESOLVED_RE = /\bresolved\b/i;
+// edge, so its bullet is skipped rather than emitted. The marker must follow a
+// dash separator ("— RESOLVED", " - resolved"); a bare occurrence of the word
+// in a bullet's prose ("blocks the resolved-tickets view") is NOT a status
+// marker, and skipping such a live blocker is the dangerous direction.
+const RESOLVED_RE = /[-—–]\s*resolved\b/i;
 
 /**
  * Extract dependency edges from an issue body. Handles multi-issue clauses
@@ -155,9 +160,10 @@ const RESOLVED_RE = /\bresolved\b/i;
  *   ## Blocked by
  *   - WXYC/Backend-Service#877 — Epic C …
  *   - WXYC/Backend-Service#878 — Epic D …
- * A heading's bullets are scanned until a blank line or a non-bullet line
- * (typically the next heading) ends the list; a bullet annotated as already
- * resolved ("— RESOLVED …") is skipped since it no longer names a live
+ * A blank line between the heading and its first bullet (the markdownlint-
+ * standard layout) is skipped; once the list has started, a blank line or a
+ * non-bullet line (typically the next heading) ends it. A bullet annotated as
+ * already resolved ("— RESOLVED …") is skipped since it no longer names a live
  * blocker. Bare `#N` refs are qualified to the citing issue's own repo;
  * `owner/repo#N` refs are kept as-is. Output is deduped on the `blocked
  * |blockedBy` pair, since the adjacent-clause and heading-list forms can name
@@ -189,11 +195,16 @@ export function bodyEdges(citing, body) {
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
     if (!DEP_HEADING_RE.test(lines[i].trim())) continue;
+    let started = false;
     for (let j = i + 1; j < lines.length; j += 1) {
       const line = lines[j];
-      if (!line.trim()) break; // blank line ends the list
+      if (!line.trim()) {
+        if (started) break; // a blank line after the list has begun ends it
+        continue; // a leading blank between heading and first bullet is skipped
+      }
       const bullet = line.match(BULLET_RE);
       if (!bullet) break; // non-bullet line (e.g. the next heading) ends the list
+      started = true;
       if (RESOLVED_RE.test(bullet[1])) continue; // stale bullet — no live edge
       for (const r of bullet[1].matchAll(tokens)) {
         edges.push({ blocked: selfRef, blockedBy: normalizeDep(r[0], cite) });
@@ -216,9 +227,16 @@ function realRunGh(args) {
  * without ever mentioning it in text, and missing that edge is the dangerous
  * failure direction (a genuinely-blocked issue reported as ready). Tolerates a
  * repo where native dependencies aren't configured, or aren't visible to the
- * token: any failure, or a non-array result, yields no edges rather than
- * aborting the fetch — mirroring how the closed-dep resolution below tolerates
- * an unreadable ref.
+ * token: any failure yields no edges rather than aborting the fetch — mirroring
+ * how the closed-dep resolution below tolerates an unreadable ref.
+ *
+ * `--paginate` is required: the REST endpoint returns 30 items/page, and a
+ * silently-truncated blocker list is the same dangerous under-reporting. With
+ * `--paginate` the `--jq` filter runs per page and its outputs are concatenated,
+ * so it must emit one raw ref per line (no array wrapper). `select(.repository)`
+ * drops any entry with a null repository (a blocker in a repo the token can't
+ * see, or a transferred/deleted one) so we never synthesize a bogus `null#N`
+ * ref that would strand its dependent as a permanent external blocker.
  *
  * @param {{number:number, repo:string}} node
  * @param {(argv:string[]) => string} runGh
@@ -226,17 +244,21 @@ function realRunGh(args) {
  */
 function nativeBlockedByEdges(node, runGh) {
   const selfRef = refOf({ number: node.number, repo: node.repo });
-  let deps;
+  let out;
   try {
-    deps = JSON.parse(runGh([
-      'api', `repos/${node.repo}/issues/${node.number}/dependencies/blocked_by`,
-      '--jq', '[.[] | "\\(.repository.full_name)#\\(.number)"]',
-    ]));
+    out = runGh([
+      'api', '--paginate',
+      `repos/${node.repo}/issues/${node.number}/dependencies/blocked_by`,
+      '--jq', '.[] | select(.repository) | "\\(.repository.full_name)#\\(.number)"',
+    ]);
   } catch {
     return []; // unconfigured, unavailable, or no access → no edges from this source
   }
-  if (!Array.isArray(deps)) return [];
-  return deps.map((d) => ({ blocked: selfRef, blockedBy: d }));
+  return String(out)
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((d) => ({ blocked: selfRef, blockedBy: d }));
 }
 
 /**
