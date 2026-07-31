@@ -182,6 +182,67 @@ test('bodyEdges with a bare-number citing (no repo) emits bare refs', () => {
   assert.deepEqual(bodyEdges(5, 'Blocked by #12'), [{ blocked: '5', blockedBy: '12' }]);
 });
 
+// ---- bodyEdges: "## Blocked by" heading + bulleted-list layout -----------
+
+test('bodyEdges captures refs from a "## Blocked by" heading with a bulleted list', () => {
+  const cite = { number: 270, repo: 'WXYC/Backend-Service' };
+  const body = [
+    'Some preamble text.',
+    '',
+    '## Blocked by',
+    '- WXYC/Backend-Service#877 — Epic C …',
+    '- WXYC/Backend-Service#878 — Epic D …',
+    '',
+    '## Description',
+    'Everything else.',
+  ].join('\n');
+  assert.deepEqual(bodyEdges(cite, body), [
+    { blocked: 'WXYC/Backend-Service#270', blockedBy: 'WXYC/Backend-Service#877' },
+    { blocked: 'WXYC/Backend-Service#270', blockedBy: 'WXYC/Backend-Service#878' },
+  ]);
+});
+
+test('bodyEdges captures a "Depends on" heading list and stops at the next heading', () => {
+  const cite = { number: 5, repo: 'o/r' };
+  const body = ['Depends on:', '- #1', '- #2', '## Next section', '- #99 — unrelated bullet'].join('\n');
+  assert.deepEqual(bodyEdges(cite, body), [
+    { blocked: 'o/r#5', blockedBy: 'o/r#1' },
+    { blocked: 'o/r#5', blockedBy: 'o/r#2' },
+  ]);
+});
+
+test('bodyEdges skips a heading-list bullet annotated as already resolved', () => {
+  const cite = { number: 270, repo: 'o/r' };
+  const body = ['## Blocked by', '- #877 — RESOLVED, merged in #900', '- #878 — Epic D still open'].join('\n');
+  assert.deepEqual(bodyEdges(cite, body), [{ blocked: 'o/r#270', blockedBy: 'o/r#878' }]);
+});
+
+test('bodyEdges heading-list scan stops at a blank line', () => {
+  const cite = { number: 5, repo: 'o/r' };
+  const body = ['## Blocked by', '- #1', '', '- #2 (not part of the list, separated by blank line)'].join('\n');
+  assert.deepEqual(bodyEdges(cite, body), [{ blocked: 'o/r#5', blockedBy: 'o/r#1' }]);
+});
+
+test('bodyEdges dedupes when the adjacent-clause and heading-list forms overlap', () => {
+  const cite = { number: 5, repo: 'o/r' };
+  const body = ['Blocked by #1.', '', '## Blocked by', '- #1', '- #2'].join('\n');
+  assert.deepEqual(bodyEdges(cite, body), [
+    { blocked: 'o/r#5', blockedBy: 'o/r#1' },
+    { blocked: 'o/r#5', blockedBy: 'o/r#2' },
+  ]);
+});
+
+test('bodyEdges keeps existing adjacent-clause and reverse-direction matching working alongside heading lists', () => {
+  const cite = { number: 5, repo: 'o/r' };
+  const body = ['Blocked by #12, #13 and #14.', '', 'This blocks #20.'].join('\n');
+  assert.deepEqual(bodyEdges(cite, body), [
+    { blocked: 'o/r#5', blockedBy: 'o/r#12' },
+    { blocked: 'o/r#5', blockedBy: 'o/r#13' },
+    { blocked: 'o/r#5', blockedBy: 'o/r#14' },
+    { blocked: 'o/r#20', blockedBy: 'o/r#5' },
+  ]);
+});
+
 // ---- fetchSpec: composite refs, cross-repo, closed-dep resolution --------
 
 test('fetchSpec records a closed dependency as done, not an external block', () => {
