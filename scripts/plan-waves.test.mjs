@@ -394,3 +394,54 @@ test('fetchSpec tolerates a native blocked_by call failing (unconfigured/no acce
   const spec = fetchSpec('o/r', { label: 'ship' }, throwingGh);
   assert.deepEqual(spec.edges, []);
 });
+
+// ---- fetchSpec: epic-as-blocker edge pruning ------------------------------
+
+test('fetchSpec drops an epic-path child\'s native blocked_by edge to its own containing epic', () => {
+  // #10 is a sub-issue of epic #1 and natively lists #1 (its own epic) as a
+  // blocker — GitHub surfaces that relationship as a dependency even though
+  // it's just "this is part of that epic". Left in, #10 would be stranded in
+  // `blocked (external)` forever, since the epic stays open until #10 (its
+  // last child) closes — a false "everything blocked" trading places with the
+  // false "everything ready" this whole change is fixing.
+  const gh = fakeGh({
+    graphql: {
+      data: { repository: { issue: { subIssues: {
+        nodes: [{ number: 10, state: 'OPEN', repository: { nameWithOwner: 'o/r' } }],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      } } } },
+    },
+    issues: { 10: { number: 10, title: 'x', labels: [], body: '', state: 'OPEN' } },
+    blockedBy: { 'o/r#10': ['o/r#1'] },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.edges, []);
+  const { waves, blocked } = planWaves(spec);
+  assert.deepEqual(waves, [['o/r#10']]);
+  assert.deepEqual(blocked, []);
+});
+
+test('fetchSpec keeps a genuine sibling blocker on an epic-path child (only the epic-self edge is pruned)', () => {
+  // #11 is blocked by sibling #10 (a real, in-DAG dependency) AND lists the
+  // epic #1 itself as a blocker. Only the epic-self edge should be dropped.
+  const gh = fakeGh({
+    graphql: {
+      data: { repository: { issue: { subIssues: {
+        nodes: [
+          { number: 10, state: 'OPEN', repository: { nameWithOwner: 'o/r' } },
+          { number: 11, state: 'OPEN', repository: { nameWithOwner: 'o/r' } },
+        ],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      } } } },
+    },
+    issues: {
+      10: { number: 10, title: 'x', labels: [], body: '', state: 'OPEN' },
+      11: { number: 11, title: 'y', labels: [], body: '', state: 'OPEN' },
+    },
+    blockedBy: { 'o/r#11': ['o/r#1', 'o/r#10'] },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.edges, [{ blocked: 'o/r#11', blockedBy: 'o/r#10' }]);
+  const { waves } = planWaves(spec);
+  assert.deepEqual(waves, [['o/r#10'], ['o/r#11']]);
+});

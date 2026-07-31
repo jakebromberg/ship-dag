@@ -339,7 +339,20 @@ export function fetchSpec(repo, { epic, label }, runGh = realRunGh) {
   // it (`toTopoNodes` does not dedupe). Doing this before step 3 also means the
   // closed-dep→done resolution classifies each native blocker for free: open
   // in-set → a wave edge, closed → done, open out-of-set/unreadable → external.
-  const uniqueEdges = dedupeEdges(edges);
+  let uniqueEdges = dedupeEdges(edges);
+
+  // 2b. On an --epic fetch, drop any edge whose blockedBy is the epic itself.
+  // A native dependency graph can surface "this issue is part of that epic" as
+  // a blocked_by edge on the epic's own number; left in, the child would be
+  // stranded in `blocked (external)` forever, since an epic stays open until
+  // its last child closes — trading the false "everything ready" this change
+  // fixes for a false "everything blocked". Narrowly scoped to the one known
+  // epic ref (not a full ancestor graph), per the fetched nodes being that
+  // epic's own children.
+  if (epic) {
+    const epicRef = refOf({ number: Number(epic), repo });
+    uniqueEdges = uniqueEdges.filter((e) => e.blockedBy !== epicRef);
+  }
 
   // 3. Resolve dependency refs that aren't open nodes: a closed/merged one is
   //    DONE (satisfied), so it must not be mistaken for an unshippable external
