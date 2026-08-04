@@ -9,12 +9,73 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { planWaves, readySet, bodyEdges, fetchSpec } from './plan-waves.mjs';
 
+// A minimal `issue view` fixture, for the hierarchy tests where only the body
+// (and hence the edges parsed out of it) varies between issues.
+const issue = (number, body = '') => ({ number, title: `#${number}`, labels: [], body, state: 'OPEN' });
+
+/** Parse `gh api graphql`'s `-F k=v` / `-f k=v` variable args into an object. */
+function graphqlVars(argv) {
+  const out = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] !== '-F' && argv[i] !== '-f') continue;
+    const pair = argv[i + 1] || '';
+    const eq = pair.indexOf('=');
+    if (eq > 0) out[pair.slice(0, eq)] = pair.slice(eq + 1);
+  }
+  return out;
+}
+
+/**
+ * Build the `subIssues` response for whichever epic a GraphQL query names, from
+ * the flat `fixtures.tree` description of a hierarchy. This lets a nested tree
+ * be written once as `{ "o/r#1": [{number: 20}], "o/r#20": [{number: 21}] }`
+ * instead of a hand-rolled envelope per level, and derives each child's
+ * `subIssuesSummary.total` from whether the tree gives that child its own
+ * entry — so the fixture can't disagree with itself about what is a container.
+ *
+ * An entry of `null` means "the parent declares children, but the query for
+ * them comes back empty" (deleted epic, or one the token can't read).
+ */
+function subIssuesResponse(tree, argv) {
+  const vars = graphqlVars(argv);
+  const repo = `${vars.owner}/${vars.name}`;
+  const entry = tree[`${repo}#${vars.n}`];
+  if (entry === undefined || entry === null) return { data: { repository: { issue: null } } };
+  const pages = Array.isArray(entry) ? [entry] : entry.pages;
+  const idx = vars.cursor ? Number(vars.cursor) : 0;
+  const isLast = idx >= pages.length - 1;
+  const childCount = (ref) => {
+    const kids = tree[ref];
+    if (kids === undefined) return 0;
+    if (kids === null) return 1; // declared a container; its own query returns nothing
+    return Array.isArray(kids) ? kids.length : kids.pages.flat().length;
+  };
+  const nodes = (pages[idx] || []).map((c) => {
+    const childRepo = c.repo || repo;
+    return {
+      number: c.number,
+      state: c.state || 'OPEN',
+      repository: { nameWithOwner: childRepo },
+      subIssuesSummary: { total: childCount(`${childRepo}#${c.number}`) },
+    };
+  });
+  return {
+    data: { repository: { issue: { subIssues: {
+      nodes,
+      pageInfo: { hasNextPage: !isLast, endCursor: isLast ? null : String(idx + 1) },
+    } } } },
+  };
+}
+
 // A fake `gh` runner: branches on argv so fetchSpec is testable without network.
 // Records every invocation on `.calls` so tests can assert repo routing.
 // `fixtures.blockedBy` (optional) maps a "repo#number" key to the array of ref
 // strings the native `dependencies/blocked_by` endpoint would return for that
 // node; a node with no entry (or when `fixtures.blockedBy` is omitted entirely)
 // gets `[]`, matching a repo with no native dependencies configured.
+// `fixtures.tree` (optional) describes a whole sub-issue hierarchy keyed by epic
+// ref — see `subIssuesResponse`. Without it, GraphQL calls fall back to the
+// fixed `fixtures.graphql` envelope.
 function fakeGh(fixtures) {
   const calls = [];
   const run = (argv) => {
@@ -25,7 +86,11 @@ function fakeGh(fixtures) {
       if (!fixtures.issues[n]) throw new Error(`no such issue #${n}`);
       return JSON.stringify(fixtures.issues[n]);
     }
-    if (argv[0] === 'api' && argv[1] === 'graphql') return JSON.stringify(fixtures.graphql);
+    if (argv[0] === 'api' && argv[1] === 'graphql') {
+      return JSON.stringify(fixtures.tree
+        ? subIssuesResponse(fixtures.tree, argv)
+        : fixtures.graphql);
+    }
     if (argv[0] === 'api' && argv.some((a) => /\/dependencies\/blocked_by$/.test(a))) {
       // `gh api --paginate --jq '… | "\(.repository.full_name)#\(.number)"'`
       // emits raw refs, one per line, concatenated across pages — not a JSON
@@ -497,4 +562,281 @@ test('fetchSpec keeps a genuine sibling blocker on an epic-path child (only the 
   assert.deepEqual(spec.edges, [{ blocked: 'o/r#11', blockedBy: 'o/r#10' }]);
   const { waves } = planWaves(spec);
   assert.deepEqual(waves, [['o/r#10'], ['o/r#11']]);
+});
+
+// ---- fetchSpec: recursive sub-issue descent -------------------------------
+
+test('fetchSpec descends into a nested epic, replacing it with its own children', () => {
+  // Epic #1 holds leaf #10 and epic #20; #20 holds #21 and #22. An intermediate
+  // epic is a grouping, not a unit of work — shipping it would hand a whole
+  // sub-tree to one implement subagent — so it is replaced by its leaves.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 10 }, { number: 20 }],
+      'o/r#20': [{ number: 21 }, { number: 22 }],
+    },
+    issues: { 10: issue(10), 20: issue(20), 21: issue(21), 22: issue(22) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#10', 'o/r#21', 'o/r#22']);
+});
+
+test('fetchSpec descends to arbitrary depth, not just one nested level', () => {
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 20 }],
+      'o/r#20': [{ number: 30 }],
+      'o/r#30': [{ number: 31 }, { number: 32 }],
+    },
+    issues: { 20: issue(20), 30: issue(30), 31: issue(31), 32: issue(32) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#31', 'o/r#32']);
+});
+
+test('fetchSpec does not spend a sub-issue query on a leaf', () => {
+  // `subIssuesSummary.total` rides along in the parent's response, so a leaf is
+  // known to be a leaf without a round trip of its own. Only the root is queried.
+  const gh = fakeGh({ tree: { 'o/r#1': [{ number: 10 }, { number: 11 }] }, issues: { 10: issue(10), 11: issue(11) } });
+  fetchSpec('o/r', { epic: 1 }, gh);
+  assert.equal(gh.calls.filter((a) => a[0] === 'api' && a[1] === 'graphql').length, 1);
+});
+
+test('fetchSpec walks a cross-repo nested epic in its own repo', () => {
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 20, repo: 'other/repo' }],
+      'other/repo#20': [{ number: 21 }],
+    },
+    issues: { 20: issue(20), 21: issue(21) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['other/repo#21']);
+  const descent = gh.calls.filter((a) => a[0] === 'api' && a[1] === 'graphql').map(graphqlVars);
+  assert.ok(descent.some((v) => v.owner === 'other' && v.name === 'repo' && v.n === '20'),
+    'the nested epic was queried in its own repo');
+});
+
+test('fetchSpec terminates on a cyclic sub-issue hierarchy', () => {
+  // A malformed hierarchy where a descendant claims the root as its own child.
+  // The visited set must stop the walk rather than loop forever.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 20 }],
+      'o/r#20': [{ number: 1 }, { number: 21 }],
+    },
+    issues: { 20: issue(20), 21: issue(21) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#21']);
+});
+
+test('fetchSpec does not descend into a closed nested epic', () => {
+  // A closed sub-issue is already out of scope at depth 1; closing an epic
+  // takes its whole sub-tree out with it, consistently.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 20, state: 'CLOSED' }, { number: 10 }],
+      'o/r#20': [{ number: 21 }],
+    },
+    issues: { 10: issue(10) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#10']);
+  const descent = gh.calls.filter((a) => a[0] === 'api' && a[1] === 'graphql').map(graphqlVars);
+  assert.ok(!descent.some((v) => v.n === '20'), 'the closed epic was not expanded');
+});
+
+test('fetchSpec paginates a nested epic, not just the root', () => {
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 20 }],
+      'o/r#20': { pages: [[{ number: 21 }], [{ number: 22 }]] },
+    },
+    issues: { 20: issue(20), 21: issue(21), 22: issue(22) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#21', 'o/r#22']);
+});
+
+test('fetchSpec keeps a nested epic as a node when its children cannot be read', () => {
+  // #20 is declared a container by its parent, but its own sub-issue query comes
+  // back empty (deleted, or invisible to the token). Dropping it would silently
+  // lose the work; keeping it as a node is the recoverable direction.
+  const gh = fakeGh({
+    tree: { 'o/r#1': [{ number: 10 }, { number: 20 }], 'o/r#20': null },
+    issues: { 10: issue(10), 20: issue(20) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref).sort(), ['o/r#10', 'o/r#20']);
+});
+
+// ---- fetchSpec: container-edge rewriting ----------------------------------
+
+test('fetchSpec expands an edge naming a container epic into edges to its leaves', () => {
+  // "#10 is blocked by epic #20" means #10 waits for everything in #20. Left
+  // pointing at #20 the edge could never be satisfied — an epic stays open until
+  // its last child closes — so #10 would be stranded as externally blocked.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 10 }, { number: 20 }],
+      'o/r#20': [{ number: 21 }, { number: 22 }],
+    },
+    issues: { 10: issue(10, 'Blocked by #20'), 20: issue(20), 21: issue(21), 22: issue(22) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.edges, [
+    { blocked: 'o/r#10', blockedBy: 'o/r#21' },
+    { blocked: 'o/r#10', blockedBy: 'o/r#22' },
+  ]);
+  const { waves, blocked } = planWaves(spec);
+  assert.deepEqual(waves, [['o/r#21', 'o/r#22'], ['o/r#10']]);
+  assert.deepEqual(blocked, []);
+});
+
+test('fetchSpec pushes a container epic\'s own blocker down onto each of its leaves', () => {
+  // Epic #20 declares a blocker. #20 never ships as a node, so the constraint
+  // has to land on the children that ship in its place.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 10 }, { number: 20 }],
+      'o/r#20': [{ number: 21 }, { number: 22 }],
+    },
+    issues: { 10: issue(10), 20: issue(20, 'Blocked by #10'), 21: issue(21), 22: issue(22) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.edges, [
+    { blocked: 'o/r#21', blockedBy: 'o/r#10' },
+    { blocked: 'o/r#22', blockedBy: 'o/r#10' },
+  ]);
+  const { waves } = planWaves(spec);
+  assert.deepEqual(waves, [['o/r#10'], ['o/r#21', 'o/r#22']]);
+});
+
+test('fetchSpec pushes a container epic\'s native blocker down, keeping it externally blocked', () => {
+  // The same push-down, from the native dependency graph rather than prose, and
+  // onto a blocker that is out of scope: both leaves must stay blocked.
+  const gh = fakeGh({
+    tree: { 'o/r#1': [{ number: 20 }], 'o/r#20': [{ number: 21 }, { number: 22 }] },
+    issues: { 20: issue(20), 21: issue(21), 22: issue(22), 99: { state: 'OPEN' } },
+    blockedBy: { 'o/r#20': ['o/r#99'] },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.edges, [
+    { blocked: 'o/r#21', blockedBy: 'o/r#99' },
+    { blocked: 'o/r#22', blockedBy: 'o/r#99' },
+  ]);
+  const { waves, blocked } = planWaves(spec);
+  assert.deepEqual(waves, []);
+  assert.deepEqual(blocked, [
+    { ref: 'o/r#21', missing: ['o/r#99'], reason: 'external' },
+    { ref: 'o/r#22', missing: ['o/r#99'], reason: 'external' },
+  ]);
+});
+
+test('fetchSpec drops a nested child\'s blocked_by edge to any of its ancestor epics', () => {
+  // The depth-1 epic-self rule, generalized: an edge to a *containing* epic at
+  // any depth is "this is part of that", not a dependency. Both #20 (parent) and
+  // #1 (grandparent) are containment artifacts for #21.
+  const gh = fakeGh({
+    tree: { 'o/r#1': [{ number: 20 }], 'o/r#20': [{ number: 21 }] },
+    issues: { 20: issue(20), 21: issue(21) },
+    blockedBy: { 'o/r#21': ['o/r#20', 'o/r#1'] },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.edges, []);
+  const { waves, blocked } = planWaves(spec);
+  assert.deepEqual(waves, [['o/r#21']]);
+  assert.deepEqual(blocked, []);
+});
+
+test('fetchSpec keeps a genuine cross-branch blocker while dropping the ancestor edge', () => {
+  // #31 (under epic #30) is blocked by sibling-branch epic #20 AND lists its own
+  // parent #30. Only the ancestor edge is containment; the other expands.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 20 }, { number: 30 }],
+      'o/r#20': [{ number: 21 }],
+      'o/r#30': [{ number: 31 }],
+    },
+    issues: { 20: issue(20), 21: issue(21), 30: issue(30), 31: issue(31) },
+    blockedBy: { 'o/r#31': ['o/r#30', 'o/r#20'] },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.edges, [{ blocked: 'o/r#31', blockedBy: 'o/r#21' }]);
+  const { waves } = planWaves(spec);
+  assert.deepEqual(waves, [['o/r#21'], ['o/r#31']]);
+});
+
+test('fetchSpec expands a container edge onto a mix of open and closed leaves', () => {
+  // Epic #20 holds open #21 and closed #22. "Blocked by #20" expands onto both;
+  // the closed one must resolve into done rather than block #10 forever.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 10 }, { number: 20 }],
+      'o/r#20': [{ number: 21 }, { number: 22, state: 'CLOSED' }],
+    },
+    issues: { 10: issue(10, 'Blocked by #20'), 20: issue(20), 21: issue(21), 22: { state: 'CLOSED' } },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#10', 'o/r#21']);
+  assert.deepEqual(spec.edges, [
+    { blocked: 'o/r#10', blockedBy: 'o/r#21' },
+    { blocked: 'o/r#10', blockedBy: 'o/r#22' },
+  ]);
+  assert.deepEqual(spec.done, ['o/r#22']);
+  const { waves, blocked } = planWaves(spec);
+  assert.deepEqual(waves, [['o/r#21'], ['o/r#10']]);
+  assert.deepEqual(blocked, []);
+});
+
+test('fetchSpec ships an open epic whose children are all closed, rather than dropping it', () => {
+  // Real shape from WXYC/Backend-Service#1543: epic #20 is open but its only
+  // sub-issue is closed. It is not a grouping of pending work — it IS the
+  // pending work, so it must become a node. Expanding it into nothing would
+  // silently delete a shippable issue from the DAG.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 10 }, { number: 20 }],
+      'o/r#20': [{ number: 21, state: 'CLOSED' }],
+    },
+    issues: { 10: issue(10), 20: issue(20) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref).sort(), ['o/r#10', 'o/r#20']);
+  const { waves } = planWaves(spec);
+  assert.deepEqual(waves.flat().sort(), ['o/r#10', 'o/r#20']);
+});
+
+test('fetchSpec keeps an epic a container when its only open descendant is a demoted epic', () => {
+  // #30's children are all closed so #30 ships; that makes #30 an open
+  // descendant of #20, which therefore stays a grouping and does not ship.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 20 }],
+      'o/r#20': [{ number: 30 }],
+      'o/r#30': [{ number: 31, state: 'CLOSED' }],
+    },
+    issues: { 20: issue(20), 30: issue(30) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#30']);
+});
+
+test('fetchSpec pushes a container blocker down onto a demoted all-closed epic', () => {
+  // #20 ships in its children's place, so a blocker declared on its parent epic
+  // #2 must reach it — the demotion must not sever the push-down.
+  const gh = fakeGh({
+    tree: {
+      'o/r#1': [{ number: 10 }, { number: 2 }],
+      'o/r#2': [{ number: 20 }],
+      'o/r#20': [{ number: 21, state: 'CLOSED' }],
+    },
+    issues: { 10: issue(10), 2: issue(2, 'Blocked by #10'), 20: issue(20) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#10', 'o/r#20']);
+  assert.deepEqual(spec.edges, [{ blocked: 'o/r#20', blockedBy: 'o/r#10' }]);
+  const { waves } = planWaves(spec);
+  assert.deepEqual(waves, [['o/r#10'], ['o/r#20']]);
 });
