@@ -345,9 +345,11 @@ function listSubIssues(epicNode, runGh) {
  * Rules, each matching how depth-1 already behaves:
  *  - A CLOSED sub-issue is out of scope, and closing an epic takes its whole
  *    sub-tree with it — the walk does not descend into it.
- *  - A container whose own sub-issue query comes back empty is kept as a leaf,
- *    with a warning. Its children are unknown, and silently dropping the work is
- *    the dangerous direction; shipping the epic issue itself is recoverable.
+ *  - A container whose own sub-issue query *fails* is kept as a leaf, with a
+ *    warning. Its children are unknown, and silently dropping the work is the
+ *    dangerous direction; shipping the epic issue itself is recoverable. (A
+ *    query that succeeds with no open children is a different case — it is
+ *    demoted by the pass below, quietly, because nothing went wrong.)
  *  - A ref already visited is not descended into again, so a malformed cyclic
  *    hierarchy terminates instead of looping forever.
  *  - An open container with no open descendant is demoted back to a leaf: it is
@@ -477,14 +479,22 @@ function isAncestor(ancestorRef, ref, parentOf) {
  *    that" — GitHub's dependency graph surfaces containment that way. This
  *    generalizes the depth-1 epic-self rule to the whole ancestor chain, in both
  *    directions: an epic is by definition blocked by its own children, so
- *    pushing that edge down would make a child block itself.
+ *    pushing that edge down would make a child block itself. This is not
+ *    hypothetical — GitHub really does list an epic as `blocked_by` each of its
+ *    own sub-issues, so without this rule an intermediate epic's dependency list
+ *    would expand into mutual sibling edges and stall the whole tree on a
+ *    fabricated cycle.
+ *  - **A self-edge is passed through untouched.** It carries no ordering to
+ *    translate; it is corrupt input, and the core reports it as a cycle.
  *  - **Everything else is expanded.** "X is blocked by epic E" becomes "X is
  *    blocked by every leaf of E", and "epic E is blocked by Y" pushes Y onto
  *    every leaf of E. Both endpoints expand, so an epic-to-epic edge becomes the
- *    cross product — faithful, and bounded by real epic sizes. Self-edges from
- *    the expansion are dropped; a node cannot block itself.
+ *    cross product — faithful, and bounded by real epic sizes. A self-pair that
+ *    the *expansion* invents is dropped; a node cannot block itself.
  *
- * A no-op when there is no hierarchy (the `--label` path).
+ * A no-op when there is no hierarchy (the `--label` path). Note that on the
+ * `--epic` path the root is always registered in `containers`, so that early-out
+ * never fires there even for a flat, depth-1 epic.
  *
  * @param {Array<{blocked:string, blockedBy:string}>} edges
  * @param {{containers:Map<string,string[]>, parentOf:Map<string,string>}} hierarchy
@@ -494,6 +504,11 @@ function rewriteContainerEdges(edges, { containers, parentOf }) {
   if (!containers.size) return edges;
   const out = [];
   for (const e of edges) {
+    // A self-edge carries no ordering to translate — it is corrupt input, and
+    // the core's job is to report it as a cycle. Pass it through untouched so
+    // that signal survives; expanding it would either erase it (the self-pair
+    // guard below) or, on a container, manufacture a cycle across every leaf.
+    if (e.blocked === e.blockedBy) { out.push(e); continue; }
     if (isAncestor(e.blockedBy, e.blocked, parentOf)) continue;
     if (isAncestor(e.blocked, e.blockedBy, parentOf)) continue;
     for (const blocked of leavesUnder(e.blocked, containers)) {

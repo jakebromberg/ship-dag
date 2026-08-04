@@ -823,6 +823,22 @@ test('fetchSpec keeps an epic a container when its only open descendant is a dem
   assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#30']);
 });
 
+test('fetchSpec preserves a leaf self-edge so it still surfaces as a cycle', () => {
+  // An issue naming itself as its own blocker is corrupt input, and the core
+  // reports it as `cyclic`. The self-pair guard in the expansion exists to drop
+  // pairs the *expansion* invented, not to erase that signal — silently shipping
+  // an issue whose own body says it is blocked is the wrong kind of quiet.
+  const gh = fakeGh({
+    tree: { 'o/r#1': [{ number: 10 }, { number: 20 }], 'o/r#20': [{ number: 21 }] },
+    issues: { 10: issue(10, 'Blocked by #10'), 20: issue(20), 21: issue(21) },
+  });
+  const spec = fetchSpec('o/r', { epic: 1 }, gh);
+  assert.deepEqual(spec.edges, [{ blocked: 'o/r#10', blockedBy: 'o/r#10' }]);
+  const { waves, cyclic } = planWaves(spec);
+  assert.deepEqual(cyclic, ['o/r#10']);
+  assert.deepEqual(waves, [['o/r#21']]);
+});
+
 test('fetchSpec pushes a container blocker down onto a demoted all-closed epic', () => {
   // #20 ships in its children's place, so a blocker declared on its parent epic
   // #2 must reach it — the demotion must not sever the push-down.
