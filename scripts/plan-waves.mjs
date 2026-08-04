@@ -9,8 +9,9 @@
 // composite-keyed topological-sort core in claude-orchestrator (`readySet` /
 // `layeredTopoSort` from `<CO_HOME>/dist/src/index.js`), so this planner and the
 // engine's `computeWaves` can never drift. This file owns only the ship-dag
-// specifics: the gh-fetch wrapper, body-prose edge parsing, spec→core conversion,
-// and the human-readable table. Set `CO_HOME` to your claude-orchestrator
+// specifics: the gh-fetch wrapper, the recursive sub-issue walk and the
+// container-edge rewriting it requires, body-prose edge parsing, spec→core
+// conversion, and the human-readable table. Set `CO_HOME` to your claude-orchestrator
 // checkout (default `/Users/me/Developer/claude-orchestrator`); the core must
 // be built (`npm run build` there — `dist/` is committed, so a fresh checkout
 // already has it).
@@ -282,6 +283,228 @@ function dedupeEdges(edges) {
   return out;
 }
 
+// ---- sub-issue hierarchy walk -------------------------------------------
+
+// One page of an epic's sub-issues. `subIssuesSummary.total` rides along on each
+// child so the walk can tell a container from a leaf without a round trip of its
+// own — on a wide epic that is one query instead of one-per-child.
+const SUB_ISSUES_QUERY =
+  'query($owner:String!,$name:String!,$n:Int!,$cursor:String){repository(owner:$owner,name:$name)'
+  + '{issue(number:$n){subIssues(first:100,after:$cursor){'
+  + 'nodes{number state repository{nameWithOwner} subIssuesSummary{total}}'
+  + 'pageInfo{hasNextPage endCursor}}}}}';
+
+/** No sub-issues connection came back for an issue — bad number, deleted, no access, feature off. */
+class SubIssuesUnavailable extends Error {}
+
+/**
+ * Every sub-issue of one epic, following cursors so a large epic isn't silently
+ * truncated. Throws `SubIssuesUnavailable` when GitHub reports no sub-issues
+ * connection at all, leaving the caller to decide whether that is fatal (the
+ * root epic) or merely a warning (a nested one).
+ *
+ * @param {{number:number, repo:string}} epicNode
+ * @param {(argv:string[]) => string} runGh
+ * @returns {Array<{number:number,state:string,repository:{nameWithOwner:string},subIssuesSummary?:{total:number}}>}
+ */
+function listSubIssues(epicNode, runGh) {
+  const [owner, name] = epicNode.repo.split('/');
+  const out = [];
+  let cursor = null;
+  do {
+    const argv = ['api', 'graphql', '-H', 'GraphQL-Features: sub_issues', '-f', `query=${SUB_ISSUES_QUERY}`,
+      '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `n=${epicNode.number}`];
+    if (cursor) argv.push('-F', `cursor=${cursor}`);
+    let resp;
+    try {
+      resp = JSON.parse(runGh(argv));
+    } catch (err) {
+      throw new SubIssuesUnavailable(`the sub-issues query failed: ${err.message}`);
+    }
+    const issue = resp && resp.data && resp.data.repository && resp.data.repository.issue;
+    if (!issue || !issue.subIssues) {
+      throw new SubIssuesUnavailable('no sub-issues returned (bad number, or the sub-issues '
+        + `feature is unavailable): ${JSON.stringify((resp && resp.errors) || resp)}`);
+    }
+    out.push(...issue.subIssues.nodes);
+    cursor = issue.subIssues.pageInfo.hasNextPage ? issue.subIssues.pageInfo.endCursor : null;
+  } while (cursor);
+  return out;
+}
+
+/**
+ * Walk an epic's sub-issue tree to any depth, breadth-first.
+ *
+ * GitHub nests epics freely, and only the leaves are units of work: handing an
+ * intermediate epic to an implement subagent would hand it a whole sub-tree. So
+ * the walk splits the tree in two — `leaves` become the spec's nodes, while
+ * `containers` are groupings that never ship but still carry structure, since a
+ * dependency naming an epic constrains everything under it (see
+ * `rewriteContainerEdges`).
+ *
+ * Rules, each matching how depth-1 already behaves:
+ *  - A CLOSED sub-issue is out of scope, and closing an epic takes its whole
+ *    sub-tree with it — the walk does not descend into it.
+ *  - A container whose own sub-issue query comes back empty is kept as a leaf,
+ *    with a warning. Its children are unknown, and silently dropping the work is
+ *    the dangerous direction; shipping the epic issue itself is recoverable.
+ *  - A ref already visited is not descended into again, so a malformed cyclic
+ *    hierarchy terminates instead of looping forever.
+ *  - An open container with no open descendant is demoted back to a leaf: it is
+ *    not a grouping of pending work, it *is* the pending work.
+ *
+ * The root epic itself is a container but is *not* read for edges by the caller,
+ * and is never demoted: it is the scope boundary, not a participant, exactly as
+ * at depth 1. An epic whose every descendant is closed therefore yields no nodes.
+ *
+ * @param {string} rootRepo  owner/repo of the root epic
+ * @param {number|string} rootNumber
+ * @param {(argv:string[]) => string} runGh
+ * @returns {{rootRef:string, leaves:Array<{number:number,repo:string,ref:string}>,
+ *            containerNodes:Array<{number:number,repo:string,ref:string}>,
+ *            containers:Map<string,string[]>, parentOf:Map<string,string>}}
+ */
+function fetchHierarchy(rootRepo, rootNumber, runGh) {
+  const root = { number: Number(rootNumber), repo: rootRepo, ref: refOf({ number: Number(rootNumber), repo: rootRepo }) };
+  const containers = new Map(); // container ref -> its direct child refs (open and closed)
+  const parentOf = new Map(); // ref -> containing epic's ref, for the ancestor test
+  const leaves = [];
+  const containerNodes = []; // open containers below the root: edges, but never nodes
+  const visited = new Set([root.ref]);
+  const queue = [root];
+
+  while (queue.length) {
+    const epicNode = queue.shift();
+    let kids;
+    try {
+      kids = listSubIssues(epicNode, runGh);
+    } catch (err) {
+      if (!(err instanceof SubIssuesUnavailable)) throw err;
+      if (epicNode.ref === root.ref) {
+        throw new Error(`epic #${epicNode.number} in ${epicNode.repo}: ${err.message}`);
+      }
+      process.stderr.write(`warning: ${epicNode.ref} reports sub-issues but none could be read `
+        + `(${err.message}); treating it as a single issue\n`);
+      leaves.push(epicNode);
+      continue;
+    }
+    if (epicNode.ref !== root.ref) containerNodes.push(epicNode);
+    const childRefs = [];
+    for (const k of kids) {
+      const kidRepo = (k.repository && k.repository.nameWithOwner) || epicNode.repo;
+      const kid = { number: k.number, repo: kidRepo, ref: refOf({ number: k.number, repo: kidRepo }) };
+      childRefs.push(kid.ref);
+      if (!parentOf.has(kid.ref)) parentOf.set(kid.ref, epicNode.ref);
+      if (k.state === 'CLOSED') continue;
+      if (!(k.subIssuesSummary && k.subIssuesSummary.total > 0)) { leaves.push(kid); continue; }
+      if (visited.has(kid.ref)) {
+        process.stderr.write(`warning: sub-issue hierarchy revisits ${kid.ref}; not descending again\n`);
+        continue;
+      }
+      visited.add(kid.ref);
+      queue.push(kid);
+    }
+    containers.set(epicNode.ref, childRefs);
+  }
+
+  // A container with no open descendant is not a grouping of pending work — it
+  // *is* the pending work. GitHub leaves such an epic open (its own body holds
+  // the remainder, or it just hasn't been closed out), and expanding it into an
+  // empty set would silently delete a shippable issue from the DAG. So demote it
+  // back to a leaf. Bottom-up, so an epic whose only open descendant is itself a
+  // demoted epic still counts as a grouping and stays one. `containerNodes` is
+  // in breadth-first order, hence parents before children, hence this reverse
+  // walk visits every child before its parent.
+  const openInTree = new Set(leaves.map((l) => l.ref));
+  for (let i = containerNodes.length - 1; i >= 0; i -= 1) {
+    const c = containerNodes[i];
+    if (!(containers.get(c.ref) || []).some((r) => openInTree.has(r))) {
+      containers.delete(c.ref); // now a leaf: `leavesUnder` resolves it to itself
+      containerNodes.splice(i, 1);
+      leaves.push(c);
+    }
+    openInTree.add(c.ref); // either way it is open, so its parent has a live descendant
+  }
+  return { rootRef: root.ref, leaves, containerNodes, containers, parentOf };
+}
+
+/** A hierarchy with no containment — the `--label` path, where the rewrites below are no-ops. */
+function flatHierarchy() {
+  return { rootRef: null, leaves: [], containerNodes: [], containers: new Map(), parentOf: new Map() };
+}
+
+// ---- container-edge rewriting -------------------------------------------
+
+/**
+ * Every shippable ref under `ref`: itself when it is a leaf, otherwise its
+ * descendants. A container with no resolvable descendants falls back to itself
+ * rather than to nothing, so an edge to it is never silently discarded (step 3
+ * then classifies it as done or external, as for any out-of-set ref).
+ *
+ * `seen` guards a hierarchy that revisits a ref. GitHub sub-issues are
+ * single-parent, so this only fires on a malformed tree.
+ */
+function leavesUnder(ref, containers, seen = new Set()) {
+  const kids = containers.get(ref);
+  if (!kids || seen.has(ref)) return [ref];
+  seen.add(ref);
+  const out = [];
+  for (const k of kids) out.push(...leavesUnder(k, containers, seen));
+  return out.length ? out : [ref];
+}
+
+/** Whether `ancestorRef` contains `ref`, at any depth. */
+function isAncestor(ancestorRef, ref, parentOf) {
+  const seen = new Set();
+  let cur = parentOf.get(ref);
+  while (cur && !seen.has(cur)) {
+    if (cur === ancestorRef) return true;
+    seen.add(cur);
+    cur = parentOf.get(cur);
+  }
+  return false;
+}
+
+/**
+ * Translate edges that name a container epic into edges between the issues that
+ * actually ship. Two things happen, and both are required once the fetch
+ * descends: an intermediate epic is no longer a node, so an edge left pointing
+ * at one could never be satisfied (an epic stays open until its last child
+ * closes) and would strand its dependent as permanently blocked.
+ *
+ *  - **Containment artifacts are dropped.** An edge between an issue and one of
+ *    its own ancestor epics says "this is part of that", not "this waits for
+ *    that" — GitHub's dependency graph surfaces containment that way. This
+ *    generalizes the depth-1 epic-self rule to the whole ancestor chain, in both
+ *    directions: an epic is by definition blocked by its own children, so
+ *    pushing that edge down would make a child block itself.
+ *  - **Everything else is expanded.** "X is blocked by epic E" becomes "X is
+ *    blocked by every leaf of E", and "epic E is blocked by Y" pushes Y onto
+ *    every leaf of E. Both endpoints expand, so an epic-to-epic edge becomes the
+ *    cross product — faithful, and bounded by real epic sizes. Self-edges from
+ *    the expansion are dropped; a node cannot block itself.
+ *
+ * A no-op when there is no hierarchy (the `--label` path).
+ *
+ * @param {Array<{blocked:string, blockedBy:string}>} edges
+ * @param {{containers:Map<string,string[]>, parentOf:Map<string,string>}} hierarchy
+ * @returns {Array<{blocked:string, blockedBy:string}>}
+ */
+function rewriteContainerEdges(edges, { containers, parentOf }) {
+  if (!containers.size) return edges;
+  const out = [];
+  for (const e of edges) {
+    if (isAncestor(e.blockedBy, e.blocked, parentOf)) continue;
+    if (isAncestor(e.blocked, e.blockedBy, parentOf)) continue;
+    for (const blocked of leavesUnder(e.blocked, containers)) {
+      for (const blockedBy of leavesUnder(e.blockedBy, containers)) {
+        if (blocked !== blockedBy) out.push({ blocked, blockedBy });
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Build a spec by querying GitHub. `runGh(argv) -> string` is injectable so the
  * fetch logic (edge parsing, closed-dependency → done resolution) is testable
@@ -292,14 +515,21 @@ function dedupeEdges(edges) {
  * citing issue, and a closed/merged dependency is resolved against *its own*
  * repo before being folded into `done`. `repo` (the epic/label repo) is the
  * default for anything left bare.
+ *
+ * The `--epic` path descends the sub-issue tree to any depth: a sub-issue that
+ * is itself an epic is replaced by the issues underneath it, and its own
+ * dependencies are pushed down onto them. `--label` selects a flat set and is
+ * unaffected.
  */
 export function fetchSpec(repo, { epic, label }, runGh = realRunGh) {
   const [owner, name] = repo.split('/');
   if (!owner || !name) throw new Error(`--repo must be owner/repo, got: ${repo}`);
 
   // 1. Discover the open node set as {number, repo} pairs (repo may differ from
-  //    the epic's for a cross-repo sub-issue).
+  //    the epic's for a cross-repo sub-issue). The epic path walks the whole
+  //    sub-issue tree; intermediate epics come back separately, as containers.
   let openNodes = [];
+  let hierarchy = flatHierarchy();
   if (label) {
     const list = JSON.parse(runGh(['issue', 'list', '--repo', repo, '--label', label,
       '--state', 'open', '--limit', String(LIST_LIMIT), '--json', 'number']));
@@ -308,73 +538,52 @@ export function fetchSpec(repo, { epic, label }, runGh = realRunGh) {
     }
     openNodes = list.map((i) => ({ number: i.number, repo }));
   } else if (epic) {
-    // Native sub-issues via GraphQL, paginated so large epics aren't silently
-    // truncated. `repository.nameWithOwner` qualifies cross-repo sub-issues.
-    let cursor = null;
-    const sub = [];
-    do {
-      const q = 'query($owner:String!,$name:String!,$n:Int!,$cursor:String){repository(owner:$owner,name:$name)'
-        + '{issue(number:$n){subIssues(first:100,after:$cursor){nodes{number state repository{nameWithOwner}}'
-        + 'pageInfo{hasNextPage endCursor}}}}}';
-      const argv = ['api', 'graphql', '-H', 'GraphQL-Features: sub_issues', '-f', `query=${q}`,
-        '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `n=${epic}`];
-      if (cursor) argv.push('-F', `cursor=${cursor}`);
-      const resp = JSON.parse(runGh(argv));
-      const issue = resp && resp.data && resp.data.repository && resp.data.repository.issue;
-      if (!issue || !issue.subIssues) {
-        throw new Error(`epic #${epic} in ${repo}: no sub-issues returned `
-          + `(bad number, or the sub-issues feature is unavailable): ${JSON.stringify(resp.errors || resp)}`);
-      }
-      sub.push(...issue.subIssues.nodes);
-      cursor = issue.subIssues.pageInfo.hasNextPage ? issue.subIssues.pageInfo.endCursor : null;
-    } while (cursor);
-    openNodes = sub
-      .filter((s) => s.state !== 'CLOSED')
-      .map((s) => ({ number: s.number, repo: (s.repository && s.repository.nameWithOwner) || repo }));
+    hierarchy = fetchHierarchy(repo, epic, runGh);
+    openNodes = hierarchy.leaves.map((l) => ({ number: l.number, repo: l.repo }));
   } else {
     throw new Error('fetch needs --epic N or --label L');
   }
 
-  // 2. Read each node's body → metadata + dependency edges. Refs are keyed on
-  //    the node's own repo.
+  // 2. Read each issue's body → metadata + dependency edges. Refs are keyed on
+  //    the issue's own repo. Containers are read for their edges but never
+  //    become nodes: they are groupings, and their constraints are pushed onto
+  //    the leaves that ship in their place (step 2b). The root epic is skipped
+  //    entirely — it is the scope boundary, not a participant.
   const openRefs = new Set(openNodes.map((o) => refOf({ number: o.number, repo: o.repo })));
+  const containerRefs = new Set(hierarchy.containerNodes.map((c) => c.ref));
   const nodes = [];
   const edges = [];
-  for (const o of openNodes) {
+  for (const o of [...openNodes, ...hierarchy.containerNodes]) {
     const iss = JSON.parse(runGh(['issue', 'view', String(o.number), '--repo', o.repo,
       '--json', 'number,title,labels,body,state']));
     const body = iss.body || '';
-    const refs = [...body.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
-    nodes.push({
-      number: iss.number,
-      repo: o.repo,
-      ref: refOf({ number: iss.number, repo: o.repo }),
-      title: iss.title,
-      labels: (iss.labels || []).map((l) => l.name),
-      bodyLen: body.length,
-      refCount: new Set(refs).size,
-    });
+    const ref = refOf({ number: iss.number, repo: o.repo });
+    if (!containerRefs.has(ref)) {
+      const refs = [...body.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+      nodes.push({
+        number: iss.number,
+        repo: o.repo,
+        ref,
+        title: iss.title,
+        labels: (iss.labels || []).map((l) => l.name),
+        bodyLen: body.length,
+        refCount: new Set(refs).size,
+      });
+    }
     edges.push(...bodyEdges({ number: iss.number, repo: o.repo }, body));
     edges.push(...nativeBlockedByEdges(o, runGh));
   }
-  // Native and prose can name the same pair; dedupe before the DAG ever sees
-  // it (`toTopoNodes` does not dedupe). Doing this before step 3 also means the
-  // closed-dep→done resolution classifies each native blocker for free: open
-  // in-set → a wave edge, closed → done, open out-of-set/unreadable → external.
-  let uniqueEdges = dedupeEdges(edges);
 
-  // 2b. On an --epic fetch, drop any edge whose blockedBy is the epic itself.
-  // A native dependency graph can surface "this issue is part of that epic" as
-  // a blocked_by edge on the epic's own number; left in, the child would be
-  // stranded in `blocked (external)` forever, since an epic stays open until
-  // its last child closes — trading the false "everything ready" this change
-  // fixes for a false "everything blocked". Narrowly scoped to the one known
-  // epic ref (not a full ancestor graph), per the fetched nodes being that
-  // epic's own children.
-  if (epic) {
-    const epicRef = refOf({ number: Number(epic), repo });
-    uniqueEdges = uniqueEdges.filter((e) => e.blockedBy !== epicRef);
-  }
+  // 2b. Translate edges that name a containing or contained epic — dropping the
+  // ones that only express containment, expanding the rest onto the leaves that
+  // actually ship. On the label path (no hierarchy) this is a no-op.
+  //
+  // Then dedupe: native and prose can name the same pair, and the expansion can
+  // produce the same pair twice. Dedupe must come before the DAG ever sees the
+  // edges (`toTopoNodes` does not dedupe). Doing it before step 3 also means the
+  // closed-dep→done resolution classifies each blocker for free: open in-set →
+  // a wave edge, closed → done, open out-of-set/unreadable → external.
+  const uniqueEdges = dedupeEdges(rewriteContainerEdges(edges, hierarchy));
 
   // 3. Resolve dependency refs that aren't open nodes: a closed/merged one is
   //    DONE (satisfied), so it must not be mistaken for an unshippable external
