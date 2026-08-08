@@ -47,7 +47,7 @@ The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [cl
 | `scripts/plan-waves.mjs` | DAG fetch + wave planning (imports claude-orchestrator's topo-sort core). |
 | `scripts/emit-config.mjs` | Turns a cleared ready-wave into a claude-orchestrator engine config. |
 | `scripts/engine/` | The engine-invocation path: `run.mts` (entry), `hooks.mts` (worktree + cutover), `repos-dir.mjs` (org-root resolution), `prompt.md`. |
-| `scripts/telemetry.mjs` | Per-issue run records (model-assignment efficacy). |
+| `scripts/telemetry.mjs` | Per-issue + per-retro-pass run records (model-assignment efficacy). |
 | `references/` | CI profiles, model/effort matrix, escalation policy, review + retrospective + eval schemas. |
 | `eval/` | Offline eval harness for the model-assignment study. |
 | `docs/` | [Field report](./docs/field-report.md) from the first production run, plus a runnable anonymized [telemetry sample](./docs/examples/run-sample.jsonl). |
