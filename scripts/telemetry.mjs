@@ -47,6 +47,8 @@ const KINDS = new Set(['issue', 'retro']);
 // refs in mergedPrs[] carry them. `wave` is a display label stamped from the
 // main agent's wave counter, not an index any report logic depends on.
 const REQUIRED_RETRO = ['runId', 'wave', 'mergedPrs'];
+const RETRO_COUNTS = ['proposedRefactors', 'approvedRefactors', 'declinedRefactors', 'proposedAdjustments', 'approvedAdjustments', 'declinedAdjustments'];
+const RETRO_LISTS = ['filed', 'adjusted', 'declinedTitles'];
 
 /** Resolve the telemetry log path from the environment (see module header). */
 export function telemetryPath(env = process.env) {
@@ -70,6 +72,12 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   const kind = rec.kind ?? 'issue';
   if (!KINDS.has(kind)) throw new Error(`bad kind: ${rec.kind}`);
   if (kind === 'retro') return normalizeRetroRecord(rec, now);
+  // A retro-shaped record that forgot its discriminator would otherwise fall
+  // through to the issue path and die on `missing required key: repo` — naming
+  // the one field the retro schema deliberately excludes.
+  if (rec.kind === undefined && (rec.mergedPrs !== undefined || rec.wave !== undefined)) {
+    throw new Error('record has retro fields but is missing kind: "retro"');
+  }
   for (const k of REQUIRED) {
     if (rec[k] === undefined || rec[k] === null) throw new Error(`missing required key: ${k}`);
   }
@@ -111,24 +119,21 @@ function normalizeRetroRecord(rec, now) {
     if (rec[k] === undefined || rec[k] === null) throw new Error(`missing required key: ${k}`);
   }
   if (!Array.isArray(rec.mergedPrs)) throw new Error('mergedPrs must be an array');
-  return {
-    ...rec,
-    kind: 'retro',
-    ts: rec.ts || now(),
-    proposedRefactors: rec.proposedRefactors ?? 0,
-    approvedRefactors: rec.approvedRefactors ?? 0,
-    declinedRefactors: rec.declinedRefactors ?? 0,
-    proposedAdjustments: rec.proposedAdjustments ?? 0,
-    approvedAdjustments: rec.approvedAdjustments ?? 0,
-    declinedAdjustments: rec.declinedAdjustments ?? 0,
-    filed: rec.filed ?? [],
-    adjusted: rec.adjusted ?? [],
-    // declinedTitles makes the run ledger reconstructible after a compaction:
-    // declined proposals are deliberately never written to GitHub, so the log
-    // is their only durable home.
-    declinedTitles: rec.declinedTitles ?? [],
-    tokens: rec.tokens ?? null,
-  };
+  const out = { ...rec, kind: 'retro', ts: rec.ts || now(), tokens: rec.tokens ?? null };
+  for (const k of RETRO_COUNTS) {
+    const v = rec[k] ?? 0;
+    if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`${k} must be a number`);
+    out[k] = v;
+  }
+  // declinedTitles makes the run ledger reconstructible after a compaction:
+  // declined proposals are deliberately never written to GitHub, so the log
+  // is their only durable home.
+  for (const k of RETRO_LISTS) {
+    const v = rec[k] ?? [];
+    if (!Array.isArray(v)) throw new Error(`${k} must be an array`);
+    out[k] = v;
+  }
+  return out;
 }
 
 /** Append one validated record as a JSON line; creates the state dir if needed. */
