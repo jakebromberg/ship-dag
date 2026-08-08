@@ -1,7 +1,7 @@
 ---
 name: ship-dag
 description: Ship a dependency DAG of GitHub issues to main — per-issue subagents (Haiku triage, Sonnet implement, Opus review), auto-merge on green (rebase-and-merge), and HITL grilling on any open question. Use when the user wants to autonomously work through an epic or a set of dependent issues end to end.
-argument-hint: "[epic#N | --label L | org/repo#N ...] [--org O] [--block-on correctness,security] [--max-review-iter 2] [--workflow-threshold 5] [--dry-run]"
+argument-hint: "[epic#N | --label L | org/repo#N ...] [--org O] [--block-on correctness,security] [--max-review-iter 2] [--workflow-threshold 5] [--retro-threshold 3] [--no-retro] [--dry-run]"
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Agent, Skill, AskUserQuestion
 ---
 
@@ -42,11 +42,12 @@ Flags:
 - `--block-on correctness,security` (default) — finding categories that block auto-merge. See `references/review-schema.md`.
 - `--max-review-iter K` (default `2`) — `/review-loop` fix passes before escalating a blocking finding.
 - `--workflow-threshold N` (default `5`) — **fallback only** (engine unavailable, step 4): a wave with ≥ N cleared issues routes the fallback implement→review through `workflow.js`; below it, inline `Agent` fan-out. Ignored on the primary engine path.
-- `--dry-run` — print the full wave partition (`waves` / `blocked` / `cyclic`) and the per-issue model/effort assignment, then stop **before any side effect**.
+- `--retro-threshold N` (default `3`) — run the step-6.5 retrospective once ≥ N merged PRs have accumulated since the last pass; below N the wave skips it and carries the count forward. A final pass always runs at drain if any unretrospected merges remain. `--no-retro` disables the step entirely (including the drain pass).
+- `--dry-run` — print the full wave partition (`waves` / `blocked` / `cyclic`), the per-issue model/effort assignment, and the retro configuration (threshold / disabled), then stop **before any side effect** — step 6.5 never executes on a dry run.
 
 ## The wave loop
 
-`SD=$HOME/.claude/skills/ship-dag`. Repeat until the DAG is drained or everything left is blocked on a HITL decision:
+`SD=$HOME/.claude/skills/ship-dag`. At run start, initialize the run-scoped retro state: `U` (merged-but-unretrospected PR refs, appended in step 6), the wave counter `W` (1-based, incremented on each pass through step 1), and the proposal ledger (retro-filed refs, declined proposals) — step 6.5 consumes and feeds all three. Repeat until the DAG is drained or everything left is blocked on a HITL decision:
 
 ### 1. Discover / refresh the DAG
 
@@ -54,6 +55,7 @@ Flags:
 - **The graph math is delegated, not reimplemented.** `plan-waves.mjs` imports the shared composite-keyed topological-sort core (`readySet`/`layeredTopoSort`) from claude-orchestrator's built `dist/`, so this planner and the engine's `computeWaves` can't drift. Point `CO_HOME` at that checkout if it isn't the default `/Users/me/Developer/claude-orchestrator`; the core must be built there (`npm run build` — `dist/` is committed, so a fresh clone already has it). If the import fails, the script errors with exactly that instruction.
 - Build the spec into a temp file. **Single repo:** `SPEC=$(mktemp); node "$SD/scripts/plan-waves.mjs" fetch --repo owner/repo (--epic N | --label L) > "$SPEC"` (or pipe `fetch … | … plan -`). It emits `{ repo, nodes[], edges[], done[] }` keyed on **composite refs**: each node carries `{ number, repo, ref, bodyLen, refCount, labels }` (the last three feed the triage-effort decision), edges are `{ blocked, blockedBy }` ref pairs, and `done[]` holds refs. Sub-issues come from GraphQL `subIssues` (paginated, each keyed on its **own** `repository.nameWithOwner` — a cross-repo sub-issue stays in its home repo, not the epic's). The `--epic` walk is **recursive**: a sub-issue that is itself an epic is descended into, to any depth, in its own repo. Only the leaves become nodes — an intermediate epic is a grouping, not a unit of work, and shipping it would hand a whole sub-tree to one implement subagent. `subIssuesSummary.total` rides along in the parent's response, so a leaf costs no query of its own; a CLOSED sub-issue takes its whole sub-tree out of scope; a cyclic hierarchy terminates with a warning; and an epic whose own sub-issue query comes back unreadable is kept as a single node rather than silently dropped. **An open epic whose descendants are all closed ships as a node** — it isn't a grouping of pending work, it *is* the pending work. Edges are fetched automatically from **two** sources and merged: GitHub's native issue-dependency graph (each node's `blocked_by` list, via `gh api .../dependencies/blocked_by` — tolerant of a repo where it isn't configured or isn't visible to the token) and body-prose `Blocked by #N` / `Blocks #N` / `Depends on #N`, including both the adjacent-clause form ("Blocked by #12, #13 and #14", multi-issue **and** cross-repo `owner/repo#N` refs handled) and a `## Blocked by` / `## Depends on` heading followed by a bulleted list of refs; a bare `#N` is qualified to the citing issue's repo either way. On an `--epic` fetch, edges naming an epic are then rewritten — **before** the merged set is deduped on the `{blocked, blockedBy}` pair, since the rewrite itself can produce the same pair twice on top of the duplicates the two sources already contribute. The rewrite is needed because an epic never ships and so an edge left pointing at one could never be satisfied (it stays open until its last child closes) — stranding its dependent as permanently blocked: an edge between an issue and one of its **own ancestor epics** is containment ("this is part of that", which the native dependency graph surfaces as a `blocked_by` entry), so it is dropped in both directions; every other epic edge is **expanded onto the leaves** — "X is blocked by epic E" becomes "X is blocked by every leaf of E", and an epic's own blocker is pushed down onto each leaf that ships in its place. Closed/merged dependencies are resolved into `done[]`, each viewed in **its own** repo.
 - **Multi-repo issue set** (an explicit `org/repo#12 other/repo#15 …` set, or a cross-repo epic): `fetch` takes one `--repo` per call, so fetch once per distinct repo (by `--epic`/`--label`, or hand-build the `nodes[]` for an explicit set) and **union** the results — concatenate `nodes[]`, `edges[]`, `done[]` into one spec, keeping a single top-level `repo` as the default for any still-bare ref. Unioning is safe precisely because every endpoint is a composite ref: same-numbered issues in different repos stay distinct and cross-repo edges survive. (The epic path already unions cross-repo sub-issues for you.)
+- On a resumed session — or on an epic run where a cross-repo retro ticket could be attached only by prose (sub-issues are same-repo-only) — **re-union the run's retro-filed refs** (this `runId`'s retro records' `filed[]` in telemetry) into the spec if the fetch didn't surface them.
 - A dependency counts as satisfied when its issue is **merged or closed** (fetch already folds those into `done[]`) — but see step 7: a *cross-repo* dependency's merge is not enough to auto-release its downstream.
 
 ### 2. Compute the ready-set
@@ -107,8 +109,28 @@ Side-effecting; all on you, the main agent; serialized in **dependency order**. 
 3. `gh pr merge --rebase`.
 4. `/cleanup owner/repo#PR` — remove the worktree, delete the branch, fast-forward, prune.
 5. **Telemetry:** emit one record (`finalState:"merged"`, plus the **worst** `reviewVerdict` seen for the issue — a bounced-then-merged issue logs `blocking`, not the post-fix `clean`, so triage-miss and review-catch stay measurable rather than survivor-biased — `bounces`, and `path`) for the merged issue — see *Telemetry* below.
+6. Append the merged issue's ref and PR number to `U`, the run's unretrospected-merge list — the input to step 6.5.
 
 **Never loop-retry a failing CI or merge.** ≤2 manual retries on an infra failure, then stop and surface the failure + cost. No `while`-loops against a red run.
+
+### 6.5 Retrospective — HITL point D
+
+Per-PR review is structurally blind to cross-PR problems: parallel implementers in separate worktrees cannot see each other's work, and the plan's remaining specs were written before this wave's code existed. This pass looks at the run holistically — after the merge queue, before advancing.
+
+**Trigger:** skip unless `|U| ≥ --retro-threshold` (default 3 merged PRs; print the carry-forward count when skipping). **Always run once at drain** — when step 7's stop condition is met with `|U| > 0` — regardless of threshold. `--no-retro` disables both. A pass consumes `U` (reset to empty) whatever it finds, and emits one `kind:"retro"` telemetry record.
+
+**Fan out ONE `Agent{model:"opus"}`** (read-only; the Retrospective block below — this block has exactly one copy, here) with: the merged PR refs+numbers in `U` (all repos), the remaining DAG (`nodes[]` refs+titles and `edges[]` from the current spec), the run's issue-set form (epic / label / explicit set), and the run ledger (previously filed retro-ticket refs, previously declined proposals). It returns `references/retrospective-schema.md`: `{ mergedPrs, refactors[], planAdjustments[], observations[] }` — the main agent stamps `wave: W` when emitting the telemetry record; the subagent never produces it.
+
+**HITL point D** (protocol in `references/escalation-policy.md`): if `refactors` and `planAdjustments` are both empty, print `observations` in the wave summary and move on — no grilling. Otherwise **batch everything into one grilling**, mirroring point A:
+
+1. Present refactors via `AskUserQuestion` with `multiSelect` — one option per proposal (title + one-line summary + evidence PR refs), recommended-first; ≤4 options per question, paginate if more. Plan adjustments likewise; an open-ended `respec` gets the inline grill-me-style interview instead of a checkbox.
+2. **Approved refactors** → ghost-write one ticket each via `/file-ticket` (the drafted `body`; the `complexity` tier as triage context), then insert into the run's DAG by issue-set form: **epic run** — attach as a native sub-issue of the epic (sub-issues are same-repo only; a cross-repo refactor ticket instead gets a prose `## Related` link to the epic AND is appended to the in-context set explicitly); **`--label L` run** — apply label `L` to the new issue; **explicit-set run** — append the fully-qualified `owner/repo#N` to the in-context issue set. Encode each approved `blockedBy`/`blocks` edge **both ways** so step 1's two merged edge sources pick it up: the native dependency graph AND body prose (`Blocked by owner/repo#N`).
+3. **Approved plan adjustments** → ghost-written issue comments recording the decision and reasoning; body edits where the spec changed (`respec`); native edge add/remove plus matching body-prose edit (`add-edge`/`drop-edge`); `gh issue close --reason "not planned"` with an explanatory comment (`obsolete` — the one destructive act: confirm it individually in the grilling, never inside a multiSelect batch); `split` files children via `/file-ticket` and respecs the parent.
+4. **Declined proposals** → recorded in the run ledger only; nothing written to GitHub; never re-proposed this run.
+5. Filed tickets flow into the next step-1 fetch and ship through the normal triage→implement→review pipeline — the retro itself never writes code and never merges.
+6. **At drain only:** filing tickets would re-open a drained DAG, so ask one final crisp fork — ship the just-filed tickets **in this run** (loop back to step 1) or **leave them filed** for a future `/ship-dag` invocation (run ends). That question is the loop's termination valve.
+
+**Telemetry:** emit one `kind:"retro"` record per pass — `{ kind:"retro", runId, wave: W, mergedPrs, proposedRefactors, approvedRefactors, declinedRefactors, proposedAdjustments, approvedAdjustments, declinedAdjustments, filed[], adjusted[], declinedTitles[] }` (see *Telemetry* below; `declinedTitles` is what makes the ledger reconstructible after a context compaction).
 
 ### 7. Advance — HITL point C on any cross-repo cutover
 
@@ -116,15 +138,15 @@ Mark merged issues done; go to step 1. The re-fetched `done[]` will surface the 
 
 **Cross-repo cutover gate — "satisfied" ≠ "merged" across a repo boundary.** A merged upstream PR is not consumable downstream until it is published/deployed (e.g. `wxyc-shared` → GH Packages → `Backend-Service`; a BS deploy → the canary validates it live). So when a newly-ready issue becomes ready **because a dependency in a *different* repo just merged**, do **not** auto-release it — **stop and grill the human** to confirm the upstream artifact is actually consumable (package published, service deployed, migration cut over), or that a named gate command succeeded, before triaging/implementing that dependent. Same-repo edges keep releasing automatically; only an edge crossing a repo boundary (or into a manual deploy/publish step) gates here. This mirrors the "anything irreversible outside the merge itself → ship it by hand" rule. A deferral here emits a `blocked-hitl` telemetry record, as at point B.
 
-Stop when `waves` is empty (drained) or the only remaining issues are blocked on a HITL decision you've already surfaced.
+Stop when `waves` is empty (drained) or the only remaining issues are blocked on a HITL decision you've already surfaced. **When the stop condition holds and `|U| > 0`, execute the step-6.5 block once more (drain mode) before the wave summary** — its substep-6 fork governs whether the loop returns to step 1 (ship the just-filed tickets now) or the run ends (leave them filed).
 
-At the end, print a **wave summary**: per issue — final state (`merged` / `blocked-hitl` / `deferred` / `error`), PR number, review verdict, and any nits or routed findings for the human.
+At the end, print a **wave summary**: per issue — final state (`merged` / `blocked-hitl` / `deferred` / `error`), PR number, review verdict, and any nits or routed findings for the human; and per retrospective pass — proposals made/approved/declined, tickets filed (refs), plan adjustments applied, and any `observations`.
 
 ---
 
 ## Subagent instruction blocks
 
-Include the relevant block **verbatim** in each subagent's prompt (the inline fallback path). The **Implement** block has two other copies — `scripts/engine/prompt.md` (the engine's template, the primary path) and `workflow.js` (the accelerator fallback); the **Review** block is mirrored in `workflow.js`. Keep all copies in sync when editing. The Review block runs from the skill on every path (the engine implements only), so it is the one block that is never skipped.
+Include the relevant block **verbatim** in each subagent's prompt (the inline fallback path). The **Implement** block has two other copies — `scripts/engine/prompt.md` (the engine's template, the primary path) and `workflow.js` (the accelerator fallback); the **Review** block is mirrored in `workflow.js`. Keep all copies in sync when editing. The Review block runs from the skill on every path (the engine implements only), so it is the one block that is never skipped. The **Retrospective** block has exactly **one** copy (below): it always runs from the main agent after the merge queue on every path — engine, workflow, and inline — so there is no mirror to keep in sync.
 
 ### Triage (Haiku, read-only)
 
@@ -159,6 +181,18 @@ Include the relevant block **verbatim** in each subagent's prompt (the inline fa
 >
 > **Return** the review schema: `{ issue, verdict, findings: [{ category, verdict, file, line, summary, failure_scenario }] }`. No Claude/AI mention anywhere.
 
+### Retrospective (Opus, read-only)
+
+> **Task:** You are the retrospective pass for this run — per-PR review sees one PR at a time; you see the run as a whole. Nothing downstream re-examines the merged surface — reason exhaustively across it. Since the last retrospective these PRs merged: `{MERGED_PRS}` (composite `owner/repo#N` issue refs with PR numbers, possibly spanning repos). The remaining DAG is `{REMAINING_NODES}` (refs + titles) with edges `{REMAINING_EDGES}`. Already filed by earlier retrospectives: `{FILED_REFS}`. Previously declined by the human — do **not** re-propose these or trivial variants: `{DECLINED}`. Do not write code, comment on issues, or modify anything — you propose; the human disposes.
+>
+> 1. Read each merged PR's diff against its own base: `gh pr diff {PR} --repo {OWNER/REPO}` and `gh pr view {PR} --repo {OWNER/REPO} --json title,body,files`. For the plan pass, read each remaining node's spec: `gh issue view {N} --repo {OWNER/REPO} --json title,body,labels`. Work from diffs; open files at the merged tip (sibling checkout under the org root) only where a diff alone is ambiguous. No worktrees, no checkouts of your own.
+> 2. **Cross-PR pass:** over the union of the diffs, find what per-PR review structurally misses — near-duplicate logic landed by parallel implementers, the same problem solved two ways (pattern divergence), extract-helper/shared-module opportunities, duplicated test fixtures or setup. A cross-PR finding must cite **≥2 merged PRs** as evidence, at least one not itself a retro-filed ticket's PR (no refactors of refactors); a single-PR finding belongs to the review gate that already ran — drop it.
+> 3. **Plan pass:** reread each remaining node's spec against what actually merged. Flag: a stale spec (merged code changed the ground it assumed — `respec`), a wrong or missing dependency (`add-edge` / `drop-edge`), an issue whose work already landed incidentally (`obsolete`), an issue the merged reality has made too big (`split`). Propose the smallest edit that makes the plan true again, with the evidence PR(s).
+> 4. For each refactor: classify with the review vocabulary (`category` from the finding schema; confidence `CONFIRMED | PLAUSIBLE`), assign a `complexity` tier (`mechanical|normal|complex` — it sets implement effort if the ticket ships), suggest `blockedBy`/`blocks` edges against remaining nodes where ordering matters, and draft a ticket `body` to the `/file-ticket` bar: problem, desired end state, where (files/symbols from the evidence), acceptance criteria, evidence PRs as context links.
+> 5. Rank refactors by expected payoff and keep the list short (≤5 typical) — a laundry list buries the two that matter. Anything real but not worth a ticket goes in `observations`. Nothing you return gates a merge; everything you saw already shipped.
+>
+> **Return** the retrospective schema (`references/retrospective-schema.md`): `{ mergedPrs, refactors[], planAdjustments[], observations[] }`. No Claude/AI mention anywhere.
+
 ---
 
 ## Model & effort
@@ -167,9 +201,9 @@ Per-step model and effort defaults, the complexity→effort mapping, and the "ne
 
 ## Telemetry
 
-Every issue that reaches a terminal-for-this-wave state emits one JSON record to an append-only run log, so leading indicators — Sonnet first-pass yield, triage-miss rate, review bounce/catch, HITL frequency — are tracked across runs nearly for free. Emission is wired at the three points terminals actually occur (**step 3** point-A defer, **step 5** blocked/deferred/error, **step 6** merged), not batched at the end.
+Every issue that reaches a terminal-for-this-wave state emits one JSON record — and every retrospective pass emits one run-scoped record — to an append-only run log, so leading indicators — Sonnet first-pass yield, triage-miss rate, review bounce/catch, HITL frequency, retro proposal/approval volume — are tracked across runs nearly for free. Emission is wired at the four points they actually occur (**step 3** point-A defer, **step 5** blocked/deferred/error, **step 6** merged, **step 6.5** one retro record per pass), not batched at the end.
 
-- **Append** (best-effort — a telemetry failure must never abort a wave): `node "$SD/scripts/telemetry.mjs" append '<json>'` (or `@file` / `-` for stdin). The record is validated and `ts`-stamped on write. Schema: `{ runId, repo, issue, complexity, triageStatus, assignment, path, implStatus, ciStatus, reviewVerdict, findings[], bounces, hitl:{pointA,pointB}, finalState, pr, tokens }`; `implStatus`/`ciStatus`/`reviewVerdict` are `null` for issues that stop at triage. Mint one `runId` per `/ship-dag` invocation.
+- **Append** (best-effort — a telemetry failure must never abort a wave): `node "$SD/scripts/telemetry.mjs" append '<json>'` (or `@file` / `-` for stdin). The record is validated and `ts`-stamped on write. Schema: `{ runId, repo, issue, complexity, triageStatus, assignment, path, implStatus, ciStatus, reviewVerdict, findings[], bounces, hitl:{pointA,pointB}, finalState, pr, tokens }`; `implStatus`/`ciStatus`/`reviewVerdict` are `null` for issues that stop at triage. Mint one `runId` per `/ship-dag` invocation. Records carry a `kind` discriminator — `"issue"` (the default; stamped when absent, so pre-existing logs stay valid) or `"retro"` (the step-6.5 pass record — a different shape, validated separately and excluded from every per-issue indicator; see `scripts/telemetry.mjs`).
 - **`path`** records `"engine"` (primary — implement via the orchestrator, review from the skill), `"workflow"`, or `"inline"` (the two fallbacks). Effort is actuated literally on `engine` and `workflow`; on the inline `Agent` fan-out it is *nominal* (prompt-approximated — the `Agent` tool has no `effort` param), so the report never treats inline effort as actuated.
 - **`tokens`** is `null` on the inline path (per-agent token counts aren't exposed to the orchestrator); real cost attribution lives in the eval harness, not here.
 - **Report:** `node "$SD/scripts/telemetry.mjs" report [--since ISO]` prints the indicators (JSON to stdout, table to stderr), broken down by complexity tier.
@@ -184,10 +218,11 @@ Every issue that reaches a terminal-for-this-wave state emits one JSON record to
 - **No auto-retry loops** — ≤2 manual retries on infra failure, then stop and report cost.
 - **Data safety** — never reset/overwrite collected data; surgical changes only.
 - **Cross-repo cutover is a HITL gate** — never auto-release a wave whose readiness depends on a *different* repo's merge; confirm the upstream is published/deployed/consumable (or a gate command passed) first. "Satisfied" ≠ "merged" across a repo boundary (step 7, point C).
-- **Auto-merge is a deliberate, requester-authorized deviation** from the house "never auto-merge" rule (`cross-repo-migration`). It is kept tightly behind the green gate (CI pass + no CONFIRMED blocking finding + no open questions), serialized in dependency order, and re-gated after any base-moving rebase. `--dry-run` and the three HITL points (A triage, B implement/review, C cross-repo cutover) are the escape hatches.
+- **The retrospective proposes; it never disposes** — no ticket filed, edge written, spec edited, or issue closed without point-D approval, and it never touches merged code (step 6.5).
+- **Auto-merge is a deliberate, requester-authorized deviation** from the house "never auto-merge" rule (`cross-repo-migration`). It is kept tightly behind the green gate (CI pass + no CONFIRMED blocking finding + no open questions), serialized in dependency order, and re-gated after any base-moving rebase. `--dry-run` and the four HITL points (A triage, B implement/review, C cross-repo cutover, D retrospective) are the escape hatches.
 
 ## Reused building blocks
 
-`/recheck-issues` (DAG re-sync), `/review-loop` (fix blocking findings), `/cleanup` (post-merge tidy), the built-in `/code-review` (optional review augmentation), `/file-ticket` (only if a follow-up ticket is discovered mid-run). `AskUserQuestion` for crisp HITL forks. All PR/issue refs passed to these are fully-qualified `owner/repo#N`.
+`/recheck-issues` (DAG re-sync), `/review-loop` (fix blocking findings), `/cleanup` (post-merge tidy), the built-in `/code-review` (optional review augmentation), `/file-ticket` (follow-ups discovered mid-run, and the step-6.5 retrospective's approved refactor tickets — its one structured caller). `AskUserQuestion` for crisp HITL forks. All PR/issue refs passed to these are fully-qualified `owner/repo#N`.
 
 **Engine-invocation bundle (step 4):** `scripts/emit-config.mjs` (ready-wave spec → engine config JSON; tested), `scripts/engine/run.mts` + `hooks.mts` + `prompt.md` (the config bundle the engine loads — `run.mts` registers the config under key `wave` and calls `createMain`; `hooks.mts` wires `deriveWorktreeHooks` + the cutover backstop), and `references/repo-ci-profiles.json` (per-repo base branch + CI). All import the engine from `$CO_HOME/dist` — the same checkout `plan-waves.mjs` uses; keep `CO_HOME` consistent across both.
