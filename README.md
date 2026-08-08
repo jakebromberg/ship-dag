@@ -6,6 +6,8 @@ A [Claude Code](https://claude.com/claude-code) skill that ships a dependency DA
 
 The premise: a well-specced issue Sonnet-implements and survives the Opus gate cleanly. When that premise breaks — an ambiguous spec, a blocking finding, a CI/merge failure — that break is the signal to stop and grill the human.
 
+Between the merge queue and the next wave, a **retrospective pass** (one read-only Opus subagent) reviews the merged surface holistically — the cross-PR duplication that per-PR review structurally misses, and remaining-plan drift — and, after human approval (HITL point D), files ghost-written refactor tickets into the remaining DAG and applies plan adjustments.
+
 See [`SKILL.md`](./SKILL.md) for the full skill definition and the wave loop.
 
 ## Dependency: claude-orchestrator
@@ -46,6 +48,6 @@ The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [cl
 | `scripts/emit-config.mjs` | Turns a cleared ready-wave into a claude-orchestrator engine config. |
 | `scripts/engine/` | The engine-invocation path: `run.mts` (entry), `hooks.mts` (worktree + cutover), `repos-dir.mjs` (org-root resolution), `prompt.md`. |
 | `scripts/telemetry.mjs` | Per-issue run records (model-assignment efficacy). |
-| `references/` | CI profiles, model/effort matrix, escalation policy, review + eval schemas. |
+| `references/` | CI profiles, model/effort matrix, escalation policy, review + retrospective + eval schemas. |
 | `eval/` | Offline eval harness for the model-assignment study. |
 | `docs/` | [Field report](./docs/field-report.md) from the first production run, plus a runnable anonymized [telemetry sample](./docs/examples/run-sample.jsonl). |
