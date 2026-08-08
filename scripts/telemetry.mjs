@@ -7,10 +7,15 @@
 // committed. Pure aggregation math is imported from ./lib/stats.mjs; this file
 // owns only validation, the file I/O, and the CLI.
 //
-// Record schema (see references/ for the authored version):
-//   { ts, runId, repo, issue, complexity, triageStatus, assignment, path,
-//     implStatus, ciStatus, reviewVerdict, findings[], bounces, hitl:{pointA,pointB},
-//     finalState, pr, tokens }
+// Record schema (see references/ for the authored version). Records carry a
+// `kind` discriminator — "issue" (default; stamped when absent, so pre-existing
+// logs stay valid) or "retro" (one run-scoped record per step-6.5 pass):
+//   issue: { kind, ts, runId, repo, issue, complexity, triageStatus, assignment, path,
+//            implStatus, ciStatus, reviewVerdict, findings[], bounces, hitl:{pointA,pointB},
+//            finalState, pr, tokens }
+//   retro: { kind, ts, runId, wave, mergedPrs[], proposedRefactors, approvedRefactors,
+//            declinedRefactors, proposedAdjustments, approvedAdjustments,
+//            declinedAdjustments, filed[], adjusted[], declinedTitles[], tokens }
 // implStatus / ciStatus / reviewVerdict are nullable: an issue that stops at
 // HITL point A (needs-decision) never reaches implement, so it logs those null.
 //
@@ -37,6 +42,11 @@ const TRIAGE_STATUSES = new Set(['clear', 'needs-decision']);
 const CI_STATUSES = new Set(['pass', 'fail', 'none', null]);
 const TIERS = ['mechanical', 'normal', 'complex'];
 const REQUIRED = ['runId', 'repo', 'issue', 'complexity', 'triageStatus', 'path', 'finalState'];
+const KINDS = new Set(['issue', 'retro']);
+// No `repo` here — a retro pass's merged surface may span repos; the composite
+// refs in mergedPrs[] carry them. `wave` is a display label stamped from the
+// main agent's wave counter, not an index any report logic depends on.
+const REQUIRED_RETRO = ['runId', 'wave', 'mergedPrs'];
 
 /** Resolve the telemetry log path from the environment (see module header). */
 export function telemetryPath(env = process.env) {
@@ -57,6 +67,9 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   if (!rec || typeof rec !== 'object' || Array.isArray(rec)) {
     throw new Error('record must be an object');
   }
+  const kind = rec.kind ?? 'issue';
+  if (!KINDS.has(kind)) throw new Error(`bad kind: ${rec.kind}`);
+  if (kind === 'retro') return normalizeRetroRecord(rec, now);
   for (const k of REQUIRED) {
     if (rec[k] === undefined || rec[k] === null) throw new Error(`missing required key: ${k}`);
   }
@@ -72,6 +85,7 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   if (!CI_STATUSES.has(ciStatus)) throw new Error(`bad ciStatus: ${rec.ciStatus}`);
   return {
     ...rec,
+    kind: 'issue',
     ts: rec.ts || now(),
     implStatus,
     ciStatus,
@@ -79,6 +93,40 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
     findings: rec.findings ?? [],
     bounces: rec.bounces ?? 0,
     hitl: { pointA: !!(rec.hitl && rec.hitl.pointA), pointB: !!(rec.hitl && rec.hitl.pointB) },
+    tokens: rec.tokens ?? null,
+  };
+}
+
+/**
+ * Validate and normalize a step-6.5 retrospective record (one per pass, run-
+ * scoped). Deliberately a separate path from the issue-record normalization:
+ * the issue coercions (the hitl forcing above, the nullable implStatus chain)
+ * would silently mangle a retro record — hitl's coercion drops unknown keys —
+ * so none of them are applied here.
+ * @param {object} rec
+ * @param {() => string} now  injectable clock (ISO string) for tests
+ */
+function normalizeRetroRecord(rec, now) {
+  for (const k of REQUIRED_RETRO) {
+    if (rec[k] === undefined || rec[k] === null) throw new Error(`missing required key: ${k}`);
+  }
+  if (!Array.isArray(rec.mergedPrs)) throw new Error('mergedPrs must be an array');
+  return {
+    ...rec,
+    kind: 'retro',
+    ts: rec.ts || now(),
+    proposedRefactors: rec.proposedRefactors ?? 0,
+    approvedRefactors: rec.approvedRefactors ?? 0,
+    declinedRefactors: rec.declinedRefactors ?? 0,
+    proposedAdjustments: rec.proposedAdjustments ?? 0,
+    approvedAdjustments: rec.approvedAdjustments ?? 0,
+    declinedAdjustments: rec.declinedAdjustments ?? 0,
+    filed: rec.filed ?? [],
+    adjusted: rec.adjusted ?? [],
+    // declinedTitles makes the run ledger reconstructible after a compaction:
+    // declined proposals are deliberately never written to GitHub, so the log
+    // is their only durable home.
+    declinedTitles: rec.declinedTitles ?? [],
     tokens: rec.tokens ?? null,
   };
 }
@@ -114,10 +162,14 @@ export function readRecords(path = telemetryPath()) {
  * "reached implement" = implStatus != null (point-A defers are excluded from
  * yield/bounce/review-catch and the triage-miss denominator — they're
  * needs-decision, not clear — but still count toward the record total and HITL).
+ * kind:"retro" records are excluded from every per-issue indicator (they are
+ * pass-scoped, not issue-scoped) and aggregated into their own `retro` section.
  */
 export function report(records) {
-  const reached = records.filter((r) => r.implStatus != null);
-  const cleared = records.filter((r) => r.triageStatus === 'clear');
+  const issues = records.filter((r) => r.kind !== 'retro');
+  const retros = records.filter((r) => r.kind === 'retro');
+  const reached = issues.filter((r) => r.implStatus != null);
+  const cleared = issues.filter((r) => r.triageStatus === 'clear');
   const yieldOf = (rs) => {
     const pass = rs.filter((r) => r.finalState === 'merged' && (r.bounces ?? 0) === 0).length;
     return { reached: rs.length, pass, rate: rs.length ? pass / rs.length : 0 };
@@ -128,22 +180,35 @@ export function report(records) {
   const miss = cleared.filter((r) => r.implStatus === 'blocked' || r.reviewVerdict === 'blocking').length;
   const blocking = reached.filter((r) => r.reviewVerdict === 'blocking').length;
   const hitlOf = (side) => ({
-    n: records.length,
-    count: records.filter((r) => r.hitl && r.hitl[side]).length,
-    rate: rate((r) => r.hitl && r.hitl[side], records),
+    n: issues.length,
+    count: issues.filter((r) => r.hitl && r.hitl[side]).length,
+    rate: rate((r) => r.hitl && r.hitl[side], issues),
   });
+  const sum = (k) => retros.reduce((a, r) => a + (r[k] ?? 0), 0);
+  const approved = sum('approvedRefactors') + sum('approvedAdjustments');
+  const declined = sum('declinedRefactors') + sum('declinedAdjustments');
   return {
-    n: records.length,
+    n: issues.length,
     firstPassYield: yieldOf(reached),
     byComplexity,
     triageMiss: { cleared: cleared.length, miss, rate: cleared.length ? miss / cleared.length : 0 },
     bounceRate: mean(reached.map((r) => r.bounces ?? 0)),
     hitl: { pointA: hitlOf('pointA'), pointB: hitlOf('pointB') },
     reviewCatch: { reached: reached.length, blocking, rate: reached.length ? blocking / reached.length : 0 },
+    retro: {
+      passes: retros.length,
+      mergedPrs: retros.reduce((a, r) => a + (r.mergedPrs?.length ?? 0), 0),
+      proposed: sum('proposedRefactors') + sum('proposedAdjustments'),
+      approved,
+      declined,
+      filed: retros.reduce((a, r) => a + (r.filed?.length ?? 0), 0),
+      approvalRate: approved + declined ? approved / (approved + declined) : 0,
+    },
   };
 }
 
-function renderReport(rep) {
+/** Render the human-readable indicator table (the stderr half of `report`). */
+export function renderReport(rep) {
   const pct = (x) => `${(x * 100).toFixed(1)}%`;
   const lines = [
     `records:           ${rep.n}`,
@@ -160,6 +225,15 @@ function renderReport(rep) {
     `HITL point-A:      ${rep.hitl.pointA.count}/${rep.hitl.pointA.n} (${pct(rep.hitl.pointA.rate)})`,
     `HITL point-B:      ${rep.hitl.pointB.count}/${rep.hitl.pointB.n} (${pct(rep.hitl.pointB.rate)})`,
   );
+  // Gated on passes > 0 so a retro-free log renders byte-identically to before
+  // the retro record kind existed (the field report quotes this table verbatim).
+  if (rep.retro.passes > 0) {
+    lines.push(
+      `retro passes:      ${rep.retro.passes} (${rep.retro.mergedPrs} PRs)`,
+      `  proposals:       ${rep.retro.proposed} proposed, ${rep.retro.approved} approved, ${rep.retro.declined} declined (${pct(rep.retro.approvalRate)} approved)`,
+      `  tickets filed:   ${rep.retro.filed}`,
+    );
+  }
   return lines.join('\n');
 }
 
@@ -175,7 +249,10 @@ function main(argv) {
     const src = rest[0];
     if (!src) { process.stderr.write('usage: append <json|@file|->\n'); process.exit(2); }
     const norm = appendRecord(JSON.parse(readArg(src)), { path: telemetryPath() });
-    process.stderr.write(`appended ${norm.repo}#${norm.issue} (${norm.finalState}) → ${telemetryPath()}\n`);
+    const what = norm.kind === 'retro'
+      ? `retro (wave ${norm.wave}, ${norm.filed.length} filed)`
+      : `${norm.repo}#${norm.issue} (${norm.finalState})`;
+    process.stderr.write(`appended ${what} → ${telemetryPath()}\n`);
     return;
   }
   if (cmd === 'report') {

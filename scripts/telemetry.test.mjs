@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
-import { normalizeRecord, appendRecord, readRecords, report, telemetryPath } from './telemetry.mjs';
+import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath } from './telemetry.mjs';
 
 const approx = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 const FIXED = () => '2026-07-23T00:00:00.000Z';
@@ -123,4 +123,120 @@ test('readRecords: tolerates a malformed line, returns the valid records', () =>
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// A complete, valid step-6.5 retrospective record; overrides tailor it per test.
+function retroBase(over = {}) {
+  return {
+    kind: 'retro', runId: 'r1', wave: 2, mergedPrs: ['WXYC/x#41', 'WXYC/x#43'],
+    proposedRefactors: 2, approvedRefactors: 1, declinedRefactors: 1,
+    proposedAdjustments: 1, approvedAdjustments: 1, declinedAdjustments: 0,
+    filed: ['WXYC/x#77'], adjusted: ['WXYC/x#55'], declinedTitles: ['dedupe retry helper'],
+    ...over,
+  };
+}
+
+test('normalizeRecord: retro record — stamps ts, keeps counts, defaults the rest', () => {
+  const r = normalizeRecord(retroBase(), FIXED);
+  assert.equal(r.ts, FIXED());
+  assert.equal(r.kind, 'retro');
+  assert.equal(r.proposedRefactors, 2);
+  assert.deepEqual(r.filed, ['WXYC/x#77']);
+  const minimal = normalizeRecord({ kind: 'retro', runId: 'r', wave: 1, mergedPrs: [] }, FIXED);
+  assert.equal(minimal.proposedRefactors, 0);
+  assert.equal(minimal.approvedRefactors, 0);
+  assert.equal(minimal.declinedRefactors, 0);
+  assert.equal(minimal.proposedAdjustments, 0);
+  assert.equal(minimal.approvedAdjustments, 0);
+  assert.equal(minimal.declinedAdjustments, 0);
+  assert.deepEqual(minimal.filed, []);
+  assert.deepEqual(minimal.adjusted, []);
+  assert.deepEqual(minimal.declinedTitles, []);
+  assert.equal(minimal.tokens, null);
+});
+
+test('normalizeRecord: retro records skip the issue coercions entirely', () => {
+  // Guards against a future "unification" of the two paths: the issue-record hitl
+  // coercion silently drops unknown keys, so routing a retro record through it
+  // would mangle the record without any error.
+  const r = normalizeRecord(retroBase(), FIXED);
+  assert.ok(!('hitl' in r));
+  assert.ok(!('implStatus' in r));
+  assert.ok(!('ciStatus' in r));
+  assert.ok(!('reviewVerdict' in r));
+});
+
+test('normalizeRecord: retro rejection — bad kind, missing keys, non-array mergedPrs', () => {
+  assert.throws(() => normalizeRecord(base({ kind: 'sideways' }), FIXED), /bad kind/);
+  assert.throws(() => normalizeRecord(retroBase({ wave: undefined }), FIXED), /missing required key: wave/);
+  assert.throws(() => normalizeRecord(retroBase({ mergedPrs: undefined }), FIXED), /missing required key: mergedPrs/);
+  assert.throws(() => normalizeRecord(retroBase({ mergedPrs: 'WXYC/x#41' }), FIXED), /mergedPrs must be an array/);
+});
+
+test('normalizeRecord: kind back-compat — absent kind is stamped "issue"', () => {
+  assert.equal(normalizeRecord(base(), FIXED).kind, 'issue');
+  assert.equal(normalizeRecord(base({ kind: 'issue' }), FIXED).kind, 'issue');
+});
+
+test('appendRecord: retro record round-trips through readRecords', () => {
+  const dir = join(tmpdir(), `ship-dag-tel-retro-${process.pid}-${counter++}`);
+  const p = join(dir, 'runs.jsonl');
+  try {
+    appendRecord(retroBase(), { path: p, now: FIXED });
+    const recs = readRecords(p);
+    assert.equal(recs.length, 1);
+    assert.equal(recs[0].kind, 'retro');
+    assert.deepEqual(recs[0].mergedPrs, ['WXYC/x#41', 'WXYC/x#43']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('report: retro records are excluded from every per-issue indicator', () => {
+  // The 8-record fixture from the report test above, byte-for-byte, plus one
+  // retro record — every per-issue value must be unchanged. The explicit
+  // hitl.*.n assertions pin the denominators that inflate if any of the six
+  // records→issues substitutions inside report() is missed.
+  const recs = [
+    base({ complexity: 'mechanical', bounces: 0, reviewVerdict: 'clean' }),
+    base({ complexity: 'mechanical', bounces: 0, reviewVerdict: 'nits-only' }),
+    base({ complexity: 'normal', bounces: 1, reviewVerdict: 'blocking' }),
+    base({ complexity: 'normal', bounces: 0, reviewVerdict: 'clean' }),
+    base({ complexity: 'complex', finalState: 'blocked-hitl', bounces: 2, reviewVerdict: 'blocking', hitl: { pointA: false, pointB: true } }),
+    base({ complexity: 'complex', triageStatus: 'needs-decision', finalState: 'blocked-hitl', implStatus: null, ciStatus: null, reviewVerdict: null, hitl: { pointA: true, pointB: false } }),
+    base({ complexity: 'normal', finalState: 'blocked-hitl', implStatus: 'blocked', reviewVerdict: null, hitl: { pointA: false, pointB: true } }),
+    base({ complexity: 'mechanical', bounces: 0, reviewVerdict: 'clean' }),
+  ].map((r) => normalizeRecord(r, FIXED));
+  const rep = report([...recs, normalizeRecord(retroBase(), FIXED)]);
+
+  assert.equal(rep.n, 8);
+  assert.equal(rep.firstPassYield.reached, 7);
+  assert.equal(rep.firstPassYield.pass, 4);
+  assert.equal(rep.triageMiss.cleared, 7);
+  assert.equal(rep.triageMiss.miss, 3);
+  approx(rep.bounceRate, 3 / 7);
+  assert.equal(rep.hitl.pointA.n, 8);
+  assert.equal(rep.hitl.pointB.n, 8);
+  assert.equal(rep.hitl.pointA.count, 1);
+  assert.equal(rep.hitl.pointB.count, 2);
+  assert.equal(rep.reviewCatch.reached, 7);
+  assert.deepEqual(rep.retro, {
+    passes: 1, mergedPrs: 2, proposed: 3, approved: 2, declined: 1, filed: 1, approvalRate: 2 / 3,
+  });
+});
+
+test('renderReport: no retro lines on an issue-only log', () => {
+  const rep = report([normalizeRecord(base(), FIXED)]);
+  assert.ok(!/retro/.test(renderReport(rep)));
+});
+
+test('report: retro-only log — per-issue indicators zeroed, retro section rendered', () => {
+  const rep = report([normalizeRecord(retroBase(), FIXED)]);
+  assert.equal(rep.n, 0);
+  assert.deepEqual(rep.firstPassYield, { reached: 0, pass: 0, rate: 0 });
+  assert.equal(rep.retro.passes, 1);
+  const rendered = renderReport(rep);
+  assert.ok(/retro passes:\s+1 \(2 PRs\)/.test(rendered));
+  assert.ok(/proposals:\s+3 proposed, 2 approved, 1 declined \(66\.7% approved\)/.test(rendered));
+  assert.ok(/tickets filed:\s+1/.test(rendered));
 });
