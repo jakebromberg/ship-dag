@@ -76,8 +76,11 @@ test('telemetryPath: SHIP_DAG_TELEMETRY > XDG_STATE_HOME > HOME/.local/state', (
   assert.equal(telemetryPath({ HOME: '/home/j' }), '/home/j/.local/state/ship-dag/runs.jsonl');
 });
 
-test('report: leading indicators over an 8-record fixture', () => {
-  const recs = [
+// The canonical 8-record indicator fixture, shared by the plain report test and
+// the retro-exclusion regression test so the two can never silently measure
+// different populations.
+function fixture8() {
+  return [
     base({ complexity: 'mechanical', bounces: 0, reviewVerdict: 'clean' }),                 // 1 mech pass
     base({ complexity: 'mechanical', bounces: 0, reviewVerdict: 'nits-only' }),             // 2 mech pass (nit ≠ miss)
     base({ complexity: 'normal', bounces: 1, reviewVerdict: 'blocking' }),                  // 3 normal bounced→merged, miss
@@ -86,7 +89,11 @@ test('report: leading indicators over an 8-record fixture', () => {
     base({ complexity: 'complex', triageStatus: 'needs-decision', finalState: 'blocked-hitl', implStatus: null, ciStatus: null, reviewVerdict: null, hitl: { pointA: true, pointB: false } }), // 6 point-A defer
     base({ complexity: 'normal', finalState: 'blocked-hitl', implStatus: 'blocked', reviewVerdict: null, hitl: { pointA: false, pointB: true } }), // 7 impl bail, miss, B
     base({ complexity: 'mechanical', bounces: 0, reviewVerdict: 'clean' }),                 // 8 mech pass
-  ].map((r) => normalizeRecord(r, FIXED));
+  ];
+}
+
+test('report: leading indicators over an 8-record fixture', () => {
+  const recs = fixture8().map((r) => normalizeRecord(r, FIXED));
   const rep = report(recs);
 
   assert.equal(rep.n, 8);
@@ -193,20 +200,11 @@ test('appendRecord: retro record round-trips through readRecords', () => {
 });
 
 test('report: retro records are excluded from every per-issue indicator', () => {
-  // The 8-record fixture from the report test above, byte-for-byte, plus one
-  // retro record — every per-issue value must be unchanged. The explicit
-  // hitl.*.n assertions pin the denominators that inflate if any of the six
-  // records→issues substitutions inside report() is missed.
-  const recs = [
-    base({ complexity: 'mechanical', bounces: 0, reviewVerdict: 'clean' }),
-    base({ complexity: 'mechanical', bounces: 0, reviewVerdict: 'nits-only' }),
-    base({ complexity: 'normal', bounces: 1, reviewVerdict: 'blocking' }),
-    base({ complexity: 'normal', bounces: 0, reviewVerdict: 'clean' }),
-    base({ complexity: 'complex', finalState: 'blocked-hitl', bounces: 2, reviewVerdict: 'blocking', hitl: { pointA: false, pointB: true } }),
-    base({ complexity: 'complex', triageStatus: 'needs-decision', finalState: 'blocked-hitl', implStatus: null, ciStatus: null, reviewVerdict: null, hitl: { pointA: true, pointB: false } }),
-    base({ complexity: 'normal', finalState: 'blocked-hitl', implStatus: 'blocked', reviewVerdict: null, hitl: { pointA: false, pointB: true } }),
-    base({ complexity: 'mechanical', bounces: 0, reviewVerdict: 'clean' }),
-  ].map((r) => normalizeRecord(r, FIXED));
+  // The shared 8-record fixture plus one retro record — every per-issue value
+  // must match the plain report test above. The explicit hitl.*.n assertions
+  // pin the denominators that inflate if any of the six records→issues
+  // substitutions inside report() is missed.
+  const recs = fixture8().map((r) => normalizeRecord(r, FIXED));
   const rep = report([...recs, normalizeRecord(retroBase(), FIXED)]);
 
   assert.equal(rep.n, 8);
@@ -236,7 +234,44 @@ test('report: retro-only log — per-issue indicators zeroed, retro section rend
   assert.deepEqual(rep.firstPassYield, { reached: 0, pass: 0, rate: 0 });
   assert.equal(rep.retro.passes, 1);
   const rendered = renderReport(rep);
-  assert.ok(/retro passes:\s+1 \(2 PRs\)/.test(rendered));
-  assert.ok(/proposals:\s+3 proposed, 2 approved, 1 declined \(66\.7% approved\)/.test(rendered));
-  assert.ok(/tickets filed:\s+1/.test(rendered));
+  // Anchored to full lines: an unanchored /tickets filed:\s+1/ would also
+  // match "tickets filed:   11", hiding a count corrupted by concatenation.
+  assert.ok(/^retro passes:\s+1 \(2 PRs\)$/m.test(rendered));
+  assert.ok(/^ {2}proposals:\s+3 proposed, 2 approved, 1 declined \(66\.7% approved\)$/m.test(rendered));
+  assert.ok(/^ {2}tickets filed:\s+1$/m.test(rendered));
+});
+
+test('normalizeRecord: retro rejection — non-numeric counts and non-array lists', () => {
+  assert.throws(() => normalizeRecord(retroBase({ proposedRefactors: '2' }), FIXED), /proposedRefactors must be a number/);
+  assert.throws(() => normalizeRecord(retroBase({ declinedAdjustments: NaN }), FIXED), /declinedAdjustments must be a number/);
+  assert.throws(() => normalizeRecord(retroBase({ filed: 'WXYC/x#77' }), FIXED), /filed must be an array/);
+  assert.throws(() => normalizeRecord(retroBase({ filed: 3 }), FIXED), /filed must be an array/);
+  assert.throws(() => normalizeRecord(retroBase({ adjusted: 'WXYC/x#55' }), FIXED), /adjusted must be an array/);
+  assert.throws(() => normalizeRecord(retroBase({ declinedTitles: 'dedupe' }), FIXED), /declinedTitles must be an array/);
+});
+
+test('normalizeRecord: retro-shaped record without kind gets a pointed error', () => {
+  // Without the guard this would die on `missing required key: repo` — naming
+  // the one field the retro schema deliberately excludes — and the best-effort
+  // append rule would swallow it, silently losing the run ledger's only
+  // durable record.
+  assert.throws(() => normalizeRecord({ runId: 'r', wave: 1, mergedPrs: [] }, FIXED), /missing kind: "retro"/);
+  assert.throws(() => normalizeRecord({ runId: 'r', mergedPrs: ['o/r#1'] }, FIXED), /missing kind: "retro"/);
+});
+
+test('report: raw readRecords output — a legacy kind-less line partitions as an issue record', () => {
+  // Real logs predate the kind field and report() consumes readRecords output
+  // un-normalized, so the partition must work on raw parsed lines.
+  const p = tmpLog();
+  const legacy = { ...base({ issue: 9 }), ts: FIXED() }; // a line written before the discriminator existed
+  try {
+    appendFileSync(p, `${JSON.stringify(legacy)}\n${JSON.stringify(retroBase({ ts: FIXED() }))}\n`);
+    const rep = report(readRecords(p));
+    assert.equal(rep.n, 1);
+    assert.equal(rep.firstPassYield.pass, 1);
+    assert.equal(rep.retro.passes, 1);
+    assert.equal(rep.retro.mergedPrs, 2);
+  } finally {
+    rmSync(p, { force: true });
+  }
 });

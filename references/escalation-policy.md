@@ -33,6 +33,6 @@ Fires from step 6.5 when unretrospected merges reach `--retro-threshold` (and al
 ## What does NOT escalate
 
 - PLAUSIBLE (unconfirmed) findings, or findings outside `--block-on` categories — surfaced in the summary, not blocking.
-- PLAUSIBLE retro proposals with thin evidence — the Retrospective subagent is told to drop them to `observations`; observations never grill, they ride the wave summary.
+- Retro items the subagent judged not worth a ticket — its block demotes them to `observations` (payoff-ranked, ≤5 proposals typical); observations never grill, they ride the wave summary. A PLAUSIBLE proposal that *did* make the cut still grills — confidence is surfaced at point D, not filtered before it.
 - Cosmetic nits — listed for the human, never block a merge.
 - A green PR — auto-merges under the requester-authorized policy (see the skill's Merge queue).

@@ -13,13 +13,14 @@ The step-6.5 Retrospective subagent returns this shape. It **reuses the vocabula
 }
 ```
 
-`mergedPrs` echoes the input surface (composite **issue** refs, spanning repos where the run does), so the telemetry record built from this result is self-describing. There is **no `wave` field** — the main agent stamps its own wave counter on the telemetry record; the subagent has no wave concept. There is **no envelope verdict**: per-item confidence plus the human's point-D disposition (approve / decline) replace the `clean | blocking | nits-only` semantics, which only make sense before a merge.
+`mergedPrs` echoes the input surface as bare composite **issue** refs (spanning repos where the run does). The PR numbers ride in the prompt, not the envelope — the main agent hands the subagent `owner/repo#N (PR #M)` pairs so `gh pr diff` is runnable; to recover which PR a ref shipped under from telemetry alone, join against the run's `kind:"issue"` records' `pr` field. There is **no `wave` field** — the main agent stamps its own wave counter on the telemetry record; the subagent has no wave concept. There is **no envelope verdict**: per-item confidence plus the human's point-D disposition (approve / decline) replace the `clean | blocking | nits-only` semantics, which only make sense before a merge.
 
 ## `refactors[]` — cross-PR findings that become tickets
 
 ```json
 {
   "title":      "Extract shared exponential-backoff helper",
+  "repo":       "owner/repo",
   "category":   "simplification",
   "confidence": "CONFIRMED",
   "summary":    "one-sentence statement of the duplication or divergence",
@@ -32,11 +33,12 @@ The step-6.5 Retrospective subagent returns this shape. It **reuses the vocabula
 }
 ```
 
+- `repo` — the repo the ticket is filed in. Required whenever the run spans repos: `locations[]` alone doesn't determine it, and `/file-ticket` defaults to the current repo — which may contain none of the code the refactor describes. In a single-repo run it defaults to the run's repo.
 - `category` / `confidence` — the review finding-item vocabulary, unchanged. `simplification` is the natural home for cross-PR duplication; a CONFIRMED `correctness`/`security` refactor (an interaction bug *between* two merged PRs) is legal and is surfaced first at point D.
 - `locations[]` — **plural**, unlike a review finding's single `file`/`line`: a cross-PR finding is cross-cutting by nature. Each entry carries `repo` because the merged surface may span repos.
 - `evidence[]` — **≥2 merged-PR issue refs**, the structural justification that this could not have been caught per-PR; a single-PR finding belongs to the review gate that already ran. At least one evidence ref must not itself be a retro-filed ticket's PR (the anti-recursion rule — no refactors of refactors).
 - `complexity` — the triage enum (`mechanical | normal | complex`), carried into the filed ticket so triage/implement effort is assigned normally when it ships.
-- `suggestedEdges[]` — `{blocked, blockedBy}` ref pairs, the literal string `"NEW"` standing for the ticket about to be filed. Approved edges are written **both** natively (the dependency graph) and as body prose (`Blocked by owner/repo#N`) so both of `plan-waves.mjs fetch`'s merged edge sources see them.
+- `suggestedEdges[]` — `{blocked, blockedBy}` ref pairs, the literal string `"NEW"` standing for the ticket about to be filed. Approved edges are written **both** natively (the dependency graph) and as body prose (`Blocked by owner/repo#N`) so both of `plan-waves.mjs fetch`'s merged edge sources see them. `blockedBy` may name an already-**merged** issue in a *different* repo when the refactor consumes its artifact — such an edge never blocks (fetch folds it into `done[]`); it exists to route the ticket through step 7's point-C cutover gate instead of letting it auto-release against an unpublished artifact.
 - `body` — the ghost-written draft `/file-ticket` publishes on approval.
 
 ## `planAdjustments[]` — keep the remaining DAG true
@@ -58,4 +60,4 @@ The step-6.5 Retrospective subagent returns this shape. It **reuses the vocabula
 
 The main agent carries, per run: `filed[]` (refs of approved-and-filed retro tickets) and `declined[]` (`{title, summary}` of rejected proposals). Both are injected into every later Retrospective prompt; a proposal naming substantially the same locations/title as a declined one must not reappear. This ledger — plus point D itself and the drain-time "ship now vs file for later" fork — is what keeps retro-filed tickets from turning the wave loop into an infinite one.
 
-**Durability:** both halves are reconstructible from this run's `kind:"retro"` telemetry records (`filed[]`, `declinedTitles[]`) after a context compaction or resume. The record's `wave` number is a display label stamped by the main agent, not an index any logic depends on — a resumed run may restart it at a lower bound.
+**Durability:** the ledger survives a context compaction or resume via this run's `kind:"retro"` telemetry records — `filed[]` fully; the declined half as `declinedTitles[]`, **titles only** (the summary/locations signal is lost, so after a resume the no-re-propose rule matches on titles and point D backstops any near-duplicate that slips past the match). The record's `wave` number is a display label stamped by the main agent, not an index any logic depends on — a resumed run may restart it at a lower bound.

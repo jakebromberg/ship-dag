@@ -14,7 +14,7 @@ Two independent axes. **Model = capability floor** (Haiku → Sonnet → Opus). 
 
 The triage subagent emits a **complexity score** (`mechanical | normal | complex`) per issue; that score is the input that sets the implement effort. Tiers are chosen per issue, not hardcoded.
 
-The retrospective always runs as an inline `Agent` fan-out from the main agent — the one path where effort is *nominal* (prompt-approximated; see the actuation caveat below): the "reason exhaustively across the merged surface" framing in its block is that approximation. Its cost is bounded by `--retro-threshold`, not wave size — a pass runs at most once per wave, over an already-thresholded surface.
+The retrospective always runs as an inline `Agent` fan-out from the main agent, so its effort is *nominal* (prompt-approximated; see the actuation caveat below) — as is the review gate's on the engine path, where review also runs inline from the skill. The "reason exhaustively across the merged surface" framing in the retro block is that approximation. `--retro-threshold` **amortizes** rather than caps cost: it sets how much merged surface accumulates before a pass runs (a higher N means fewer but strictly larger passes), and the plan half of a pass scales with the remaining DAG, untouched by the flag.
 
 ## Guardrails
 
@@ -23,4 +23,4 @@ The retrospective always runs as an inline `Agent` fan-out from the main agent �
 
 ## Actuation caveat
 
-`effort` is a real parameter on the engine path (per-issue `model`/`effort` in the emitted config → `--model`/`--effort` on each session) and on the `workflow.js` path (`agent(prompt, { effort })`). The inline `Agent` tool (the baseline fan-out) has **no `effort` parameter**, so on that path effort is approximated by (a) the model choice and (b) prompt framing ("reason exhaustively about correctness and edge cases" vs "make the mechanical change"). If a strict per-step effort contract matters for a run, lower the `workflow.js` threshold to ≥1 so every wave routes through it — traded against workflow startup overhead on tiny waves.
+`effort` is a real parameter on the engine path for **implement** sessions (per-issue `model`/`effort` in the emitted config → `--model`/`--effort` on each session; the review gate on that path runs inline from the skill, so review effort there is nominal) and on the `workflow.js` path for both implement and review (`agent(prompt, { effort })`). The inline `Agent` tool (the baseline fan-out, the engine-path review gate, and the retrospective always) has **no `effort` parameter**, so there effort is approximated by (a) the model choice and (b) prompt framing ("reason exhaustively about correctness and edge cases" vs "make the mechanical change"). If a strict per-step effort contract matters for a run, lower the `workflow.js` threshold to ≥1 so every wave routes through it — traded against workflow startup overhead on tiny waves.
