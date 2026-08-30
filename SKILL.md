@@ -72,9 +72,11 @@ Fan out **one `Agent{model:"haiku"}` per ready issue, all in a single message** 
 - Only **cleared** issues proceed. Carry each issue's `complexity` → implement effort and `digest` forward.
 - **Telemetry:** emit one record (see *Telemetry* below) for every issue **deferred at this gate** — `finalState:"blocked-hitl"`, `hitl.pointA:true`, `implStatus`/`ciStatus`/`reviewVerdict` null. These point-A records are what make the triage-miss and HITL-A indicators measurable instead of survivor-only.
 
-### 4. Implement fan-out — the engine implements, the skill reviews
+### 4. Implement fan-out — the engine implements, a workflow reviews
 
-The parallel **implement** work is delegated to the **claude-orchestrator engine** — per-repo worktrees + CI, per-issue model/effort, and its default `mergePolicy: "none"` (implement each issue in its own worktree, run that repo's CI, open a PR, then **STOP** — never merge). The **Opus review gate stays here**, as a ship-dag pass over the PRs the engine opens. `CO_HOME` points at the engine checkout (default `/Users/jake/Developer/claude-orchestrator`, the same core import as step 1).
+The parallel **implement** work is delegated to the **claude-orchestrator engine** — per-repo worktrees + CI, per-issue model/effort, and its default `mergePolicy: "none"` (implement each issue in its own worktree, run that repo's CI, open a PR, then **STOP** — never merge). The **Opus review gate then runs as a workflow** (step 4d) over the PRs the engine opened, so review effort is actuated rather than approximated. `CO_HOME` points at the engine checkout (default `/Users/jake/Developer/claude-orchestrator`, the same core import as step 1).
+
+**The merge queue stays with you either way** — neither the engine nor the review workflow ever merges.
 
 **a. Emit the engine config.** Build a ready-wave spec (JSON): for each **cleared** issue `{ number, repo, ref, title, complexity, model?, effort?, digest, extraDirs? }` — carry triage's `complexity` (the engine derives effort from it); set `model`/`effort` only where triage or the rubric overrides. Add `repos` from `references/repo-ci-profiles.json` for the wave's distinct repos (each `{ baseBranch, commands }`; a repo absent there defaults to `main` + no CI — emit-config warns); `name: "ship-dag-<runId>"`; an absolute per-run `stateDir` **outside any repo** (e.g. `${XDG_STATE_HOME:-$HOME/.local/state}/ship-dag/engine/<runId>`); `projectRoot` = the org checkout root `$PROJECT_ROOT`, derived once as `PROJECT_ROOT="${SHIP_DAG_REPOS_DIR:-$(dirname "$(git rev-parse --show-toplevel)")}"` — the parent of the target repo's checkout in the sibling layout; set `SHIP_DAG_REPOS_DIR` to override (e.g. a meta-repo root like `/Users/jake/Developer/daisyguide`); `promptTemplate` = `$SD/scripts/engine/prompt.md`. Then:
 `node "$SD/scripts/emit-config.mjs" spec.json > "$STATE/config.json"`. Every ready-wave issue is independent, so emit-config gives each `dependsOn: []` — one flat wave the engine runs fully in parallel.
@@ -87,16 +89,39 @@ then run it:
 
 **c. Read the report.** The engine writes `<stateDir>/state/reports/<id>.json`. Each row is keyed on the composite **`ref`** (`owner/repo#N`) — the disambiguator for same-numbered cross-repo issues — plus `number`, `status`, `prUrl`, `prNumber`. A `succeeded` row means the engine ran that repo's CI green before opening the PR (`retryOnCheckFailure` retried once, else the row is `failed`), so treat it as `ciStatus: "pass"` and map its `ref`→`prNumber` (branch via `gh pr view <PR> --json headRefName` if the review needs it). A `failed`/`blocked` row (no PR) is an implement stall → **HITL point B** (step 5).
 
-**d. Review pass (Opus — stays in the skill).** For each opened PR, run the **Review** subagent (the verbatim block below) over the PR's diff against **its own** base branch → `{ verdict, findings[] }`. This yields the same per-issue result the fallback paths do — `{ issue, ref, branch, pr, ciStatus, review:{ verdict, findings[] }, openQuestions[] }` — which step 5 reconciles.
+**d. Review gate — through `review-workflow.js`, always.** The review is **not** an inline `Agent` fan-out. It runs as a workflow so that per-PR **effort is a real parameter** rather than prompt-approximated: the inline `Agent` tool has no `effort`, and review is the one step where under-deliberating is unrecoverable, because nothing downstream catches a miss (CI is already green on every PR that reaches here).
 
-**Fallback (engine unavailable — `CO_HOME` unset/unbuilt, or the invocation errors):** revert to the pre-C1 path. Cleared count ≥ `--workflow-threshold` **and** `Workflow` available → `Workflow({ scriptPath: "$SD/workflow.js", args: { repo, blockOn, issues: [{ number, digest, complexity, implEffort, reviewEffort }] } })`; else inline `Agent` fan-out (one Implement per issue in a single message, Review each as it returns). Both blocks are still present and produce the same result shape. The engine is preferred: it actuates per-issue effort literally, isolates per-repo worktrees + CI, and survives `--detach` — the fallback keeps ship-dag working without the engine checkout.
+```
+Workflow({ scriptPath: "$SD/review-workflow.js", args: {
+  blockOn,
+  prs: [{ ref, repo, issue, pr, branch, baseBranch, decisions, scope, reach }]
+}})
+```
+
+Build one `prs[]` entry per PR the engine opened:
+
+- **`decisions`** — the binding decisions this issue settled, verbatim from the issue's comments (HITL point A's resolutions, plus anything the triage digest pinned). These drive the confirmation pass. Omit only if the issue genuinely settled nothing; the pass then derives them itself, less reliably.
+- **`scope`** — narrows what both passes read. Set it whenever a diff's bulk is machine-generated or otherwise already proven by a tool: a vendored codegen tree whose fidelity a `verify-*` CI job checks byte-for-byte needs no human-equivalent review, and paying to review it is pure cost. Name the hand-written subset instead.
+- **`reach`** — `in-diff | repo | external`, the effort dial. See the rubric in `references/model-effort-matrix.md`; it keys on **how far the reasoning must travel from the diff**, not on how alarming the subject sounds.
+
+**Two passes per PR, deliberately at different efforts** (the script's own doc comment argues this at length): a **Verify** pass (`opus`, default `medium`) that checks each stated decision landed in the code and that every new test can actually fail, and an **Explore** pass (`opus`, `medium`/`high`/`xhigh` by `reach`) that is *not given the checklist* and hunts what nobody asked. A long enumerated list is a gradient a model follows, so handing one agent both jobs reliably buys the checklist and loses the discovery.
+
+The workflow merges both passes into one `{ verdict, findings[] }` per PR, deduped, so step 5 consumes the same shape it always did: `{ issue, ref, branch, pr, ciStatus, review:{ verdict, findings[] }, openQuestions[] }`.
+
+**`incomplete: true` is not a clean review.** If either pass dies, the row carries `incomplete` and **must not** be auto-merged — route it to HITL point B, or re-run the gate for that PR. Silence from a crashed reviewer is not evidence of correctness, and this is the one failure mode that would otherwise let an unreviewed PR through the gate wearing a `clean` verdict.
+
+**When the `Workflow` tool is unavailable** (not enabled for the session, or the user hasn't opted into multi-agent orchestration): fall back to the inline **Review** subagent block below, one per PR, and say plainly in the wave summary that review effort was nominal on this run.
+
+**Fallback (engine unavailable — `CO_HOME` unset/unbuilt, or the invocation errors):** revert to the pre-C1 path, which does implement *and* review in one script. Cleared count ≥ `--workflow-threshold` **and** `Workflow` available → `Workflow({ scriptPath: "$SD/workflow.js", args: { repo, blockOn, issues: [{ number, digest, complexity, implEffort, reviewEffort }] } })`; else inline `Agent` fan-out (one Implement per issue in a single message, Review each as it returns). Both blocks are still present and produce the same result shape. The engine is preferred because it isolates per-repo worktrees + CI, handles mixed-repo waves, and survives `--detach`; `workflow.js` remains the single-repo fallback. Note its review is the older **single-pass** shape — it actuates effort but does not split verify from explore, so on that path expect the checklist to crowd out discovery.
 
 **Mixed-repo waves:** the engine handles them natively (per-issue `repo` → per-repo worktree, base branch, and CI), where `workflow.js` takes a single `repo` per batch. In practice a single ready wave rarely mixes repos, since cross-repo edges fall on wave boundaries where step 7's point-C gate already stops you.
 
 ### 5. Reconcile each result
 
-- **Green** — CI pass, review `verdict` not `blocking`, no open questions → queue for merge.
+- **Green** — CI pass, review `verdict` not `blocking`, **`incomplete` falsy**, no open questions → queue for merge.
+- **`incomplete: true`** (a review pass died) → **never** queue for merge, whatever the verdict says. Re-run the gate for that PR alone; if it fails again, **HITL point B**. A `clean` verdict computed from one surviving pass is a review that didn't happen.
 - **Blocking finding** → `/review-loop owner/repo#PR --max-iter K` (from *you*, the main agent — reliable Skill access). Converges to green → queue. Doesn't clear within `--max-review-iter`, or needs a design call → **HITL point B**. On a bounce, the retried implement runs one effort tier higher (rubric guardrail 2).
+- **You fixed a blocking finding yourself** (rather than routing to `/review-loop`) → re-gate, but **scoped**: hand `review-workflow.js` a single-PR `prs[]` whose `decisions` are the findings you claim to have fixed, and whose `reach` reflects the *fix*, not the original PR. A full second review re-derives what you already know; what a re-gate is actually for is (a) proving the fix does what you say and (b) catching what the fix or an intervening rebase introduced. If the base moved under the PR, say so in `scope` so the pass reads the rebase delta too.
 - **Open question surfaced mid-implementation / non-flaky CI failure / judgment-needing merge conflict** → **HITL point B** (grill), then re-queue or defer the issue.
 - **Telemetry:** emit one record for every issue that **terminates here** without merging (`blocked-hitl` / `deferred` / `error`), capturing `implStatus`, `ciStatus`, `reviewVerdict`, `findings[]`, `bounces`, and `hitl.pointB`.
 
@@ -170,7 +195,9 @@ Include the relevant block **verbatim** in each subagent's prompt (the inline fa
 >
 > **Return:** `{ issue, status: "pushed|blocked|error", branch, pr, ciStatus: "pass|fail|none", openQuestions: [ ... ], notes }`.
 
-### Review (Opus, own worktree)
+### Review (Opus, own worktree) — **fallback only**
+
+Used when the `Workflow` tool isn't available to the session. The primary path is `review-workflow.js` (step 4d), which splits this into a Verify and an Explore pass at separately actuated efforts; this single block does both jobs at once and therefore reliably buys the checklist at the expense of the discovery. Say so in the wave summary when you take it.
 
 > **Task:** You are the last code-review gate before `{OWNER/REPO}#{N}` (PR `#{PR}`, branch `{BRANCH}`) reaches its base branch. Nothing downstream catches your misses — reason exhaustively.
 >
@@ -197,7 +224,11 @@ Include the relevant block **verbatim** in each subagent's prompt (the inline fa
 
 ## Model & effort
 
-Per-step model and effort defaults, the complexity→effort mapping, and the "never crank effort on a weak model" / "escalate on failure per item" guardrails live in `references/model-effort-matrix.md`. Effort is actuated **literally** on the two primary paths — the engine (implement sessions: per-issue `model`/`effort`/`complexity` in the emitted config → `--model`/`--effort` on each session) and `workflow.js` (`agent(prompt, { effort })`, implement and review both); the inline `Agent` fan-out — the fallback, the engine-path review gate, and the retrospective always — approximates it via model choice + prompt framing.
+Per-step model and effort defaults, the review **`reach`** rubric, the complexity→effort mapping, and the "never crank effort on a weak model" / "escalate on failure per item" guardrails live in `references/model-effort-matrix.md`.
+
+Effort is actuated **literally** on both primary paths now: the engine actuates it for implement sessions (per-issue `model`/`effort`/`complexity` in the emitted config → `--model`/`--effort`), and `review-workflow.js` actuates it for review (`agent(prompt, { effort })`, per pass per PR). `workflow.js` does both in one script on the engine-unavailable fallback. Only the **retrospective**, the **triage** gate, and the **review fallback when `Workflow` is unavailable** still approximate effort via model choice + prompt framing.
+
+**Model is not the review dial** — both review passes are `opus`, always. Reaching for a cheaper model to save tokens trades away the judgment that finds a defect nobody enumerated, which is the only reason the gate exists. Tier on effort.
 
 ## Telemetry
 
@@ -226,3 +257,5 @@ Every issue that reaches a terminal-for-this-wave state emits one JSON record �
 `/recheck-issues` (DAG re-sync), `/review-loop` (fix blocking findings), `/cleanup` (post-merge tidy), the built-in `/code-review` (optional review augmentation), `/file-ticket` (follow-ups discovered mid-run, and the step-6.5 retrospective's approved refactor tickets — its one structured caller). `AskUserQuestion` for crisp HITL forks. All PR/issue refs passed to these are fully-qualified `owner/repo#N`.
 
 **Engine-invocation bundle (step 4):** `scripts/emit-config.mjs` (ready-wave spec → engine config JSON; tested), `scripts/engine/run.mts` + `hooks.mts` + `prompt.md` (the config bundle the engine loads — `run.mts` registers the config under key `wave` and calls `createMain`; `hooks.mts` wires `deriveWorktreeHooks` + the cutover backstop), and `references/repo-ci-profiles.json` (per-repo base branch + CI). All import the engine from `$CO_HOME/dist` — the same checkout `plan-waves.mjs` uses; keep `CO_HOME` consistent across both.
+
+**Review bundle (step 4d):** `review-workflow.js` (the two-pass Opus gate over the PRs the engine opened; `Workflow({ scriptPath })`), covered by `scripts/review-workflow.test.mjs`. That test **executes the real script** with the workflow globals stubbed rather than restating its logic, because a workflow script can't be imported (top-level `return`, injected globals, no filesystem) and a duplicated copy of the merge rules would drift from the one that runs. `workflow.js` is the older combined implement+review script, now only the engine-unavailable fallback.
