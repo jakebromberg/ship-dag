@@ -38,7 +38,7 @@ export function defaultBaseDir(env = process.env) {
   return `${stateHome}/ship-dag/engine`;
 }
 
-/** How many newest-by-mtime candidates {@link readLatestUtilization} will read looking for a usable reading, before giving up and reporting none. */
+/** How many newest-by-mtime candidates `readLatestUtilization` will read looking for a usable reading, before giving up and reporting none. */
 export const DEFAULT_MAX_CANDIDATES = 5;
 
 /**
@@ -91,7 +91,7 @@ export function newestLogFiles(baseDir, limit = DEFAULT_MAX_CANDIDATES) {
 /**
  * The single most recently modified `issue-*.log` transcript under `baseDir`,
  * or null if there is none. A thin convenience wrapper over
- * {@link newestLogFiles}; {@link readLatestUtilization} uses the full
+ * `newestLogFiles`; `readLatestUtilization` uses the full
  * candidate list instead so a newest-but-empty log can't shadow an older one
  * that actually has a reading.
  * @param {string} baseDir
@@ -144,14 +144,17 @@ export function readLatestUtilization(baseDir, { maxCandidates = DEFAULT_MAX_CAN
  * into `NaN`, which compares false against everything downstream — an
  * `--threshold` typo like `abc` would otherwise make preflightDecision's
  * `utilization < threshold` check always false and invert a healthy window
- * into a `hitl` fork instead of erroring loudly.
+ * into a `hitl` fork instead of erroring loudly. Guards the *other* silent
+ * `Number()` trap too: `Number("")` and `Number("  ")` are `0`, not `NaN` —
+ * a missing/blank value would otherwise sail through the finite check and
+ * land squarely inside `--threshold`'s valid `[0, 1]` range.
  * @param {string} flag  flag name for the error message, without the leading `--`
  * @param {string|undefined} raw
  * @param {{min?: number, max?: number, exclusiveMin?: number}} [bounds]
  * @returns {number}
  */
 function parseNumberOption(flag, raw, { min, max, exclusiveMin } = {}) {
-  if (raw === undefined) throw new Error(`--${flag} requires a value`);
+  if (raw === undefined || raw.trim() === '') throw new Error(`--${flag} requires a value`);
   const n = Number(raw);
   if (!Number.isFinite(n)) throw new Error(`--${flag} must be a number, got: ${JSON.stringify(raw)}`);
   if (min !== undefined && n < min) throw new Error(`--${flag} must be >= ${min}, got: ${n}`);
@@ -164,7 +167,7 @@ function parseNumberOption(flag, raw, { min, max, exclusiveMin } = {}) {
  * Parse the `check` subcommand's flags. Throws (with a message naming the bad
  * flag and value) on a non-numeric or out-of-range `--threshold` /
  * `--wait-max-minutes` rather than propagating a silent `NaN` — see
- * {@link parseNumberOption}. Exported for direct unit coverage; `main` is the
+ * `parseNumberOption`. Exported for direct unit coverage; `main` is the
  * only caller in normal operation.
  * @param {string[]} argv
  */

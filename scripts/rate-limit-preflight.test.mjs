@@ -205,6 +205,15 @@ test('parseArgs: accepts valid --threshold and --wait-max-minutes values', () =>
   assert.deepEqual(opts, { baseDir: '/tmp/x', threshold: 0.5, waitMaxMinutes: 15 });
 });
 
+test('parseArgs: rejects an empty or blank --threshold instead of silently coercing to 0', () => {
+  // Number("") and Number("  ") are 0, not NaN — a missing/blank value would
+  // otherwise sail past the finite check and land inside the valid [0, 1]
+  // range instead of erroring, the same silent-Number()-coercion trap as the
+  // NaN case just below, one input away from it.
+  assert.throws(() => parseArgs(['--threshold', '']), /--threshold requires a value/);
+  assert.throws(() => parseArgs(['--threshold', '   ']), /--threshold requires a value/);
+});
+
 test('parseArgs: rejects a non-numeric --threshold instead of silently coercing to NaN', () => {
   // The bug this guards: a bare Number("abc") is NaN, and NaN compares false
   // against everything, so preflightDecision's `utilization < threshold` check
