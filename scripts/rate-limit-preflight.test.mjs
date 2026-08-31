@@ -20,8 +20,18 @@ function writeLog(dir, runId, ref, content, mtime) {
   return p;
 }
 
-const event = (utilization, resetsAt, status = 'allowed') =>
-  `${JSON.stringify({ type: 'rate_limit_event', status, unifiedWindows: { five_hour: { utilization, resetsAt } } })}\n`;
+const event = (utilization, resetsAtSec, status = 'allowed_warning') =>
+  `${JSON.stringify({
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status,
+      rateLimitType: 'five_hour',
+      utilization,
+      resetsAt: resetsAtSec,
+      unifiedWindows: { five_hour: { utilization, resetsAt: resetsAtSec }, seven_day: { utilization: 0.1, resetsAt: 1788724800 } },
+    },
+  })}\n`;
+const isoResetsAt = (sec) => new Date(sec * 1000).toISOString();
 
 test('newestLogFile: missing base dir → null (fail-open source)', () => {
   assert.equal(newestLogFile(join(tmpdir(), 'ship-dag-preflight-does-not-exist')), null);
@@ -40,10 +50,24 @@ test('newestLogFile: empty base dir → null', () => {
 test('newestLogFile: picks the most recently modified issue-*.log across run subdirs', () => {
   const dir = tmpBase();
   try {
-    const older = writeLog(dir, 'run-a', 'o-r-1', event(0.5, '2026-08-31T20:00:00Z'), new Date('2026-08-31T20:00:00Z'));
-    const newer = writeLog(dir, 'run-b', 'o-r-2', event(0.9, '2026-08-31T23:00:00Z'), new Date('2026-08-31T22:00:00Z'));
+    const older = writeLog(dir, 'run-a', 'o-r-1', event(0.5, 1788196400), new Date('2026-08-31T20:00:00Z'));
+    const newer = writeLog(dir, 'run-b', 'o-r-2', event(0.9, 1788206400), new Date('2026-08-31T22:00:00Z'));
     assert.equal(newestLogFile(dir), newer);
     assert.notEqual(newestLogFile(dir), older);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('newestLogFile: excludes the engine\'s issue-<ref>.stderr.log companions', () => {
+  const dir = tmpBase();
+  try {
+    const p = writeLog(dir, 'run-a', 'o-r-1', event(0.5, 1788196400), new Date('2026-08-31T20:00:00Z'));
+    const stderrDir = join(dir, 'run-a', 'state', 'logs');
+    const stderrPath = join(stderrDir, 'issue-o-r-1.stderr.log');
+    writeFileSync(stderrPath, 'some stderr noise\n');
+    utimesSync(stderrPath, new Date('2026-08-31T23:59:59Z'), new Date('2026-08-31T23:59:59Z')); // newer than p
+    assert.equal(newestLogFile(dir), p);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -52,11 +76,11 @@ test('newestLogFile: picks the most recently modified issue-*.log across run sub
 test('readLatestUtilization: reads the newest event from the newest log file', () => {
   const dir = tmpBase();
   try {
-    writeLog(dir, 'run-a', 'o-r-1', event(0.5, '2026-08-31T20:00:00Z'), new Date('2026-08-31T20:00:00Z'));
-    writeLog(dir, 'run-b', 'o-r-2', event(0.3, '2026-08-31T21:00:00Z') + event(0.91, '2026-08-31T23:30:00Z'), new Date('2026-08-31T22:00:00Z'));
+    writeLog(dir, 'run-a', 'o-r-1', event(0.5, 1788196400), new Date('2026-08-31T20:00:00Z'));
+    writeLog(dir, 'run-b', 'o-r-2', event(0.3, 1788200000) + event(0.91, 1788206400), new Date('2026-08-31T22:00:00Z'));
     const result = readLatestUtilization(dir);
     assert.equal(result.utilization, 0.91);
-    assert.equal(result.resetsAt, '2026-08-31T23:30:00Z');
+    assert.equal(result.resetsAt, isoResetsAt(1788206400));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

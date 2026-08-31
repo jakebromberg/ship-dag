@@ -1,7 +1,7 @@
 // rate-limit.mjs — pure helpers for the five-hour rate-limit window: parsing
 // `rate_limit_event` records out of an engine session transcript (the
 // `--output-format stream-json` log the engine already writes to
-// `<configDir>/logs/issue-<ref>.log`), and the preflight/HITL-fork decision
+// `<configDir>/logs/issue-<url-encoded-ref>.log`), and the preflight/HITL-fork decision
 // SKILL.md step 4 makes from the newest one it can find.
 //
 // No I/O, no globals, no clock beyond an injected `now` — safe to import
@@ -9,12 +9,28 @@
 
 const DEATH_MARKER = "hit your session limit";
 
+/** Epoch seconds (the transcript's unit for every `resetsAt`) → ISO string. */
+function epochSecondsToIso(seconds) {
+  return typeof seconds === 'number' ? new Date(seconds * 1000).toISOString() : null;
+}
+
 /**
  * Parse every `rate_limit_event` line out of a stream-json transcript. Lines
  * that fail to parse (torn writes, non-JSON noise) are skipped rather than
  * throwing, and only top-level `type: "rate_limit_event"` records are
- * considered — a coincidental `unifiedWindows`-shaped field on an unrelated
- * event type (e.g. echoed in a tool result) is not mistaken for the real one.
+ * considered — a coincidental lookalike field on an unrelated event type
+ * (e.g. echoed in a tool result) is not mistaken for the real one.
+ *
+ * The real record nests everything under `rate_limit_info`, whose shape
+ * varies by which window it's reporting on: a plain `{status, resetsAt,
+ * rateLimitType, utilization?}` for that one window, PLUS an optional
+ * `unifiedWindows: {five_hour, seven_day}` breakdown (each `{utilization,
+ * resetsAt}`) once the CLI has both windows' current state to report. Five-
+ * hour utilization/resetsAt are read preferentially from `unifiedWindows`
+ * (authoritative regardless of which window the event itself is about);
+ * falling back to the flat fields only when `rateLimitType` is itself
+ * `"five_hour"` (an early/warning event with no unified breakdown yet).
+ * `resetsAt` on the wire is epoch seconds; this returns ISO strings.
  * @param {string} text
  * @returns {Array<{status: string|null, utilization: number|null, resetsAt: string|null, raw: object}>}
  */
@@ -29,11 +45,21 @@ export function parseRateLimitEvents(text) {
       continue;
     }
     if (!obj || obj.type !== 'rate_limit_event') continue;
-    const fiveHour = obj.unifiedWindows?.five_hour;
+    const info = obj.rate_limit_info ?? {};
+    const fiveHour = info.unifiedWindows?.five_hour;
+    let utilization = null;
+    let resetsAt = null;
+    if (fiveHour) {
+      utilization = fiveHour.utilization ?? null;
+      resetsAt = epochSecondsToIso(fiveHour.resetsAt);
+    } else if (info.rateLimitType === 'five_hour') {
+      utilization = info.utilization ?? null;
+      resetsAt = epochSecondsToIso(info.resetsAt);
+    }
     out.push({
-      status: obj.status ?? null,
-      utilization: fiveHour?.utilization ?? null,
-      resetsAt: fiveHour?.resetsAt ?? null,
+      status: info.status ?? null,
+      utilization,
+      resetsAt,
       raw: obj,
     });
   }
@@ -41,25 +67,45 @@ export function parseRateLimitEvents(text) {
 }
 
 /**
- * The newest `rate_limit_event` in a transcript (transcripts are append-only,
- * so "last line" is "newest"), or null if the transcript has none.
+ * The newest `rate_limit_event` carrying five-hour utilization (transcripts
+ * are append-only, so "last matching line" is "newest"). Early-session events
+ * can predate the CLI's `unifiedWindows` breakdown and carry no five-hour
+ * data at all (see parseRateLimitEvents); those are skipped in favor of the
+ * latest one that does, rather than blindly returning the last line. Null if
+ * the transcript has no rate_limit_event with five-hour data.
  * @param {string} text
  */
 export function latestRateLimitEvent(text) {
-  const events = parseRateLimitEvents(text);
+  const events = parseRateLimitEvents(text).filter((e) => e.utilization != null);
   return events.length ? events[events.length - 1] : null;
 }
 
 /**
- * Whether a session transcript shows the rate-limit-death signature: a
- * `rate_limit_event` the window rejected, or the CLI's synthetic final result
- * ("You've hit your session limit ..."). Either is sufficient on its own —
- * the synthetic result can appear without a captured event line if the
- * transcript was truncated mid-write.
+ * Whether a session transcript shows the rate-limit-death signature. Two
+ * independent anchors, either sufficient on its own:
+ *   1. The CLI's synthetic assistant turn when the window rejects a request —
+ *      `{type: "assistant", error: "rate_limit", is_api_error_message: true,
+ *      message: {content: [{type: "text", text: "You've hit your session
+ *      limit · resets ..."}]}}`. This is the actual death signal; anchoring
+ *      on the structured `error` field (not a whole-transcript substring
+ *      search) avoids false-positiving on a session whose prompt merely
+ *      *discusses* rate limits (e.g. this very feature's own issue body).
+ *   2. A `rate_limit_event` whose `status` is `"rejected"`.
  * @param {string} text
  */
 export function isRateLimitDeath(text) {
-  if (text.includes(DEATH_MARKER)) return true;
+  for (const line of text.split('\n')) {
+    if (!line.trim() || !line.includes(DEATH_MARKER)) continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (obj && obj.type === 'assistant' && obj.error === 'rate_limit' && obj.is_api_error_message === true) {
+      return true;
+    }
+  }
   return parseRateLimitEvents(text).some((e) => e.status === 'rejected');
 }
 

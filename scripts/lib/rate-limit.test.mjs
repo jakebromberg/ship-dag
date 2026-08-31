@@ -1,4 +1,6 @@
 // Tests for the rate-limit transcript parsing + preflight decision helpers.
+// Fixtures mirror real `--output-format stream-json` records captured from
+// live engine transcripts, not a guessed schema — see the module doc.
 // Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,54 +14,107 @@ import {
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 
-const event = (utilization, resetsAt, status = 'allowed') =>
+// A real early-session event: no unifiedWindows breakdown yet, no utilization
+// figure at all (below the CLI's own warning threshold).
+const bareEvent = (rateLimitType, resetsAtSec, status = 'allowed') =>
+  line({ type: 'rate_limit_event', rate_limit_info: { status, resetsAt: resetsAtSec, rateLimitType } });
+
+// A real mature event carrying the unifiedWindows breakdown for both windows.
+const unifiedEvent = (fiveHour, sevenDay, status = 'allowed_warning', rateLimitType = 'five_hour') =>
   line({
     type: 'rate_limit_event',
-    status,
-    unifiedWindows: { five_hour: { utilization, resetsAt }, seven_day: { utilization: 0.1, resetsAt: '2026-09-05T00:00:00Z' } },
+    rate_limit_info: {
+      status,
+      rateLimitType,
+      resetsAt: rateLimitType === 'five_hour' ? fiveHour.resetsAt : sevenDay.resetsAt,
+      utilization: rateLimitType === 'five_hour' ? fiveHour.utilization : sevenDay.utilization,
+      unifiedWindows: { five_hour: fiveHour, seven_day: sevenDay },
+    },
   });
 
-test('parseRateLimitEvents: extracts five_hour utilization/resetsAt/status from rate_limit_event lines', () => {
-  const text = line({ type: 'system', subtype: 'init' }) + event(0.42, '2026-08-31T23:00:00Z');
+const deathLine = () =>
+  line({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: "You've hit your session limit · resets 1pm (America/Los_Angeles)" }] },
+    error: 'rate_limit',
+    is_api_error_message: true,
+  });
+
+test('parseRateLimitEvents: reads five_hour utilization/resetsAt out of rate_limit_info.unifiedWindows, converting epoch seconds to ISO', () => {
+  const text = line({ type: 'system', subtype: 'init' }) + unifiedEvent({ utilization: 0.42, resetsAt: 1788206400 }, { utilization: 0.1, resetsAt: 1788724800 });
   const events = parseRateLimitEvents(text);
   assert.equal(events.length, 1);
   assert.equal(events[0].utilization, 0.42);
-  assert.equal(events[0].resetsAt, '2026-08-31T23:00:00Z');
+  assert.equal(events[0].resetsAt, new Date(1788206400 * 1000).toISOString());
+  assert.equal(events[0].status, 'allowed_warning');
+});
+
+test('parseRateLimitEvents: falls back to the flat fields when rateLimitType is five_hour and unifiedWindows is absent', () => {
+  const text = line({
+    type: 'rate_limit_event',
+    rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.9, resetsAt: 1788206400 },
+  });
+  const events = parseRateLimitEvents(text);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].utilization, 0.9);
+  assert.equal(events[0].resetsAt, new Date(1788206400 * 1000).toISOString());
+});
+
+test('parseRateLimitEvents: a seven_day-only event with no unifiedWindows carries no five-hour utilization', () => {
+  const events = parseRateLimitEvents(bareEvent('seven_day', 1788724800));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].utilization, null);
+  assert.equal(events[0].resetsAt, null);
   assert.equal(events[0].status, 'allowed');
 });
 
 test('parseRateLimitEvents: skips malformed JSON lines and blank lines', () => {
-  const text = 'not json\n\n' + event(0.5, '2026-08-31T23:00:00Z');
+  const text = 'not json\n\n' + bareEvent('five_hour', 1788206400);
   assert.equal(parseRateLimitEvents(text).length, 1);
 });
 
-test('parseRateLimitEvents: ignores non-rate_limit_event lines even if they carry unifiedWindows-shaped data', () => {
-  const text = line({ type: 'assistant', unifiedWindows: { five_hour: { utilization: 0.9 } } });
+test('parseRateLimitEvents: ignores non-rate_limit_event lines even if they carry lookalike fields', () => {
+  const text = line({ type: 'assistant', rate_limit_info: { utilization: 0.9 } });
   assert.equal(parseRateLimitEvents(text).length, 0);
 });
 
-test('latestRateLimitEvent: returns the last event in the transcript, not the first', () => {
-  const text = event(0.5, '2026-08-31T21:00:00Z') + event(0.99, '2026-08-31T23:45:00Z', 'rejected');
+test('latestRateLimitEvent: returns the last event that actually carries five-hour data, not just the last line', () => {
+  const text =
+    unifiedEvent({ utilization: 0.5, resetsAt: 1788206400 }, { utilization: 0.2, resetsAt: 1788724800 }) +
+    bareEvent('seven_day', 1788724800) + // last line, but no five-hour data
+    unifiedEvent({ utilization: 1, resetsAt: 1788206400 }, { utilization: 0.3, resetsAt: 1788724800 }, 'rejected');
   const latest = latestRateLimitEvent(text);
-  assert.equal(latest.utilization, 0.99);
+  assert.equal(latest.utilization, 1);
   assert.equal(latest.status, 'rejected');
 });
 
-test('latestRateLimitEvent: null when the transcript has no rate_limit_event lines', () => {
+test('latestRateLimitEvent: null when the transcript has no rate_limit_event with five-hour data', () => {
+  assert.equal(latestRateLimitEvent(bareEvent('seven_day', 1788724800)), null);
   assert.equal(latestRateLimitEvent(line({ type: 'system', subtype: 'init' })), null);
 });
 
-test('isRateLimitDeath: true on a rejected rate_limit_event', () => {
-  assert.equal(isRateLimitDeath(event(1.0, '2026-08-31T23:45:00Z', 'rejected')), true);
+test('isRateLimitDeath: true on the CLI synthetic rate-limit assistant turn', () => {
+  const text = unifiedEvent({ utilization: 0.99, resetsAt: 1788206400 }, { utilization: 0.34, resetsAt: 1788724800 }, 'allowed_warning') + deathLine();
+  assert.equal(isRateLimitDeath(text), true);
 });
 
-test('isRateLimitDeath: true on the synthetic final-result marker even without a rejected event', () => {
-  const text = line({ type: 'result', subtype: 'success', result: "You've hit your session limit for this 5-hour window." });
+test('isRateLimitDeath: true on a rejected rate_limit_event even without the synthetic assistant turn', () => {
+  const text = unifiedEvent({ utilization: 1, resetsAt: 1788206400 }, { utilization: 0.34, resetsAt: 1788724800 }, 'rejected');
   assert.equal(isRateLimitDeath(text), true);
 });
 
 test('isRateLimitDeath: false on an ordinary successful transcript', () => {
-  const text = event(0.5, '2026-08-31T21:00:00Z') + line({ type: 'result', subtype: 'success', result: 'done' });
+  const text = unifiedEvent({ utilization: 0.5, resetsAt: 1788206400 }, { utilization: 0.2, resetsAt: 1788724800 }) + line({ type: 'result', subtype: 'success', is_error: false });
+  assert.equal(isRateLimitDeath(text), false);
+});
+
+test('isRateLimitDeath: false when the death phrase appears only as ordinary prose, not the structured synthetic turn', () => {
+  // e.g. this very issue's own triage/implement session, whose prompt/plan discusses
+  // rate-limit deaths — must not be misclassified as its own transcript rate-limiting.
+  const text = line({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text: 'The dead session showed "You\'ve hit your session limit" in its transcript.' }] },
+  });
   assert.equal(isRateLimitDeath(text), false);
 });
 
@@ -70,8 +125,7 @@ test('classifyFailureReason: prefers a structured failureReason on the report ro
 
 test('classifyFailureReason: falls back to transcript parsing when the report row has no failureReason', () => {
   const row = { ref: 'o/r#1', status: 'failed' };
-  const text = line({ type: 'result', subtype: 'success', result: "You've hit your session limit" });
-  assert.equal(classifyFailureReason(row, text), 'rate-limited');
+  assert.equal(classifyFailureReason(row, deathLine()), 'rate-limited');
 });
 
 test('classifyFailureReason: null when neither the report row nor the transcript indicate a rate-limit death', () => {
