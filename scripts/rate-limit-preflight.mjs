@@ -3,7 +3,7 @@
 // run before handing a ready wave to the claude-orchestrator engine.
 //
 // Every engine run writes its per-issue session transcripts (the
-// `--output-format stream-json` log) to `<stateDir>/state/logs/issue-<ref>.log`,
+// `--output-format stream-json` log) to `<stateDir>/state/logs/issue-<url-encoded-ref>.log`,
 // and step 4 always places `stateDir` under one well-known base
 // (`${XDG_STATE_HOME:-$HOME/.local/state}/ship-dag/engine/<runId>`, see
 // SKILL.md step 4a). So the preflight has a stable place to look: scan every
@@ -49,9 +49,16 @@ export function newestLogFile(baseDir) {
     const logsDir = join(baseDir, runId, 'state', 'logs');
     if (!existsSync(logsDir)) continue;
     for (const name of readdirSync(logsDir)) {
-      if (!name.startsWith('issue-') || !name.endsWith('.log')) continue;
+      // Excludes the engine's issue-<ref>.stderr.log companions (also
+      // issue-*-prefixed, also .log-suffixed) — no transcript in those.
+      if (!name.startsWith('issue-') || !name.endsWith('.log') || name.endsWith('.stderr.log')) continue;
       const p = join(logsDir, name);
-      const mtime = statSync(p).mtimeMs;
+      let mtime;
+      try {
+        mtime = statSync(p).mtimeMs;
+      } catch {
+        continue; // a concurrent run may rotate/remove a log between readdir and stat
+      }
       if (mtime > newestMtime) {
         newestMtime = mtime;
         newest = p;
