@@ -115,12 +115,19 @@ export function isRateLimitDeath(text) {
  * not yet shipped as of this writing); falls back to parsing the failed
  * session's transcript for the rate-limit-death signature. Returns null when
  * neither source identifies a rate-limit death (an ordinary implement failure).
+ *
+ * Only ever returns `"rate-limited"` or `null` — telemetry.mjs's `failureReason`
+ * enum is deliberately kept to just those two (see the issue's decision
+ * comment), so a report row carrying some other future value (a claude-orchestrator#87
+ * reason this schema doesn't know about yet) is treated as unclassified here
+ * rather than passed through, which would otherwise make the telemetry append
+ * throw and silently drop the very failure record this exists to capture.
  * @param {{failureReason?: string}|null|undefined} reportRow
  * @param {string|null|undefined} transcriptText
- * @returns {string|null}
+ * @returns {"rate-limited"|null}
  */
 export function classifyFailureReason(reportRow, transcriptText) {
-  if (reportRow && typeof reportRow.failureReason === 'string') return reportRow.failureReason;
+  if (reportRow && reportRow.failureReason === 'rate-limited') return 'rate-limited';
   if (transcriptText && isRateLimitDeath(transcriptText)) return 'rate-limited';
   return null;
 }
@@ -133,6 +140,10 @@ export function classifyFailureReason(reportRow, transcriptText) {
  * - No utilization data → `proceed` (fail-open: a fresh machine with no
  *   recent session logs must not be blocked by absent telemetry).
  * - Below `threshold` → `proceed`.
+ * - At/above `threshold` but `resetsAt` is already in the past → `proceed`
+ *   (this utilization reading no longer describes the current window — the
+ *   newest log the preflight found is stale, e.g. left over from a run whose
+ *   window has since reset with no new session yet to report the fresh one).
  * - At/above `threshold` and the window resets within `waitMaxMinutes` →
  *   `wait` (the caller prints resetsAt and waits).
  * - At/above `threshold` and the reset is further off (or unknown) →
@@ -150,6 +161,9 @@ export function preflightDecision({ utilization, resetsAt, now = new Date(), thr
     return { action: 'hitl', reason: 'above-threshold-no-reset-time', utilization, resetsAt: null };
   }
   const minutesUntilReset = (new Date(resetsAt).getTime() - now.getTime()) / 60000;
+  if (minutesUntilReset <= 0) {
+    return { action: 'proceed', reason: 'window-already-reset', utilization, resetsAt, minutesUntilReset };
+  }
   if (minutesUntilReset <= waitMaxMinutes) {
     return { action: 'wait', reason: 'reset-soon', utilization, resetsAt, minutesUntilReset };
   }
