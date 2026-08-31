@@ -133,6 +133,15 @@ test('classifyFailureReason: null when neither the report row nor the transcript
   assert.equal(classifyFailureReason({ ref: 'o/r#1', status: 'failed' }, null), null);
 });
 
+test('classifyFailureReason: an unrecognized structured failureReason is treated as unclassified, not passed through', () => {
+  // telemetry.mjs's failureReason enum only knows "rate-limited" | null today (see the
+  // issue's decision comment) — a future claude-orchestrator#87 reason this schema
+  // doesn't support yet must not reach the telemetry append and make it throw.
+  const row = { ref: 'o/r#1', status: 'failed', failureReason: 'timeout' };
+  assert.equal(classifyFailureReason(row, null), null);
+  assert.equal(classifyFailureReason(row, deathLine()), 'rate-limited');
+});
+
 const NOW = new Date('2026-08-31T23:00:00Z');
 
 test('preflightDecision: proceeds when no utilization data is readable (fail-open)', () => {
@@ -164,6 +173,12 @@ test('preflightDecision: surfaces a HITL fork when above threshold with no reset
   const d = preflightDecision({ utilization: 0.95, resetsAt: null, now: NOW });
   assert.equal(d.action, 'hitl');
   assert.equal(d.reason, 'above-threshold-no-reset-time');
+});
+
+test('preflightDecision: proceeds when the newest known reading is stale — resetsAt already passed', () => {
+  const d = preflightDecision({ utilization: 0.95, resetsAt: '2026-08-30T18:00:00Z', now: NOW });
+  assert.equal(d.action, 'proceed');
+  assert.equal(d.reason, 'window-already-reset');
 });
 
 test('preflightDecision: custom threshold and waitMaxMinutes are honored', () => {

@@ -51,12 +51,13 @@ test('normalizeRecord: point-A defer record — nullable downstream fields defau
 });
 
 test('normalizeRecord: failureReason defaults to null and round-trips "rate-limited" alongside implStatus "error"', () => {
-  const withoutIt = normalizeRecord(base({ implStatus: 'blocked' }), FIXED);
+  const withoutIt = normalizeRecord(base({ finalState: 'blocked-hitl', implStatus: 'error' }), FIXED);
   assert.equal(withoutIt.failureReason, null);
   const withIt = normalizeRecord(
-    base({ finalState: 'blocked-hitl', implStatus: 'blocked', failureReason: 'rate-limited' }),
+    base({ finalState: 'blocked-hitl', implStatus: 'error', failureReason: 'rate-limited' }),
     FIXED,
   );
+  assert.equal(withIt.implStatus, 'error');
   assert.equal(withIt.failureReason, 'rate-limited');
 });
 
