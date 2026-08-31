@@ -108,6 +108,19 @@ test('isRateLimitDeath: false on an ordinary successful transcript', () => {
   assert.equal(isRateLimitDeath(text), false);
 });
 
+test('isRateLimitDeath: true on the synthetic assistant turn even when the CLI has reworded the prose message', () => {
+  // Anchors on the structured error/is_api_error_message fields, not the
+  // "hit your session limit" substring — a CLI copy change must not silently
+  // disable this anchor.
+  const reworded = line({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Your usage limit has been reached for this window.' }] },
+    error: 'rate_limit',
+    is_api_error_message: true,
+  });
+  assert.equal(isRateLimitDeath(reworded), true);
+});
+
 test('isRateLimitDeath: false when the death phrase appears only as ordinary prose, not the structured synthetic turn', () => {
   // e.g. this very issue's own triage/implement session, whose prompt/plan discusses
   // rate-limit deaths — must not be misclassified as its own transcript rate-limiting.

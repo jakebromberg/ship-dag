@@ -128,6 +128,39 @@ test('report: leading indicators over an 8-record fixture', () => {
   assert.equal(rep.reviewCatch.reached, 7);
 });
 
+test('report: a rate-limited death record followed by the same issue merging is excluded from model-quality indicators, tallied as a quota failure', () => {
+  // The death record is real telemetry — emitted at death time, before the
+  // wrapper resumes the issue in place — so both records land in the log for
+  // the same repo#issue. It must not dilute first-pass yield: excluded from
+  // `reached` even though implStatus: "error" is non-null.
+  const recs = [
+    normalizeRecord(base({ issue: 5, finalState: 'error', implStatus: 'error', failureReason: 'rate-limited', reviewVerdict: null, ciStatus: null }), FIXED),
+    normalizeRecord(base({ issue: 5, finalState: 'merged', implStatus: 'pushed', reviewVerdict: 'clean', bounces: 0 }), FIXED),
+  ];
+  const rep = report(recs);
+  assert.equal(rep.n, 2);
+  assert.equal(rep.quotaFailures, 1);
+  assert.equal(rep.firstPassYield.reached, 1);
+  assert.equal(rep.firstPassYield.pass, 1);
+  assert.equal(rep.firstPassYield.rate, 1);
+  assert.equal(rep.triageMiss.cleared, 1);
+  assert.equal(rep.reviewCatch.reached, 1);
+});
+
+test('renderReport: quota-failure-free log has no "quota failures" line', () => {
+  const rep = report([normalizeRecord(base(), FIXED)]);
+  assert.ok(!/quota failures/.test(renderReport(rep)));
+});
+
+test('renderReport: prints the quota-failures line when present', () => {
+  const recs = [
+    normalizeRecord(base({ issue: 5, finalState: 'error', implStatus: 'error', failureReason: 'rate-limited', reviewVerdict: null, ciStatus: null }), FIXED),
+    normalizeRecord(base({ issue: 5, finalState: 'merged', implStatus: 'pushed', reviewVerdict: 'clean', bounces: 0 }), FIXED),
+  ];
+  const rendered = renderReport(report(recs));
+  assert.ok(/^quota failures:\s+1$/m.test(rendered));
+});
+
 test('normalizeRecord: rejects bad triageStatus and ciStatus', () => {
   assert.throws(() => normalizeRecord(base({ triageStatus: 'cleared' }), FIXED), /bad triageStatus/);
   assert.throws(() => normalizeRecord(base({ ciStatus: 'green' }), FIXED), /bad ciStatus/);
