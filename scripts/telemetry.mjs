@@ -11,13 +11,17 @@
 // `kind` discriminator — "issue" (default; stamped when absent, so pre-existing
 // logs stay valid) or "retro" (one run-scoped record per step-6.5 pass):
 //   issue: { kind, ts, runId, repo, issue, complexity, triageStatus, assignment, path,
-//            implStatus, ciStatus, reviewVerdict, findings[], bounces, hitl:{pointA,pointB},
-//            finalState, pr, tokens }
+//            implStatus, ciStatus, reviewVerdict, failureReason, findings[], bounces,
+//            hitl:{pointA,pointB}, finalState, pr, tokens }
 //   retro: { kind, ts, runId, wave, mergedPrs[], proposedRefactors, approvedRefactors,
 //            declinedRefactors, proposedAdjustments, approvedAdjustments,
 //            declinedAdjustments, filed[], adjusted[], declinedTitles[], tokens }
 // implStatus / ciStatus / reviewVerdict are nullable: an issue that stops at
 // HITL point A (needs-decision) never reaches implement, so it logs those null.
+// failureReason is also nullable — set to "rate-limited" alongside
+// implStatus: "error" when the wrapper (scripts/rate-limit-preflight.mjs /
+// scripts/lib/rate-limit.mjs) identifies the five-hour window as the cause,
+// so the eval harness can separate quota failures from model failures.
 //
 // Usage:
 //   node telemetry.mjs append '<json>'      # append one record (validates + stamps ts)
@@ -37,6 +41,11 @@ const COMPLEXITIES = new Set(['mechanical', 'normal', 'complex']);
 const PATHS = new Set(['engine', 'inline', 'workflow']);
 const FINAL_STATES = new Set(['merged', 'blocked-hitl', 'deferred', 'error']);
 const IMPL_STATUSES = new Set(['pushed', 'blocked', 'error', null]);
+// Nullable, carried alongside implStatus: "error" — distinguishes a rate-limit
+// death (infra failure, wait-and-resume) from a model failure (HITL point B).
+// Kept as its own field rather than growing IMPL_STATUSES so existing logs and
+// the report subcommand stay valid without a coordinated schema bump.
+const FAILURE_REASONS = new Set(['rate-limited', null]);
 const REVIEW_VERDICTS = new Set(['clean', 'blocking', 'nits-only', null]);
 const TRIAGE_STATUSES = new Set(['clear', 'needs-decision']);
 const CI_STATUSES = new Set(['pass', 'fail', 'none', null]);
@@ -91,6 +100,8 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   if (!TRIAGE_STATUSES.has(rec.triageStatus)) throw new Error(`bad triageStatus: ${rec.triageStatus}`);
   const ciStatus = rec.ciStatus ?? null;
   if (!CI_STATUSES.has(ciStatus)) throw new Error(`bad ciStatus: ${rec.ciStatus}`);
+  const failureReason = rec.failureReason ?? null;
+  if (!FAILURE_REASONS.has(failureReason)) throw new Error(`bad failureReason: ${rec.failureReason}`);
   return {
     ...rec,
     kind: 'issue',
@@ -98,6 +109,7 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
     implStatus,
     ciStatus,
     reviewVerdict,
+    failureReason,
     findings: rec.findings ?? [],
     bounces: rec.bounces ?? 0,
     hitl: { pointA: !!(rec.hitl && rec.hitl.pointA), pointB: !!(rec.hitl && rec.hitl.pointB) },

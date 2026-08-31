@@ -50,6 +50,20 @@ test('normalizeRecord: point-A defer record — nullable downstream fields defau
   assert.equal(r.tokens, null);
 });
 
+test('normalizeRecord: failureReason defaults to null and round-trips "rate-limited" alongside implStatus "error"', () => {
+  const withoutIt = normalizeRecord(base({ implStatus: 'blocked' }), FIXED);
+  assert.equal(withoutIt.failureReason, null);
+  const withIt = normalizeRecord(
+    base({ finalState: 'blocked-hitl', implStatus: 'blocked', failureReason: 'rate-limited' }),
+    FIXED,
+  );
+  assert.equal(withIt.failureReason, 'rate-limited');
+});
+
+test('normalizeRecord: rejects an unrecognized failureReason', () => {
+  assert.throws(() => normalizeRecord(base({ failureReason: 'gremlins' }), FIXED), /bad failureReason/);
+});
+
 test('appendRecord: append-only, one line per call, creates the state dir', () => {
   const dir = join(tmpdir(), `ship-dag-tel-dir-${process.pid}-${counter++}`);
   const p = join(dir, 'runs.jsonl');
@@ -171,6 +185,7 @@ test('normalizeRecord: retro records skip the issue coercions entirely', () => {
   assert.ok(!('implStatus' in r));
   assert.ok(!('ciStatus' in r));
   assert.ok(!('reviewVerdict' in r));
+  assert.ok(!('failureReason' in r));
 });
 
 test('normalizeRecord: retro rejection — bad kind, missing keys, non-array mergedPrs', () => {
