@@ -179,14 +179,25 @@ export function readRecords(path = telemetryPath()) {
  * "reached implement" = implStatus != null (point-A defers are excluded from
  * yield/bounce/review-catch and the triage-miss denominator — they're
  * needs-decision, not clear — but still count toward the record total and HITL).
+ * A record with failureReason: "rate-limited" (an infra death, not a model
+ * failure) is likewise excluded from yield/byComplexity/triage-miss/bounce/
+ * review-catch — it still counts toward the record total and HITL, and is
+ * tallied separately in `quotaFailures`.
  * kind:"retro" records are excluded from every per-issue indicator (they are
  * pass-scoped, not issue-scoped) and aggregated into their own `retro` section.
  */
 export function report(records) {
   const issues = records.filter((r) => r.kind !== 'retro');
   const retros = records.filter((r) => r.kind === 'retro');
-  const reached = issues.filter((r) => r.implStatus != null);
-  const cleared = issues.filter((r) => r.triageStatus === 'clear');
+  // A failureReason: "rate-limited" record is an infra death (the wrapper's
+  // wait/resume cycle killed the attempt), not a model-quality signal. Exclude
+  // it from the model-quality population — first-pass yield (and its
+  // byComplexity breakdown), triage-miss, bounce rate, review-catch — so a
+  // quota outage never dilutes those; it's counted instead in quotaFailures.
+  const quotaFailures = issues.filter((r) => r.failureReason === 'rate-limited');
+  const modelIssues = issues.filter((r) => r.failureReason !== 'rate-limited');
+  const reached = modelIssues.filter((r) => r.implStatus != null);
+  const cleared = modelIssues.filter((r) => r.triageStatus === 'clear');
   const yieldOf = (rs) => {
     const pass = rs.filter((r) => r.finalState === 'merged' && (r.bounces ?? 0) === 0).length;
     return { reached: rs.length, pass, rate: rs.length ? pass / rs.length : 0 };
@@ -206,6 +217,7 @@ export function report(records) {
   const declined = sum('declinedRefactors') + sum('declinedAdjustments');
   return {
     n: issues.length,
+    quotaFailures: quotaFailures.length,
     firstPassYield: yieldOf(reached),
     byComplexity,
     triageMiss: { cleared: cleared.length, miss, rate: cleared.length ? miss / cleared.length : 0 },
@@ -229,8 +241,11 @@ export function renderReport(rep) {
   const pct = (x) => `${(x * 100).toFixed(1)}%`;
   const lines = [
     `records:           ${rep.n}`,
-    `first-pass yield:  ${rep.firstPassYield.pass}/${rep.firstPassYield.reached} (${pct(rep.firstPassYield.rate)})`,
   ];
+  // Gated on quotaFailures > 0 so a quota-failure-free log renders
+  // byte-identically to before this field existed.
+  if (rep.quotaFailures > 0) lines.push(`quota failures:    ${rep.quotaFailures}`);
+  lines.push(`first-pass yield:  ${rep.firstPassYield.pass}/${rep.firstPassYield.reached} (${pct(rep.firstPassYield.rate)})`);
   for (const tier of TIERS) {
     const y = rep.byComplexity[tier];
     lines.push(`  ${tier.padEnd(11)}${y.pass}/${y.reached} (${pct(y.rate)})`);

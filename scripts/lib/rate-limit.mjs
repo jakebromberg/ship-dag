@@ -7,7 +7,12 @@
 // No I/O, no globals, no clock beyond an injected `now` — safe to import
 // anywhere and unit-test under `node --test`, matching scripts/lib/stats.mjs.
 
-const DEATH_MARKER = "hit your session limit";
+// A cheap prefilter for the synthetic-turn check in isRateLimitDeath, below.
+// Deliberately the JSON *key* the record carries the structured signal under,
+// not the English prose the CLI happens to word the message with today — a
+// copy change to the prose can't silently disable the structured check the
+// way substring-matching on the prose itself would.
+const IS_API_ERROR_MESSAGE_KEY = '"is_api_error_message"';
 
 /** Epoch seconds (the transcript's unit for every `resetsAt`) → ISO string. */
 function epochSecondsToIso(seconds) {
@@ -87,15 +92,23 @@ export function latestRateLimitEvent(text) {
  *      `{type: "assistant", error: "rate_limit", is_api_error_message: true,
  *      message: {content: [{type: "text", text: "You've hit your session
  *      limit · resets ..."}]}}`. This is the actual death signal; anchoring
- *      on the structured `error` field (not a whole-transcript substring
- *      search) avoids false-positiving on a session whose prompt merely
- *      *discusses* rate limits (e.g. this very feature's own issue body).
+ *      on the structured `error`/`is_api_error_message` fields (not a
+ *      whole-transcript substring search on the prose) avoids two failure
+ *      modes at once: false-positiving on a session whose prompt merely
+ *      *discusses* rate limits (e.g. this very feature's own issue body), and
+ *      false-negativing when the CLI rewords the message text — a prose
+ *      substring check alone would silently stop matching. The structured
+ *      fields are tested first; `IS_API_ERROR_MESSAGE_KEY` is used only as a
+ *      cheap prefilter to skip `JSON.parse` on lines that plainly can't carry
+ *      the field, and matches the JSON *key* rather than any prose so it
+ *      can't mask the structured check the way a prose-substring prefilter
+ *      did before.
  *   2. A `rate_limit_event` whose `status` is `"rejected"`.
  * @param {string} text
  */
 export function isRateLimitDeath(text) {
   for (const line of text.split('\n')) {
-    if (!line.trim() || !line.includes(DEATH_MARKER)) continue;
+    if (!line.trim() || !line.includes(IS_API_ERROR_MESSAGE_KEY)) continue;
     let obj;
     try {
       obj = JSON.parse(line);

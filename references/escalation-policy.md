@@ -1,6 +1,6 @@
 # Escalation policy — when to grill the human
 
-`/ship-dag` runs autonomously *except* at four human-in-the-loop points — A (triage), B (implement/review), C (cross-repo cutover), D (retrospective). A and B fire when the design premise breaks — a well-specced issue Sonnet-implements and survives the Opus gate cleanly; **when that premise breaks, that break is the escalation signal.** C and D are **scheduled gates** built into the loop.
+`/ship-dag` runs autonomously *except* at five human-in-the-loop points — A (triage), B (implement/review), C (cross-repo cutover), D (retrospective), E (rate-limit window). A and B fire when the design premise breaks — a well-specced issue Sonnet-implements and survives the Opus gate cleanly; **when that premise breaks, that break is the escalation signal.** C and D are **scheduled gates** built into the loop. E is neither: it fires when the account's five-hour rate-limit window can't be waited out cheaply (step 4's preflight, and the identical fork mid-recovery-recipe below) — an infra constraint, not a premise break, and deliberately kept distinct from B (see the *Point E* section — a rate-limit death is not a model failure).
 
 ## Triggers (any one → pause and grill)
 
@@ -9,6 +9,7 @@
 3. **Unclearable blocking finding** — the Opus gate returns a CONFIRMED finding in a `--block-on` category that `/review-loop` cannot clear within `--max-review-iter`, or that needs a design decision rather than a mechanical fix.
 4. **Non-flaky CI failure** — CI fails for a real reason (not a known-flaky/infra retry). Per global rules, ≤2 manual retries on infra failure, then stop — never loop.
 5. **Merge conflict needing judgment** — a rebase conflict whose resolution isn't mechanical.
+6. **Rate-limit window can't be waited out cheaply** (point E) — the step-4 preflight (`scripts/rate-limit-preflight.mjs`), or the identical fork hit mid-recovery-recipe while waiting out a live rate-limit death, finds the five-hour window at/above threshold with the reset more than `--wait-max-minutes` away, or no reset time at all: wait / defer this wave (or issue) / stop the run.
 
 ## Protocol
 
@@ -30,15 +31,15 @@ Fires from step 6.5 when unretrospected merges reach `--retro-threshold` (and al
 - **Declined** → run ledger only, never re-proposed this run, nothing written to GitHub.
 - **At drain**, filing tickets re-opens a drained DAG — so the final fork is explicit: ship the new tickets in this run, or leave them filed for a future one.
 
-## Rate-limit-death recovery — resume in place, never re-run the engine
+## Point E — the rate-limit-window fork, and rate-limit-death recovery (resume in place, never re-run the engine)
 
 A rate-limit death is a distinct failure shape from a model failure: the session didn't get anything wrong, it ran out of window mid-work. Step 4 preflights the five-hour window before every engine invocation (`scripts/rate-limit-preflight.mjs`, threshold 0.8) so this should be rare, but the preflight is a heuristic over the *newest* known utilization, not a guarantee — a wave can still start clean and cross the threshold mid-run, or the preflight's source can be stale/absent (it fails open). When step 5 classifies a `failed`/`blocked` row's `failureReason` as `"rate-limited"` (via `classifyFailureReason` in `scripts/lib/rate-limit.mjs` — the report row's structured field when present, else the transcript signature), treat it as an infra failure and follow this recipe rather than the HITL point B grill:
 
 1. **Diagnose from the session log.** Tail `<stateDir>/state/logs/issue-<url-encoded-ref>.log` (the engine percent-encodes the ref, e.g. `issue-owner%2Frepo%23N.log`) for the signature: a `rate_limit_event` line whose `rate_limit_info.status` is `"rejected"`, and/or the CLI's synthetic rate-limit assistant turn (`error: "rate_limit"`, text "You've hit your session limit") — this is what `isRateLimitDeath` checks. The rejected event's `rate_limit_info.unifiedWindows.five_hour.resetsAt` (epoch seconds) is the window's reset time.
 2. **Confirm the worktree survived.** The engine's per-issue worktree (`<stateDir>/worktrees/<ref>/...`) is untouched by the death — the session's own commits, if any, are still there. `git -C <worktree> log --oneline -5` and `git -C <worktree> status` to see how far it got before the window closed. Do **not** delete or reset this worktree.
-3. **Wait for the reset.** If `resetsAt` is soon, wait for it (same wait-vs-ask fork as the step-4 preflight: print the time, wait if it's within 30 minutes, otherwise this itself is a HITL fork — wait / defer / stop).
+3. **Wait for the reset — or fork to point E.** If `resetsAt` is soon, wait for it (the same wait-vs-ask fork trigger 6 names, shared with the step-4 preflight: print the time, wait if it's within `--wait-max-minutes`, otherwise **this is the point-E grill** — wait / defer / stop).
 4. **Launch a continuation agent into the *existing* worktree/branch** — never re-run the engine for that issue. Re-running would create a second worktree/branch and collide with the one the dead session already pushed to (or left committed locally). Carry forward whatever blocking context the dead session was working through when it died (e.g. a pre-PR hook's review text, an open review comment) so the continuation doesn't repeat work or lose the thread. The continuation agent finishes the same implement→push→PR sequence the Implement subagent block describes, from where the dead session left off.
-5. **Telemetry:** the original `failed` row's record carries `implStatus: "error"` and `failureReason: "rate-limited"` (see `scripts/telemetry.mjs`) so the eval harness can separate this from a model failure. If the continuation succeeds, the issue's eventual `merged` telemetry record is a normal step-6 emission — the rate-limited attempt is not re-recorded as a bounce.
+5. **Telemetry — emitted at death time, not deferred until the outcome is known.** The instant step 5 classifies the row as rate-limited, emit its record immediately: `implStatus: "error"`, `failureReason: "rate-limited"` (see `scripts/telemetry.mjs`). This happens even though the issue isn't actually abandoned — it's resumed in place via the continuation agent above — because the death itself is real telemetry about the window, independent of whatever the continuation later does. If the continuation succeeds, the issue's eventual `merged` telemetry record is a *separate*, ordinary step-6 emission for the same issue — the rate-limited attempt is not re-recorded as a bounce on it. `report()` excludes every `failureReason: "rate-limited"` record from the model-quality indicators (first-pass yield, triage-miss, bounce rate) — an infra death must never make those numbers look worse than the model actually performed — and tallies it instead in the report's `quotaFailures` count (see *Telemetry* in `SKILL.md`).
 
 ## What does NOT escalate
 
