@@ -38,6 +38,9 @@ const RESULT_TYPE_KEY = '"type":"result"';
  * `subtype: "success"` with `is_error: true` on a quota stop, so the subtype
  * is not a verdict.
  *
+ * Hook-emitted `result` records (tagged `hook_event_name`) are skipped: they
+ * are a hook's output, not the session's.
+ *
  * Never throws — an unparseable or blank line is skipped, not fatal, so a
  * truncated transcript (the common shape when a session is killed mid-write)
  * still yields whatever came before it.
@@ -55,7 +58,11 @@ export function terminalEvent(transcriptText) {
     } catch {
       continue;
     }
-    if (!obj || obj.type !== 'result') continue;
+    // Hooks emit their own `result`-typed records, tagged with hook_event_name.
+    // A Stop hook's record can land after the session's real terminal event, so
+    // taking the last result unconditionally would report the hook's output as
+    // the reason the session died.
+    if (!obj || obj.type !== 'result' || obj.hook_event_name) continue;
     found = {
       subtype: obj.subtype ?? null,
       isError: obj.is_error === true,

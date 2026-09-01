@@ -68,9 +68,16 @@ Flags:
 
 Fan out **one `Agent{model:"haiku"}` per ready issue, all in a single message** (read-only; see the Triage block). Each returns `{ clear | needs-decision, complexity, questions[], digest }`.
 
-- Collect every `needs-decision` across the wave and **grill the user once** (batch, not per-issue) — `AskUserQuestion` for crisp forks, inline interview for open design questions (`references/escalation-policy.md`). Record each resolution as a GitHub issue comment (ghost-writer, no attribution); update the issue body if scope changed.
-- Only **cleared** issues proceed. Carry each issue's `complexity` → implement effort and `digest` forward.
-- **Telemetry:** emit one record (see *Telemetry* below) for every issue **deferred at this gate** — `finalState:"blocked-hitl"`, `hitl.pointA:true`, `implStatus`/`ciStatus`/`reviewVerdict` null. These point-A records are what make the triage-miss and HITL-A indicators measurable instead of survivor-only.
+**a. Verify the premises before grilling anyone.** Triage runs on Haiku against the issue text; it is *supposed* to be uncertain about mechanism, and its `questions[]` routinely rest on claims about the code that are simply false. Both `needs-decision` issues in run sd-20260831-162148 did, and checking them **changed both outcomes** — one question dissolved entirely (the column triage wanted to add had no writer to justify it), and the other was unanswerable as asked but sat next to a decidable fact that re-ordered the DAG.
+
+So: for every issue with a non-empty `questions[]`, fan out **one `Agent{model:"sonnet"}` per issue** (read-only; the Premise-check block below), handed that issue's questions. It reads the code and returns one-line verdicts. Grill the human only on what survives — `verdict: "confirmed"` (the premise holds, so the question is real) and `verdict: "undecidable"` (the code cannot settle it; it is a genuine product or design call). A `refuted` question is answered, not deferred: record the refutation as an issue comment and let the issue proceed.
+
+This step exists to keep file-reading **out of main context**. The verification in that run was worth every token it cost — but it was done by reading handlers, migration headers and tests inline, where they persisted for the rest of the run. The conclusions are a few lines; the files they came from are not. Skip the step only when every issue came back `clear`.
+
+**b. Grill once, on what's left.** Collect every surviving question across the wave and **grill the user once** (batch, not per-issue) — `AskUserQuestion` for crisp forks, inline interview for open design questions (`references/escalation-policy.md`). Quote the verifier's `assertion` alongside each question so the human decides against the code as it is, not as triage guessed it to be. Record each resolution as a GitHub issue comment (ghost-writer, no attribution); update the issue body if scope changed.
+**c. Proceed.** Only **cleared** issues go on. Carry each issue's `complexity` → implement effort and `digest` forward; where a premise check corrected the digest's assumptions, carry the corrected version — the engine's implementer reads `digest`, not this conversation.
+
+**d. Telemetry:** emit one record (see *Telemetry* below) for every issue **deferred at this gate** — `finalState:"blocked-hitl"`, `hitl.pointA:true`, `implStatus`/`ciStatus`/`reviewVerdict` null. These point-A records are what make the triage-miss and HITL-A indicators measurable instead of survivor-only.
 
 ### 4. Implement fan-out — the engine implements, the skill reviews
 
@@ -160,7 +167,7 @@ At the end, print a **wave summary**: per issue — final state (`merged` / `blo
 
 ## Subagent instruction blocks
 
-Include the relevant block **verbatim** in each subagent's prompt (the inline fallback path). The **Implement** block has two other copies — `scripts/engine/prompt.md` (the engine's template, the primary path) and `workflow.js` (the accelerator fallback); the **Review** block is mirrored in `workflow.js`. Keep all copies in sync when editing. The Review block runs from the skill on every path (the engine implements only), so it is the one block that is never skipped. The **Retrospective** block has exactly **one** copy (below): it always runs from the main agent after the merge queue on every path — engine, workflow, and inline — so there is no mirror to keep in sync.
+Include the relevant block **verbatim** in each subagent's prompt (the inline fallback path). The **Premise-check** block (step 3a) and the **Retrospective** block have exactly one copy each — both always run from the main agent on every path. The **Implement** block has two other copies — `scripts/engine/prompt.md` (the engine's template, the primary path) and `workflow.js` (the accelerator fallback); the **Review** block is mirrored in `workflow.js`. Keep all copies in sync when editing. The Review block runs from the skill on every path (the engine implements only), so it is the one block that is never skipped. The **Retrospective** block has exactly **one** copy (below): it always runs from the main agent after the merge queue on every path — engine, workflow, and inline — so there is no mirror to keep in sync.
 
 ### Triage (Haiku, read-only)
 
@@ -171,6 +178,20 @@ Include the relevant block **verbatim** in each subagent's prompt (the inline fa
 > 3. Judge **complexity**: `mechanical` (config/string/dep bump, single file, no logic) · `normal` · `complex` (multi-file, algorithmic, concurrency, schema/migration, public API, or security surface).
 >
 > **Return:** `{ status: "clear" | "needs-decision", complexity: "mechanical|normal|complex", questions: [ ... ], digest: "2-3 sentence implementation plan" }`.
+
+### Premise-check (Sonnet, read-only)
+
+> **Task:** Triage flagged `{OWNER/REPO}#{N}` as needing a decision. Each of its questions rests on a claim about how this code actually works, and triage read only the issue text — it did not read the code. Your only job is to check those claims. Do **not** write code, answer the design question, or touch the repo.
+>
+> Questions from triage: `{QUESTIONS}`
+>
+> 1. For each question, name the factual premise it assumes (e.g. "this table has writers other than X", "this status grants an entitlement", "this function has multiple callers").
+> 2. Settle that premise **against the code**: find the callers, the writers, the readers, the migration that created the column, the test that pins the behaviour. Cite `file:line`.
+> 3. Verdict per question: `refuted` — the premise is false, so the question dissolves (say what is true instead); `confirmed` — the premise holds, so the question is a real decision; `undecidable` — the code cannot settle it, because it is a product or design call.
+> 4. An `undecidable` question often sits next to a fact that *is* decidable and that changes the answer — a table with zero readers, rows that predate the accounts they reference, a caller that passes one constant forever. State it. It is frequently more useful than the question asked.
+> 5. Be brief and be specific. One or two sentences per `assertion`, each one something a reader could check from the `evidence` alone. Do not summarize the issue, restate the question, or explain your search.
+>
+> **Return:** `{ issue, premises: [{ question, verdict: "refuted|confirmed|undecidable", assertion, evidence: ["path/to/file.ts:42"] }] }`. No Claude/AI mention anywhere.
 
 ### Implement (Sonnet, own worktree)
 
@@ -235,6 +256,7 @@ Every issue that reaches a terminal-for-this-wave state emits one JSON record �
 - **CI before push** — local lint/format/typecheck/tests must pass before any push.
 - **No auto-retry loops** — ≤2 manual retries on infra failure, then stop and report cost.
 - **Data safety** — never reset/overwrite collected data; surgical changes only.
+- **Never read a session transcript, and never measure with `/context`** — `<stateDir>/state/logs/issue-*.log` are full stream-json transcripts (megabytes); ask `scripts/diagnose-failure.mjs` instead. `/context` itself costs ~15k tokens a call, mostly the deferred-MCP inventory it lists but does not load, so two casual checks can outweigh a wave's actual overhead. To watch a run's context growth for free, sample `wc -c` on this session's transcript (`~/.claude/projects/<project>/<session-uuid>.jsonl`) at the interesting boundaries — launch, engine-done, pre-review, post-merge — and diff the byte counts.
 - **Cross-repo cutover is a HITL gate** — never auto-release a wave whose readiness depends on a *different* repo's merge; confirm the upstream is published/deployed/consumable (or a gate command passed) first. "Satisfied" ≠ "merged" across a repo boundary (step 7, point C).
 - **The retrospective proposes; it never disposes** — no ticket filed, edge written, spec edited, or issue closed without point-D approval, and it never touches merged code (step 6.5).
 - **Auto-merge is a deliberate, requester-authorized deviation** from the house "never auto-merge" rule (`cross-repo-migration`). It is kept tightly behind the green gate (CI pass + no CONFIRMED blocking finding + no open questions), serialized in dependency order, and re-gated after any base-moving rebase. `--dry-run` and the five HITL points (A triage, B implement/review, C cross-repo cutover, D retrospective, E rate-limit window) are the escape hatches.
