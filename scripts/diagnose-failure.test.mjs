@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { logPathForRef, newestReportFile, diagnose, MAX_REASON_CHARS } from './diagnose-failure.mjs';
+import { logPathForRef, newestReportFile, digestPathForRef, diagnose, MAX_REASON_CHARS } from './diagnose-failure.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 
@@ -101,4 +101,45 @@ test('diagnose: a long terminal reason is truncated — this output goes straigh
   const { terminal } = diagnose(dir, REF);
   assert.equal(terminal.reason.length, MAX_REASON_CHARS + 1);
   assert.ok(terminal.reason.endsWith('…'));
+});
+
+// --- the two producers agree, and the cheap one wins ------------------------
+
+test('diagnose: prefers the engine-written digest over re-reading the transcript', () => {
+  const dir = fixture({ rows: [{ ref: REF, number: 620, status: 'failed' }], transcript: quotaDeath() });
+  mkdirSync(join(dir, 'state', 'failure-digest'), { recursive: true });
+  writeFileSync(
+    join(dir, 'state', 'failure-digest', `issue-${encodeURIComponent(REF)}.json`),
+    JSON.stringify({ ref: REF, status: 'failed', prNumber: 625, failureReason: 'rate-limited', route: 'review-gate', exitCode: 1, terminal: null }),
+  );
+  const out = diagnose(dir, REF);
+  assert.equal(out.source, 'digest');
+  assert.equal(out.route, 'review-gate');
+  assert.equal(out.exitCode, 1);
+});
+
+test('diagnose: a torn digest falls back to computing, rather than failing', () => {
+  const dir = fixture({ rows: [{ ref: REF, number: 620, status: 'failed', prNumber: 625 }], transcript: quotaDeath() });
+  mkdirSync(join(dir, 'state', 'failure-digest'), { recursive: true });
+  writeFileSync(join(dir, 'state', 'failure-digest', `issue-${encodeURIComponent(REF)}.json`), '{"ref": "trunc');
+  const out = diagnose(dir, REF);
+  assert.equal(out.source, 'computed');
+  assert.equal(out.route, 'review-gate');
+});
+
+test('diagnose: both producers agree on the same run', async () => {
+  // The reconciliation's actual contract: the engine's streaming pass and this
+  // script's string fold must not disagree about one transcript.
+  const { writeFailureDigests } = await import('./engine/failure-digest.mjs');
+  const rows = [{ ref: REF, number: 620, status: 'failed', prNumber: 625 }];
+  const dir = fixture({ rows, transcript: quotaDeath() });
+  const computed = diagnose(dir, REF);
+  await writeFailureDigests({ configDir: join(dir, 'state'), report: { issues: rows } });
+  const fromDigest = diagnose(dir, REF);
+
+  assert.equal(fromDigest.source, 'digest');
+  for (const k of ['ref', 'status', 'prNumber', 'failureReason', 'route']) {
+    assert.deepEqual(fromDigest[k], computed[k], `producers disagree on ${k}`);
+  }
+  assert.deepEqual(fromDigest.terminal, computed.terminal);
 });

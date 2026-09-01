@@ -17,6 +17,13 @@
 // in lib/failure.mjs decides it, and this CLI makes the whole diagnosis one
 // cheap invocation whose output is a few hundred bytes.
 //
+// Two producers, one shape. The engine writes a diagnosis for every
+// non-succeeded row as it finishes (scripts/engine/failure-digest.mjs), which
+// is the cheap and authoritative path — it ran while the transcript was hot.
+// This script prefers that file and falls back to computing the same object
+// from the report and transcript, which is what makes it work on a run the
+// engine digested before this existed, or one it never digested at all.
+//
 // **Never `cat`/`tail`/`grep` `state/logs/issue-*.log` yourself.** Those are
 // full `--output-format stream-json` session transcripts, routinely megabytes,
 // and reading one into an agent context costs more than the wave it describes.
@@ -28,25 +35,31 @@
 // Prints the diagnosis as JSON on stdout and a one-line summary on stderr.
 // Exit 2 on a malformed invocation, 3 when the state dir has no such row.
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
-import { classifyFailureReason } from './lib/rate-limit.mjs';
-import { terminalEvent, routeFailure } from './lib/failure.mjs';
+import { artifactStem, createTranscriptScan, buildDiagnosis, MAX_REASON_CHARS } from './lib/failure.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 
-/** Cap on the terminal `result` string. It is an assistant turn — unbounded in principle — and this output is read straight into an agent context. */
-export const MAX_REASON_CHARS = 500;
+export { MAX_REASON_CHARS };
 
 /**
- * The engine's transcript path for a composite ref. The engine
- * percent-encodes the whole ref into one filename, so
- * `owner/repo#N` becomes `issue-owner%2Frepo%23N.log`.
+ * The engine's transcript path for a composite ref — `owner/repo#N` becomes
+ * `issue-owner%2Frepo%23N.log`, per `artifactStem`.
  * @param {string} stateDir
  * @param {string} ref
  */
 export function logPathForRef(stateDir, ref) {
-  return join(stateDir, 'state', 'logs', `issue-${encodeURIComponent(ref)}.log`);
+  return join(stateDir, 'state', 'logs', `issue-${artifactStem(ref)}.log`);
+}
+
+/**
+ * Where the engine's post-run pass writes this ref's diagnosis, if it ran.
+ * @param {string} stateDir
+ * @param {string} ref
+ */
+export function digestPathForRef(stateDir, ref) {
+  return join(stateDir, 'state', 'failure-digest', `issue-${artifactStem(ref)}.json`);
 }
 
 /**
@@ -78,12 +91,6 @@ export function newestReportFile(stateDir) {
   return candidates[0]?.p ?? null;
 }
 
-/** Truncate to `MAX_REASON_CHARS`, marking the cut so a reader can tell the text was clipped rather than ending there. */
-function clip(text) {
-  if (typeof text !== 'string' || text.length <= MAX_REASON_CHARS) return text ?? null;
-  return `${text.slice(0, MAX_REASON_CHARS)}…`;
-}
-
 /**
  * Diagnose one issue's engine session from its run state dir. Reads the newest
  * report for the row and, if present, the session transcript for its terminal
@@ -100,6 +107,17 @@ function clip(text) {
  * @param {string} ref       composite issue ref, `owner/repo#N`
  */
 export function diagnose(stateDir, ref) {
+  // The engine already answered this if it digested the run — prefer that over
+  // re-reading a transcript that may be megabytes.
+  const digestFile = digestPathForRef(stateDir, ref);
+  if (existsSync(digestFile)) {
+    try {
+      return { ...JSON.parse(readFileSync(digestFile, 'utf8')), source: 'digest', digest: digestFile };
+    } catch {
+      // A torn or truncated digest is not worth failing over — recompute below.
+    }
+  }
+
   const reportFile = newestReportFile(stateDir);
   if (!reportFile) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} — is this the right run's state dir?`);
   const report = JSON.parse(readFileSync(reportFile, 'utf8'));
@@ -118,16 +136,13 @@ export function diagnose(stateDir, ref) {
     transcript = null; // a session that died before its first write leaves no log
   }
 
-  const failureReason = classifyFailureReason(row, transcript);
-  const terminal = terminalEvent(transcript);
+  const scan = createTranscriptScan();
+  if (transcript !== null) for (const line of transcript.split('\n')) scan.line(line);
+  const { terminal, rateLimited } = scan.result();
+
   return {
-    ref,
-    status: row.status ?? null,
-    prNumber: row.prNumber ?? null,
-    prUrl: row.prUrl ?? null,
-    failureReason,
-    route: routeFailure({ ...row, failureReason }),
-    terminal: terminal ? { ...terminal, reason: clip(terminal.reason) } : null,
+    ...buildDiagnosis({ row, terminal, rateLimited }),
+    source: 'computed',
     transcript: transcript === null ? null : transcriptPath,
     report: reportFile,
   };

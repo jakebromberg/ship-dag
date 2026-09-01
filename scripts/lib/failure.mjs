@@ -25,8 +25,117 @@
 // ./rate-limit.mjs, which answers "was this a rate-limit death?" from the same
 // transcript and feeds `failureReason` here.
 
+import { isRateLimitDeathLine } from './rate-limit.mjs';
+
 /** JSON key present on every stream-json result record — a cheap prefilter that skips `JSON.parse` on the ~99% of transcript lines that cannot be one. */
 const RESULT_TYPE_KEY = '"type":"result"';
+
+/** Cap on the terminal `result` string. It is an assistant turn — unbounded in principle — and a diagnosis is read straight into an agent context. */
+export const MAX_REASON_CHARS = 500;
+
+/**
+ * The filename stem the engine gives a ref's per-issue artifacts (logs,
+ * metadata, failure digests). Mirrors claude-orchestrator's
+ * `encodeRefForFilename` **exactly** — only `%`, `/` and `#` are escaped.
+ *
+ * Deliberately not `encodeURIComponent`: the two agree on every ref made of
+ * legal GitHub owner/repo characters, which is precisely what would keep a
+ * mismatch hidden until some ref contained a character they disagree about and
+ * a lookup silently found no file.
+ * @param {string} ref  composite issue ref, `owner/repo#N`
+ */
+export function artifactStem(ref) {
+  return String(ref).replace(/%/g, '%25').replace(/\//g, '%2F').replace(/#/g, '%23');
+}
+
+/**
+ * Parse one transcript line, returning the terminal-record fields when it is a
+ * genuine session `result` event and `null` otherwise.
+ *
+ * Hook-emitted `result` records (tagged `hook_event_name`) return null: they
+ * are a hook's output, not the session's, and a Stop hook's record can land
+ * after the session's real terminal event.
+ * @param {string} line
+ * @returns {{subtype: string|null, isError: boolean, numTurns: number|null, reason: string|null}|null}
+ */
+export function parseTerminalResultLine(line) {
+  if (!line || !line.trim() || !line.includes(RESULT_TYPE_KEY)) return null;
+  let obj;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!obj || obj.type !== 'result' || obj.hook_event_name) return null;
+  return {
+    subtype: obj.subtype ?? null,
+    isError: obj.is_error === true,
+    numTurns: typeof obj.num_turns === 'number' ? obj.num_turns : null,
+    reason: typeof obj.result === 'string' ? obj.result : null,
+  };
+}
+
+/**
+ * A single-pass accumulator over transcript lines, collecting both facts a
+ * diagnosis needs: the session's terminal record, and whether it died on a
+ * rate limit.
+ *
+ * It exists so the two producers of a diagnosis traverse a transcript the same
+ * way. The engine's post-run digest streams the file line-by-line (it may be
+ * megabytes, and it is read while the run is still hot); `diagnose-failure.mjs`
+ * folds over an already-read string. One definition, two drivers — which is
+ * what stops them from drifting into disagreeing about the same transcript.
+ */
+export function createTranscriptScan() {
+  let terminal = null;
+  let rateLimited = false;
+  return {
+    /** @param {string} line */
+    line(line) {
+      const parsed = parseTerminalResultLine(line);
+      if (parsed) terminal = parsed;
+      if (!rateLimited && isRateLimitDeathLine(line)) rateLimited = true;
+    },
+    /** @returns {{terminal: object|null, rateLimited: boolean}} */
+    result() {
+      return { terminal, rateLimited };
+    },
+  };
+}
+
+/** Truncate to `MAX_REASON_CHARS`, marking the cut so a reader can tell the text was clipped rather than ending there. */
+function clipReason(text) {
+  if (typeof text !== 'string' || text.length <= MAX_REASON_CHARS) return text ?? null;
+  return `${text.slice(0, MAX_REASON_CHARS)}…`;
+}
+
+/**
+ * The canonical diagnosis object, from a report row plus whatever a transcript
+ * scan found. Both producers emit exactly this shape, so a consumer never has
+ * to care which one wrote it.
+ *
+ * `failureReason` prefers a structured `failureReason` on the row
+ * (claude-orchestrator#87) over the transcript scan, and passes through ONLY
+ * `"rate-limited"` — telemetry.mjs's enum is deliberately just that value or
+ * null, so forwarding some future orchestrator reason would make the telemetry
+ * append throw and drop the very failure record it exists to capture.
+ *
+ * @param {{row: object, terminal: object|null, rateLimited?: boolean, exitCode?: number|string|null}} opts
+ */
+export function buildDiagnosis({ row, terminal, rateLimited = false, exitCode = null }) {
+  const structured = row?.failureReason === 'rate-limited';
+  const failureReason = structured || rateLimited ? 'rate-limited' : null;
+  return {
+    ref: row?.ref ?? null,
+    status: row?.status ?? null,
+    prNumber: row?.prNumber ?? null,
+    prUrl: row?.prUrl ?? null,
+    exitCode,
+    failureReason,
+    route: routeFailure({ ...row, failureReason }),
+    terminal: terminal ? { ...terminal, reason: clipReason(terminal.reason) } : null,
+  };
+}
 
 /**
  * The session-terminating `result` record from a stream-json transcript,
@@ -49,28 +158,9 @@ const RESULT_TYPE_KEY = '"type":"result"';
  */
 export function terminalEvent(transcriptText) {
   if (!transcriptText) return null;
-  let found = null;
-  for (const line of transcriptText.split('\n')) {
-    if (!line.trim() || !line.includes(RESULT_TYPE_KEY)) continue;
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    // Hooks emit their own `result`-typed records, tagged with hook_event_name.
-    // A Stop hook's record can land after the session's real terminal event, so
-    // taking the last result unconditionally would report the hook's output as
-    // the reason the session died.
-    if (!obj || obj.type !== 'result' || obj.hook_event_name) continue;
-    found = {
-      subtype: obj.subtype ?? null,
-      isError: obj.is_error === true,
-      numTurns: typeof obj.num_turns === 'number' ? obj.num_turns : null,
-      reason: typeof obj.result === 'string' ? obj.result : null,
-    };
-  }
-  return found;
+  const scan = createTranscriptScan();
+  for (const line of transcriptText.split('\n')) scan.line(line);
+  return scan.result().terminal;
 }
 
 /**

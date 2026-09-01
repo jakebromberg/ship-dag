@@ -6,12 +6,26 @@
 // Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { terminalEvent, routeFailure } from './failure.mjs';
+import {
+  terminalEvent,
+  routeFailure,
+  artifactStem,
+  parseTerminalResultLine,
+  createTranscriptScan,
+  buildDiagnosis,
+} from './failure.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 
 // The real terminal record from sd-20260831-162148's #620 transcript. Note
 // `subtype: "success"` alongside `is_error: true` — the subtype alone lies.
+// The real two-line death: the synthetic rate-limit assistant turn, then the
+// result record. classifyFailureReason anchors on the former.
+const quotaDeathTranscript = () =>
+  line({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } }) +
+  line({ type: 'assistant', message: { role: 'assistant' }, error: 'rate_limit', is_api_error_message: true }) +
+  sessionLimitResult();
+
 const sessionLimitResult = () =>
   line({
     type: 'result',
@@ -86,4 +100,79 @@ test('routeFailure: prNumber 0 and an absent prNumber are both "no PR"', () => {
   // PR-less stall to the review gate, which has no PR to review.
   assert.equal(routeFailure({ status: 'failed', prNumber: 0 }), 'point-B');
   assert.equal(routeFailure({ status: 'failed' }), 'point-B');
+});
+
+// --- the shared single-pass scan + canonical diagnosis -----------------------
+// Both producers of a diagnosis (the engine's post-run digest, which streams a
+// transcript it may never have to read again, and diagnose-failure.mjs, which
+// reads one on demand) traverse the same transcript looking for the same two
+// facts. These tests pin the one definition they share.
+
+test('artifactStem: mirrors claude-orchestrator encodeRefForFilename exactly', () => {
+  assert.equal(artifactStem('daisysguide/backend#620'), 'daisysguide%2Fbackend%23620');
+  // Only %, / and # are escaped — NOT encodeURIComponent's full set. The two
+  // agree on every valid GitHub ref, which is exactly why a mismatch here would
+  // go unnoticed until some ref contained a character they disagree about.
+  assert.equal(artifactStem('o/r#1?x'), 'o%2Fr%231?x');
+  assert.equal(artifactStem('o/r#1%2F'), 'o%2Fr%231%252F');
+});
+
+test('parseTerminalResultLine: a genuine terminal result, and nothing else', () => {
+  assert.deepEqual(parseTerminalResultLine(line({ type: 'result', subtype: 'success', is_error: true, num_turns: 4, result: 'boom' })), {
+    subtype: 'success',
+    isError: true,
+    numTurns: 4,
+    reason: 'boom',
+  });
+  assert.equal(parseTerminalResultLine(line({ type: 'assistant' })), null);
+  assert.equal(parseTerminalResultLine(line({ type: 'result', hook_event_name: 'Stop' })), null);
+  assert.equal(parseTerminalResultLine('not json'), null);
+  assert.equal(parseTerminalResultLine(''), null);
+});
+
+test('createTranscriptScan: collects the terminal event and the rate-limit signature in ONE pass', () => {
+  const scan = createTranscriptScan();
+  for (const l of (quotaDeathTranscript()).split('\n')) scan.line(l);
+  const { terminal, rateLimited } = scan.result();
+  assert.equal(rateLimited, true);
+  assert.equal(terminal.reason, "You've hit your session limit · resets 7:10pm (America/Los_Angeles)");
+});
+
+test('createTranscriptScan: an ordinary failing session is not a rate-limit death', () => {
+  const scan = createTranscriptScan();
+  scan.line(line({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'tests failed' }));
+  assert.deepEqual(scan.result().rateLimited, false);
+});
+
+test('buildDiagnosis: the sd-20260831-162148 row — failed, PR open, quota, review-gate', () => {
+  const d = buildDiagnosis({
+    row: { ref: 'daisysguide/backend#620', status: 'failed', prNumber: 625, prUrl: 'https://x/625' },
+    terminal: { subtype: 'success', isError: true, numTurns: 67, reason: 'limit' },
+    rateLimited: true,
+    exitCode: 1,
+  });
+  assert.equal(d.route, 'review-gate');
+  assert.equal(d.failureReason, 'rate-limited');
+  assert.equal(d.exitCode, 1);
+  assert.equal(d.prNumber, 625);
+});
+
+test('buildDiagnosis: a structured failureReason on the row beats the transcript scan', () => {
+  const d = buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed', failureReason: 'rate-limited' }, terminal: null, rateLimited: false });
+  assert.equal(d.failureReason, 'rate-limited');
+  assert.equal(d.route, 'point-E');
+});
+
+test('buildDiagnosis: an unrecognized structured failureReason is not passed through', () => {
+  // telemetry.mjs's failureReason enum is deliberately just rate-limited|null;
+  // passing a future claude-orchestrator value through would make the append throw
+  // and drop the very record it exists to capture.
+  const d = buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed', failureReason: 'disk-full' }, terminal: null, rateLimited: false });
+  assert.equal(d.failureReason, null);
+  assert.equal(d.route, 'point-B');
+});
+
+test('buildDiagnosis: clips a long terminal reason — this lands in an agent context', () => {
+  const d = buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed' }, terminal: { subtype: 's', isError: true, numTurns: 1, reason: 'x'.repeat(5000) }, rateLimited: false });
+  assert.ok(d.terminal.reason.endsWith('…'));
 });
