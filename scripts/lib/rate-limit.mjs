@@ -12,6 +12,8 @@
 // not the English prose the CLI happens to word the message with today — a
 // copy change to the prose can't silently disable the structured check the
 // way substring-matching on the prose itself would.
+const RATE_LIMIT_EVENT_TYPE_KEY = '"type":"rate_limit_event"';
+
 const IS_API_ERROR_MESSAGE_KEY = '"is_api_error_message"';
 
 /** Epoch seconds (the transcript's unit for every `resetsAt`) → ISO string. */
@@ -108,18 +110,38 @@ export function latestRateLimitEvent(text) {
  */
 export function isRateLimitDeath(text) {
   for (const line of text.split('\n')) {
-    if (!line.trim() || !line.includes(IS_API_ERROR_MESSAGE_KEY)) continue;
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (obj && obj.type === 'assistant' && obj.error === 'rate_limit' && obj.is_api_error_message === true) {
-      return true;
-    }
+    if (isRateLimitDeathLine(line)) return true;
   }
-  return parseRateLimitEvents(text).some((e) => e.status === 'rejected');
+  return false;
+}
+
+/**
+ * The single-line half of `isRateLimitDeath`, so a caller streaming a
+ * multi-megabyte transcript can apply the same test without holding the file in
+ * memory (scripts/engine/failure-digest.mjs does exactly that). Both of
+ * `isRateLimitDeath`'s signatures are per-line facts, so folding this over the
+ * lines is equivalent to the whole-text form — and keeping ONE definition is
+ * what stops the streaming and string readers from drifting apart.
+ * @param {string} line
+ * @returns {boolean}
+ */
+export function isRateLimitDeathLine(line) {
+  if (!line || !line.trim()) return false;
+  // Cheap prefilters: skip JSON.parse on the ~99% of lines that can carry
+  // neither signature. Both match a JSON *key*, never prose, so a transcript
+  // that merely discusses rate limits can't trip them.
+  const maybeSynthetic = line.includes(IS_API_ERROR_MESSAGE_KEY);
+  const maybeEvent = line.includes(RATE_LIMIT_EVENT_TYPE_KEY);
+  if (!maybeSynthetic && !maybeEvent) return false;
+  let obj;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (!obj) return false;
+  if (obj.type === 'assistant' && obj.error === 'rate_limit' && obj.is_api_error_message === true) return true;
+  return obj.type === 'rate_limit_event' && obj.rate_limit_info?.status === 'rejected';
 }
 
 /**

@@ -19,9 +19,17 @@
 // The config's paths (configDir/worktreeDir under a per-run state dir, absolute
 // promptTemplate) are absolute, so YAML path resolution against this file's dir
 // is a no-op — the bundle is location-independent.
+//
+// After createMain() returns, a post-run step writes a small routed diagnosis
+// for every non-succeeded row (scripts/engine/failure-digest.mjs) — see the
+// comment above that call, below. It shares its transcript scan and its output
+// shape with scripts/diagnose-failure.mjs, so the eager and on-demand readers
+// cannot disagree about the same run.
 
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { writeFailureDigests } from "./failure-digest.mjs";
 
 const CO_HOME = process.env.CO_HOME || "/Users/me/Developer/claude-orchestrator";
 const indexUrl = pathToFileURL(path.join(CO_HOME, "dist/src/index.js")).href;
@@ -45,3 +53,28 @@ await createMain({
   // paths from a stable base rather than the skill dir.
   projectRoot: process.env.SHIP_DAG_PROJECT_ROOT || process.cwd(),
 });
+
+// Post-run: digest every non-succeeded row from this run's freshest report, so
+// SKILL.md step 4c never has to open a multi-megabyte session transcript by
+// hand to learn why a row failed — and so the digest can carry the ROUTE, which
+// is the part a terminal reason and an exit code cannot supply on their own: a
+// failed row that opened a PR belongs at the review gate, never in a retry. Best-effort (a digest failure must not fail
+// the wave) and only reachable on the paths where createMain() actually wrote
+// a fresh report — `wave`/`retry-failed`/`run-specific`, foreground or the
+// --detach child. Every early-exit mode (--plan, the --detach parent, status/
+// help/merge/cleanup/tail/watch/dashboard) calls process.exit() from inside
+// createMain and terminates the process before control ever returns here.
+try {
+  const { configDir } = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  const reportsDir = path.join(configDir, "reports");
+  const reportFiles = fs.readdirSync(reportsDir).filter((f) => f.endsWith(".json"));
+  if (reportFiles.length > 0) {
+    const newest = reportFiles
+      .map((f) => ({ f, mtimeMs: fs.statSync(path.join(reportsDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)[0].f;
+    const report = JSON.parse(fs.readFileSync(path.join(reportsDir, newest), "utf-8"));
+    await writeFailureDigests({ configDir, report });
+  }
+} catch (err) {
+  console.error(`run.mts: failed to write failure digests (non-fatal): ${err instanceof Error ? err.message : err}`);
+}
