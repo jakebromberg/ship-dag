@@ -13,6 +13,8 @@ export const meta = {
 //   issues:  [{ number, digest, complexity, implEffort, reviewEffort }]
 //            complexity ∈ "mechanical"|"normal"|"complex" (from triage); implEffort/
 //            reviewEffort optional explicit overrides.
+//   reviewDir: absolute dir the review subagents write their findings into
+//            (the skill passes `$STATE/reviews`; it must already exist).
 // }
 // The skill has already triaged these issues (cleared of open questions) and
 // computed per-issue effort from the rubric; this workflow just actuates them.
@@ -22,6 +24,11 @@ export const meta = {
 const A = typeof args === 'string' ? JSON.parse(args) : args || {}
 const blockOn = (A && A.blockOn) || ['correctness', 'security']
 const repo = A && A.repo
+// Findings go to disk, not into the workflow's return value: the skill gates on
+// scripts/review-gate.mjs reading these files, so a wave's whole finding set
+// never has to pass back through main-session context. Mirrors SKILL.md's
+// Review block — keep the two in sync.
+const reviewDir = (A && A.reviewDir) || '.'
 
 // Map triage's complexity enum → implement effort (explicit implEffort wins).
 function implEffortFor(iss) {
@@ -46,29 +53,19 @@ const IMPL_SCHEMA = {
   },
 }
 
+// The review agent returns a summary; the findings themselves are written to
+// `path` in references/review-schema.md's shape. The overall verdict is
+// deliberately NOT part of this contract — scripts/review-gate.mjs recomputes
+// it from the file, so no merge turns on a model's claim about its own output.
 const REVIEW_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['issue', 'verdict', 'findings'],
+  required: ['issue', 'path', 'findingCount'],
   properties: {
     issue: { type: 'number' },
-    verdict: { enum: ['clean', 'blocking', 'nits-only'] },
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['category', 'verdict', 'summary'],
-        properties: {
-          category: { enum: ['correctness', 'security', 'simplification', 'efficiency', 'test-coverage'] },
-          verdict: { enum: ['CONFIRMED', 'PLAUSIBLE'] },
-          file: { type: 'string' },
-          line: { type: 'number' },
-          summary: { type: 'string' },
-          failure_scenario: { type: 'string' },
-        },
-      },
-    },
+    path: { type: 'string' },
+    findingCount: { type: 'number' },
+    headline: { type: 'string' },
   },
 }
 
@@ -90,6 +87,11 @@ function implementPrompt(iss) {
   ].join('\n')
 }
 
+// Matches SKILL.md step 4d's `$STATE/reviews/<url-encoded-ref>.json`.
+function reviewPathFor(issue) {
+  return `${reviewDir}/${encodeURIComponent(`${repo}#${issue}`)}.json`
+}
+
 function reviewPrompt(impl) {
   return [
     `You are the code-review gate for GitHub issue ${repo}#${impl.issue}, PR #${impl.pr} on branch ${impl.branch}.`,
@@ -97,9 +99,10 @@ function reviewPrompt(impl) {
     `1. In your worktree: cd into the ${repo} checkout, \`git fetch\`, and \`gh pr checkout ${impl.pr}\` (or check out ${impl.branch}) so the branch is present.`,
     `2. Review \`git diff origin/main...HEAD\` for correctness, security, simplification, efficiency, and test coverage. Reason exhaustively about edge cases — you are the last gate before this reaches main; nothing downstream catches your misses.`,
     `3. Optionally, if the Skill tool is reachable, also run the built-in \`/code-review\` and union any extra findings. If it is not reachable, your inline review stands alone.`,
-    `4. Classify: verdict "blocking" if any finding is CONFIRMED in a blocking category (${blockOn.join(', ')}); "nits-only" if only non-blocking/ PLAUSIBLE findings; "clean" if none.`,
+    `4. Classify each finding: category (correctness|security|simplification|efficiency|test-coverage) and verdict CONFIRMED|PLAUSIBLE. Do NOT decide an overall verdict — the gate is recomputed from your findings against the blocking categories (${blockOn.join(', ')}).`,
+    `5. Write the full finding object — { issue, findings[] (category, verdict, file, line, summary, failure_scenario) } — as JSON to ${reviewPathFor(impl.issue)}. Return only the summary below; returning findings inline would park all of them in the orchestrator's context for the rest of the run.`,
     ``,
-    `Return the schema: issue, verdict, findings[] (category, verdict CONFIRMED|PLAUSIBLE, file, line, summary, failure_scenario). Do not mention Claude/AI anywhere.`,
+    `Return the schema: issue, path (the file you wrote), findingCount, headline (one line naming the most serious finding, or "no findings"). Do not mention Claude/AI anywhere.`,
   ].join('\n')
 }
 
@@ -128,6 +131,7 @@ const results = await pipeline(
   },
 )
 
-// The skill consumes these: auto-merge the clean ones (in dependency order, with a
-// re-gate after any non-trivial rebase), and escalate blocked/blocking ones to HITL.
+// The skill consumes these: run scripts/review-gate.mjs over each `review.path`
+// to get the verdict, then auto-merge the clean ones (in dependency order, with a
+// re-gate after any non-trivial rebase) and escalate blocked/blocking ones to HITL.
 return results.filter(Boolean)
