@@ -13,12 +13,15 @@ The step-6.5 Retrospective subagent returns this shape. It **reuses the vocabula
 }
 ```
 
+The subagent **writes this envelope to a file** (`$STATE/retro/wave-<W>.json`) and returns it **minus every `refactors[].body` and `planAdjustments[].proposal`** — the two long fields. Point D's grilling renders from titles, summaries, evidence and edges; the drafted text is needed only for the proposals the human approves, which is the minority, and is fetched back one at a time with `scripts/retro-pick.mjs <file> <id>`. Every proposal therefore carries a stable `id` — `R1, R2, …` for refactors, `P1, P2, …` for plan adjustments, in ranked order — which is what the picker keys on.
+
 `mergedPrs` echoes the input surface as bare composite **issue** refs (spanning repos where the run does). The PR numbers ride in the prompt, not the envelope — the main agent hands the subagent `owner/repo#N (PR #M)` pairs so `gh pr diff` is runnable; to recover which PR a ref shipped under from telemetry alone, join against the run's `kind:"issue"` records' `pr` field. There is **no `wave` field** — the main agent stamps its own wave counter on the telemetry record; the subagent has no wave concept. There is **no envelope verdict**: per-item confidence plus the human's point-D disposition (approve / decline) replace the `clean | blocking | nits-only` semantics, which only make sense before a merge.
 
 ## `refactors[]` — cross-PR findings that become tickets
 
 ```json
 {
+  "id":         "R1",
   "title":      "Extract shared exponential-backoff helper",
   "repo":       "owner/repo",
   "category":   "simplification",
@@ -39,12 +42,14 @@ The step-6.5 Retrospective subagent returns this shape. It **reuses the vocabula
 - `evidence[]` — **≥2 merged-PR issue refs**, the structural justification that this could not have been caught per-PR; a single-PR finding belongs to the review gate that already ran. At least one evidence ref must not itself be a retro-filed ticket's PR (the anti-recursion rule — no refactors of refactors).
 - `complexity` — the triage enum (`mechanical | normal | complex`), carried into the filed ticket so triage/implement effort is assigned normally when it ships.
 - `suggestedEdges[]` — `{blocked, blockedBy}` ref pairs, the literal string `"NEW"` standing for the ticket about to be filed. Approved edges are written **both** natively (the dependency graph) and as body prose (`Blocked by owner/repo#N`) so both of `plan-waves.mjs fetch`'s merged edge sources see them. `blockedBy` may name an already-**merged** issue in a *different* repo when the refactor consumes its artifact — such an edge never blocks (fetch folds it into `done[]`); it exists to route the ticket through step 7's point-C cutover gate instead of letting it auto-release against an unpublished artifact.
-- `body` — the ghost-written draft `/file-ticket` publishes on approval.
+- `body` — the ghost-written draft `/file-ticket` publishes on approval. **Omitted from the subagent's return**; it lives in the result file and is fetched by `id` once the human approves the proposal.
+- `id` — `R1, R2, …` in ranked order. The handle point D uses to fetch this proposal's `body` back without re-reading the rest.
 
 ## `planAdjustments[]` — keep the remaining DAG true
 
 ```json
 {
+  "id":        "P1",
   "ref":       "owner/repo#55",
   "kind":      "respec | add-edge | drop-edge | obsolete | split",
   "proposal":  "the concrete edit: replacement spec text, the edge endpoints, or the split children",
@@ -54,7 +59,7 @@ The step-6.5 Retrospective subagent returns this shape. It **reuses the vocabula
 }
 ```
 
-`edge` is present only for `add-edge`/`drop-edge`. `obsolete` closes the issue (`gh issue close --reason "not planned"`, with an explanatory comment) — the one destructive kind: point D confirms it **individually**, never inside a multiSelect batch. `split` files children (each to the refactors' `body` bar) and respecs the parent.
+`id` is `P1, P2, …`, the handle `retro-pick.mjs` keys on; `proposal` is **omitted from the subagent's return** for the same reason `body` is, and fetched back by id on approval. `edge` is present only for `add-edge`/`drop-edge`. `obsolete` closes the issue (`gh issue close --reason "not planned"`, with an explanatory comment) — the one destructive kind: point D confirms it **individually**, never inside a multiSelect batch. `split` files children (each to the refactors' `body` bar) and respecs the parent.
 
 ## The run ledger (main-agent state, not returned by the subagent)
 
