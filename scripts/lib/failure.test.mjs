@@ -48,6 +48,14 @@ test('terminalEvent: takes the LAST result record when a transcript carries seve
   assert.equal(terminalEvent(text).reason, "You've hit your session limit · resets 7:10pm (America/Los_Angeles)");
 });
 
+test('terminalEvent: ignores a hook-triggered result event, however late it lands', () => {
+  // Hooks emit their own `result`-typed records, tagged with hook_event_name.
+  // Taking the last result unconditionally would report a Stop hook's output as
+  // the session's reason for dying.
+  const text = sessionLimitResult() + line({ type: 'result', subtype: 'success', is_error: false, hook_event_name: 'Stop', result: 'hook ok' });
+  assert.equal(terminalEvent(text).reason, "You've hit your session limit · resets 7:10pm (America/Los_Angeles)");
+});
+
 test('terminalEvent: skips unparseable and blank lines rather than throwing', () => {
   assert.equal(terminalEvent(`not json\n\n${sessionLimitResult()}`).numTurns, 67);
 });
