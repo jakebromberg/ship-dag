@@ -4,17 +4,31 @@
     "WXYC/library-metadata-lookup": {
       "baseBranch": "main",
       "commands": [
-        "ruff check .",
-        "ruff format --check .",
-        "pytest -m 'not pg and not external_api and not stack and not slow' -q"
+        "uv sync --extra dev",
+        "uv run --no-sync ruff check .",
+        "uv run --no-sync ruff format --check .",
+        "uv run --no-sync mypy . --ignore-missing-imports",
+        "uv run --no-sync pytest -m 'not pg and not external_api' -q"
+      ]
+    },
+    "WXYC/discogs-etl": {
+      "baseBranch": "main",
+      "commands": [
+        "uv venv --python 3.12",
+        "uv pip install -e '.[dev]'",
+        ".venv/bin/ruff check .",
+        ".venv/bin/ruff format --check .",
+        ".venv/bin/pytest tests/unit/ -v"
       ]
     },
     "WXYC/request-o-matic": {
       "baseBranch": "main",
       "commands": [
-        "ruff check .",
-        "ruff format --check .",
-        "pytest -m 'not pg and not external_api and not stack and not slow' -q"
+        "uv sync --locked --extra dev",
+        "uv run --no-sync ruff format --check .",
+        "uv run --no-sync ruff check .",
+        "uv run --no-sync mypy . --ignore-missing-imports",
+        "uv run --no-sync pytest tests/unit/ -q"
       ]
     },
     "WXYC/semantic-index": {
@@ -30,17 +44,19 @@
       "commands": [
         "npm ci --no-audit --no-fund --prefer-offline",
         "npm run lint",
+        "npm run format:check",
         "npm run typecheck",
-        "npm test"
-      ]
+        "npm run test:unit"
+      ],
+      "_note": "npm test is the INTEGRATION suite: it dotenvx-runs jest against a live stack (wait-on localhost:8080/8082 healthchecks) and times out in a bare engine worktree (ship-dag-bs1990-1991-20260807 wave-1 lesson, 2026-08-07). Engine checks stay stack-free (test:unit); the merge queue runs `npm run ci:testmock` (Docker) per PR before merging. CI lint-and-typecheck also runs prettier --check (format:check) — added 2026-08-08 after PR#2041 caught it in CI only."
     },
     "WXYC/dj-site": {
       "baseBranch": "main",
       "commands": [
         "npm ci --no-audit --no-fund --prefer-offline",
         "npm run lint",
-        "npm run typecheck",
-        "npm test"
+        "npx tsc --noEmit",
+        "npx vitest run"
       ]
     },
     "WXYC/wxyc-shared": {
@@ -51,6 +67,26 @@
         "npm test"
       ]
     },
+    "WXYC/website": {
+      "baseBranch": "main",
+      "commands": [
+        "npm ci --no-audit --no-fund --prefer-offline",
+        "npm run lint",
+        "npm run test"
+      ],
+      "_note": "Verified green 2026-08-08 (82 vitest tests; `next lint` exit 0 with pre-existing no-img-element warnings). `npm run check-format` is DELIBERATELY EXCLUDED: `prettier --check .` fails on 19 files already dirty on main, so it would red every session for reasons unrelated to the change — clean those separately before adding it. `npm run build` is excluded too: it runs `tinacms build` first, which needs TinaCMS cloud credentials absent from a bare worktree. Static export (`output: 'export'`, Pages Router) — no SSR, no API routes, no getServerSideProps."
+    },
+    "WXYC/archive": {
+      "baseBranch": "main",
+      "commands": [
+        "npm ci --no-audit --no-fund --prefer-offline",
+        "npm run lint",
+        "npx tsc --noEmit",
+        "npm run test"
+      ],
+      "_note": "Verified green 2026-08-08 (217 vitest tests, eslint exit 0, tsc exit 0) after a clean `npm ci`. archive#94 reports eslint crashing repo-wide (ESLint 10 vs eslint-config-next's bundled eslint-plugin-react); it did NOT reproduce on a fresh install, so lint stays in the profile — if a session goes red on lint, drop that command rather than chasing it. Needs NPM_TOKEN: `@wxyc/shared` is an unpinned `github:` git dependency (archive#89). Deploys via OpenNext to Cloudflare (`npm run deploy`), NOT GitHub Pages as the org CLAUDE.md still says.",
+      "_deploy_note": "A merge to main here changes a LIVE public site (archive.wxyc.org)."
+    },
     "WXYC/wxyc-canary": {
       "baseBranch": "main",
       "commands": [
@@ -59,11 +95,51 @@
         "npm test"
       ]
     },
+    "WXYC/wxyc-fastapi": {
+      "baseBranch": "main",
+      "commands": [
+        "uv sync --extra dev",
+        "uv run --no-sync ruff check src tests scripts",
+        "uv run --no-sync ruff format --check src tests scripts",
+        "uv run --no-sync pytest -q"
+      ],
+      "_note": "Verified green 2026-08-10 in a clean detached worktree (191 pytest passed, ruff check + format clean). Mirrors .github/workflows/ci.yml, which runs `pip install -e '.[dev,posthog]'` then `ruff check/format --check src tests scripts` and `pytest -v`; the `dev` extra already pulls posthog + psycopg + jsonschema, so a single `--extra dev` covers CI's `[dev,posthog]`. No mypy — this repo's CI does not run it (unlike library-metadata-lookup).",
+      "_deploy_note": "Publishes to PyPI via tag-pushed Trusted Publishing (publish.yml), so a merge here is not itself a release — but a version bump + `v*` tag is. Consumers (library-metadata-lookup, request-o-matic, semantic-index) pin the package, so a merge does NOT reach them until published AND their pin is bumped: treat any downstream issue as a cross-repo cutover (SKILL.md step 7 / HITL point C), not an auto-release."
+    },
     "WXYC/wxyc-ios-64": {
       "baseBranch": "master",
       "commands": [
-        "xcodebuild test -scheme WXYC -destination 'platform=iOS Simulator,name=iPhone 15' -quiet"
-      ]
+        "git submodule update --init --recursive",
+        "rm -rf TestResults.xcresult",
+        "TEST_RUNNER_WXYC_SKIP_KNOWN_FLAKES=1 TEST_RUNNER_WXYC_SKIP_SLOW=1 TEST_RUNNER_WXYC_SKIP_UI=1 scripts/test-affected.sh > \"${TMPDIR:-/tmp}/ship-dag-ci-$$.log\" 2>&1 || { tail -120 \"${TMPDIR:-/tmp}/ship-dag-ci-$$.log\"; exit 1; }"
+      ],
+      "_note": "Updated 2026-08-27 (second revision, after master commit 1e49b2626). (1) DO NOT PASS --simulator. As of 1e49b2626 (PR #1020) scripts/test-affected.sh resolves the destination at run time via scripts/lib/simulator.zsh, and the repo CLAUDE.md now states the rule outright: never hardcode a simulator name or UUID, because both are local to one machine and one Xcode version and a stale one fails minutes into a build with 'Unable to find a device matching the provided destination specifier', which reads like a broken script. This field rotted twice before the run-time fix landed ('iPhone 15', then 'iPhone 17'). Passing --simulator now re-introduces the constant-with-an-expiry-date the script exists to remove. NOTE: a branch based BEFORE 1e49b2626 still has the hardcoded default and needs an explicit --simulator until it is rebased. (2) Shared/Wallpaper is a git submodule that a fresh worktree leaves uninitialized - xcodebuild dies at package resolution without the init. (3) The three TEST_RUNNER_ vars are MANDATORY. They mirror .github/workflows/build-and-test.yml, and without WXYC_SKIP_KNOWN_FLAKES the AppServicesTests/WidgetStateServiceRelevanceTests suite HANGS FOREVER at ~150% CPU (its mock spins on `while count < n { await Task.yield() }`, and Swift Testing's .timeLimit cannot cancel it) - it burns the whole stallTimeout instead of failing. xcodebuild strips the TEST_RUNNER_ prefix when forwarding into the runner; the shell-prefix form is required, a positional form after -destination silently does not propagate. (4) test-affected.sh hardcodes -resultBundlePath TestResults.xcresult and xcodebuild refuses to overwrite one. (5) RUN THIS REPO'S WAVES WITH --parallel 1: test-affected.sh exposes no -derivedDataPath flag, so concurrent worktrees building the same scheme share DerivedData and cross-contaminate. (6) Redirect output to a file. The engine runs these through spawnSync, whose default maxBuffer a full run overruns - a 2026-08-27 wave produced ~695KB and every issue failed with `spawnSync /bin/sh ENOBUFS` AFTER its PR was opened, which reads like a test failure and is not one. ENOBUFS is deterministic, so the built-in retry re-hits it identically."
+    },
+    "WXYC/wxyc-dj-ios": {
+      "baseBranch": "main",
+      "commands": [
+        "swift test --package-path Packages/WXYCAPI",
+        "SIM_ID=$(xcrun simctl list devices available | grep -m1 'iPhone 1[67]' | grep -oE '\\([A-F0-9-]{36}\\)' | tr -d '()'); test -n \"$SIM_ID\" || { echo 'no iPhone 16/17 simulator available' >&2; exit 1; }; xcrun simctl boot \"$SIM_ID\" 2>/dev/null; xcodebuild test -project WXYCDJ.xcodeproj -scheme WXYCDJ -destination \"platform=iOS Simulator,id=$SIM_ID\" -configuration Debug -skip-testing:WXYCDJTests/SpotlightClientStateToleranceTests -skip-testing:WXYCDJTests/SpotlightFieldResolutionTests CODE_SIGNING_ALLOWED=NO"
+      ],
+      "_note": "Added 2026-08-24 (sd-swiftauth run). Mirrors the repo CLAUDE.md pre-flight and .github/workflows/ci.yml: host swift test for the WXYCAPI package, then the app-target bundle on a simulator with the two device-only Spotlight suites skipped and code signing off. The sim pick tolerates a shutdown device (simctl boot is a no-op-ish when already booted; xcodebuild boots it otherwise). If project.yml or the source file list changed, the implementer must run `xcodegen generate` and commit the regenerated pbxproj BEFORE these commands — xcodebuild builds the checked-in project, not project.yml. A third check, scripts/verify-api-types.sh, applies ONLY when Packages/WXYCAPIModels/** or scripts/*-api-types.sh changed (needs git/npm/java/rsync). RUN THIS REPO'S WAVES WITH --parallel 1 (verified 2026-08-30): the sim pick is `grep -m1 'iPhone 1[67]'`, so every concurrent worktree resolves the SAME device, and two xcodebuild runs then install the same bundle id (org.wxyc.dj) plus its XCTest runner onto it at once — the second install overwrites the first mid-test. Unlike wxyc-ios-64 this is NOT a DerivedData problem (Xcode hashes DerivedData on the project's full path, so per-worktree paths already separate), it is simulator contention, and it surfaces as a flaky app-target failure that reads like a real one. Making waves parallel here needs a per-worktree `simctl clone`, not a different grep."
+    },
+    "WXYC/WXYC-Android": {
+      "baseBranch": "master",
+      "commands": [
+        "./gradlew assembleDebug",
+        "./gradlew test",
+        "./gradlew lint"
+      ],
+      "_note": "Added 2026-08-12. Repo default branch is master. No CI exists (no .github/workflows); .agent/workflows/android.md documents the build/test/lint tasks. All three verified green 2026-08-12 in a worktree (feat/27-donate-button run). First gradle invocation in a fresh worktree downloads dependencies — allow minutes, not seconds."
+    },
+    "WXYC/triangle-shows": {
+      "baseBranch": "main",
+      "commands": [
+        "node --test frontend/tests/*.test.js",
+        "cd backend || exit 1; test -x .venv/bin/pytest || { py=\"$(command -v python3.13 || command -v python3.12 || command -v python3)\"; rm -rf .venv; \"$py\" -m venv .venv; }; ./.venv/bin/pip install -q -r requirements-dev.txt",
+        "cd backend || exit 1; db=\"ts_$(basename \"$(cd .. && pwd)\" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '_' | cut -c1-40)_test\"; DATABASE_URL_TEST=\"${DATABASE_URL_TEST:-postgresql+asyncpg://postgres:postgres@localhost:55432/$db}\" ./.venv/bin/pytest -q"
+      ],
+      "_note": "Fork has no PR-triggered CI; deploy.yml runs only the frontend node tests on push to main, so backend pytest is a local-only gate (2026-08-08). Backend needs a real PostgreSQL: the conftest default targets :5432, but on this machine :5432 is a local PG holding real discogs/musicbrainz data and the harness does create_all/drop_all — so DATABASE_URL_TEST points at a throwaway container instead (`docker run -d --rm --name ts-test-pg -e POSTGRES_PASSWORD=postgres -p 55432:5432 postgres:16-alpine`), per backend/README.md:92. Venv must be python3.13 or older: psycopg2 has no 3.14 wheel. The database name is derived PER WORKTREE: the harness does create_all/drop_all per test, so two ship-dag sessions sharing one database name shred each other's schema mid-run — that produced 2-of-5 red runs with DBAPI/ProgrammingError noise during the #88/#90 wave (2026-08-08) and reads as container flakiness if you only ever run one at a time. Name must keep a `test` component to satisfy conftest's safety rail."
     },
     "daisysguide/backend": {
       "baseBranch": "main",
@@ -71,6 +147,42 @@
         "deno test --allow-env --allow-read --allow-write scripts/migration-tests/",
         "deno test --allow-read scripts/workflow-tests/",
         "cd supabase/functions || exit 1; test_files=\"\"; for dir in */; do if [ -f \"$dir/test.ts\" ]; then test_files=\"$test_files $dir/test.ts\"; elif [ -d \"$dir/__tests__\" ]; then test_files=\"$test_files $dir/__tests__\"; fi; done; for f in _shared/*.test.ts; do [ -f \"$f\" ] && test_files=\"$test_files $f\"; done; for f in */v*/test.ts; do [ -f \"$f\" ] && test_files=\"$test_files $f\"; done; if [ -n \"$test_files\" ]; then deno test --allow-all --ignore='**/integration-test.ts' $test_files; fi"
+      ]
+    },
+    "jakebromberg/code-audit-pipeline": {
+      "baseBranch": "main",
+      "commands": [
+        "cd extractors/typescript || exit 1; npm ci --no-audit --no-fund --prefer-offline",
+        "go generate ./...",
+        "status=\"$(git status --porcelain -- cmd/code-audit/queries cmd/code-audit/extractors)\"; if [ -n \"$status\" ]; then echo 'embed trees are out of sync with pipeline/queries/ or extractors/ — run go generate ./... and commit the result in this PR' >&2; echo \"$status\" >&2; exit 1; fi",
+        "go vet ./...",
+        "go test ./...",
+        "go build -o /tmp/code-audit-shipdag ./cmd/code-audit",
+        "cd extractors/swift || exit 1; swift build",
+        "cd extractors/swift || exit 1; for t in tests/*.sh; do echo \"--- $t\"; \"$t\" >/dev/null || exit 1; done",
+        "shellcheck pipeline/queries/_tests/test_canonical.sh pipeline/queries/_tests/test_queries_integration.sh pipeline/queries/_tests/test_gojq_parity.sh pipeline/queries/_tests/test_cross_repo_ops.sh pipeline/queries/_tests/smoke_test_real_catalog.sh pipeline/fetch-catalogs.sh pipeline/publish-catalog.sh pipeline/verify-index.sh pipeline/run-cross-repo-query.sh pipeline/_tests/test_substrate.sh pipeline/_tests/test_audit_core.sh .github/actions/audit-core/scripts/detect-languages.sh extractors/typescript/tests/test_smoke.sh install.sh pipeline/_tests/test_install.sh extractors/swift/tests/*.sh",
+        "pipeline/queries/_tests/test_canonical.sh",
+        "pipeline/queries/_tests/test_queries_integration.sh",
+        "pipeline/_tests/test_audit_core.sh"
+      ]
+    },
+    "WXYC/wxyc-dj-android": {
+      "baseBranch": "main",
+      "commands": [
+        "export ANDROID_HOME=${ANDROID_HOME:-$HOME/Library/Android/sdk} && ./gradlew :api:test",
+        "export ANDROID_HOME=${ANDROID_HOME:-$HOME/Library/Android/sdk} && ./gradlew :app:testDebugUnitTest",
+        "export ANDROID_HOME=${ANDROID_HOME:-$HOME/Library/Android/sdk} && ./gradlew :app:lintDebug"
+      ],
+      "_note": "Mirrors .github/workflows/ci.yml exactly. :api:test is named separately from the :app tasks on purpose: :api is a pure JVM module and its suites are the repo's whole structural bet, so they must never be able to stop running as a side effect of a task-graph change. ANDROID_HOME is exported because a fresh worktree has no local.properties (gitignored) and AGP would otherwise fail with 'SDK location not found'; verified 2026-08-19 that the env fallback builds clean without it. Lint runs abortOnError against an empty baseline."
+    },
+    "jakebromberg/PhaseMatrix": {
+      "baseBranch": "main",
+      "commands": [
+        "cp -R /Users/jake/Developer/PhaseMatrix/.build .build 2>/dev/null || true",
+        "find .build -maxdepth 4 -type d -name 'ModuleCache*' -prune -exec rm -rf {} + 2>/dev/null || true",
+        "swift build --build-tests",
+        "swift test --skip-build --skip allocationProbe",
+        "swift test --skip-build --filter allocationProbe --no-parallel"
       ]
     }
   }
