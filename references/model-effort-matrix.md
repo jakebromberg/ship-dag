@@ -7,10 +7,13 @@ Two independent axes. **Model = capability floor** (Haiku → Sonnet → Opus). 
 | Step | Model | Default effort | Escalate to | De-escalate to |
 |---|---|---|---|---|
 | Triage / read | `haiku` | low | **medium** — long body, many cross-refs, or `epic`/`complex` label | — |
+| Premise-check (step 3a) | `sonnet` | medium (nominal) | **high (nominal)** — the premise spans repos, or turns on a migration/schema history rather than a call graph | — |
 | Implement | `sonnet` | medium | **high** — triage tagged complex (multi-file, algorithmic, concurrency, schema/migration, public-API, security surface) | **low** — purely mechanical (config/string/dep bump, single file, no logic) |
 | Review | `opus` | high | **xhigh–max** — large diff, security surface, or impl resolved open questions unilaterally | never below high |
 | Retrospective | `opus` | high (nominal) | **xhigh (nominal)** — merged surface spans repos, > ~10 PRs, or touches a security surface | never below high — misses here are caught by nobody (point D only filters false positives; it cannot restore an unseen finding) |
 | Merge | main agent (no subagent) | low (n/a) | rebase re-gate re-runs the review at *that issue's* review effort | — |
+
+**Premise-check is Sonnet, not Haiku, and this is the one place the matrix pays *up* for a read-only step.** It is the pass that decides which questions reach the human at point A, and both of its failure modes are expensive: a premise wrongly refuted ships an issue on a false understanding of the code, and a premise wrongly confirmed spends a human's attention on a question the code already answered. It is also the step whose output most directly replaces main-context file-reading — the whole point is that its conclusions are trustworthy enough that nobody re-derives them. Haiku already had its turn at this issue during triage; running the check on the same tier would mostly reproduce triage's guesses.
 
 The triage subagent emits a **complexity score** (`mechanical | normal | complex`) per issue; that score is the input that sets the implement effort. Tiers are chosen per issue, not hardcoded.
 
