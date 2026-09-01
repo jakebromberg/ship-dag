@@ -3,8 +3,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
-import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath } from './telemetry.mjs';
+import { rmSync, readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import {
+  normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath,
+  recordKey, appendUniqueRecords, loadWaveContext, auditWaves,
+} from './telemetry.mjs';
 
 const approx = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 const FIXED = () => '2026-07-23T00:00:00.000Z';
@@ -322,5 +327,230 @@ test('report: raw readRecords output — a legacy kind-less line partitions as a
     assert.equal(rep.retro.mergedPrs, 2);
   } finally {
     rmSync(p, { force: true });
+  }
+});
+
+// ---- structural emission: engine artifacts → records ----------------------
+// Every test below points the log at a temp file. The real run log
+// (~/.local/state/ship-dag/runs.jsonl) is collected data and is never written
+// by the suite; appendUniqueRecords/auditWaves take an explicit path for
+// exactly that reason.
+
+test('recordKey: an issue is keyed by run + ref + outcome, so a rate-limit death and the later merge both survive', () => {
+  const death = base({ issue: 5, finalState: 'error', implStatus: 'error', failureReason: 'rate-limited' });
+  const merge = base({ issue: 5, finalState: 'merged' });
+  assert.notEqual(recordKey(death), recordKey(merge));
+  assert.equal(recordKey(base({ issue: 5 })), recordKey(base({ issue: 5, bounces: 3 })));
+  assert.equal(recordKey(retroBase()), recordKey(retroBase({ filed: [] })));
+  assert.notEqual(recordKey(retroBase()), recordKey(retroBase({ wave: 3 })));
+});
+
+test('appendUniqueRecords: appends new records and skips ones already in the log', () => {
+  const p = tmpLog();
+  try {
+    const first = appendUniqueRecords([base({ issue: 1 }), base({ issue: 2 })], { path: p, now: FIXED });
+    assert.equal(first.appended.length, 2);
+    assert.deepEqual(first.skipped, []);
+    // Re-running the same wave close must not double-count it.
+    const second = appendUniqueRecords([base({ issue: 1 }), base({ issue: 3 })], { path: p, now: FIXED });
+    assert.equal(second.appended.length, 1);
+    assert.equal(second.appended[0].issue, 3);
+    assert.equal(second.skipped.length, 1);
+    assert.deepEqual(readRecords(p).map((r) => r.issue), [1, 2, 3]);
+  } finally {
+    rmSync(p, { force: true });
+  }
+});
+
+test('appendUniqueRecords: a duplicate inside one batch is written once', () => {
+  const p = tmpLog();
+  try {
+    const res = appendUniqueRecords([base({ issue: 1 }), base({ issue: 1 })], { path: p, now: FIXED });
+    assert.equal(res.appended.length, 1);
+    assert.equal(readRecords(p).length, 1);
+  } finally {
+    rmSync(p, { force: true });
+  }
+});
+
+test('appendUniqueRecords: one bad record is reported, not fatal — the rest of the wave still lands', () => {
+  // Best-effort is non-negotiable: a telemetry failure must never abort a wave,
+  // so a record that fails validation is collected in `failed` rather than
+  // thrown past the caller and taking its siblings with it.
+  const p = tmpLog();
+  try {
+    const res = appendUniqueRecords(
+      [base({ issue: 1 }), base({ issue: 2, finalState: 'nope' }), base({ issue: 3 })],
+      { path: p, now: FIXED },
+    );
+    assert.deepEqual(res.appended.map((r) => r.issue), [1, 3]);
+    assert.equal(res.failed.length, 1);
+    assert.match(res.failed[0].error, /bad finalState/);
+    assert.deepEqual(readRecords(p).map((r) => r.issue), [1, 3]);
+  } finally {
+    rmSync(p, { force: true });
+  }
+});
+
+test('appendUniqueRecords: an empty batch never creates the file', () => {
+  const p = tmpLog();
+  const res = appendUniqueRecords([], { path: p, now: FIXED });
+  assert.deepEqual(res.appended, []);
+  assert.equal(existsSync(p), false);
+});
+
+// A minimal engine state tree: <stateDir>/config.json (or the sidecar) plus
+// <stateDir>/state/reports/<ISO>.json — the layout every engine wave leaves behind.
+function engineTree(dir, { runId, refs, sidecar = false, status = 'succeeded' }) {
+  mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
+  const issues = refs.map((ref, i) => ({ number: Number(ref.split('#')[1]), repo: ref.split('#')[0], complexity: 'normal', ref }));
+  const ctx = sidecar
+    ? { runId, wave: 2, path: 'engine', issues: issues.map((i) => ({ ...i, assignment: 'sonnet' })) }
+    : { name: `ship-dag-${runId}`, defaultModel: 'sonnet', issues };
+  writeFileSync(join(dir, sidecar ? 'ship-dag-wave.json' : 'config.json'), JSON.stringify(ctx));
+  writeFileSync(
+    join(dir, 'state', 'reports', '2026-08-29T19-00-00.000Z.json'),
+    JSON.stringify({
+      configName: `ship-dag-${runId}`,
+      startedAt: '2026-08-29T19:00:00.000Z',
+      finishedAt: '2026-08-29T19:30:00.000Z',
+      issues: refs.map((ref, i) => ({ ref, number: Number(ref.split('#')[1]), status, prNumber: 100 + i })),
+    }),
+  );
+  return join(dir, 'state', 'reports', '2026-08-29T19-00-00.000Z.json');
+}
+
+test('loadWaveContext: prefers the sidecar, falls back to config.json, tolerates neither', () => {
+  const dir = join(tmpdir(), `ship-dag-ctx-${process.pid}-${counter++}`);
+  try {
+    const reportPath = engineTree(join(dir, 'run1'), { runId: 'r1', refs: ['o/r#1'], sidecar: true });
+    const withSidecar = loadWaveContext(reportPath);
+    assert.equal(withSidecar.source, join(dir, 'run1', 'ship-dag-wave.json'));
+    assert.equal(withSidecar.context.wave, 2);
+
+    const cfgPath = engineTree(join(dir, 'run2'), { runId: 'r2', refs: ['o/r#1'] });
+    const withConfig = loadWaveContext(cfgPath);
+    assert.equal(withConfig.source, join(dir, 'run2', 'config.json'));
+    assert.equal(withConfig.context.name, 'ship-dag-r2');
+
+    mkdirSync(join(dir, 'run3', 'state', 'reports'), { recursive: true });
+    const bare = loadWaveContext(join(dir, 'run3', 'state', 'reports', 'x.json'));
+    assert.equal(bare.context, null);
+    assert.equal(bare.stateDir, join(dir, 'run3'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('auditWaves: names the engine waves whose rows never reached the log', () => {
+  const dir = join(tmpdir(), `ship-dag-audit-${process.pid}-${counter++}`);
+  try {
+    engineTree(join(dir, 'w1'), { runId: 'r1', refs: ['o/r#1', 'o/r#2'] });
+    engineTree(join(dir, 'w2'), { runId: 'r2', refs: ['o/r#3'] });
+    const records = [
+      normalizeRecord(base({ runId: 'r1', repo: 'o/r', issue: 1 }), FIXED),
+      // o/r#2 was shipped but never recorded — the under-emission defect itself.
+      // o/r#3 was recorded under a *different* runId, so it is accounted for but misattributed.
+      normalizeRecord(base({ runId: 'other', repo: 'o/r', issue: 3 }), FIXED),
+    ];
+    const audit = auditWaves({ baseDir: dir, records });
+    assert.equal(audit.waves.length, 2);
+    assert.equal(audit.expected, 3);
+    assert.deepEqual(audit.missing, ['o/r#2']);
+    assert.deepEqual(audit.elsewhere, ['o/r#3']);
+    const w1 = audit.waves.find((w) => w.runId === 'r1');
+    assert.deepEqual(w1.missing, ['o/r#2']);
+    assert.equal(w1.present, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('auditWaves: a fully-recorded tree reports no gap; a missing base dir is not an error', () => {
+  const dir = join(tmpdir(), `ship-dag-audit-ok-${process.pid}-${counter++}`);
+  try {
+    engineTree(join(dir, 'w1'), { runId: 'r1', refs: ['o/r#1'] });
+    const audit = auditWaves({ baseDir: dir, records: [normalizeRecord(base({ runId: 'r1', repo: 'o/r', issue: 1 }), FIXED)] });
+    assert.deepEqual(audit.missing, []);
+    assert.equal(audit.expected, 1);
+    const none = auditWaves({ baseDir: join(dir, 'does-not-exist'), records: [] });
+    assert.deepEqual(none.waves, []);
+    assert.equal(none.expected, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI ingest-wave: a whole wave lands from the engine report; a half-supplied wave is refused', () => {
+  const dir = join(tmpdir(), `ship-dag-cli-${process.pid}-${counter++}`);
+  const log = join(dir, 'runs.jsonl');
+  const cli = fileURLToPath(new URL('./telemetry.mjs', import.meta.url));
+  const run = (args) => spawnSync(process.execPath, [cli, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, SHIP_DAG_TELEMETRY: log },
+  });
+  try {
+    const reportPath = engineTree(join(dir, 'w1'), { runId: 'r1', refs: ['o/r#1', 'o/r#2'] });
+
+    // Half the wave supplied → nothing written, and the forgotten ref is named.
+    const partial = run(['ingest-wave', reportPath, '--outcomes', '{"o/r#1":"merged"}']);
+    assert.equal(partial.status, 2);
+    assert.match(partial.stderr, /o\/r#2/);
+    assert.equal(existsSync(log), false);
+
+    const full = run(['ingest-wave', reportPath, '--outcomes', '{"o/r#1":"merged","o/r#2":{"finalState":"blocked-hitl","hitl":{"pointB":true}}}']);
+    assert.equal(full.status, 0, full.stderr);
+    const recs = readRecords(log);
+    assert.equal(recs.length, 2);
+    assert.deepEqual(recs.map((r) => r.issue), [1, 2]);
+    assert.equal(recs[0].path, 'engine');
+    assert.equal(recs[0].triageStatus, 'clear');
+    assert.equal(recs[0].pr, 100);
+    assert.equal(recs[0].ts, '2026-08-29T19:30:00.000Z');
+    assert.equal(recs[1].hitl.pointB, true);
+
+    // Re-running the same close is a no-op, not a doubling.
+    assert.equal(run(['ingest-wave', reportPath, '--outcomes', '{"o/r#1":"merged","o/r#2":"blocked-hitl"}']).status, 0);
+    assert.equal(readRecords(log).length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI run-id: mints a fresh id, and echoes an already-exported one', () => {
+  const cli = fileURLToPath(new URL('./telemetry.mjs', import.meta.url));
+  const fresh = spawnSync(process.execPath, [cli, 'run-id'], { encoding: 'utf8', env: { ...process.env, SHIP_DAG_RUN_ID: '' } });
+  assert.equal(fresh.status, 0, fresh.stderr);
+  assert.match(fresh.stdout.trim(), /^sd-\d{8}-\d{6}$/);
+  const labelled = spawnSync(process.execPath, [cli, 'run-id', '--label', 'dj ios 135'], { encoding: 'utf8', env: { ...process.env, SHIP_DAG_RUN_ID: '' } });
+  assert.match(labelled.stdout.trim(), /^sd-\d{8}-\d{6}-dj-ios-135$/);
+  const existing = spawnSync(process.execPath, [cli, 'run-id'], { encoding: 'utf8', env: { ...process.env, SHIP_DAG_RUN_ID: 'sd-already-minted' } });
+  assert.equal(existing.stdout.trim(), 'sd-already-minted');
+});
+
+test('CLI ingest-wave: a wave with no resolvable run id is refused, not written ungroupably', () => {
+  const dir = join(tmpdir(), `ship-dag-noid-${process.pid}-${counter++}`);
+  const log = join(dir, 'runs.jsonl');
+  const reportsDir = join(dir, 'run', 'state', 'reports');
+  const cli = fileURLToPath(new URL('./telemetry.mjs', import.meta.url));
+  try {
+    mkdirSync(reportsDir, { recursive: true });
+    const reportPath = join(reportsDir, 'r.json');
+    // No config, no sidecar, and a report with no configName: nothing to group on.
+    writeFileSync(reportPath, JSON.stringify({ issues: [{ ref: 'o/r#1', number: 1, status: 'succeeded' }] }));
+    const res = spawnSync(process.execPath, [cli, 'ingest-wave', reportPath, '--outcomes', '{"o/r#1":"merged"}'], {
+      encoding: 'utf8', env: { ...process.env, SHIP_DAG_TELEMETRY: log, SHIP_DAG_RUN_ID: '' },
+    });
+    assert.equal(res.status, 2);
+    assert.match(res.stderr, /no run id/);
+    assert.equal(existsSync(log), false);
+    // ...and the ambient run id rescues exactly that case.
+    const rescued = spawnSync(process.execPath, [cli, 'ingest-wave', reportPath, '--outcomes', '{"o/r#1":"merged"}'], {
+      encoding: 'utf8', env: { ...process.env, SHIP_DAG_TELEMETRY: log, SHIP_DAG_RUN_ID: 'sd-from-env' },
+    });
+    assert.equal(rescued.status, 0, rescued.stderr);
+    assert.equal(readRecords(log)[0].runId, 'sd-from-env');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

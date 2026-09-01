@@ -10,6 +10,20 @@ Between the merge queue and the next wave, a **retrospective pass** (one read-on
 
 See [`SKILL.md`](./SKILL.md) for the full skill definition and the wave loop.
 
+## Telemetry
+
+Every wave leaves durable artifacts on disk — the engine's per-wave report (`<stateDir>/state/reports/<ISO>.json`) and the sidecar `emit-config.mjs` writes beside its config — and telemetry is derived from them rather than retyped, so a record is a consequence of the work rather than a step the agent has to remember:
+
+```bash
+export SHIP_DAG_RUN_ID=$(node scripts/telemetry.mjs run-id)          # mint the run id once
+node scripts/emit-config.mjs spec.json > "$STATE/config.json"        # + wave sidecar + HITL point-A records
+node scripts/telemetry.mjs ingest-wave "$STATE/state/reports/<ISO>.json" --outcomes @outcomes.json
+node scripts/telemetry.mjs audit                                     # waves on disk vs. records in the log
+node scripts/telemetry.mjs report                                    # the leading indicators
+```
+
+`ingest-wave` derives `runId`, `repo`, `issue`, `complexity`, `triageStatus`, `assignment`, `path`, `implStatus`, `ciStatus`, `pr` and `ts` from those artifacts and takes only the judgement half (`finalState`, `reviewVerdict`, `findings`, `bounces`, `hitl`, `failureReason`) from the outcomes file — and **refuses a half-supplied wave**, naming the refs it was not given, instead of writing a partial one. `audit` is the backstop: because the engine reports persist, a wave that was never closed stays recoverable rather than lost. See the *Telemetry* section of [`SKILL.md`](./SKILL.md) for the full contract.
+
 ## Dependency: claude-orchestrator
 
 The parallel **implement** fan-out is delegated to the [claude-orchestrator](https://github.com/jakebromberg/claude-orchestrator) engine — per-repo worktrees + CI, per-issue model/effort, `mergePolicy: "none"` (implement, run CI, open a PR, then STOP; the Opus review gate and merge queue stay in the skill). Point `CO_HOME` at a checkout of that repo (default `~/Developer/claude-orchestrator`); its `dist/` must be built (`npm run build` — `dist/` is committed, so a fresh clone already has it).
@@ -47,7 +61,8 @@ The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [cl
 | `scripts/plan-waves.mjs` | DAG fetch + wave planning (imports claude-orchestrator's topo-sort core). |
 | `scripts/emit-config.mjs` | Turns a cleared ready-wave into a claude-orchestrator engine config. |
 | `scripts/engine/` | The engine-invocation path: `run.mts` (entry), `hooks.mts` (worktree + cutover), `repos-dir.mjs` (org-root resolution), `prompt.md`. |
-| `scripts/telemetry.mjs` | Per-issue + per-retro-pass run records (model-assignment efficacy). |
+| `scripts/telemetry.mjs` | Per-issue + per-retro-pass run records (model-assignment efficacy) — `run-id`, `append`, `ingest-wave`, `audit`, `report`. |
+| `scripts/lib/wave-records.mjs` | Turns an engine wave report + its config/sidecar into telemetry records (the structural half of emission). |
 | `references/` | CI profiles, model/effort matrix, escalation policy, review + retrospective + eval schemas. |
 | `eval/` | Offline eval harness for the model-assignment study. |
 | `docs/` | [Field report](./docs/field-report.md) from the first production run, plus a runnable anonymized [telemetry sample](./docs/examples/run-sample.jsonl). |
