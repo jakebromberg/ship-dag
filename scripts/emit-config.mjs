@@ -35,15 +35,36 @@
 //     "issues": [
 //       { "number": 924, "repo": "owner/repo", "title": "...", "complexity": "normal",
 //         "model": "opus", "effort": "high", "digest": "2-3 sentence plan", "extraDirs": ["../wxyc-shared"] }
+//     ],
+//     "runId":    "sd-20260831-104814",           // optional (default: name minus the ship-dag- prefix)
+//     "wave":     2,                               // optional, the run's wave counter
+//     "deferred": [                                // optional: issues triage deferred at HITL point A
+//       { "ref": "owner/repo#930", "complexity": "complex" }
 //     ]
 //   }
+//
+// Telemetry side effect (SKILL.md steps 3 + 4a). This command is the one the
+// wave loop must run anyway, immediately after triage, holding triage's verdicts
+// — so it is where two facts that used to depend on the main agent remembering a
+// separate prose step are now written as a consequence of building the config:
+//   1. `<stateDir>/ship-dag-wave.json` — the sidecar carrying the run identity,
+//      the wave number, and each issue's complexity + assigned model. The engine's
+//      own report records none of those, so without the sidecar a wave close would
+//      have to re-type them.
+//   2. one HITL point-A telemetry record per `deferred[]` entry — the records that
+//      keep the triage-miss and HITL-A indicators from being survivor-only.
+// Both are strictly best-effort: a telemetry failure warns on stderr and never
+// fails config emission, because a broken write must never take down a wave.
 //
 // Usage:
 //   node emit-config.mjs <spec.json|->            # read spec (stdin with -), write config JSON to stdout
 //   node emit-config.mjs <spec.json> > config.json
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
+import { waveSidecar, deferredRecords, runIdFromConfigName } from './lib/wave-records.mjs';
+import { appendUniqueRecords, telemetryPath } from './telemetry.mjs';
 
 /**
  * A filename/branch-safe slug from an issue title, or `issue-<number>` when the
@@ -138,6 +159,50 @@ export function buildConfig(spec) {
   };
 }
 
+/**
+ * Write the wave sidecar beside the engine config and append one HITL point-A
+ * telemetry record per triage deferral. Strictly best-effort: every failure is
+ * warned about and swallowed, because emission must never abort a wave.
+ *
+ * The run's identity comes from `spec.runId`, else the `ship-dag-<runId>`
+ * config name — so a spec built the documented way needs no extra field.
+ * @param {object} spec  the ready-wave spec
+ * @returns {{sidecar: string|null, appended: number, deferred: number}}
+ */
+export function recordWave(spec) {
+  const out = { sidecar: null, appended: 0, deferred: 0 };
+  const runId = spec.runId || runIdFromConfigName(spec.name);
+  try {
+    if (spec.stateDir) {
+      mkdirSync(spec.stateDir, { recursive: true });
+      const path = join(spec.stateDir, 'ship-dag-wave.json');
+      writeFileSync(path, `${JSON.stringify(waveSidecar(spec), null, 2)}\n`);
+      out.sidecar = path;
+    }
+  } catch (err) {
+    console.error(`emit-config: WARNING — could not write the wave sidecar: ${err.message}`);
+  }
+  try {
+    const records = deferredRecords({ runId, repo: spec.repo, deferred: spec.deferred });
+    out.deferred = records.length;
+    if (records.length > 0 && !runId) {
+      console.error('emit-config: WARNING — no run id (spec.runId or a ship-dag-<runId> name); point-A records not written');
+    } else if (records.length > 0) {
+      const { appended, skipped, failed } = appendUniqueRecords(records, { path: telemetryPath() });
+      out.appended = appended.length;
+      for (const f of failed) console.error(`emit-config: WARNING — dropped a point-A record: ${f.error}`);
+      console.error(
+        `emit-config: logged ${appended.length} HITL point-A defer record(s)`
+        + (skipped.length ? `, ${skipped.length} already logged` : '')
+        + ` → ${telemetryPath()}`,
+      );
+    }
+  } catch (err) {
+    console.error(`emit-config: WARNING — point-A telemetry not written: ${err.message}`);
+  }
+  return out;
+}
+
 // ---- CLI -----------------------------------------------------------------
 
 if (isMain(import.meta.url)) {
@@ -159,4 +224,6 @@ if (isMain(import.meta.url)) {
 
   const config = buildConfig(spec);
   process.stdout.write(JSON.stringify(config, null, 2) + '\n');
+
+  recordWave(spec);
 }

@@ -24,18 +24,39 @@
 // so the eval harness can separate quota failures from model failures.
 //
 // Usage:
+//   node telemetry.mjs run-id [--label L]    # mint (or echo $SHIP_DAG_RUN_ID) this run's id
 //   node telemetry.mjs append '<json>'      # append one record (validates + stamps ts)
 //   node telemetry.mjs append @rec.json      # ...from a file
 //   node telemetry.mjs append -              # ...from stdin
+//   node telemetry.mjs ingest-wave <report.json> --outcomes <json|@file|->
+//                                            # close a whole engine wave: derive every
+//                                            # record the engine's own artifacts already
+//                                            # know, supply only the judgement half
+//   node telemetry.mjs audit [--base-dir D]  # engine waves on disk vs. records in the log
 //   node telemetry.mjs report [--since ISO]  # print leading indicators (JSON + table)
+//
+// `ingest-wave` is the structural emission point (SKILL.md steps 5-6). Emission
+// used to be five separate prose instructions to the main agent, and under-emitted
+// exactly when a run was long and multi-wave; `ingest-wave` collapses a whole wave
+// into one call whose derivable half cannot be mistyped and whose judgement half,
+// if incomplete, is REFUSED with the forgotten refs named rather than half-written.
+// `audit` is the backstop: engine reports persist on disk, so a wave that was never
+// ingested stays recoverable instead of being lost.
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
 // else ~/.local/state/ship-dag/runs.jsonl.
 
-import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
+import {
+  mintRunId,
+  runIdFromConfigName,
+  canonicalRunId,
+  parseRef,
+  deriveWaveRecords,
+} from './lib/wave-records.mjs';
 
 const COMPLEXITIES = new Set(['mechanical', 'normal', 'complex']);
 const PATHS = new Set(['engine', 'inline', 'workflow']);
@@ -154,6 +175,183 @@ export function appendRecord(rec, { path = telemetryPath(), now } = {}) {
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, `${JSON.stringify(norm)}\n`);
   return norm;
+}
+
+/**
+ * The identity a record occupies in the log: one issue's outcome within one
+ * run, or one retrospective pass. Two records with the same key are the same
+ * fact written twice, so a re-run of a wave close is a no-op rather than a
+ * doubling. `finalState` + `failureReason` are part of the key deliberately:
+ * a rate-limit death record and the merge record for the same issue in the
+ * same run are two *different* facts (see `report()`), and both must survive.
+ * @param {object} rec
+ * @returns {string}
+ */
+export function recordKey(rec) {
+  if ((rec.kind ?? 'issue') === 'retro') return `retro|${rec.runId}|${rec.wave}`;
+  return `issue|${rec.runId}|${rec.repo}#${rec.issue}|${rec.finalState}|${rec.failureReason ?? ''}`;
+}
+
+/**
+ * Append a batch of records, skipping any whose `recordKey` is already in the
+ * log (or repeated inside the batch), in a single read + single write.
+ *
+ * Never throws: a record that fails validation is collected in `failed` and the
+ * rest of the batch still lands. Emission is best-effort by contract — a broken
+ * telemetry write must never take down a wave — so one malformed record can't
+ * cost the wave its other records.
+ * @param {object[]} records
+ * @param {{path?: string, now?: () => string}} [opts]
+ * @returns {{appended: object[], skipped: object[], failed: Array<{record: object, error: string}>}}
+ */
+export function appendUniqueRecords(records, { path = telemetryPath(), now } = {}) {
+  const appended = [];
+  const skipped = [];
+  const failed = [];
+  if (!records || records.length === 0) return { appended, skipped, failed };
+  const seen = new Set(readRecords(path).map(recordKey));
+  const lines = [];
+  for (const rec of records) {
+    let norm;
+    try {
+      norm = normalizeRecord(rec, now);
+    } catch (err) {
+      failed.push({ record: rec, error: err.message });
+      continue;
+    }
+    const key = recordKey(norm);
+    if (seen.has(key)) {
+      skipped.push(norm);
+      continue;
+    }
+    seen.add(key);
+    lines.push(`${JSON.stringify(norm)}\n`);
+    appended.push(norm);
+  }
+  if (lines.length > 0) {
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, lines.join(''));
+  }
+  return { appended, skipped, failed };
+}
+
+/** Default base dir holding every run's engine state (SKILL.md step 4a). */
+export function defaultEngineBaseDir(env = process.env) {
+  const stateHome = env.XDG_STATE_HOME || `${env.HOME}/.local/state`;
+  return `${stateHome}/ship-dag/engine`;
+}
+
+/**
+ * The wave context sitting beside an engine report: the `ship-dag-wave.json`
+ * sidecar emit-config.mjs writes (preferred — it is the only artifact carrying
+ * the wave number and the point-A deferrals), else the `config.json` the engine
+ * was handed. Either supplies each issue's triage `complexity` and assigned
+ * model, which the report itself does not record.
+ *
+ * `<stateDir>/state/reports/<ISO>.json` → `<stateDir>` is three levels up.
+ * @param {string} reportPath
+ * @returns {{stateDir: string, source: string|null, context: object|null}}
+ */
+export function loadWaveContext(reportPath) {
+  const stateDir = dirname(dirname(dirname(resolve(reportPath))));
+  for (const name of ['ship-dag-wave.json', 'config.json']) {
+    const p = join(stateDir, name);
+    try {
+      return { stateDir, source: p, context: JSON.parse(readFileSync(p, 'utf8')) };
+    } catch {
+      // missing or unreadable — fall through to the next candidate
+    }
+  }
+  return { stateDir, source: null, context: null };
+}
+
+/**
+ * Every engine wave report under a base dir
+ * (`<baseDir>/<stateDirName>/state/reports/*.json`), sorted for determinism.
+ * Never throws: a missing base dir, or a run subdir with no reports, is simply
+ * no candidate.
+ * @param {string} baseDir
+ * @returns {string[]}
+ */
+export function findWaveReports(baseDir) {
+  let runDirs;
+  try {
+    runDirs = readdirSync(baseDir);
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const runDir of runDirs) {
+    const reportsDir = join(baseDir, runDir, 'state', 'reports');
+    let names;
+    try {
+      names = readdirSync(reportsDir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (name.endsWith('.json')) out.push(join(reportsDir, name));
+    }
+  }
+  return out.sort();
+}
+
+/**
+ * Reconcile the engine waves that actually ran (their reports are durable, on
+ * disk, under the one well-known base dir) against the records in the log.
+ * This is what turns chronic under-emission from invisible into a number: a
+ * wave that shipped five issues and logged two shows up here as three refs by
+ * name, and — because the report survives — can still be ingested afterwards.
+ *
+ * A row recorded under a *different* runId is reported as `elsewhere` rather
+ * than `missing`: the datum exists, but per-run grouping lost it.
+ * @param {{baseDir?: string, records?: object[]}} [opts]
+ * @returns {{waves: object[], expected: number, missing: string[], elsewhere: string[]}}
+ */
+export function auditWaves({ baseDir = defaultEngineBaseDir(), records = [] } = {}) {
+  const byRunRef = new Set();
+  const byRef = new Set();
+  for (const r of records) {
+    if ((r.kind ?? 'issue') === 'retro') continue;
+    const ref = `${r.repo}#${r.issue}`;
+    byRunRef.add(`${canonicalRunId(r.runId)}|${ref}`);
+    byRef.add(ref);
+  }
+  const waves = [];
+  const missing = [];
+  const elsewhere = [];
+  let expected = 0;
+  for (const reportPath of findWaveReports(baseDir)) {
+    let rep;
+    try {
+      rep = JSON.parse(readFileSync(reportPath, 'utf8'));
+    } catch {
+      continue; // a torn/half-written report is not evidence of a gap
+    }
+    const { context } = loadWaveContext(reportPath);
+    const runId = context?.runId
+      || runIdFromConfigName(context?.name)
+      || runIdFromConfigName(rep.configName);
+    const wave = { report: reportPath, runId, expected: 0, present: 0, missing: [], elsewhere: [] };
+    for (const row of Array.isArray(rep.issues) ? rep.issues : []) {
+      const parsed = parseRef(row.ref);
+      if (!parsed) continue; // a row with no composite ref can't be matched to a record
+      const ref = `${parsed.repo}#${parsed.issue}`;
+      wave.expected += 1;
+      if (byRunRef.has(`${canonicalRunId(runId)}|${ref}`)) {
+        wave.present += 1;
+      } else if (byRef.has(ref)) {
+        wave.elsewhere.push(ref);
+      } else {
+        wave.missing.push(ref);
+      }
+    }
+    expected += wave.expected;
+    missing.push(...wave.missing);
+    elsewhere.push(...wave.elsewhere);
+    waves.push(wave);
+  }
+  return { waves, expected, missing, elsewhere };
 }
 
 /** Read all records from the log (missing file → []). Skips blank lines. */
@@ -275,8 +473,114 @@ function readArg(src) {
   return src;
 }
 
+/** Pull `--flag value` / `--flag` out of an argv tail into a plain object. */
+function parseFlags(rest) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    const a = rest[i];
+    if (!a.startsWith('--')) { positional.push(a); continue; }
+    const key = a.slice(2);
+    const next = rest[i + 1];
+    if (next === undefined || next.startsWith('--')) flags[key] = true;
+    else { flags[key] = next; i += 1; }
+  }
+  return { flags, positional };
+}
+
+/** `ingest-wave`: derive a whole engine wave's records and append the new ones. */
+function ingestWave(rest) {
+  const { flags, positional } = parseFlags(rest);
+  const reportPath = positional[0];
+  if (!reportPath) {
+    process.stderr.write('usage: ingest-wave <report.json> --outcomes <json|@file|-> [--run-id R] [--config P] [--allow-missing] [--dry-run]\n');
+    process.exit(2);
+  }
+  const report_ = JSON.parse(readFileSync(reportPath, 'utf8'));
+  const loaded = typeof flags.config === 'string'
+    ? { source: flags.config, context: JSON.parse(readFileSync(flags.config, 'utf8')) }
+    : loadWaveContext(reportPath);
+  // The wave's own artifacts outrank the ambient env var: a stale exported
+  // SHIP_DAG_RUN_ID from an earlier run must not relabel this wave's records.
+  const runId = (typeof flags['run-id'] === 'string' && flags['run-id'])
+    || loaded.context?.runId
+    || runIdFromConfigName(loaded.context?.name)
+    || process.env.SHIP_DAG_RUN_ID
+    || undefined;
+  const outcomes = typeof flags.outcomes === 'string' ? JSON.parse(readArg(flags.outcomes)) : undefined;
+  const { records, missing, unknown } = deriveWaveRecords({
+    report: report_, config: loaded.context, runId, outcomes,
+  });
+  if (records.length > 0 && !records[0].runId) {
+    // Without a run id the records are ungroupable, which is the exact failure
+    // this command exists to prevent — say so rather than letting each record
+    // fail validation one by one.
+    process.stderr.write('telemetry: REFUSED — no run id: pass --run-id, export SHIP_DAG_RUN_ID, or give the config a ship-dag-<runId> name\n');
+    process.exit(2);
+  }
+  if (unknown.length > 0) {
+    process.stderr.write(`telemetry: WARNING — outcome supplied for ${unknown.length} ref(s) this report never ran: ${unknown.join(', ')}\n`);
+  }
+  if (missing.length > 0 && !flags['allow-missing']) {
+    // The under-emission defect, made loud: a half-supplied wave is refused
+    // whole rather than half-written, and every forgotten ref is named. The
+    // engine report is durable, so re-running with the rest costs nothing.
+    process.stderr.write(
+      `telemetry: REFUSED — no outcome supplied for ${missing.length} of ${missing.length + records.length} issue(s) in this wave:\n`
+      + missing.map((r) => `  ${r}\n`).join('')
+      + 'Supply { finalState, reviewVerdict?, findings?, bounces?, hitl? } for each, then re-run.\n'
+      + 'Pass --allow-missing to record only the issues you did supply.\n',
+    );
+    process.exit(2);
+  }
+  if (flags['dry-run']) {
+    process.stdout.write(`${JSON.stringify(records, null, 2)}\n`);
+    process.stderr.write(`telemetry: dry run — ${records.length} record(s), nothing written\n`);
+    return;
+  }
+  const { appended, skipped, failed } = appendUniqueRecords(records, { path: telemetryPath() });
+  for (const f of failed) process.stderr.write(`telemetry: WARNING — dropped a record: ${f.error}\n`);
+  const notes = [`appended ${appended.length}`];
+  if (skipped.length) notes.push(`${skipped.length} already logged`);
+  if (failed.length) notes.push(`${failed.length} invalid`);
+  if (missing.length) notes.push(`${missing.length} unsupplied`);
+  process.stderr.write(`${notes.join(', ')} → ${telemetryPath()}\n`);
+}
+
+/** `audit`: engine waves that ran on disk vs. records that reached the log. */
+function auditCli(rest) {
+  const { flags } = parseFlags(rest);
+  const baseDir = typeof flags['base-dir'] === 'string' ? flags['base-dir'] : defaultEngineBaseDir();
+  const result = auditWaves({ baseDir, records: readRecords(telemetryPath()) });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  const lines = [
+    `engine waves:      ${result.waves.length} under ${baseDir}`,
+    `issue rows:        ${result.expected}`,
+    `unrecorded:        ${result.missing.length}`,
+    `logged under another runId: ${result.elsewhere.length}`,
+  ];
+  for (const w of result.waves) {
+    if (w.missing.length === 0 && w.elsewhere.length === 0) continue;
+    lines.push(`  ${w.runId ?? '(unknown run)'} — ${w.present}/${w.expected} recorded`
+      + (w.missing.length ? `; missing ${w.missing.join(', ')}` : '')
+      + (w.elsewhere.length ? `; elsewhere ${w.elsewhere.join(', ')}` : ''));
+  }
+  process.stderr.write(`${lines.join('\n')}\n`);
+}
+
 function main(argv) {
   const [cmd, ...rest] = argv;
+  if (cmd === 'run-id') {
+    // Minted here rather than in the agent's head: an id invented per-message
+    // drifts, and per-run grouping is exactly what drift destroys.
+    const { flags } = parseFlags(rest);
+    const existing = process.env.SHIP_DAG_RUN_ID;
+    const label = typeof flags.label === 'string' ? flags.label : undefined;
+    process.stdout.write(`${existing || mintRunId({ label })}\n`);
+    return;
+  }
+  if (cmd === 'ingest-wave') return ingestWave(rest);
+  if (cmd === 'audit') return auditCli(rest);
   if (cmd === 'append') {
     const src = rest[0];
     if (!src) { process.stderr.write('usage: append <json|@file|->\n'); process.exit(2); }
@@ -302,7 +606,7 @@ function main(argv) {
     process.stderr.write(`${renderReport(rep)}\n`);
     return;
   }
-  process.stderr.write('usage: telemetry.mjs <append|report> ...\n');
+  process.stderr.write('usage: telemetry.mjs <run-id|append|ingest-wave|audit|report> ...\n');
   process.exit(2);
 }
 

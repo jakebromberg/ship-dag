@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { deriveSlug, buildConfig, unknownCiRepos } from './emit-config.mjs';
 
 // A minimal well-formed spec the ready-wave hands the emitter.
@@ -171,4 +175,102 @@ test('repo-ci-profiles.json makes daisysguide/backend a known-CI repo (no unveri
     built.postSessionCheck?.commands?.length > 0,
     'daisysguide/backend must carry executable CI commands',
   );
+});
+
+// ---- the telemetry side effect (SKILL.md steps 3 + 4a) --------------------
+// Driven through the CLI with SHIP_DAG_TELEMETRY pointed at a temp file: the
+// real run log is collected data and the suite must never write to it.
+
+test('CLI: emitting a config drops the wave sidecar and logs the point-A deferrals', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ship-dag-emit-'));
+  const log = join(dir, 'runs.jsonl');
+  const stateDir = join(dir, 'state-run1');
+  const specPath = join(dir, 'spec.json');
+  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+  try {
+    writeFileSync(specPath, JSON.stringify(spec({
+      name: 'ship-dag-sd-20260831-104814',
+      wave: 2,
+      stateDir,
+      deferred: [
+        { ref: 'WXYC/library-metadata-lookup#930', complexity: 'complex' },
+        { number: 931 },
+      ],
+    })));
+    const res = spawnSync(process.execPath, [cli, specPath], {
+      encoding: 'utf8', env: { ...process.env, SHIP_DAG_TELEMETRY: log },
+    });
+    assert.equal(res.status, 0, res.stderr);
+    // The config still goes to stdout unchanged — the side effect is additive.
+    assert.equal(JSON.parse(res.stdout).name, 'ship-dag-sd-20260831-104814');
+
+    const side = JSON.parse(readFileSync(join(stateDir, 'ship-dag-wave.json'), 'utf8'));
+    assert.equal(side.runId, 'sd-20260831-104814');
+    assert.equal(side.wave, 2);
+    assert.deepEqual(side.issues[0], {
+      ref: 'WXYC/library-metadata-lookup#924', repo: 'WXYC/library-metadata-lookup',
+      number: 924, complexity: 'normal', assignment: null,
+    });
+    assert.deepEqual(side.deferred, ['WXYC/library-metadata-lookup#930', 'WXYC/library-metadata-lookup#931']);
+
+    const recs = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(recs.length, 2);
+    assert.deepEqual(recs.map((r) => r.issue), [930, 931]);
+    for (const r of recs) {
+      assert.equal(r.runId, 'sd-20260831-104814');
+      assert.equal(r.triageStatus, 'needs-decision');
+      assert.equal(r.finalState, 'blocked-hitl');
+      assert.equal(r.hitl.pointA, true);
+      assert.equal(r.implStatus, null);
+    }
+
+    // Re-emitting the same wave (a retry, a regenerated config) must not double-log.
+    assert.equal(spawnSync(process.execPath, [cli, specPath], {
+      encoding: 'utf8', env: { ...process.env, SHIP_DAG_TELEMETRY: log },
+    }).status, 0);
+    assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI: a wave with no deferrals writes the sidecar and no telemetry at all', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ship-dag-emit-'));
+  const log = join(dir, 'runs.jsonl');
+  const specPath = join(dir, 'spec.json');
+  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+  try {
+    writeFileSync(specPath, JSON.stringify(spec({ stateDir: join(dir, 'st') })));
+    const res = spawnSync(process.execPath, [cli, specPath], {
+      encoding: 'utf8', env: { ...process.env, SHIP_DAG_TELEMETRY: log },
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(existsSync(join(dir, 'st', 'ship-dag-wave.json')));
+    assert.equal(existsSync(log), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI: an unwritable stateDir warns but never fails config emission', () => {
+  // Best-effort is the contract — a broken telemetry write must not take down
+  // a wave, so the config must still reach stdout with an exit code of 0.
+  const dir = mkdtempSync(join(tmpdir(), 'ship-dag-emit-'));
+  const blocker = join(dir, 'not-a-dir');
+  const specPath = join(dir, 'spec.json');
+  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+  try {
+    writeFileSync(blocker, 'this is a file, not a directory');
+    writeFileSync(specPath, JSON.stringify(spec({ stateDir: blocker, deferred: [{ number: 930 }] })));
+    const res = spawnSync(process.execPath, [cli, specPath], {
+      encoding: 'utf8', env: { ...process.env, SHIP_DAG_TELEMETRY: join(dir, 'runs.jsonl') },
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).name, 'ship-dag-run1');
+    assert.match(res.stderr, /WARNING — could not write the wave sidecar/);
+    // The point-A records are independent of the sidecar and still land.
+    assert.equal(readFileSync(join(dir, 'runs.jsonl'), 'utf8').trim().split('\n').length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
