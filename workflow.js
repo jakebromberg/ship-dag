@@ -10,7 +10,8 @@ export const meta = {
 // args: {
 //   repo:    "owner/repo",
 //   blockOn: ["correctness","security"],          // categories that block auto-merge
-//   issues:  [{ number, digest, complexity, implEffort, reviewEffort }]
+//   issues:  [{ number, digest, complexity, implEffort, reviewEffort, sourceEstimate }]
+//            sourceEstimate is triage's added-production-source budget (default 200).
 //            complexity ∈ "mechanical"|"normal"|"complex" (from triage); implEffort/
 //            reviewEffort optional explicit overrides.
 //   reviewDir: absolute dir the review subagents write their findings into
@@ -80,10 +81,11 @@ function implementPrompt(iss) {
     `2. Read repo + package CLAUDE.md and the existing patterns in the module you're touching. Match them.`,
     `3. Implement the issue test-first (failing test → code → passing test), smallest correct change, no drive-by refactors.`,
     `4. Run the repo's local CI (lint/format/typecheck/tests, or \`npm run ci:*\`). Only proceed on green.`,
-    `5. Commit (ghost-writer: no Claude/AI attribution anywhere), push a dedicated branch, open a PR whose body has \`Closes #${iss.number}\` and cross-references the issue.`,
-    `6. If mid-implementation you hit a genuine open question (ambiguous spec, an architectural fork, a new third-party dependency) that you cannot resolve from the issue + repo conventions, STOP: return status "blocked" with the questions in openQuestions and DO NOT push a guess.`,
+    `5. Size check — run it as you work, and again before you commit. Your budget is ${iss.sourceEstimate || 200} added lines of production source; tests, generated data, and docs sit outside it and must never be trimmed to fit. Measure with \`git diff --stat "$(git merge-base HEAD "origin/$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)")"\` and count only the source files. Over by more than half: STOP and cut — take the change back to the last point where the tests pass and the slice stands on its own, push that, and record the remainder (what you left undone, and the seam you cut on) under a \`## Deferred\` heading in the PR body and in splitRemainder. A narrow PR that lands beats a complete one that stalls in review.`,
+    `6. Commit (ghost-writer: no Claude/AI attribution anywhere), push a dedicated branch, open a PR whose body has \`Closes #${iss.number}\` and cross-references the issue.`,
+    `7. If mid-implementation you hit a genuine open question (ambiguous spec, an architectural fork, a new third-party dependency) that you cannot resolve from the issue + repo conventions, STOP: return status "blocked" with the questions in openQuestions and DO NOT push a guess.`,
     ``,
-    `Return the schema: issue, status (pushed|blocked|error), branch, pr, ciStatus, openQuestions, notes.`,
+    `Return the schema: issue, status (pushed|blocked|error), branch, pr, ciStatus, openQuestions, splitRemainder, notes.`,
   ].join('\n')
 }
 
