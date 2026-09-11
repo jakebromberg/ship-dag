@@ -92,6 +92,20 @@ export function unknownCiRepos(spec) {
 }
 
 /** Build the engine config object from a ready-wave spec. */
+// Triage's per-issue line budget rides on the *description*, not on a new field.
+// The engine interpolates a fixed set of prompt variables (ISSUE_NUMBER, SLUG,
+// DESCRIPTION, ...) and leaves any unrecognized `{{...}}` placeholder intact, so
+// a `{{SOURCE_ESTIMATE}}` would leak literally into the implementer's prompt.
+// DESCRIPTION is the one channel that carries arbitrary triage text through.
+// A missing, zero, negative, or non-numeric estimate is dropped rather than
+// rendered — an implementer told its budget is "NaN lines" is worse off than one
+// told nothing, who falls back to the prompt template's standing 200-line rule.
+export function withLineBudget(description, sourceEstimate) {
+  const n = Number(sourceEstimate);
+  if (!Number.isFinite(n) || n <= 0) return description;
+  return `${description}\n\nSize budget: about ${Math.round(n)} added lines of production source. Tests, generated data, and docs sit outside the budget — do not trim them to fit. If the change runs more than half again past it, stop at the last green, coherent point and push that.`;
+}
+
 export function buildConfig(spec) {
   const repos = {};
   for (const r of distinctRepos(spec)) {
@@ -110,7 +124,7 @@ export function buildConfig(spec) {
       slug: issue.slug || deriveSlug(number, issue.title),
       repo: repoOfIssue(issue, spec),
       dependsOn: [], // every ready-wave issue is independent → one flat parallel wave
-      description: issue.digest || 'See the GitHub issue for the canonical spec.',
+      description: withLineBudget(issue.digest || 'See the GitHub issue for the canonical spec.', issue.sourceEstimate),
     };
     // Optional per-issue routing — omitted fields fall back to engine defaults
     // (defaultModel sonnet; effort derived from complexity by the model-effort policy).
