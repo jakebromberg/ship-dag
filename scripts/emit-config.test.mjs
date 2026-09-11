@@ -95,6 +95,45 @@ test('a missing digest degrades to a read-the-issue placeholder', () => {
   assert.match(c.issues[0].description, /issue/i);
 });
 
+test('a sourceEstimate appends a line budget to the description the implementer reads', () => {
+  const c = buildConfig(spec({
+    issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap the bulk concurrency env.', sourceEstimate: 120 }],
+  }));
+  const d = c.issues[0].description;
+  assert.match(d, /Cap the bulk concurrency env\./); // the digest survives verbatim
+  assert.match(d, /120/);
+  assert.match(d, /production source/i);
+});
+
+test('the budget rides on the description even when triage produced no digest', () => {
+  const c = buildConfig(spec({
+    issues: [{ number: 7, repo: 'WXYC/library-metadata-lookup', sourceEstimate: 80 }],
+  }));
+  assert.match(c.issues[0].description, /issue/i);
+  assert.match(c.issues[0].description, /80/);
+});
+
+test('no sourceEstimate leaves the description exactly as triage wrote it', () => {
+  const c = buildConfig(spec());
+  assert.equal(c.issues[0].description, 'Cap the bulk concurrency env below the interactive lane.');
+});
+
+test('a non-positive or non-numeric sourceEstimate is dropped, not emitted as a nonsense budget', () => {
+  for (const bad of [0, -5, 'lots', null, NaN, undefined]) {
+    const c = buildConfig(spec({
+      issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap it.', sourceEstimate: bad }],
+    }));
+    assert.equal(c.issues[0].description, 'Cap it.', `sourceEstimate ${String(bad)} should be ignored`);
+  }
+});
+
+test('sourceEstimate is folded into the description, never emitted as an engine issue field', () => {
+  const c = buildConfig(spec({
+    issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap it.', sourceEstimate: 120 }],
+  }));
+  assert.ok(!('sourceEstimate' in c.issues[0]));
+});
+
 test('repos: map is assembled from the distinct issue repos with per-repo base + CI', () => {
   const c = buildConfig(spec({
     repos: {
