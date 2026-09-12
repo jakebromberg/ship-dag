@@ -211,3 +211,64 @@ test('repo-ci-profiles.json makes daisysguide/backend a known-CI repo (no unveri
     'daisysguide/backend must carry executable CI commands',
   );
 });
+
+// The daisysguide/ios profile was recovered from a clone whose object store had
+// corrupted, so it never reached origin; these pin the parts that were learned
+// the hard way and would be silently lossy to "simplify".
+test('repo-ci-profiles.json makes daisysguide/ios a known-CI repo (no unverified wave)', () => {
+  const profiles = JSON.parse(
+    readFileSync(new URL('../references/repo-ci-profiles.json', import.meta.url), 'utf-8'),
+  ).profiles;
+  const repo = 'daisysguide/ios';
+  const s = spec({
+    repo,
+    repos: { [repo]: profiles[repo] },
+    issues: [{ number: 1, repo, digest: 'beta ship-dag run' }],
+  });
+  assert.deepEqual(unknownCiRepos(s), []);
+  const built = buildConfig(s).repos[repo];
+  assert.equal(built.baseBranch, 'main');
+  assert.ok(
+    built.postSessionCheck?.commands?.length > 0,
+    'daisysguide/ios must carry executable CI commands',
+  );
+});
+
+test('daisysguide/ios xcodebuild commands redirect their logs (execSync maxBuffer is 1 MiB)', () => {
+  const { commands } = JSON.parse(
+    readFileSync(new URL('../references/repo-ci-profiles.json', import.meta.url), 'utf-8'),
+  ).profiles['daisysguide/ios'];
+  const xcodebuild = commands.filter((c) => c.includes('xcodebuild'));
+  assert.ok(xcodebuild.length > 0, 'expected xcodebuild commands');
+  // An unredirected full-suite log blows execSync's default maxBuffer and every
+  // node dies ENOBUFS *after* opening its PR — the failure the _note records.
+  for (const c of xcodebuild) {
+    assert.match(c, />\s*"\$\{TMPDIR:-\/tmp\}\//, `unredirected xcodebuild command: ${c.slice(0, 60)}`);
+  }
+});
+
+test('daisysguide/ios runs the resolve-sim-udid guard suite with DGS_NO_REAP unset', () => {
+  const { commands } = JSON.parse(
+    readFileSync(new URL('../references/repo-ci-profiles.json', import.meta.url), 'utf-8'),
+  ).profiles['daisysguide/ios'];
+  // The run exports DGS_NO_REAP=1 for the resolver calls inside the xcodebuild
+  // entries; the guard suite pins default-reaper behaviour from ambient env, so
+  // with the var set 1 of its 79 tests fails and the check dies at command 2.
+  const guard = commands.find((c) => c.includes('test_resolve_sim_udid.py'));
+  assert.ok(guard, 'expected the resolve-sim-udid guard suite');
+  assert.match(guard, /env -u DGS_NO_REAP/);
+});
+
+test('every profile carrying a node_modules wipe retries it (macOS re-creates .DS_Store mid-delete)', () => {
+  const { profiles } = JSON.parse(
+    readFileSync(new URL('../references/repo-ci-profiles.json', import.meta.url), 'utf-8'),
+  );
+  for (const [repo, profile] of Object.entries(profiles)) {
+    for (const c of profile.commands ?? []) {
+      if (!c.includes('rm -rf node_modules')) continue;
+      // A single rm can lose the race with macOS re-creating .DS_Store inside a
+      // subdir it has already walked; the bounded retry wins it.
+      assert.match(c, /for i in 1 2 3; do/, `${repo}: unretried node_modules wipe`);
+    }
+  }
+});
