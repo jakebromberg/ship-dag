@@ -42,22 +42,23 @@
     "WXYC/Backend-Service": {
       "baseBranch": "main",
       "commands": [
-        "npm ci --no-audit --no-fund --prefer-offline",
+        "npm ci --include=dev --no-audit --no-fund --prefer-offline",
         "npm run lint",
         "npm run format:check",
         "npm run typecheck",
-        "npm run test:unit"
+        "NODE_ENV=test npm run test:unit"
       ],
       "_note": "npm test is the INTEGRATION suite: it dotenvx-runs jest against a live stack (wait-on localhost:8080/8082 healthchecks) and times out in a bare engine worktree (ship-dag-bs1990-1991-20260807 wave-1 lesson, 2026-08-07). Engine checks stay stack-free (test:unit); the merge queue runs `npm run ci:testmock` (Docker) per PR before merging. CI lint-and-typecheck also runs prettier --check (format:check) — added 2026-08-08 after PR#2041 caught it in CI only."
     },
     "WXYC/dj-site": {
       "baseBranch": "main",
       "commands": [
-        "npm ci --no-audit --no-fund --prefer-offline",
+        "for i in 1 2 3; do rm -rf node_modules 2>/dev/null && break; done; npm ci --include=dev --no-audit --no-fund --prefer-offline",
         "npm run lint",
         "npx tsc --noEmit",
-        "npx vitest run"
-      ]
+        "NODE_ENV=test npx vitest run"
+      ],
+      "_note": "macOS re-creates .DS_Store inside node_modules subdirs while a delete walks them. npm ci removes a package's known files then rmdir's the dir, so a fresh .DS_Store makes that rmdir fail ENOTEMPTY and takes the whole check down (observed on node_modules/date-fns; prqueue-20260831 waves 2 and 3, at --parallel 4 and --parallel 1 alike, so it is not install contention). A single rm -rf can lose the same race (observed leaving only node_modules/{,next/,next/dist/}.DS_Store); the bounded retry wins it."
     },
     "WXYC/wxyc-shared": {
       "baseBranch": "main",
@@ -148,6 +149,25 @@
         "deno test --allow-read scripts/workflow-tests/",
         "cd supabase/functions || exit 1; test_files=\"\"; for dir in */; do if [ -f \"$dir/test.ts\" ]; then test_files=\"$test_files $dir/test.ts\"; elif [ -d \"$dir/__tests__\" ]; then test_files=\"$test_files $dir/__tests__\"; fi; done; for f in _shared/*.test.ts; do [ -f \"$f\" ] && test_files=\"$test_files $f\"; done; for f in */v*/test.ts; do [ -f \"$f\" ] && test_files=\"$test_files $f\"; done; if [ -n \"$test_files\" ]; then deno test --allow-all --ignore='**/integration-test.ts' $test_files; fi"
       ]
+    },
+    "daisysguide/ios": {
+      "baseBranch": "main",
+      "commands": [
+        "./scripts/bootstrap-xcconfig.sh",
+        "env -u DGS_NO_REAP python3 scripts/test_resolve_sim_udid.py",
+        "python3 scripts/test_generate_illustrations.py",
+        "python3 scripts/test_refresh_goldens.py",
+        "python3 scripts/test_bootstrap_xcconfig.py",
+        "python3 scripts/test_testflight_workflow.py",
+        "python3 scripts/test_plan_docs.py",
+        "python3 scripts/test_ui_tests_workflow.py",
+        "python3 scripts/test_ui_test_reel.py",
+        "xcodegen generate",
+        "UDID=$(python3 scripts/resolve-sim-udid.py) && xcodebuild test -project DaisysGuide.xcodeproj -scheme DaisysGuide -destination \"platform=iOS Simulator,id=$UDID\" -derivedDataPath DerivedData -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO > \"${TMPDIR:-/tmp}/ship-dag-ci-$$.log\" 2>&1 || { tail -120 \"${TMPDIR:-/tmp}/ship-dag-ci-$$.log\"; exit 1; }",
+        "UDID=$(python3 scripts/resolve-sim-udid.py) && xcodebuild build -project DaisysGuide.xcodeproj -scheme DaisysGuideCatalog -destination \"platform=iOS Simulator,id=$UDID\" -derivedDataPath DerivedData -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO > \"${TMPDIR:-/tmp}/ship-dag-ci-cat-$$.log\" 2>&1 || { tail -120 \"${TMPDIR:-/tmp}/ship-dag-ci-cat-$$.log\"; exit 1; }",
+        "rm -rf DerivedData || { sleep 5; rm -rf DerivedData; }"
+      ],
+      "_note": "Added 2026-09-06 (beta ship-DAG run; plan: daisyguide docs/plans/2026-09-06-beta-ship-dag.md, section 0.5 step 3). Mirrors ios/scripts/ci.sh with three divergences: (1) no sudo xcode-select pin - inert on that machine (only /Applications/Xcode.app exists, the Xcode_*.app glob matches nothing, ci.sh takes its fallback branch), real the day a versioned Xcode is installed; (2) plain `xcodegen generate` vs ci.sh's --use-cache branch - inert in an always-fresh worktree (no pbxproj to be stale); (3) -derivedDataPath DerivedData plus the trailing rm - ci.sh passes/does neither. The -derivedDataPath pins what is otherwise only the machine-global IDECustomDerivedDataLocation Xcode pref; the rm is a disk budget for halted-path runs where worktrees persist (mergePolicy none + halted merge queue), at the cost of a cold rebuild per review-fix iteration - judge whether it still earns that tax before reusing. The redirect is MANDATORY: a full suite log blows execSync's 1 MiB default maxBuffer and every node dies ENOBUFS after opening its PR (same lesson as WXYC/wxyc-ios-64). resolve-sim-udid.py gives each worktree its own simulator; NEVER hand-create devices, and never `git worktree remove` while any node runs - the resolver's orphan reaper fires twice per node here; export DGS_NO_REAP=1 for the run as the backstop and unset it after. The eight python guards are the repo's pre-Xcode checks (test.yml); milliseconds each. 2026-09-06 addendum: the resolve-sim-udid guard suite runs with `env -u DGS_NO_REAP` because the run exports DGS_NO_REAP=1 for the resolver invocations inside the xcodebuild entries, and the suite pins default-reaper behavior from ambient env — with the var set, 1 of its 79 tests fails and the whole check dies at command 2. The final rm retries once after 5s: an SPM writer can repopulate SourcePackages between readdir and rmdir, failing an otherwise-green check at the cleanup step."
     },
     "jakebromberg/code-audit-pipeline": {
       "baseBranch": "main",
