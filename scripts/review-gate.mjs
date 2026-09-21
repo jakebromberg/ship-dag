@@ -78,15 +78,50 @@ export function parseBlockOn(raw) {
  * accepted deliberately: `indexOf('--flag')` alone ignored the equals form, so
  * an operator who widened the gate with `--block-on=...` silently got the
  * narrower default instead of an error.
+ *
+ * A flag *present with no value* is an error, not an absent flag. The two are
+ * distinguishable, and conflating them is the same silent narrowing: an
+ * operator who typed `--block-on` and lost the list would get the default gate
+ * and no signal at all.
+ *
  * @param {string[]} argv
  * @param {string} flag
  * @returns {string|undefined} the value, or undefined when the flag is absent
+ * @throws {Error} when the flag is present but carries no value
  */
 export function readFlag(argv, flag) {
   const eq = argv.find((a) => a.startsWith(`${flag}=`));
-  if (eq !== undefined) return eq.slice(flag.length + 1);
+  if (eq !== undefined) {
+    const value = eq.slice(flag.length + 1);
+    if (!value) throw new Error(`${flag} was given with no value`);
+    return value;
+  }
   const i = argv.indexOf(flag);
-  return i === -1 ? undefined : argv[i + 1];
+  if (i === -1) return undefined;
+  const value = argv[i + 1];
+  if (value === undefined || value.startsWith('--')) throw new Error(`${flag} was given with no value`);
+  return value;
+}
+
+/**
+ * The positional argument, skipping every `--flag` *and* the value a
+ * space-separated one consumes. Scanning for "the first argv entry that isn't a
+ * `--flag`" took `--block-on correctness,security review.json`'s list as the
+ * review path and died `ENOENT` — exit 3, "unreadable review", for what is
+ * plainly a malformed invocation.
+ *
+ * @param {string[]} argv
+ * @param {string[]} [valueFlags]  flags whose space-separated form takes a value
+ * @returns {string|undefined}
+ */
+export function readPositional(argv, valueFlags = []) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (!a.startsWith('--')) return a;
+    // `--flag=value` carries its own value; `--flag value` eats the next entry.
+    if (valueFlags.includes(a)) i += 1;
+  }
+  return undefined;
 }
 
 /**
@@ -114,7 +149,11 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
     throw new Error('review has no findings array — refusing to treat an unreadable review as clean');
   }
   const gate = new Set(blockOn.map((c) => c.toLowerCase()));
-  const blocking = [];
+  // Two lists, concatenated for the listed window: a reviewer who coins three
+  // category names would otherwise push the real defects out of `blocking[≤3]`,
+  // which is the only list the operator reads in a wave summary.
+  const byRule = [];
+  const byTaxonomy = [];
   const unknown = new Set();
   let nitCount = 0;
   for (const f of review.findings) {
@@ -122,29 +161,33 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
     // trailing space is transcription noise, not a different category, and
     // reporting `"correctness "` as unknown gave the operator nothing to act on.
     const category = String(f?.category ?? '').trim().toLowerCase();
-    const known = category && CATEGORIES.includes(category);
+    const known = Boolean(category) && CATEGORIES.includes(category);
     if (!known) unknown.add(category || '(blank)');
     const confirmed = String(f?.verdict ?? '').toUpperCase() === 'CONFIRMED';
-    if (!known || (gate.has(category) && confirmed)) blocking.push(f);
-    else nitCount += 1;
-  }
-  return {
-    issue: review.issue ?? null,
-    verdict: blocking.length ? 'blocking' : review.findings.length ? 'nits-only' : 'clean',
-    blockingCount: blocking.length,
-    nitCount,
-    findingCount: review.findings.length,
     // One line each: enough for the human to recognize the defect in a wave
     // summary or a grill, without lifting the prose into context wholesale.
-    blocking: blocking.slice(0, MAX_LISTED).map((f) => ({
-      // `?? null` like its siblings: a blank/absent category now reaches this
-      // projection, and `JSON.stringify` drops an `undefined` value outright —
-      // the operator would get an entry with no `category` key at all.
-      category: f.category ?? null,
-      file: f.file ?? null,
-      line: f.line ?? null,
-      summary: f.summary ?? null,
-    })),
+    // Every field is `?? null` — `JSON.stringify` drops an `undefined` value
+    // outright, so the operator would get an entry missing that key entirely —
+    // and `category` reports the same normalized value `unknownCategories[]`
+    // does, rather than two spellings of one finding.
+    const entry = {
+      category: category || null,
+      file: f?.file ?? null,
+      line: f?.line ?? null,
+      summary: f?.summary ?? null,
+    };
+    if (!known) byTaxonomy.push(entry);
+    else if (gate.has(category) && confirmed) byRule.push(entry);
+    else nitCount += 1;
+  }
+  const blockingCount = byRule.length + byTaxonomy.length;
+  return {
+    issue: review.issue ?? null,
+    verdict: blockingCount ? 'blocking' : review.findings.length ? 'nits-only' : 'clean',
+    blockingCount,
+    nitCount,
+    findingCount: review.findings.length,
+    blocking: [...byRule, ...byTaxonomy].slice(0, MAX_LISTED),
     unknownCategories: [...unknown],
   };
 }
@@ -161,7 +204,7 @@ export function gateFile(path, blockOn = DEFAULT_BLOCK_ON) {
 }
 
 function main(argv) {
-  const path = argv.find((a) => !a.startsWith('--'));
+  const path = readPositional(argv, ['--block-on']);
   if (!path) {
     process.stderr.write('usage: review-gate.mjs <review.json> [--block-on correctness,security]\n');
     process.exit(2);
@@ -183,9 +226,9 @@ function main(argv) {
     process.exit(3);
   }
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
-  // JSON-quoted so a category carrying whitespace or punctuation is legible as
-  // the literal string the reviewer wrote, not as bare prose the operator would
-  // read straight past.
+  // JSON-quoted so a coined multi-word category (`test quality`) or one
+  // carrying punctuation reads as the single literal string the reviewer wrote,
+  // rather than as bare prose the operator scans straight past.
   const unknown = out.unknownCategories.length
     ? `; unknown categories: ${out.unknownCategories.map((c) => JSON.stringify(c)).join(', ')}`
     : '';
