@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,17 +57,56 @@ test('parseBlockOn: rejects a category outside the enum instead of gating on one
   assert.deepEqual(parseBlockOn(CATEGORIES.join(',')), CATEGORIES);
 });
 
-test('normalizeCategory: maps every known alias to its canonical spelling, and passes through the rest', () => {
-  for (const [alias, canonical] of Object.entries(CATEGORY_ALIASES)) {
-    assert.equal(normalizeCategory(alias), canonical);
-  }
+test('normalizeCategory: maps each known alias to its canonical spelling, and passes through the rest', () => {
+  // Literal cases, not a loop over CATEGORY_ALIASES: deriving the cases from the
+  // map under test made this pass vacuously — empty the map and the loop ran
+  // zero times, so the one thing the test exists to catch could not turn it red.
+  assert.equal(normalizeCategory('conventions'), 'convention');
+  assert.equal(normalizeCategory('contract-conformance'), 'contract');
   assert.equal(normalizeCategory('correctness'), 'correctness');
   assert.equal(normalizeCategory('vibes'), 'vibes');
+});
+
+test('normalizeCategory: an Object.prototype key is a category like any other, never an inherited member', () => {
+  // `CATEGORY_ALIASES` was an object literal, so `['constructor']` resolved to
+  // the `Object` function and `['__proto__']` to `Object.prototype`. The gate
+  // still failed closed, but the *report* broke: JSON.stringify drops a
+  // function, so `unknownCategories` read `[null]` and `blocking[]` shipped
+  // with no `category` key — defeating #25's "name it without opening the
+  // review file". Pass-through is the only correct answer for all three.
+  for (const key of ['constructor', '__proto__', 'tostring', 'hasownproperty', 'valueof']) {
+    assert.equal(normalizeCategory(key), key, `${key} must pass through unchanged`);
+  }
+});
+
+test('CATEGORY_ALIASES: every alias resolves to a real category and is not itself one', () => {
+  // The assertion nothing made before: an alias pointing at a non-category
+  // would normalize a finding into a name the membership test rejects, failing
+  // it closed forever with no way for a reviewer to spell it correctly.
+  assert.ok(CATEGORY_ALIASES.size > 0, 'an empty alias map makes the loop below vacuous');
+  for (const [alias, canonical] of CATEGORY_ALIASES) {
+    assert.ok(CATEGORIES.includes(canonical), `alias ${alias} points at ${canonical}, which is not a category`);
+    assert.ok(!CATEGORIES.includes(alias), `${alias} is a category, so aliasing it away makes it unspellable`);
+  }
 });
 
 test('parseBlockOn: normalizes an aliased spelling before validating it, rather than rejecting it', () => {
   assert.deepEqual(parseBlockOn('conventions'), ['convention']);
   assert.deepEqual(parseBlockOn('correctness,contract-conformance'), ['correctness', 'contract']);
+});
+
+test('gateReview: the --block-on side is normalized too, so a programmatic caller gates identically to the CLI', () => {
+  // The CLI funnels its list through `parseBlockOn`, which normalizes. A caller
+  // importing `gateReview` does not, so lowercasing alone left the exported API
+  // gating on a spelling no finding can carry — the same silent narrowing
+  // `parseBlockOn` was added to prevent, one layer down.
+  const review = { issue: 1, findings: [finding({ category: 'contract' })] };
+  assert.equal(gateReview(review, ['correctness', 'contract-conformance']).verdict, 'blocking');
+  const conventions = { issue: 1, findings: [finding({ category: 'convention' })] };
+  assert.equal(gateReview(conventions, ['Conventions ']).verdict, 'blocking');
+  // Both sides normalize, so every spelling of one category matches every other.
+  assert.equal(gateReview(conventions, ['convention']).verdict, 'blocking');
+  assert.equal(gateReview({ issue: 1, findings: [finding({ category: 'conventions' })] }, ['convention']).verdict, 'blocking');
 });
 
 test('gateReview: an aliased category normalizes to its canonical spelling BEFORE the enum membership test — this is the inversion check', () => {
@@ -191,6 +230,36 @@ test('gateReview: an unrecognized category alongside only real nits still blocks
   assert.deepEqual(g.unknownCategories, ['test-quality']);
 });
 
+test('gateReview: a category named after an Object.prototype key is reported as itself, not as an inherited value', () => {
+  // The alias map used to be an object literal, so `constructor` resolved to
+  // the `Object` function and `__proto__` to `Object.prototype`. The gate still
+  // blocked — but `unknownCategories` carried a function and an object instead
+  // of strings, which is what the operator reads to learn what to fix.
+  const g = gateReview({
+    issue: 1,
+    findings: [
+      finding({ category: 'constructor', verdict: 'PLAUSIBLE' }),
+      finding({ category: '__proto__', verdict: 'PLAUSIBLE' }),
+      finding({ category: 'toString', verdict: 'PLAUSIBLE' }),
+    ],
+  });
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 3);
+  assert.deepEqual(g.unknownCategories, ['constructor', '__proto__', 'tostring']);
+  assert.deepEqual(
+    g.blocking.map((b) => b.category),
+    ['constructor', '__proto__', 'tostring'],
+  );
+});
+
+test('parseBlockOn: an Object.prototype key on the operator’s side is rejected by name', () => {
+  // Same defect on the other side of the gate: the thrown message ran the
+  // resolved value through JSON.stringify, which renders a function as
+  // `undefined` — "--block-on names undefined" told the operator nothing.
+  assert.throws(() => parseBlockOn('constructor'), /"constructor"/);
+  assert.throws(() => parseBlockOn('__proto__'), /"__proto__"/);
+});
+
 test('gateReview: a blank or absent category fails closed the same way, reported as (blank)', () => {
   const blank = gateReview({ issue: 1, findings: [finding({ category: '' })] });
   assert.equal(blank.verdict, 'blocking');
@@ -286,6 +355,21 @@ test('CLI: a blank category is reported quoted and still carries a category key 
   assert.match(stderr, /unknown categories: "\(blank\)"/);
 });
 
+test('CLI: a category named after an Object.prototype key survives JSON.stringify and is named on stderr', () => {
+  // The unit tests above catch the wrong *value*; only the CLI shows the cost.
+  // `JSON.stringify` drops a function, so with the old object-literal alias map
+  // this printed `"unknownCategories": [null]`, a `blocking[]` entry missing its
+  // `category` key entirely, and a stderr line naming nothing at all.
+  const p = reviewFile({ issue: 620, findings: [finding({ category: 'constructor', verdict: 'PLAUSIBLE' })] });
+  const { code, stdout, stderr } = runCli([p]);
+  assert.equal(code, 0);
+  const out = JSON.parse(stdout);
+  assert.equal(out.verdict, 'blocking');
+  assert.deepEqual(out.unknownCategories, ['constructor']);
+  assert.equal(out.blocking[0].category, 'constructor');
+  assert.match(stderr, /unknown categories: "constructor"/);
+});
+
 test('CLI: --block-on accepts the equals spelling identically to the space-separated one', () => {
   // `argv.indexOf('--block-on')` ignored `--block-on=<list>` outright, so an
   // operator who widened the gate silently got the narrower default instead.
@@ -339,4 +423,127 @@ test('CLI: exit codes separate a malformed invocation from an unreadable review'
   assert.equal(truncated.code, 3);
   assert.equal(truncated.stdout, '');
   assert.match(truncated.stderr, /findings/);
+});
+
+// --- Cross-file enum sync ---------------------------------------------------
+//
+// `CATEGORIES` is spelled out in four other files, and SKILL.md's "Keep all
+// copies in sync when editing" was the only thing holding them together — a
+// convention, enforced by nobody. The `convention`/`contract` widening kept
+// them in step by hand; the next edit is free not to. A copy that drifts is
+// worse than a missing one: the Review subagent is prompted from these files,
+// so a stale list tells the reviewer to emit a category the gate then fails
+// closed on, bouncing the PR to `/review-loop`, which has no fix for it.
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Files outside `review-gate.mjs` that enumerate the categories, and how many
+ * enumerations each holds. The counts are pinned so that rewording one list
+ * *out of recognition* fails here rather than passing on the strength of the
+ * file's other copy.
+ */
+const ENUM_SITES = {
+  'references/review-schema.md': 1, // the `category` line of the JSON block
+  'references/retrospective-schema.md': 1, // the inherited-vocabulary sentence
+  'SKILL.md': 2, // the Review block: the "Cover ..." prose and the inline enum
+  'workflow.js': 2, // the mirrored Review prompt: the same two
+};
+
+/** Prose spells `test-coverage` as `test coverage`; both name the same category. */
+const SPELLINGS = new Map(
+  CATEGORIES.flatMap((c) => (c.includes('-') ? [[c, c], [c.replaceAll('-', ' '), c]] : [[c, c]])),
+);
+
+/** Longest alternative first, so `test coverage` never matches as bare `coverage`. */
+const TOKEN = new RegExp(`\\b(?:${[...SPELLINGS.keys()].sort((a, b) => b.length - a.length).join('|')})\\b`, 'g');
+
+/**
+ * What may sit *between* two members of one enumeration: pipes, commas,
+ * whitespace, and a trailing "and". Anything else — a backtick, a quote, a
+ * word — ends the run, which doubles as the escape hatch for prose naming
+ * categories individually (`` `conventions` for `convention` ``) rather than
+ * enumerating them.
+ */
+const SEPARATOR = /^[\s|,]*(?:and\s+)?$/;
+
+/**
+ * A `--block-on` list names the *gate*, which is a chosen subset of the enum
+ * (`--block-on correctness,security,contract` is a documented example, not a
+ * stale copy of `CATEGORIES`). Dropped before the enumerations are read.
+ */
+const BLOCK_ON_LIST = /--block-on[= ][a-z][a-z,-]*/g;
+
+/**
+ * Every category enumeration in a file: a run of three or more category names
+ * joined only by separators, and mentioning `correctness`. Matching on the
+ * names present rather than on a sentence keeps this indifferent to how the
+ * surrounding prose is worded — only list membership and order are pinned.
+ *
+ * @param {string} text
+ * @returns {string[][]} each enumeration, in canonical spellings
+ */
+function categoryLists(raw) {
+  const text = raw.replaceAll(BLOCK_ON_LIST, ' ');
+  const lists = [];
+  let run = [];
+  let end = -1;
+  for (const hit of text.matchAll(TOKEN)) {
+    if (run.length && SEPARATOR.test(text.slice(end, hit.index))) run.push(hit[0]);
+    else {
+      if (run.length >= 3) lists.push(run);
+      run = [hit[0]];
+    }
+    end = hit.index + hit[0].length;
+  }
+  if (run.length >= 3) lists.push(run);
+  return lists.filter((l) => l.includes('correctness')).map((l) => l.map((n) => SPELLINGS.get(n)));
+}
+
+test('categoryLists: reads an enumeration out of prose or a pipe list, and is not fooled by a passing mention', () => {
+  // The sync test below is worth exactly what this matcher is worth: if it
+  // quietly stopped recognizing lists, the whole guard would pass vacuously.
+  assert.deepEqual(
+    categoryLists('one of `correctness | security | simplification | efficiency | test-coverage | convention | contract`'),
+    [CATEGORIES],
+  );
+  assert.deepEqual(
+    categoryLists('Cover correctness, security, simplification, efficiency, test coverage, convention, and contract.'),
+    [CATEGORIES],
+  );
+  assert.deepEqual(categoryLists('(correctness|security|simplification|efficiency|test-coverage|convention|contract)'), [CATEGORIES]);
+  // A stale list is seen, and seen as stale.
+  assert.deepEqual(categoryLists('correctness | security | simplification'), [['correctness', 'security', 'simplification']]);
+  // Not enumerations: prose that happens to use a category word, the two-name
+  // default, and individually quoted names including the alias spellings.
+  assert.deepEqual(categoryLists('whether it names a correctness defect or a cosmetic nit'), []);
+  assert.deepEqual(categoryLists('--block-on correctness,security'), []);
+  // A `--block-on` example names a subset of the enum on purpose, so it is not
+  // a copy that can go stale — even when it is long enough to look like one.
+  assert.deepEqual(categoryLists('widen it per-run: `--block-on correctness,security,contract`'), []);
+  assert.deepEqual(categoryLists('`conventions` for `convention`, `contract-conformance` for `contract`'), []);
+});
+
+test('every file that spells the category enum out agrees with CATEGORIES', () => {
+  for (const [site, expected] of Object.entries(ENUM_SITES)) {
+    const lists = categoryLists(readFileSync(join(REPO_ROOT, site), 'utf8'));
+    assert.equal(
+      lists.length,
+      expected,
+      `${site} holds ${lists.length} category enumerations, expected ${expected} — if one was deliberately added or reworded away, update ENUM_SITES`,
+    );
+    for (const list of lists) {
+      assert.deepEqual(list, CATEGORIES, `${site} enumerates ${list.join(', ')}, which is out of sync with CATEGORIES`);
+    }
+  }
+});
+
+test('SKILL.md documents the default gate, not a stale one', () => {
+  // The `--block-on` argument hint spells DEFAULT_BLOCK_ON rather than the enum,
+  // but drifts for the same reason and at the same cost: an operator reading a
+  // default the gate does not actually apply.
+  const skill = readFileSync(join(REPO_ROOT, 'SKILL.md'), 'utf8');
+  const hints = [...skill.matchAll(/--block-on ([a-z][a-z,-]*)/g)].map((m) => m[1].split(','));
+  assert.ok(hints.length, 'SKILL.md no longer documents a --block-on default');
+  for (const hint of hints) assert.deepEqual(hint, DEFAULT_BLOCK_ON);
 });

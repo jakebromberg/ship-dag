@@ -62,11 +62,20 @@ export const CATEGORIES = [
  * that name. Applied by `normalizeCategory` before every enum membership test
  * — checking membership first would make an aliased spelling fail closed the
  * same as a genuinely unrecognized one, and this map would go dead.
+ *
+ * A `Map`, not an object literal, because the keys are attacker-shaped strings
+ * from a review file: `{}['constructor']` is the `Object` function and
+ * `{}['__proto__']` is `Object.prototype`, so a finding categorized
+ * `constructor` normalized to a *function*. It still failed the membership
+ * test and still blocked, but `JSON.stringify` drops a function outright, so
+ * `unknownCategories` reported `null` and `blocking[]` carried no `category`
+ * key at all — the gate told the operator nothing about what to fix. A `Map`
+ * has no inherited keys to resolve.
  */
-export const CATEGORY_ALIASES = {
-  conventions: 'convention',
-  'contract-conformance': 'contract',
-};
+export const CATEGORY_ALIASES = new Map([
+  ['conventions', 'convention'],
+  ['contract-conformance', 'contract'],
+]);
 
 /**
  * Normalize a trimmed, lowercased category through `CATEGORY_ALIASES`. A
@@ -75,7 +84,7 @@ export const CATEGORY_ALIASES = {
  * @returns {string}
  */
 export function normalizeCategory(category) {
-  return CATEGORY_ALIASES[category] ?? category;
+  return CATEGORY_ALIASES.get(category) ?? category;
 }
 
 /** How many blocking findings the summary lists inline. The count is always exact; the rest are one `path` away. */
@@ -187,7 +196,12 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
   if (!review || !Array.isArray(review.findings)) {
     throw new Error('review has no findings array — refusing to treat an unreadable review as clean');
   }
-  const gate = new Set(blockOn.map((c) => c.toLowerCase()));
+  // Normalized, not merely lowercased, and by the same function the finding
+  // side uses: the CLI runs `blockOn` through `parseBlockOn` first, but a
+  // programmatic caller passing `['contract-conformance']` reaches here raw,
+  // and an un-normalized gate would then match no finding at all — the silent
+  // narrowing `parseBlockOn` exists to prevent.
+  const gate = new Set(blockOn.map((c) => normalizeCategory(String(c).trim().toLowerCase())));
   // Two lists, concatenated for the listed window: a reviewer who coins three
   // category names would otherwise push the real defects out of `blocking[≤3]`,
   // which is the only list the operator reads in a wave summary.
