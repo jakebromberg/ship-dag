@@ -51,6 +51,12 @@ export const DEFAULT_BLOCK_ON = ['correctness', 'security', 'convention', 'contr
  * letting the model grade its own homework, exactly what recomputing the
  * gate from `findings[]` (rather than trusting a self-reported verdict)
  * exists to prevent.
+ *
+ * Every member must be a canonical `CATEGORIES` spelling *and* a member of
+ * `DEFAULT_BLOCK_ON` — a carve-out naming a category the default gate does
+ * not block is inert, and one naming a non-canonical spelling never matches,
+ * since the gate tests it after `normalizeCategory`. Both are pinned by an
+ * invariant test rather than left to the three lists agreeing by hand.
  */
 export const ALWAYS_BLOCK = ['correctness', 'security'];
 
@@ -191,8 +197,8 @@ export function readPositional(argv, valueFlags = []) {
  * A finding blocks iff its `category` is in `blockOn` AND its `verdict` is
  * CONFIRMED AND — for a category outside `ALWAYS_BLOCK` — its own `blocking`
  * field is not explicitly `false` — **or** its `category` is outside
- * `CATEGORIES` (including blank/absent) at all. That third clause is the
- * reviewer's own blocking/nit call, ANDed onto the category test rather than
+ * `CATEGORIES` (including blank/absent) at all. The `blocking` conjunct is
+ * the reviewer's own blocking/nit call, ANDed onto the category test rather than
  * trusted alone: it narrows which findings in a widened category actually
  * block, but can never by itself clear one, and a finding that omits
  * `blocking` fails toward blocking — the same fail-closed rule an
@@ -202,6 +208,22 @@ export function readPositional(argv, valueFlags = []) {
  * fails closed rather than defaulting to "nit". Everything else (PLAUSIBLE
  * findings in a known, non-blocking category) is counted and surfaced but
  * does not block.
+ *
+ * `blocking` is **validated, not coerced**: only a JSON boolean is a usable
+ * value. A finding that omits it fails toward blocking, as documented; a
+ * finding carrying something else (`"false"`, `"no"`, `0`, `null`) also fails
+ * toward blocking *and* has that value named in `malformedBlocking[]`, rather
+ * than being ignored in silence. Coercing instead would mean guessing which
+ * junk values the reviewer meant as a clearance, in the one direction that
+ * merges code.
+ *
+ * When the axis does clear a CONFIRMED finding, that is recorded in
+ * `selfClearedCount` and `selfCleared[≤MAX_LISTED]`. Folded into `nitCount`
+ * alone, the result would be bit-identical to a review that merely had a
+ * PLAUSIBLE nit, and the one thing about this axis that deserves an
+ * operator's scrutiny — the reviewer downgrading its own CONFIRMED finding —
+ * would leave no trace, where the other fail-closed path leaves
+ * `unknownCategories[]`.
  *
  * Throws when `findings` is not an array. That is deliberately fatal rather
  * than defaulted to `[]`: a truncated or half-written review file would
@@ -226,7 +248,12 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
   // which is the only list the operator reads in a wave summary.
   const byRule = [];
   const byTaxonomy = [];
+  // The findings the reviewer's own `blocking: false` cleared, and the
+  // `blocking` values that were present but unusable. Both are reported;
+  // neither changes a count.
+  const selfCleared = [];
   const unknown = new Set();
+  const malformed = new Set();
   let nitCount = 0;
   for (const f of review.findings) {
     // Trimmed as well as lowercased, symmetrically with `parseBlockOn`: a
@@ -251,10 +278,30 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
     // The reviewer's own blocking/nit call, only able to narrow a category
     // ALWAYS_BLOCK doesn't already force — a CONFIRMED correctness or
     // security finding blocks no matter what it says here.
-    const selfNit = f?.blocking === false && !ALWAYS_BLOCK.includes(category);
+    //
+    // Validated rather than coerced, unlike its neighbours above: `verdict`
+    // and `category` coerce because any string they carry is *some* claim the
+    // gate can score, where `blocking` has exactly two usable values and
+    // anything else is the reviewer failing to answer the question. Coercing
+    // would mean guessing whether `"false"` or `0` was meant as a clearance,
+    // in the one direction that merges code. So a non-boolean is treated as
+    // absent — it blocks — and is named in `malformedBlocking[]` so the
+    // operator sees the reviewer emitted something the gate could not use,
+    // rather than having it ignored in silence.
+    const claimed = f?.blocking;
+    const usable = claimed === undefined || typeof claimed === 'boolean';
+    if (!usable) malformed.add(JSON.stringify(claimed) ?? String(claimed));
+    const selfNit = usable && claimed === false && !ALWAYS_BLOCK.includes(category);
     if (!known) byTaxonomy.push(entry);
-    else if (gate.has(category) && confirmed && !selfNit) byRule.push(entry);
-    else nitCount += 1;
+    else if (gate.has(category) && confirmed) {
+      if (selfNit) {
+        // Counted as a nit, as before — but no longer *only* as a nit, or the
+        // result would be indistinguishable from a review that had a
+        // PLAUSIBLE nit and no downgrade at all.
+        selfCleared.push(entry);
+        nitCount += 1;
+      } else byRule.push(entry);
+    } else nitCount += 1;
   }
   const blockingCount = byRule.length + byTaxonomy.length;
   return {
@@ -262,9 +309,12 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
     verdict: blockingCount ? 'blocking' : review.findings.length ? 'nits-only' : 'clean',
     blockingCount,
     nitCount,
+    selfClearedCount: selfCleared.length,
     findingCount: review.findings.length,
     blocking: [...byRule, ...byTaxonomy].slice(0, MAX_LISTED),
+    selfCleared: selfCleared.slice(0, MAX_LISTED),
     unknownCategories: [...unknown],
+    malformedBlocking: [...malformed],
   };
 }
 
@@ -308,7 +358,16 @@ function main(argv) {
   const unknown = out.unknownCategories.length
     ? `; unknown categories: ${out.unknownCategories.map((c) => JSON.stringify(c)).join(', ')}`
     : '';
-  process.stderr.write(`review-gate: #${out.issue} ${out.verdict} — ${out.blockingCount} blocking, ${out.nitCount} nits${unknown}\n`);
+  // The axis's one merge-ward direction, on the same line as the counts: a
+  // CONFIRMED finding the reviewer downgraded itself is the case an operator
+  // is most likely to want to second-guess, and `nitCount` alone hides it.
+  const cleared = out.selfClearedCount ? `; ${out.selfClearedCount} self-cleared (CONFIRMED, blocking: false)` : '';
+  // Already JSON text, so not re-quoted — `"false"` reads as the string the
+  // reviewer wrote, `0` as the number.
+  const malformed = out.malformedBlocking.length ? `; unusable blocking: ${out.malformedBlocking.join(', ')}` : '';
+  process.stderr.write(
+    `review-gate: #${out.issue} ${out.verdict} — ${out.blockingCount} blocking, ${out.nitCount} nits${cleared}${unknown}${malformed}\n`,
+  );
 }
 
 if (isMain(import.meta.url)) main(process.argv.slice(2));
