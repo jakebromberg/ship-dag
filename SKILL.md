@@ -1,7 +1,7 @@
 ---
 name: ship-dag
 description: Ship a dependency DAG of GitHub issues to main — per-issue subagents (Haiku triage, Sonnet implement, Opus review), auto-merge on green (rebase-and-merge), and HITL grilling on any open question. Use when the user wants to autonomously work through an epic or a set of dependent issues end to end.
-argument-hint: "[epic#N | --label L | org/repo#N ...] [--org O] [--block-on correctness,security] [--max-review-iter 2] [--workflow-threshold 5] [--retro-threshold 3] [--no-retro] [--dry-run]"
+argument-hint: "[epic#N | --label L | org/repo#N ...] [--org O] [--block-on correctness,security,convention,contract] [--max-review-iter 2] [--workflow-threshold 5] [--retro-threshold 3] [--no-retro] [--dry-run]"
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Agent, Skill, AskUserQuestion
 ---
 
@@ -39,7 +39,7 @@ The issue set may span repositories. Every node is keyed on its **composite ref*
 Hand refs to `/review-loop` as **fully-qualified `owner/repo#N`**: it infers a default org for a bare `repo#N` and looks for the checkout as a sibling of the current working tree (falling back to `gh repo clone`), so a fully-qualified ref keeps it on the right repo. `/cleanup` is org-agnostic — it operates on the current repo's `git worktree list` and detects the default branch dynamically — so it needs no special qualification, but passing it the same fully-qualified ref is harmless.
 
 Flags:
-- `--block-on correctness,security` (default) — finding categories that block auto-merge. See `references/review-schema.md`.
+- `--block-on correctness,security,convention,contract` (default) — finding categories that block auto-merge. See `references/review-schema.md`.
 - `--max-review-iter K` (default `2`) — `/review-loop` fix passes before escalating a blocking finding.
 - `--workflow-threshold N` (default `5`) — **fallback only** (engine unavailable, step 4): a wave with ≥ N cleared issues routes the fallback implement→review through `workflow.js`; below it, inline `Agent` fan-out. Ignored on the primary engine path.
 - `--retro-threshold N` (default `3`) — run the step-6.5 retrospective once ≥ N merged PRs have accumulated since the last pass; below N the wave skips it and carries the count forward. A final pass always runs at drain if any unretrospected merges remain. `--no-retro` disables the step entirely (including the drain pass).
@@ -216,8 +216,8 @@ Include the relevant block **verbatim** in each subagent's prompt (the inline fa
 > 1. In your worktree: `cd` into the checkout, `git fetch`, `gh pr checkout {PR}` (or check out `{BRANCH}`).
 > 2. Review the PR against **its own base branch** (`git diff origin/$(gh pr view {PR} --json baseRefName -q .baseRefName)...HEAD`, or simply `gh pr diff {PR}`) — do not assume `main`; this repo's base may be `master`. Cover correctness, security, simplification, efficiency, test coverage, convention, and contract.
 > 3. Optionally, if the Skill tool is reachable, also run the built-in `/code-review` and union its findings. If not reachable, your inline review stands alone.
-> 4. Classify **each finding** per `references/review-schema.md` — `category`, **exactly one of `correctness | security | simplification | efficiency | test-coverage | convention | contract`**, and `verdict: CONFIRMED | PLAUSIBLE`. Any other category (or a blank one) fails the gate closed and bounces the PR to `/review-loop`, which has no fix for a taxonomy error — so pick the nearest listed category rather than coining one. Do **not** decide the overall gate yourself: `scripts/review-gate.mjs` recomputes it from your findings, so a merge never turns on a model's claim about its own output.
-> 5. **Write the full schema object to `{REVIEW_PATH}`** — `{ issue, findings: [{ category, verdict, file, line, summary, failure_scenario }] }` — and return only the summary below. Your findings are read from that file at the moment they're actually needed (a `/review-loop` route, or a report to the human); returning them inline instead would park every one of them in the orchestrator's context for the rest of the run.
+> 4. Classify **each finding** per `references/review-schema.md` — `category`, **exactly one of `correctness | security | simplification | efficiency | test-coverage | convention | contract`**, `verdict: CONFIRMED | PLAUSIBLE`, and `blocking: true | false` — your own call on whether *this specific finding*, not just its category, should block the merge (e.g. two `test-coverage` findings in one review can differ: a test that cannot fail in the direction it exists for is `blocking: true`; a documentary case is `blocking: false`). Any other category (or a blank one) fails the gate closed and bounces the PR to `/review-loop`, which has no fix for a taxonomy error — so pick the nearest listed category rather than coining one. Do **not** decide the overall gate yourself: `scripts/review-gate.mjs` recomputes it from your findings, so a merge never turns on a model's claim about its own output — `blocking` narrows which findings in an already-blocking category count, it can never clear one on its own, and omitting it fails toward blocking.
+> 5. **Write the full schema object to `{REVIEW_PATH}`** — `{ issue, findings: [{ category, verdict, blocking, file, line, summary, failure_scenario }] }` — and return only the summary below. Your findings are read from that file at the moment they're actually needed (a `/review-loop` route, or a report to the human); returning them inline instead would park every one of them in the orchestrator's context for the rest of the run.
 >
 > **Return:** `{ issue, path: "{REVIEW_PATH}", findingCount, headline }` — `headline` being one line naming the most serious finding, or `"no findings"`. No Claude/AI mention anywhere.
 

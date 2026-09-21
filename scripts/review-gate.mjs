@@ -35,11 +35,24 @@ import { isMain } from './lib/is-main.mjs';
 
 /**
  * The gate's default categories, matching `references/review-schema.md`.
- * Deliberately unchanged by the `convention`/`contract` widening below — a
- * CONFIRMED finding in either merges silently until #27 decides whether they
- * belong in the default gate. Widen per-run with `--block-on`.
+ * `convention` and `contract` joined this default in #27, discharging the
+ * silent-auto-merge obligation #26 deferred: without the new `blocking` axis
+ * below, that widening would have promoted every cosmetic `convention` nit to
+ * a blocker. With it, a category's default membership only decides which
+ * findings are *eligible* to block; the reviewer's own blocking/nit call
+ * still decides which of them actually do.
  */
-export const DEFAULT_BLOCK_ON = ['correctness', 'security'];
+export const DEFAULT_BLOCK_ON = ['correctness', 'security', 'convention', 'contract'];
+
+/**
+ * Categories severe enough that a CONFIRMED finding always blocks, immune to
+ * the `blocking` axis below. Without this carve-out, a reviewer could mark
+ * its own confirmed correctness or security defect a "nit" and clear it —
+ * letting the model grade its own homework, exactly what recomputing the
+ * gate from `findings[]` (rather than trusting a self-reported verdict)
+ * exists to prevent.
+ */
+export const ALWAYS_BLOCK = ['correctness', 'security'];
 
 /**
  * The finding `category` enum. The first five mirror `/code-review`'s
@@ -176,13 +189,19 @@ export function readPositional(argv, valueFlags = []) {
  * Recompute the merge gate from a review object.
  *
  * A finding blocks iff its `category` is in `blockOn` AND its `verdict` is
- * CONFIRMED — exactly `references/review-schema.md`'s rule — **or** its
- * `category` is outside `CATEGORIES` (including blank/absent) at all. An
- * unrecognized category is the same hazard as a truncated `findings` array
- * with a quieter failure mode: the gate cannot know whether it names a
- * correctness defect or a cosmetic nit, so it fails closed rather than
- * defaulting to "nit". Everything else (PLAUSIBLE findings in a known,
- * non-blocking category) is counted and surfaced but does not block.
+ * CONFIRMED AND — for a category outside `ALWAYS_BLOCK` — its own `blocking`
+ * field is not explicitly `false` — **or** its `category` is outside
+ * `CATEGORIES` (including blank/absent) at all. That third clause is the
+ * reviewer's own blocking/nit call, ANDed onto the category test rather than
+ * trusted alone: it narrows which findings in a widened category actually
+ * block, but can never by itself clear one, and a finding that omits
+ * `blocking` fails toward blocking — the same fail-closed rule an
+ * unrecognized category follows. An unrecognized category is the same hazard
+ * as a truncated `findings` array with a quieter failure mode: the gate
+ * cannot know whether it names a correctness defect or a cosmetic nit, so it
+ * fails closed rather than defaulting to "nit". Everything else (PLAUSIBLE
+ * findings in a known, non-blocking category) is counted and surfaced but
+ * does not block.
  *
  * Throws when `findings` is not an array. That is deliberately fatal rather
  * than defaulted to `[]`: a truncated or half-written review file would
@@ -229,8 +248,12 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
       line: f?.line ?? null,
       summary: f?.summary ?? null,
     };
+    // The reviewer's own blocking/nit call, only able to narrow a category
+    // ALWAYS_BLOCK doesn't already force — a CONFIRMED correctness or
+    // security finding blocks no matter what it says here.
+    const selfNit = f?.blocking === false && !ALWAYS_BLOCK.includes(category);
     if (!known) byTaxonomy.push(entry);
-    else if (gate.has(category) && confirmed) byRule.push(entry);
+    else if (gate.has(category) && confirmed && !selfNit) byRule.push(entry);
     else nitCount += 1;
   }
   const blockingCount = byRule.length + byTaxonomy.length;
