@@ -455,8 +455,17 @@ const SPELLINGS = new Map(
   CATEGORIES.flatMap((c) => (c.includes('-') ? [[c, c], [c.replaceAll('-', ' '), c]] : [[c, c]])),
 );
 
-/** Longest alternative first, so `test coverage` never matches as bare `coverage`. */
-const TOKEN = new RegExp(`\\b(?:${[...SPELLINGS.keys()].sort((a, b) => b.length - a.length).join('|')})\\b`, 'g');
+/**
+ * Longest alternative first, so `test coverage` never matches as bare
+ * `coverage`; escaped, so a category name is data here rather than pattern.
+ */
+const TOKEN = new RegExp(
+  `\\b(?:${[...SPELLINGS.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|')})\\b`,
+  'g',
+);
 
 /**
  * What may sit *between* two members of one enumeration: pipes, commas,
@@ -480,7 +489,7 @@ const BLOCK_ON_LIST = /--block-on[= ][a-z][a-z,-]*/g;
  * names present rather than on a sentence keeps this indifferent to how the
  * surrounding prose is worded — only list membership and order are pinned.
  *
- * @param {string} text
+ * @param {string} raw  the file's contents
  * @returns {string[][]} each enumeration, in canonical spellings
  */
 function categoryLists(raw) {
