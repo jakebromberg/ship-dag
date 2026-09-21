@@ -9,7 +9,17 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gateReview, parseBlockOn, gateFile, normalizeCategory, CATEGORIES, CATEGORY_ALIASES, DEFAULT_BLOCK_ON, MAX_LISTED } from './review-gate.mjs';
+import {
+  gateReview,
+  parseBlockOn,
+  gateFile,
+  normalizeCategory,
+  ALWAYS_BLOCK,
+  CATEGORIES,
+  CATEGORY_ALIASES,
+  DEFAULT_BLOCK_ON,
+  MAX_LISTED,
+} from './review-gate.mjs';
 
 const finding = (over = {}) => ({
   category: 'correctness',
@@ -196,6 +206,107 @@ test('gateReview: a convention nit the reviewer itself flagged non-blocking stay
   const g = gateReview({ issue: 1, findings: [finding({ category: 'convention', blocking: false })] });
   assert.equal(g.verdict, 'nits-only');
   assert.equal(g.nitCount, 1);
+});
+
+test('gateReview: clearing a CONFIRMED finding by the reviewer’s own say-so leaves a trace, not just a nit', () => {
+  // Folded into `nitCount` alone, this result is bit-identical to a review
+  // that merely had a PLAUSIBLE nit — and the reviewer downgrading its own
+  // CONFIRMED finding is the one thing about this axis worth an operator's
+  // scrutiny. `unknownCategories[]` signals the other fail-closed path; this
+  // is its counterpart on the path that merges.
+  const cleared = gateReview({
+    issue: 1,
+    findings: [finding({ category: 'convention', summary: 'brace style', blocking: false })],
+  });
+  const plausible = gateReview({ issue: 1, findings: [finding({ category: 'convention', verdict: 'PLAUSIBLE' })] });
+  assert.equal(cleared.verdict, plausible.verdict);
+  assert.equal(cleared.nitCount, plausible.nitCount);
+  // ...and yet the two are distinguishable, which is the whole point.
+  assert.equal(cleared.selfClearedCount, 1);
+  assert.deepEqual(cleared.selfCleared, [{ category: 'convention', file: 'src/a.ts', line: 42, summary: 'brace style' }]);
+  assert.equal(plausible.selfClearedCount, 0);
+  assert.deepEqual(plausible.selfCleared, []);
+});
+
+test('gateReview: only a finding the axis actually cleared is counted as self-cleared', () => {
+  // A `blocking: false` that changed nothing — the category was never in the
+  // gate, or ALWAYS_BLOCK overrode it — must not inflate the signal, or the
+  // operator learns to ignore it.
+  const outside = gateReview({ issue: 1, findings: [finding({ category: 'simplification', blocking: false })] });
+  assert.equal(outside.selfClearedCount, 0);
+  const carvedOut = gateReview({ issue: 1, findings: [finding({ category: 'correctness', blocking: false })] });
+  assert.equal(carvedOut.verdict, 'blocking');
+  assert.equal(carvedOut.selfClearedCount, 0);
+  const plausible = gateReview({ issue: 1, findings: [finding({ category: 'convention', verdict: 'PLAUSIBLE', blocking: false })] });
+  assert.equal(plausible.selfClearedCount, 0);
+});
+
+test('gateReview: selfCleared[] lists at most MAX_LISTED but counts them all', () => {
+  const findings = Array.from({ length: MAX_LISTED + 2 }, (_, i) =>
+    finding({ category: 'convention', summary: `nit ${i}`, blocking: false }),
+  );
+  const g = gateReview({ issue: 1, findings });
+  assert.equal(g.selfClearedCount, MAX_LISTED + 2);
+  assert.equal(g.selfCleared.length, MAX_LISTED);
+});
+
+// `blocking` is validated, not coerced. Its neighbours in the same loop coerce
+// — `verdict` through `String(...).toUpperCase()`, `category` through
+// trim/lowercase/alias — because any string those carry is still *some* claim
+// the gate can score. `blocking` has exactly two usable values, so anything
+// else is the reviewer failing to answer, and coercing would mean guessing
+// which junk value meant "clear this", in the one direction that merges code.
+for (const claimed of ['false', 'no', 'true', 0, 1, null, {}, []]) {
+  test(`gateReview: blocking: ${JSON.stringify(claimed)} is not a usable clearance, and is named rather than ignored`, () => {
+    const g = gateReview({ issue: 1, findings: [finding({ category: 'convention', blocking: claimed })] });
+    assert.equal(g.verdict, 'blocking', 'an unusable value must fail toward blocking, like an omitted one');
+    assert.equal(g.blockingCount, 1);
+    assert.equal(g.selfClearedCount, 0);
+    assert.deepEqual(g.malformedBlocking, [JSON.stringify(claimed)]);
+  });
+}
+
+test('gateReview: a usable blocking value is never reported as malformed, and neither is an omitted one', () => {
+  for (const f of [finding({ blocking: true }), finding({ category: 'convention', blocking: false }), finding({})]) {
+    assert.deepEqual(gateReview({ issue: 1, findings: [f] }).malformedBlocking, []);
+  }
+});
+
+test('gateReview: malformedBlocking names each distinct unusable value once, across findings', () => {
+  const g = gateReview({
+    issue: 1,
+    findings: [
+      finding({ category: 'convention', blocking: 'false' }),
+      finding({ category: 'contract', blocking: 'false' }),
+      finding({ category: 'convention', blocking: 0 }),
+    ],
+  });
+  assert.deepEqual(g.malformedBlocking, ['"false"', '0']);
+  assert.equal(g.blockingCount, 3);
+});
+
+test('ALWAYS_BLOCK: every always-blocking category is a real category, canonically spelled, and in the default gate', () => {
+  // A third overlapping list, on top of CATEGORIES and DEFAULT_BLOCK_ON and
+  // the alias map. A member outside CATEGORIES can never be matched; a member
+  // outside DEFAULT_BLOCK_ON is an inert carve-out over a category the default
+  // gate does not block; a non-canonical spelling never matches either, since
+  // the gate tests membership *after* normalizeCategory.
+  assert.ok(ALWAYS_BLOCK.length > 0, 'an empty ALWAYS_BLOCK makes the loop below vacuous');
+  for (const category of ALWAYS_BLOCK) {
+    assert.ok(CATEGORIES.includes(category), `ALWAYS_BLOCK names ${category}, which is not in CATEGORIES`);
+    assert.equal(normalizeCategory(category), category, `ALWAYS_BLOCK names ${category}, which is an alias rather than a canonical spelling`);
+    assert.ok(
+      DEFAULT_BLOCK_ON.includes(category),
+      `ALWAYS_BLOCK names ${category}, which the default gate does not block — the carve-out would be inert by default`,
+    );
+  }
+  // The same membership rule for the default gate itself: parseBlockOn enforces
+  // it for an operator's list but returns DEFAULT_BLOCK_ON unchecked.
+  assert.ok(DEFAULT_BLOCK_ON.length > 0, 'an empty DEFAULT_BLOCK_ON disables blocking entirely');
+  for (const category of DEFAULT_BLOCK_ON) {
+    assert.ok(CATEGORIES.includes(category), `DEFAULT_BLOCK_ON names ${category}, which no finding can carry`);
+    assert.equal(normalizeCategory(category), category, `DEFAULT_BLOCK_ON names ${category}, which is an alias rather than a canonical spelling`);
+  }
 });
 
 test('gateReview: no findings is clean', () => {
@@ -485,6 +596,22 @@ test('CLI: exit codes separate a malformed invocation from an unreadable review'
   assert.match(truncated.stderr, /findings/);
 });
 
+test('CLI: stderr names a self-cleared finding and an unusable blocking value without the operator opening the review', () => {
+  // The stderr line is the whole operator surface in a wave summary. A
+  // downgrade that only moved `nitCount` reads there as an ordinary nit.
+  const p = reviewFile({
+    issue: 620,
+    findings: [finding({ category: 'convention', blocking: false }), finding({ category: 'contract', blocking: 'false' })],
+  });
+  const { code, stdout, stderr } = runCli([p]);
+  assert.equal(code, 0);
+  const out = JSON.parse(stdout);
+  assert.equal(out.selfClearedCount, 1);
+  assert.deepEqual(out.malformedBlocking, ['"false"']);
+  assert.match(stderr, /1 self-cleared/);
+  assert.match(stderr, /unusable blocking: "false"/);
+});
+
 // --- Cross-file enum sync ---------------------------------------------------
 //
 // `CATEGORIES` is spelled out in four other files, and SKILL.md's "Keep all
@@ -636,4 +763,78 @@ test('every declaration of the --block-on default agrees with DEFAULT_BLOCK_ON',
   const fallback = workflow.match(/const blockOn\s*=[^\n]*?\[([^\]]*)\]/);
   assert.ok(fallback, 'workflow.js no longer declares a blockOn fallback');
   assert.deepEqual([...fallback[1].matchAll(/'([^']*)'/g)].map((m) => m[1]), DEFAULT_BLOCK_ON);
+});
+
+// --- The reviewer prompt's `blocking` instruction --------------------------
+//
+// The axis's only real-world input is the instruction telling the reviewer to
+// emit `blocking`; every gate test above supplies the field directly, so the
+// suite cannot notice the instruction going missing. It went missing and
+// stayed green — stripped from both prompts, all 49 tests passed. The cost is
+// silent: a review that omits `blocking` fails toward blocking by design, so
+// the axis degrades to "every CONFIRMED finding in a now-widened category
+// blocks", and `convention` — 18 emissions across 294 logged findings, mostly
+// cosmetic — becomes a merge blocker, which is precisely the outcome widening
+// DEFAULT_BLOCK_ON was only safe because this axis prevents.
+
+/** The classify step must name the field and both of the values it may take. */
+const EMITS_BLOCKING = /\bblocking\b[:\s]+`?true`?\s*\|\s*`?false`?/;
+
+/** The write step must list `blocking` among the finding object's keys. */
+const WRITES_BLOCKING = /\bcategory,\s*verdict,\s*blocking,\s*file,\s*line,\s*summary,\s*failure_scenario\b/;
+
+/** The fail-closed default has to reach the reviewer, not just the gate. */
+const OMISSION_FAILS_CLOSED = /omitting it fails toward blocking/;
+
+/**
+ * Every copy of the Review subagent's prompt, and the schema it points the
+ * reviewer at. `workflow.js` mirrors SKILL.md's block for the fallback path,
+ * so an instruction added to one and not the other leaves half the runs
+ * emitting the field.
+ */
+const BLOCKING_INSTRUCTION_SITES = {
+  'SKILL.md': [EMITS_BLOCKING, WRITES_BLOCKING, OMISSION_FAILS_CLOSED],
+  'workflow.js': [EMITS_BLOCKING, WRITES_BLOCKING, OMISSION_FAILS_CLOSED],
+  // The schema block the prompts tell the reviewer to classify against.
+  'references/review-schema.md': [/"blocking":\s*(?:true|false)/],
+};
+
+test('every copy of the reviewer prompt still instructs the reviewer to emit blocking', () => {
+  for (const [site, patterns] of Object.entries(BLOCKING_INSTRUCTION_SITES)) {
+    const raw = readFileSync(join(REPO_ROOT, site), 'utf8');
+    for (const pattern of patterns) {
+      assert.match(
+        raw,
+        pattern,
+        `${site} no longer instructs the reviewer to emit \`blocking\` (${pattern}) — without it every review omits the field, the gate fails every CONFIRMED finding toward blocking, and the axis is gone with the suite still green`,
+      );
+    }
+  }
+});
+
+/**
+ * Every prose statement of the blocking predicate, and the phrase that locates
+ * it. A statement that drifts is worse than a missing one: SKILL.md step 4d
+ * stated the pre-#27 rule verbatim (`category ∈ --block-on` and `verdict ==
+ * CONFIRMED`) for the whole of this PR, describing a gate that no longer
+ * exists to the one agent whose job is to apply it.
+ */
+const GATE_RULE_SITES = {
+  'SKILL.md': "review-schema.md`'s rule",
+  'references/review-schema.md': 'Auto-merge is **blocked**',
+};
+
+/** The conjuncts `gateReview` actually ANDs together, as the prose spells them. */
+const RULE_CONJUNCTS = [/`category ∈ --block-on`/, /`verdict == CONFIRMED`/, /`blocking` is not explicitly `false`/];
+
+test('every prose statement of the gate rule names every conjunct the gate applies', () => {
+  for (const [site, locator] of Object.entries(GATE_RULE_SITES)) {
+    const statement = readFileSync(join(REPO_ROOT, site), 'utf8')
+      .split('\n')
+      .find((l) => l.includes(locator));
+    assert.ok(statement, `${site} no longer states the gate rule near ${JSON.stringify(locator)} — update GATE_RULE_SITES`);
+    for (const conjunct of RULE_CONJUNCTS) {
+      assert.match(statement, conjunct, `${site} states the gate rule without ${conjunct}`);
+    }
+  }
 });
