@@ -89,10 +89,42 @@ test('gateReview: a review with no findings array is a hard error, never a silen
   assert.throws(() => gateReview(null), /findings/);
 });
 
-test('gateReview: an unrecognized category is reported, not silently swallowed', () => {
-  const g = gateReview({ issue: 1, findings: [finding({ category: 'vibes' })] });
+test('gateReview: an unrecognized category fails closed — it cannot yield a mergeable verdict', () => {
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'vibes', verdict: 'PLAUSIBLE' })] });
   assert.deepEqual(g.unknownCategories, ['vibes']);
-  assert.equal(g.verdict, 'nits-only');
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 1);
+});
+
+test('gateReview: an unrecognized category alongside a genuine blocking finding still blocks, and counts both', () => {
+  const g = gateReview({
+    issue: 1,
+    findings: [finding(), finding({ category: 'contract', verdict: 'PLAUSIBLE' })],
+  });
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 2);
+  assert.deepEqual(g.unknownCategories, ['contract']);
+});
+
+test('gateReview: an unrecognized category alongside only real nits still blocks — it is never scored as a nit', () => {
+  const g = gateReview({
+    issue: 1,
+    findings: [finding({ category: 'simplification' }), finding({ category: 'test-quality' })],
+  });
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 1);
+  assert.equal(g.nitCount, 1);
+  assert.deepEqual(g.unknownCategories, ['test-quality']);
+});
+
+test('gateReview: a blank or absent category fails closed the same way, reported as (blank)', () => {
+  const blank = gateReview({ issue: 1, findings: [finding({ category: '' })] });
+  assert.equal(blank.verdict, 'blocking');
+  assert.deepEqual(blank.unknownCategories, ['(blank)']);
+
+  const absent = gateReview({ issue: 1, findings: [finding({ category: undefined })] });
+  assert.equal(absent.verdict, 'blocking');
+  assert.deepEqual(absent.unknownCategories, ['(blank)']);
 });
 
 test('gateFile: reads a review off disk and carries its path through for the human', () => {
