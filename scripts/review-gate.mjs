@@ -25,8 +25,10 @@
 //
 // Usage:
 //   node review-gate.mjs <review.json> [--block-on correctness,security]
+//   node review-gate.mjs <review.json> [--block-on=correctness,security]
 // Prints the gate decision as JSON on stdout and a one-line summary on stderr.
-// Exit 2 on a malformed invocation, 3 on an unreadable or malformed review.
+// Exit 2 on a malformed invocation — including a `--block-on` naming a category
+// outside `CATEGORIES` — and 3 on an unreadable or malformed review.
 
 import { readFileSync } from 'node:fs';
 import { isMain } from './lib/is-main.mjs';
@@ -43,8 +45,16 @@ export const MAX_LISTED = 3;
 /**
  * Parse a `--block-on` list. An absent or empty value means the default gate —
  * never an empty list, which would silently disable blocking entirely.
+ *
+ * Every member must be in `CATEGORIES`. A category no finding can ever carry
+ * is not a stricter gate, it is a *narrower* one that looks stricter: before
+ * this check, `--block-on test-quality` matched nothing, so the gate quietly
+ * fell back to nothing at all and auto-merged a CONFIRMED correctness defect.
+ * Failing loudly here is the same fail-closed rule the finding side applies.
+ *
  * @param {string|undefined|null} raw
  * @returns {string[]}
+ * @throws {Error} when any member is outside `CATEGORIES`
  */
 export function parseBlockOn(raw) {
   if (raw === undefined || raw === null) return DEFAULT_BLOCK_ON;
@@ -52,7 +62,31 @@ export function parseBlockOn(raw) {
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  return parts.length ? parts : DEFAULT_BLOCK_ON;
+  if (!parts.length) return DEFAULT_BLOCK_ON;
+  const unknown = parts.filter((c) => !CATEGORIES.includes(c));
+  if (unknown.length) {
+    throw new Error(
+      `--block-on names ${unknown.map((c) => JSON.stringify(c)).join(', ')}, which no finding can carry; ` +
+        `the categories are exactly ${CATEGORIES.join(', ')}`,
+    );
+  }
+  return parts;
+}
+
+/**
+ * Read a `--flag value` / `--flag=value` option out of argv. Both spellings are
+ * accepted deliberately: `indexOf('--flag')` alone ignored the equals form, so
+ * an operator who widened the gate with `--block-on=...` silently got the
+ * narrower default instead of an error.
+ * @param {string[]} argv
+ * @param {string} flag
+ * @returns {string|undefined} the value, or undefined when the flag is absent
+ */
+export function readFlag(argv, flag) {
+  const eq = argv.find((a) => a.startsWith(`${flag}=`));
+  if (eq !== undefined) return eq.slice(flag.length + 1);
+  const i = argv.indexOf(flag);
+  return i === -1 ? undefined : argv[i + 1];
 }
 
 /**
@@ -84,7 +118,10 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
   const unknown = new Set();
   let nitCount = 0;
   for (const f of review.findings) {
-    const category = String(f?.category ?? '').toLowerCase();
+    // Trimmed as well as lowercased, symmetrically with `parseBlockOn`: a
+    // trailing space is transcription noise, not a different category, and
+    // reporting `"correctness "` as unknown gave the operator nothing to act on.
+    const category = String(f?.category ?? '').trim().toLowerCase();
     const known = category && CATEGORIES.includes(category);
     if (!known) unknown.add(category || '(blank)');
     const confirmed = String(f?.verdict ?? '').toUpperCase() === 'CONFIRMED';
@@ -100,7 +137,10 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
     // One line each: enough for the human to recognize the defect in a wave
     // summary or a grill, without lifting the prose into context wholesale.
     blocking: blocking.slice(0, MAX_LISTED).map((f) => ({
-      category: f.category,
+      // `?? null` like its siblings: a blank/absent category now reaches this
+      // projection, and `JSON.stringify` drops an `undefined` value outright —
+      // the operator would get an entry with no `category` key at all.
+      category: f.category ?? null,
       file: f.file ?? null,
       line: f.line ?? null,
       summary: f.summary ?? null,
@@ -122,20 +162,33 @@ export function gateFile(path, blockOn = DEFAULT_BLOCK_ON) {
 
 function main(argv) {
   const path = argv.find((a) => !a.startsWith('--'));
-  const blockOnIdx = argv.indexOf('--block-on');
   if (!path) {
     process.stderr.write('usage: review-gate.mjs <review.json> [--block-on correctness,security]\n');
     process.exit(2);
   }
+  // Parsed outside the gate's try/catch so a bad invocation exits 2 (the
+  // operator's mistake) rather than 3 (an unreadable review).
+  let blockOn;
+  try {
+    blockOn = parseBlockOn(readFlag(argv, '--block-on'));
+  } catch (err) {
+    process.stderr.write(`review-gate: ${err.message}\n`);
+    process.exit(2);
+  }
   let out;
   try {
-    out = gateFile(path, parseBlockOn(blockOnIdx === -1 ? undefined : argv[blockOnIdx + 1]));
+    out = gateFile(path, blockOn);
   } catch (err) {
     process.stderr.write(`review-gate: ${err.message}\n`);
     process.exit(3);
   }
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
-  const unknown = out.unknownCategories.length ? `; unknown categories: ${out.unknownCategories.join(', ')}` : '';
+  // JSON-quoted so a category carrying whitespace or punctuation is legible as
+  // the literal string the reviewer wrote, not as bare prose the operator would
+  // read straight past.
+  const unknown = out.unknownCategories.length
+    ? `; unknown categories: ${out.unknownCategories.map((c) => JSON.stringify(c)).join(', ')}`
+    : '';
   process.stderr.write(`review-gate: #${out.issue} ${out.verdict} — ${out.blockingCount} blocking, ${out.nitCount} nits${unknown}\n`);
 }
 

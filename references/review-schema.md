@@ -43,4 +43,4 @@ A merge decision must not rest on a model's claim about its own output, and a re
 - `verdict: "nits-only"` → mergeable; list the nits in the wave summary for the human.
 - `verdict: "clean"` → mergeable.
 
-Widen `--block-on` (e.g. add `efficiency`) for a stricter gate; the categories it can name are exactly the schema's `category` enum above — this is enforced, not aspirational: any category outside that enum blocks regardless of `--block-on`.
+Widen `--block-on` (e.g. add `efficiency`) for a stricter gate; the categories it can name are exactly the schema's `category` enum above — this is enforced, not aspirational, on **both** sides. A `--block-on` naming anything else is a usage error (`review-gate.mjs` exits 2 and echoes the enum), never a gate that silently matches no finding and merges anyway; and any *finding* whose category is outside the enum blocks regardless of `--block-on`. Both `--block-on <list>` and `--block-on=<list>` are accepted.
