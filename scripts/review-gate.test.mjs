@@ -172,6 +172,42 @@ test('gateReview: a category padded with whitespace is that category, not an unk
   assert.deepEqual(blank.unknownCategories, ['(blank)']);
 });
 
+test('gateReview: real blocking findings lead the listed window, taxonomy errors trail it', () => {
+  // `blocking[]` is truncated to MAX_LISTED, and a reviewer who coins three
+  // category names in one review would otherwise push the null-deref and the
+  // plaintext-token finding out of the only list the operator reads.
+  const g = gateReview({
+    issue: 1,
+    findings: [
+      finding({ category: 'naming nit', verdict: 'PLAUSIBLE', summary: 'coined a' }),
+      finding({ category: 'style', verdict: 'PLAUSIBLE', summary: 'coined b' }),
+      finding({ category: 'docs', verdict: 'PLAUSIBLE', summary: 'coined c' }),
+      finding({ category: 'correctness', summary: 'null deref' }),
+      finding({ category: 'security', summary: 'plaintext token' }),
+    ],
+  });
+  assert.equal(g.blockingCount, 5);
+  assert.deepEqual(
+    g.blocking.map((b) => b.summary),
+    ['null deref', 'plaintext token', 'coined a'],
+  );
+});
+
+test('gateReview: blocking[].category reports the same normalized value unknownCategories[] does', () => {
+  const g = gateReview({ issue: 1, findings: [finding({ category: ' Vibes ' })] });
+  assert.deepEqual(g.unknownCategories, ['vibes']);
+  assert.equal(g.blocking[0].category, 'vibes');
+  // Blank stays null in the projection — `(blank)` is the report's sentinel, not a value.
+  const blank = gateReview({ issue: 1, findings: [finding({ category: '  ' })] });
+  assert.equal(blank.blocking[0].category, null);
+});
+
+test('gateReview: a null entry in findings[] blocks instead of crashing the gate', () => {
+  const g = gateReview({ issue: 1, findings: [null] });
+  assert.equal(g.verdict, 'blocking');
+  assert.deepEqual(g.blocking[0], { category: null, file: null, line: null, summary: null });
+});
+
 test('gateFile: reads a review off disk and carries its path through for the human', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ship-dag-review-'));
   const p = join(dir, 'daisysguide%2Fbackend%23620.json');
@@ -229,6 +265,26 @@ test('CLI: --block-on naming a category outside the enum is a loud usage error, 
     assert.match(stderr, /"test-quality"/);
     // The message carries the enum, so the operator can correct it in one pass.
     assert.match(stderr, /correctness, security, simplification, efficiency, test-coverage/);
+  }
+});
+
+test('CLI: --block-on is positional-independent — the list is never mistaken for the review path', () => {
+  // `argv.find((a) => !a.startsWith('--'))` took the *list* as the path when the
+  // flag came first, so a malformed invocation died as exit 3 "unreadable review".
+  const p = reviewFile({ issue: 620, findings: [finding({ category: 'efficiency' })] });
+  const after = runCli([p, '--block-on', 'correctness,security,efficiency']);
+  const before = runCli(['--block-on', 'correctness,security,efficiency', p]);
+  assert.equal(before.code, 0, before.stderr);
+  assert.deepEqual(JSON.parse(before.stdout), JSON.parse(after.stdout));
+});
+
+test('CLI: --block-on present with no value is a usage error, not a silent fall back to the default', () => {
+  const p = reviewFile({ issue: 620, findings: [finding({ category: 'efficiency' })] });
+  for (const args of [[p, '--block-on'], [p, '--block-on='], [p, '--block-on', '--verbose']]) {
+    const { code, stdout, stderr } = runCli(args);
+    assert.equal(code, 2, `expected a usage error for ${args.join(' ')}`);
+    assert.equal(stdout, '');
+    assert.match(stderr, /--block-on/);
   }
 });
 
