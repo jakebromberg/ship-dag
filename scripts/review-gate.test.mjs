@@ -542,17 +542,38 @@ test('every file that spells the category enum out agrees with CATEGORIES', () =
       `${site} holds ${lists.length} category enumerations, expected ${expected} — if one was deliberately added or reworded away, update ENUM_SITES`,
     );
     for (const list of lists) {
-      assert.deepEqual(list, CATEGORIES, `${site} enumerates ${list.join(', ')}, which is out of sync with CATEGORIES`);
+      assert.deepEqual(
+        list,
+        CATEGORIES,
+        `${site} enumerates ${list.join(', ')}, which is out of sync with CATEGORIES — if this is a deliberate subset rather than a copy of the enum (the five ReportFindings categories, say), name its members individually so the run breaks, e.g. \`correctness\` and \`security\` in backticks`,
+      );
     }
   }
 });
 
-test('SKILL.md documents the default gate, not a stale one', () => {
-  // The `--block-on` argument hint spells DEFAULT_BLOCK_ON rather than the enum,
-  // but drifts for the same reason and at the same cost: an operator reading a
-  // default the gate does not actually apply.
+test('every declaration of the --block-on default agrees with DEFAULT_BLOCK_ON', () => {
+  // These spell DEFAULT_BLOCK_ON rather than the enum, but drift for the same
+  // reason and at the same cost: an operator — or a reviewer subagent — reading
+  // a default the gate does not actually apply.
+  //
+  // Only declarations *marked* as the default are read. `--block-on
+  // correctness,security,contract` appears in review-schema.md as a worked
+  // example of widening the gate per-run; an example is not a copy, and pinning
+  // every occurrence would fail the moment one is quoted somewhere new.
   const skill = readFileSync(join(REPO_ROOT, 'SKILL.md'), 'utf8');
-  const hints = [...skill.matchAll(/--block-on ([a-z][a-z,-]*)/g)].map((m) => m[1].split(','));
-  assert.ok(hints.length, 'SKILL.md no longer documents a --block-on default');
-  for (const hint of hints) assert.deepEqual(hint, DEFAULT_BLOCK_ON);
+  const declared = skill
+    .split('\n')
+    .filter((l) => l.includes('--block-on') && (l.startsWith('argument-hint:') || l.includes('(default)')))
+    .map((l) => l.match(/--block-on ([a-z][a-z,-]*)/)?.[1]?.split(','));
+  assert.equal(declared.length, 2, 'SKILL.md should declare the default gate in its argument hint and in its flag list');
+  for (const hint of declared) assert.deepEqual(hint, DEFAULT_BLOCK_ON);
+
+  // `workflow.js` re-declares the default for the accelerator fallback path and
+  // interpolates it into the reviewer's prompt. Unpinned, a change to
+  // DEFAULT_BLOCK_ON leaves that path telling a reviewer the gate blocks on
+  // categories it no longer blocks on — or omitting ones it now does.
+  const workflow = readFileSync(join(REPO_ROOT, 'workflow.js'), 'utf8');
+  const fallback = workflow.match(/const blockOn\s*=[^\n]*?\[([^\]]*)\]/);
+  assert.ok(fallback, 'workflow.js no longer declares a blockOn fallback');
+  assert.deepEqual([...fallback[1].matchAll(/'([^']*)'/g)].map((m) => m[1]), DEFAULT_BLOCK_ON);
 });
