@@ -1,6 +1,6 @@
 # Review finding schema & the `--block-on` gate
 
-The Opus review subagent returns findings in a **fixed schema** so the merge gate is defined in the tool's own vocabulary — never an invented High/Medium/Low severity (the built-in `/code-review`'s `ReportFindings` has no severity field, so thresholding on one is meaningless).
+The Opus review subagent returns findings in a **fixed schema** so the merge gate is defined in the tool's own vocabulary — never an invented High/Medium/Low severity (the built-in `/code-review`'s `ReportFindings` has no severity field, so thresholding on one is meaningless). `category` alone turned out not to be enough of a vocabulary: two findings in the same category can differ in whether they should actually block (#27), and the fix is still not a severity scale — it is `blocking`, the reviewer's own per-finding blocking/nit call, which is the tool's own vocabulary rather than a new one and is ANDed onto `category`/`verdict` rather than trusted alone (see *The gate* below).
 
 ## Per-issue review result
 
@@ -11,6 +11,7 @@ The Opus review subagent returns findings in a **fixed schema** so the merge gat
     {
       "category": "correctness | security | simplification | efficiency | test-coverage | convention | contract",
       "verdict":  "CONFIRMED | PLAUSIBLE",
+      "blocking": true,
       "file":     "path/to/file.ts",
       "line":     42,
       "summary":  "one-sentence statement of the defect",
@@ -20,7 +21,7 @@ The Opus review subagent returns findings in a **fixed schema** so the merge gat
 }
 ```
 
-`verdict` mirrors the built-in `/code-review` `ReportFindings` contract exactly. `category` no longer does: `convention` and `contract` were added on top of the five `ReportFindings` categories, because logged review data showed reviewers emitting both — each under two spellings — with no fix available but widening the enum (see *The gate* below). The optional augmentation (unioning `/code-review` output into `findings[]`) still needs no translation, because the five `ReportFindings` categories are a subset of this enum and each is recognized as written. A `/code-review` finding whose category falls **outside** this enum gets no special case: it is normalized through the alias map, fails the membership test like any other unrecognized category, is named in `unknownCategories[]`, and blocks the merge. That is the specified behavior rather than an unreachable one — the gate does not assume what an external tool emits, so a `ReportFindings` contract that gains a category tomorrow costs one bounce, not a silent auto-merge.
+`verdict` mirrors the built-in `/code-review` `ReportFindings` contract exactly. `blocking` is new in #27 and has no `ReportFindings` counterpart: it is the reviewer's own blocking/nit call for *this finding*, not its category — two `test-coverage` findings can differ, one a real defect and one a documentary test case. It only ever narrows: it cannot make a `category` outside `--block-on` block, and (see *The gate*) it cannot clear a CONFIRMED `correctness` or `security` finding either. A finding that omits it is treated as `blocking: true` — the same fail-closed default an unrecognized category gets. `category` no longer does: `convention` and `contract` were added on top of the five `ReportFindings` categories, because logged review data showed reviewers emitting both — each under two spellings — with no fix available but widening the enum (see *The gate* below). The optional augmentation (unioning `/code-review` output into `findings[]`) still needs no translation, because the five `ReportFindings` categories are a subset of this enum and each is recognized as written. A `/code-review` finding whose category falls **outside** this enum gets no special case: it is normalized through the alias map, fails the membership test like any other unrecognized category, is named in `unknownCategories[]`, and blocks the merge. That is the specified behavior rather than an unreachable one — the gate does not assume what an external tool emits, so a `ReportFindings` contract that gains a category tomorrow costs one bounce, not a silent auto-merge.
 
 ## Where the object lives
 
@@ -37,11 +38,13 @@ A merge decision must not rest on a model's claim about its own output, and a re
 
 ## The gate
 
-`--block-on` is a comma-separated list of **categories** (default `correctness,security` — unchanged by the `convention`/`contract` widening; see below). Auto-merge is **blocked** for an issue when its review has **any finding whose `category ∈ --block-on` AND `verdict == CONFIRMED`** — **or any finding whose `category` is not one of the categories listed above, blank, or absent**. An unrecognized category is the same hazard as a missing `findings` array with a quieter failure mode: the gate cannot tell whether it names a correctness defect or a cosmetic nit, so it fails closed rather than defaulting to "nit". `unknownCategories[]` names every offending category (or `(blank)`) so an operator can act without opening the review file. Everything else (PLAUSIBLE findings in a known, non-blocking category) is surfaced but does **not** block.
+`--block-on` is a comma-separated list of **categories**, defaulting to `--block-on correctness,security,convention,contract`. Auto-merge is **blocked** for an issue when its review has **any finding whose `category ∈ --block-on` AND `verdict == CONFIRMED` AND `blocking` is not explicitly `false`** — **or any finding whose `category` is not one of the categories listed above, blank, or absent**. An unrecognized category is the same hazard as a missing `findings` array with a quieter failure mode: the gate cannot tell whether it names a correctness defect or a cosmetic nit, so it fails closed rather than defaulting to "nit". `unknownCategories[]` names every offending category (or `(blank)`) so an operator can act without opening the review file. Everything else (PLAUSIBLE findings in a known, non-blocking category, or a `blocking: false` finding in a category that isn't `correctness`/`security`) is surfaced but does **not** block.
+
+`blocking` narrows, never widens: for `correctness` and `security` — the two categories the gate has always trusted on `verdict` alone — a CONFIRMED finding blocks regardless of what `blocking` says, so a reviewer cannot wave off its own confirmed defect as a nit. For every other blocked category, `blocking: false` moves a CONFIRMED finding into the nit count instead of the blocking count; omitting the field blocks, the same fail-closed default an unrecognized category gets.
 
 Two categories have alternate spellings reviewers use in practice — `conventions` for `convention`, `contract-conformance` for `contract`. `review-gate.mjs` normalizes both to their canonical spelling *before* checking enum membership, on both the finding side and the `--block-on` side, so neither spelling fails closed and neither needs its own enum entry.
 
-`convention` and `contract` are **not** in `DEFAULT_BLOCK_ON`: a CONFIRMED finding in either currently merges silently, same as any other known-but-not-blocked category. Deciding whether either belongs in the default gate is deferred to a follow-up ticket that owns blocking policy; until it lands, an operator who wants either to block widens `--block-on` per-run (e.g. `--block-on correctness,security,contract`).
+`convention` and `contract` joined `DEFAULT_BLOCK_ON` in #27, closing the gap #26 deliberately left open (a CONFIRMED finding in either used to merge silently). Widening the default this way would have promoted every cosmetic `convention` finding to a blocker on its own — `blocking` is what makes that safe: a reviewer marks the cosmetic ones `blocking: false` and only the finding that actually matters (a response-field description with its semantics backwards, say) blocks.
 
 - `verdict: "blocking"` → at least one blocking finding, **or** at least one unrecognized category → route to `/review-loop`, then re-review; escalate to HITL if it can't clear within `--max-review-iter`.
 - `verdict: "nits-only"` → mergeable; list the nits in the wave summary for the human.
