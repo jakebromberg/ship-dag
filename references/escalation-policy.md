@@ -6,7 +6,7 @@
 
 1. **Underspecced issue** — triage (or the implement subagent) cannot resolve an ambiguity from the issue body + repo conventions. A guess would be a coin flip on intent.
 2. **Architectural fork or new dependency** — the work forces a design choice with lasting consequences, or pulls in a new third-party dependency.
-3. **Unclearable blocking finding** — the Opus gate returns a CONFIRMED finding in a `--block-on` category that `/review-loop` cannot clear within `--max-review-iter`, or that needs a design decision rather than a mechanical fix.
+3. **Unclearable blocking finding** — the Opus gate blocks the PR (a finding whose `category ∈ --block-on` **and** `verdict == CONFIRMED` **and** whose `blocking` is not explicitly `false`, or one whose category is outside the enum at all) and `/review-loop` cannot clear it within `--max-review-iter`, or it needs a design decision rather than a mechanical fix.
 4. **Non-flaky CI failure** — CI fails for a real reason (not a known-flaky/infra retry). Per global rules, ≤2 manual retries on infra failure, then stop — never loop.
 5. **Merge conflict needing judgment** — a rebase conflict whose resolution isn't mechanical.
 6. **Oversize issue** (point A) — triage estimates the issue needs more than 200 added lines of production source. The fork is split-now vs accept-the-size, and it is a scope call the human owns. It costs minutes here and a whole branch later, so it is worth a grill even though nothing is ambiguous.
@@ -47,4 +47,5 @@ A rate-limit death is a distinct failure shape from a model failure: the session
 - PLAUSIBLE (unconfirmed) findings, or findings outside `--block-on` categories — surfaced in the summary, not blocking.
 - Retro items the subagent judged not worth a ticket — its block demotes them to `observations` (payoff-ranked, ≤5 proposals typical); observations never grill, they ride the wave summary. A PLAUSIBLE proposal that *did* make the cut still grills — confidence is surfaced at point D, not filtered before it.
 - Cosmetic nits — listed for the human, never block a merge.
+- A CONFIRMED finding the reviewer itself marked `blocking: false`, outside `correctness`/`security` — scored as a nit, and named in the gate's `selfClearedCount`/`selfCleared[≤3]` so the human can second-guess the downgrade in the wave summary without it stopping the wave.
 - A green PR — auto-merges under the requester-authorized policy (see the skill's Merge queue).
