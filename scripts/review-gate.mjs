@@ -33,11 +33,50 @@
 import { readFileSync } from 'node:fs';
 import { isMain } from './lib/is-main.mjs';
 
-/** The gate's default categories, matching `references/review-schema.md`. */
+/**
+ * The gate's default categories, matching `references/review-schema.md`.
+ * Deliberately unchanged by the `convention`/`contract` widening below — a
+ * CONFIRMED finding in either merges silently until #27 decides whether they
+ * belong in the default gate. Widen per-run with `--block-on`.
+ */
 export const DEFAULT_BLOCK_ON = ['correctness', 'security'];
 
-/** The finding `category` enum, mirroring `/code-review`'s ReportFindings contract exactly. */
-export const CATEGORIES = ['correctness', 'security', 'simplification', 'efficiency', 'test-coverage'];
+/**
+ * The finding `category` enum. The first five mirror `/code-review`'s
+ * ReportFindings contract exactly; `convention` and `contract` extend past it
+ * — logged review data showed both in real use, each under two spellings,
+ * with no fix available but widening the enum (see `CATEGORY_ALIASES`).
+ */
+export const CATEGORIES = [
+  'correctness',
+  'security',
+  'simplification',
+  'efficiency',
+  'test-coverage',
+  'convention',
+  'contract',
+];
+
+/**
+ * Alternate spellings reviewers emit for a canonical category name, mapped to
+ * that name. Applied by `normalizeCategory` before every enum membership test
+ * — checking membership first would make an aliased spelling fail closed the
+ * same as a genuinely unrecognized one, and this map would go dead.
+ */
+export const CATEGORY_ALIASES = {
+  conventions: 'convention',
+  'contract-conformance': 'contract',
+};
+
+/**
+ * Normalize a trimmed, lowercased category through `CATEGORY_ALIASES`. A
+ * category with no alias passes through unchanged.
+ * @param {string} category
+ * @returns {string}
+ */
+export function normalizeCategory(category) {
+  return CATEGORY_ALIASES[category] ?? category;
+}
 
 /** How many blocking findings the summary lists inline. The count is always exact; the rest are one `path` away. */
 export const MAX_LISTED = 3;
@@ -60,7 +99,7 @@ export function parseBlockOn(raw) {
   if (raw === undefined || raw === null) return DEFAULT_BLOCK_ON;
   const parts = raw
     .split(',')
-    .map((s) => s.trim().toLowerCase())
+    .map((s) => normalizeCategory(s.trim().toLowerCase()))
     .filter(Boolean);
   if (!parts.length) return DEFAULT_BLOCK_ON;
   const unknown = parts.filter((c) => !CATEGORIES.includes(c));
@@ -160,7 +199,7 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
     // Trimmed as well as lowercased, symmetrically with `parseBlockOn`: a
     // trailing space is transcription noise, not a different category, and
     // reporting `"correctness "` as unknown gave the operator nothing to act on.
-    const category = String(f?.category ?? '').trim().toLowerCase();
+    const category = normalizeCategory(String(f?.category ?? '').trim().toLowerCase());
     const known = Boolean(category) && CATEGORIES.includes(category);
     if (!known) unknown.add(category || '(blank)');
     const confirmed = String(f?.verdict ?? '').toUpperCase() === 'CONFIRMED';

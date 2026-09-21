@@ -9,7 +9,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gateReview, parseBlockOn, gateFile, CATEGORIES, DEFAULT_BLOCK_ON, MAX_LISTED } from './review-gate.mjs';
+import { gateReview, parseBlockOn, gateFile, normalizeCategory, CATEGORIES, CATEGORY_ALIASES, DEFAULT_BLOCK_ON, MAX_LISTED } from './review-gate.mjs';
 
 const finding = (over = {}) => ({
   category: 'correctness',
@@ -55,6 +55,48 @@ test('parseBlockOn: rejects a category outside the enum instead of gating on one
   assert.throws(() => parseBlockOn('correctness,vibes'), /vibes/);
   // Every enum member is accepted, so a legitimately widened gate never trips this.
   assert.deepEqual(parseBlockOn(CATEGORIES.join(',')), CATEGORIES);
+});
+
+test('normalizeCategory: maps every known alias to its canonical spelling, and passes through the rest', () => {
+  for (const [alias, canonical] of Object.entries(CATEGORY_ALIASES)) {
+    assert.equal(normalizeCategory(alias), canonical);
+  }
+  assert.equal(normalizeCategory('correctness'), 'correctness');
+  assert.equal(normalizeCategory('vibes'), 'vibes');
+});
+
+test('parseBlockOn: normalizes an aliased spelling before validating it, rather than rejecting it', () => {
+  assert.deepEqual(parseBlockOn('conventions'), ['convention']);
+  assert.deepEqual(parseBlockOn('correctness,contract-conformance'), ['correctness', 'contract']);
+});
+
+test('gateReview: an aliased category normalizes to its canonical spelling BEFORE the enum membership test — this is the inversion check', () => {
+  // If normalization ran after the membership test (checking `CATEGORIES.includes('conventions')`
+  // instead of `CATEGORIES.includes(normalizeCategory('conventions'))`), the alias map would be
+  // dead code: 'conventions' isn't itself in CATEGORIES, so it would fail closed exactly like a
+  // genuinely unrecognized category. Tamper-verified: moving normalization after the `known` check
+  // turns this red (unknownCategories becomes ['conventions'] instead of []).
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'conventions', verdict: 'PLAUSIBLE' })] });
+  assert.deepEqual(g.unknownCategories, []);
+  assert.equal(g.blocking.length, 0);
+  assert.equal(g.nitCount, 1);
+
+  const h = gateReview({ issue: 1, findings: [finding({ category: 'contract-conformance', verdict: 'PLAUSIBLE' })] });
+  assert.deepEqual(h.unknownCategories, []);
+});
+
+test('gateReview: convention and contract are known categories that still do not block by default', () => {
+  // DEFAULT_BLOCK_ON is unchanged by this widening — see #27.
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'convention' }), finding({ category: 'contract' })] });
+  assert.deepEqual(g.unknownCategories, []);
+  assert.equal(g.verdict, 'nits-only');
+  assert.equal(g.nitCount, 2);
+});
+
+test('gateReview: contract blocks once an operator widens --block-on to include it', () => {
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'contract' })] }, ['correctness', 'security', 'contract']);
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 1);
 });
 
 test('gateReview: no findings is clean', () => {
@@ -131,11 +173,11 @@ test('gateReview: an unrecognized category fails closed — it cannot yield a me
 test('gateReview: an unrecognized category alongside a genuine blocking finding still blocks, and counts both', () => {
   const g = gateReview({
     issue: 1,
-    findings: [finding(), finding({ category: 'contract', verdict: 'PLAUSIBLE' })],
+    findings: [finding(), finding({ category: 'documentation', verdict: 'PLAUSIBLE' })],
   });
   assert.equal(g.verdict, 'blocking');
   assert.equal(g.blockingCount, 2);
-  assert.deepEqual(g.unknownCategories, ['contract']);
+  assert.deepEqual(g.unknownCategories, ['documentation']);
 });
 
 test('gateReview: an unrecognized category alongside only real nits still blocks — it is never scored as a nit', () => {
@@ -264,7 +306,7 @@ test('CLI: --block-on naming a category outside the enum is a loud usage error, 
     assert.equal(stdout, '');
     assert.match(stderr, /"test-quality"/);
     // The message carries the enum, so the operator can correct it in one pass.
-    assert.match(stderr, /correctness, security, simplification, efficiency, test-coverage/);
+    assert.match(stderr, new RegExp(CATEGORIES.join(', ').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
 });
 
