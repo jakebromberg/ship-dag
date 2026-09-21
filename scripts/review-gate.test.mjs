@@ -14,11 +14,13 @@ import {
   parseBlockOn,
   gateFile,
   normalizeCategory,
+  renderUnusable,
   ALWAYS_BLOCK,
   CATEGORIES,
   CATEGORY_ALIASES,
   DEFAULT_BLOCK_ON,
   MAX_LISTED,
+  MAX_VALUE_CHARS,
 } from './review-gate.mjs';
 
 const finding = (over = {}) => ({
@@ -265,6 +267,44 @@ for (const claimed of ['false', 'no', 'true', 0, 1, null, {}, []]) {
     assert.deepEqual(g.malformedBlocking, [JSON.stringify(claimed)]);
   });
 }
+
+test('gateReview: an unusable blocking value that could not have decided anything is not reported', () => {
+  // Same principle the self-cleared signal applies: a value the gate would
+  // have ignored regardless is not news, and reporting it teaches the operator
+  // to skim past the field. Only the position where a boolean `false` would
+  // have cleared the finding counts.
+  const plausible = gateReview({ issue: 1, findings: [finding({ category: 'convention', verdict: 'PLAUSIBLE', blocking: 'false' })] });
+  assert.deepEqual(plausible.malformedBlocking, []);
+  const ungated = gateReview({ issue: 1, findings: [finding({ category: 'simplification', blocking: 'false' })] });
+  assert.deepEqual(ungated.malformedBlocking, []);
+  const carvedOut = gateReview({ issue: 1, findings: [finding({ category: 'correctness', blocking: 'false' })] });
+  assert.equal(carvedOut.verdict, 'blocking');
+  assert.deepEqual(carvedOut.malformedBlocking, []);
+  const unknownCategory = gateReview({ issue: 1, findings: [finding({ category: 'vibes', blocking: 'false' })] });
+  assert.deepEqual(unknownCategory.malformedBlocking, []);
+});
+
+test('renderUnusable: reviewer-authored text cannot spend the whole result budget', () => {
+  // This script exists to keep a per-PR merge decision to a few hundred bytes,
+  // and the value is written by the reviewer: `blocking: { why: <prose> }`
+  // would otherwise land in full on stdout *and* on the stderr summary line.
+  assert.equal(renderUnusable('false'), '\"false\"');
+  assert.equal(renderUnusable(0), '0');
+  assert.equal(renderUnusable(null), 'null');
+  const long = renderUnusable({ why: 'x'.repeat(500) });
+  assert.equal(long.length, MAX_VALUE_CHARS + 1, 'a long value is truncated to MAX_VALUE_CHARS plus the ellipsis');
+  assert.ok(long.endsWith('…'));
+});
+
+test('gateReview: malformedBlocking is rendered and capped, so a verbose reviewer cannot flood the result', () => {
+  const findings = Array.from({ length: MAX_LISTED + 2 }, (_, i) =>
+    finding({ category: 'convention', blocking: { why: `${i}${'x'.repeat(500)}` } }),
+  );
+  const g = gateReview({ issue: 1, findings });
+  assert.equal(g.blockingCount, MAX_LISTED + 2, 'every one of them still blocks');
+  assert.equal(g.malformedBlocking.length, MAX_LISTED);
+  for (const value of g.malformedBlocking) assert.ok(value.length <= MAX_VALUE_CHARS + 1, `${value} is not bounded`);
+});
 
 test('gateReview: a usable blocking value is never reported as malformed, and neither is an omitted one', () => {
   for (const f of [finding({ blocking: true }), finding({ category: 'convention', blocking: false }), finding({})]) {
@@ -763,6 +803,19 @@ test('every declaration of the --block-on default agrees with DEFAULT_BLOCK_ON',
   const fallback = workflow.match(/const blockOn\s*=[^\n]*?\[([^\]]*)\]/);
   assert.ok(fallback, 'workflow.js no longer declares a blockOn fallback');
   assert.deepEqual([...fallback[1].matchAll(/'([^']*)'/g)].map((m) => m[1]), DEFAULT_BLOCK_ON);
+
+  // `references/review-schema.md` is the canonical statement of the gate and
+  // the file both prompts point the reviewer at, so it is the worst place of
+  // the three for the stated default to drift from the applied one. Located by
+  // "defaulting to", which marks the declaration rather than the worked
+  // examples of widening the gate per-run that appear later in the file.
+  const schema = readFileSync(join(REPO_ROOT, 'references/review-schema.md'), 'utf8');
+  const stated = schema
+    .split('\n')
+    .filter((l) => l.includes('defaulting to `--block-on'))
+    .map((l) => l.match(/defaulting to `--block-on ([a-z][a-z,-]*)`/)?.[1]?.split(','));
+  assert.equal(stated.length, 1, 'review-schema.md should declare the default gate exactly once');
+  assert.deepEqual(stated[0], DEFAULT_BLOCK_ON);
 });
 
 // --- The reviewer prompt's `blocking` instruction --------------------------
@@ -822,6 +875,12 @@ test('every copy of the reviewer prompt still instructs the reviewer to emit blo
 const GATE_RULE_SITES = {
   'SKILL.md': "review-schema.md`'s rule",
   'references/review-schema.md': 'Auto-merge is **blocked**',
+  // The escalation trigger restates the rule to decide what reaches a human.
+  // It stated the pre-#27 version — "a CONFIRMED finding in a `--block-on`
+  // category" — which is now neither necessary nor sufficient: a CONFIRMED
+  // `convention` finding the reviewer cleared is in a `--block-on` category
+  // and does not block, so the trigger fired on a case the gate merges.
+  'references/escalation-policy.md': '**Unclearable blocking finding**',
 };
 
 /** The conjuncts `gateReview` actually ANDs together, as the prose spells them. */

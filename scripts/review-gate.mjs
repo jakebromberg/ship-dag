@@ -52,11 +52,17 @@ export const DEFAULT_BLOCK_ON = ['correctness', 'security', 'convention', 'contr
  * gate from `findings[]` (rather than trusting a self-reported verdict)
  * exists to prevent.
  *
+ * The carve-out is applied *within* the `--block-on` test, not around it: it
+ * stops `blocking` narrowing the gate, it does not widen the gate past the
+ * list the operator gave. An operator who narrows `--block-on` to a single
+ * category still gets exactly that category, as they always did.
+ *
  * Every member must be a canonical `CATEGORIES` spelling *and* a member of
  * `DEFAULT_BLOCK_ON` — a carve-out naming a category the default gate does
- * not block is inert, and one naming a non-canonical spelling never matches,
- * since the gate tests it after `normalizeCategory`. Both are pinned by an
- * invariant test rather than left to the three lists agreeing by hand.
+ * not block is inert by default, and one naming a non-canonical spelling
+ * never matches, since the gate tests it after `normalizeCategory`. Both are
+ * pinned by an invariant test rather than left to the three lists agreeing by
+ * hand.
  */
 export const ALWAYS_BLOCK = ['correctness', 'security'];
 
@@ -108,6 +114,29 @@ export function normalizeCategory(category) {
 
 /** How many blocking findings the summary lists inline. The count is always exact; the rest are one `path` away. */
 export const MAX_LISTED = 3;
+
+/**
+ * How many characters of an unusable `blocking` value are echoed back. This
+ * script exists to keep a per-PR merge decision to a few hundred bytes, and
+ * the value is reviewer-authored: `blocking: { why: "<three paragraphs>" }`
+ * would otherwise spend that whole budget twice, once on stdout and once on
+ * the stderr summary line. Wide enough for `"false"`, `0`, or `null` — the
+ * spellings actually seen — to arrive whole.
+ */
+export const MAX_VALUE_CHARS = 40;
+
+/**
+ * Render an unusable `blocking` value for the operator: its JSON text, so
+ * `"false"` reads as the string the reviewer wrote and `0` as the number,
+ * truncated to `MAX_VALUE_CHARS`. Falls back to `String` for a value
+ * `JSON.stringify` has no text for (a function, from a programmatic caller).
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function renderUnusable(value) {
+  const raw = JSON.stringify(value) ?? String(value);
+  return raw.length > MAX_VALUE_CHARS ? `${raw.slice(0, MAX_VALUE_CHARS)}…` : raw;
+}
 
 /**
  * Parse a `--block-on` list. An absent or empty value means the default gate —
@@ -217,6 +246,15 @@ export function readPositional(argv, valueFlags = []) {
  * junk values the reviewer meant as a clearance, in the one direction that
  * merges code.
  *
+ * `malformedBlocking[]` reports only the values that would have decided
+ * something — a CONFIRMED finding in a gated category outside `ALWAYS_BLOCK`,
+ * the one position where a boolean `false` would have cleared it. A
+ * `blocking` of `0` on a PLAUSIBLE finding changed no outcome, and reporting
+ * it would train the operator to skim past the field; it is the same
+ * principle `selfCleared[]` applies. Rendered through `renderUnusable` and
+ * capped at `MAX_LISTED`, because the value is reviewer-authored text in a
+ * result measured in hundreds of bytes.
+ *
  * When the axis does clear a CONFIRMED finding, that is recorded in
  * `selfClearedCount` and `selfCleared[≤MAX_LISTED]`. Folded into `nitCount`
  * alone, the result would be bit-identical to a review that merely had a
@@ -289,9 +327,15 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
     // operator sees the reviewer emitted something the gate could not use,
     // rather than having it ignored in silence.
     const claimed = f?.blocking;
-    const usable = claimed === undefined || typeof claimed === 'boolean';
-    if (!usable) malformed.add(JSON.stringify(claimed) ?? String(claimed));
-    const selfNit = usable && claimed === false && !ALWAYS_BLOCK.includes(category);
+    // The one position where the axis decides anything: a CONFIRMED finding
+    // in a gated category that `ALWAYS_BLOCK` does not already force. Both
+    // the clearance and the report of an unusable value are scoped to it —
+    // a `blocking` the gate would have ignored anyway is not news.
+    const clearable = known && gate.has(category) && confirmed && !ALWAYS_BLOCK.includes(category);
+    if (clearable && claimed !== undefined && typeof claimed !== 'boolean') malformed.add(renderUnusable(claimed));
+    // `claimed === false` already implies a usable value, so no separate
+    // check: an unusable one falls through to blocking, as an omitted one does.
+    const selfNit = clearable && claimed === false;
     if (!known) byTaxonomy.push(entry);
     else if (gate.has(category) && confirmed) {
       if (selfNit) {
@@ -314,7 +358,7 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
     blocking: [...byRule, ...byTaxonomy].slice(0, MAX_LISTED),
     selfCleared: selfCleared.slice(0, MAX_LISTED),
     unknownCategories: [...unknown],
-    malformedBlocking: [...malformed],
+    malformedBlocking: [...malformed].slice(0, MAX_LISTED),
   };
 }
 
