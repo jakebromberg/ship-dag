@@ -59,9 +59,13 @@ export function parseBlockOn(raw) {
  * Recompute the merge gate from a review object.
  *
  * A finding blocks iff its `category` is in `blockOn` AND its `verdict` is
- * CONFIRMED — exactly `references/review-schema.md`'s rule. Everything else
- * (PLAUSIBLE findings, non-blocking categories, cosmetic nits) is counted and
- * surfaced but does not block.
+ * CONFIRMED — exactly `references/review-schema.md`'s rule — **or** its
+ * `category` is outside `CATEGORIES` (including blank/absent) at all. An
+ * unrecognized category is the same hazard as a truncated `findings` array
+ * with a quieter failure mode: the gate cannot know whether it names a
+ * correctness defect or a cosmetic nit, so it fails closed rather than
+ * defaulting to "nit". Everything else (PLAUSIBLE findings in a known,
+ * non-blocking category) is counted and surfaced but does not block.
  *
  * Throws when `findings` is not an array. That is deliberately fatal rather
  * than defaulted to `[]`: a truncated or half-written review file would
@@ -81,9 +85,10 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
   let nitCount = 0;
   for (const f of review.findings) {
     const category = String(f?.category ?? '').toLowerCase();
-    if (category && !CATEGORIES.includes(category)) unknown.add(category);
+    const known = category && CATEGORIES.includes(category);
+    if (!known) unknown.add(category || '(blank)');
     const confirmed = String(f?.verdict ?? '').toUpperCase() === 'CONFIRMED';
-    if (gate.has(category) && confirmed) blocking.push(f);
+    if (!known || (gate.has(category) && confirmed)) blocking.push(f);
     else nitCount += 1;
   }
   return {

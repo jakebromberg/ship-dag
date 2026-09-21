@@ -37,10 +37,10 @@ A merge decision must not rest on a model's claim about its own output, and a re
 
 ## The gate
 
-`--block-on` is a comma-separated list of **categories** (default `correctness,security`). Auto-merge is **blocked** for an issue when its review has **any finding whose `category ∈ --block-on` AND `verdict == CONFIRMED`**. Everything else (PLAUSIBLE findings, non-blocking categories, cosmetic nits) is surfaced but does **not** block.
+`--block-on` is a comma-separated list of **categories** (default `correctness,security`). Auto-merge is **blocked** for an issue when its review has **any finding whose `category ∈ --block-on` AND `verdict == CONFIRMED`** — **or any finding whose `category` is not one of the five listed above, blank, or absent**. An unrecognized category is the same hazard as a missing `findings` array with a quieter failure mode: the gate cannot tell whether it names a correctness defect or a cosmetic nit, so it fails closed rather than defaulting to "nit". `unknownCategories[]` names every offending category (or `(blank)`) so an operator can act without opening the review file. Everything else (PLAUSIBLE findings in a known, non-blocking category) is surfaced but does **not** block.
 
-- `verdict: "blocking"` → at least one blocking finding → route to `/review-loop`, then re-review; escalate to HITL if it can't clear within `--max-review-iter`.
+- `verdict: "blocking"` → at least one blocking finding, **or** at least one unrecognized category → route to `/review-loop`, then re-review; escalate to HITL if it can't clear within `--max-review-iter`.
 - `verdict: "nits-only"` → mergeable; list the nits in the wave summary for the human.
 - `verdict: "clean"` → mergeable.
 
-Widen `--block-on` (e.g. add `efficiency`) for a stricter gate; the categories are exactly the schema's `category` enum.
+Widen `--block-on` (e.g. add `efficiency`) for a stricter gate; the categories it can name are exactly the schema's `category` enum above — this is enforced, not aspirational: any category outside that enum blocks regardless of `--block-on`.
