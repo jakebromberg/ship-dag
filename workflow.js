@@ -9,7 +9,7 @@ export const meta = {
 
 // args: {
 //   repo:    "owner/repo",
-//   blockOn: ["correctness","security"],          // categories that block auto-merge
+//   blockOn: ["correctness","security","convention","contract"], // categories that block auto-merge
 //   issues:  [{ number, digest, complexity, implEffort, reviewEffort, sourceEstimate }]
 //            sourceEstimate is triage's added-production-source budget (default 200).
 //            complexity ∈ "mechanical"|"normal"|"complex" (from triage); implEffort/
@@ -23,7 +23,7 @@ export const meta = {
 // The runtime may hand `args` through as a JSON string rather than an object;
 // normalize so the rest of the script always sees a parsed object.
 const A = typeof args === 'string' ? JSON.parse(args) : args || {}
-const blockOn = (A && A.blockOn) || ['correctness', 'security']
+const blockOn = (A && A.blockOn) || ['correctness', 'security', 'convention', 'contract']
 const repo = A && A.repo
 // Findings go to disk, not into the workflow's return value: the skill gates on
 // scripts/review-gate.mjs reading these files, so a wave's whole finding set
@@ -101,8 +101,8 @@ function reviewPrompt(impl) {
     `1. In your worktree: cd into the ${repo} checkout, \`git fetch\`, and \`gh pr checkout ${impl.pr}\` (or check out ${impl.branch}) so the branch is present.`,
     `2. Review \`git diff origin/main...HEAD\` for correctness, security, simplification, efficiency, test coverage, convention, and contract. Reason exhaustively about edge cases — you are the last gate before this reaches main; nothing downstream catches your misses.`,
     `3. Optionally, if the Skill tool is reachable, also run the built-in \`/code-review\` and union any extra findings. If it is not reachable, your inline review stands alone.`,
-    `4. Classify each finding: category (correctness|security|simplification|efficiency|test-coverage|convention|contract) and verdict CONFIRMED|PLAUSIBLE. Any other category — or a blank one — fails the gate closed and bounces the PR to /review-loop, which has no fix for a taxonomy error, so pick the nearest listed category rather than coining one. Do NOT decide an overall verdict — the gate is recomputed from your findings against the blocking categories (${blockOn.join(', ')}).`,
-    `5. Write the full finding object — { issue, findings[] (category, verdict, file, line, summary, failure_scenario) } — as JSON to ${reviewPathFor(impl.issue)}. Return only the summary below; returning findings inline would park all of them in the orchestrator's context for the rest of the run.`,
+    `4. Classify each finding: category (correctness|security|simplification|efficiency|test-coverage|convention|contract), verdict CONFIRMED|PLAUSIBLE, and blocking true|false — your own call on whether this specific finding, not just its category, should block the merge (two test-coverage findings can differ: one blocking, one a documentary nit). Any other category — or a blank one — fails the gate closed and bounces the PR to /review-loop, which has no fix for a taxonomy error, so pick the nearest listed category rather than coining one. Do NOT decide an overall verdict — the gate is recomputed from your findings against the blocking categories (${blockOn.join(', ')}); blocking only narrows within an already-blocking category and omitting it fails toward blocking.`,
+    `5. Write the full finding object — { issue, findings[] (category, verdict, blocking, file, line, summary, failure_scenario) } — as JSON to ${reviewPathFor(impl.issue)}. Return only the summary below; returning findings inline would park all of them in the orchestrator's context for the rest of the run.`,
     ``,
     `Return the schema: issue, path (the file you wrote), findingCount, headline (one line naming the most serious finding, or "no findings"). Do not mention Claude/AI anywhere.`,
   ].join('\n')

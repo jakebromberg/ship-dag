@@ -124,18 +124,78 @@ test('gateReview: an aliased category normalizes to its canonical spelling BEFOR
   assert.deepEqual(h.unknownCategories, []);
 });
 
-test('gateReview: convention and contract are known categories that still do not block by default', () => {
-  // DEFAULT_BLOCK_ON is unchanged by this widening — see #27.
+test('gateReview: convention and contract are now in the default gate, discharging the #26 obligation', () => {
   const g = gateReview({ issue: 1, findings: [finding({ category: 'convention' }), finding({ category: 'contract' })] });
   assert.deepEqual(g.unknownCategories, []);
-  assert.equal(g.verdict, 'nits-only');
-  assert.equal(g.nitCount, 2);
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 2);
 });
 
 test('gateReview: contract blocks once an operator widens --block-on to include it', () => {
   const g = gateReview({ issue: 1, findings: [finding({ category: 'contract' })] }, ['correctness', 'security', 'contract']);
   assert.equal(g.verdict, 'blocking');
   assert.equal(g.blockingCount, 1);
+});
+
+// --- The reviewer's own blocking/nit call (#27) -----------------------------
+
+test('gateReview: the motivating case — two test-coverage findings, one blocking and one not, block exactly once', () => {
+  const blockOn = [...DEFAULT_BLOCK_ON, 'test-coverage'];
+  const g = gateReview(
+    {
+      issue: 1,
+      findings: [
+        finding({ category: 'test-coverage', summary: 'assertion cannot fail in the direction the test exists for', blocking: true }),
+        finding({ category: 'test-coverage', summary: 'documentary {} test case', blocking: false }),
+      ],
+    },
+    blockOn,
+  );
+  assert.equal(g.blockingCount, 1);
+  assert.equal(g.nitCount, 1);
+});
+
+test('gateReview: omitting the blocking field fails toward blocking, not toward merging', () => {
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'test-coverage', blocking: undefined })] }, [
+    ...DEFAULT_BLOCK_ON,
+    'test-coverage',
+  ]);
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 1);
+});
+
+test('gateReview: the new axis is never sufficient on its own to clear a CONFIRMED correctness finding', () => {
+  // A reviewer marking its own correctness defect a "nit" must not be able to
+  // un-block it — that would let the model grade its own homework, exactly
+  // what recomputing the gate from findings[] exists to prevent.
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'correctness', blocking: false })] });
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 1);
+});
+
+test('gateReview: the new axis is never sufficient on its own to clear a CONFIRMED security finding', () => {
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'security', blocking: false })] });
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 1);
+});
+
+test('gateReview: #26 obligation discharged — a CONFIRMED contract finding no longer auto-merges silently', () => {
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'contract' })] });
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 1);
+  assert.deepEqual(g.unknownCategories, []);
+});
+
+test('gateReview: #26 obligation discharged — a CONFIRMED convention finding no longer auto-merges silently', () => {
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'convention' })] });
+  assert.equal(g.verdict, 'blocking');
+  assert.equal(g.blockingCount, 1);
+});
+
+test('gateReview: a convention nit the reviewer itself flagged non-blocking stays a nit', () => {
+  const g = gateReview({ issue: 1, findings: [finding({ category: 'convention', blocking: false })] });
+  assert.equal(g.verdict, 'nits-only');
+  assert.equal(g.nitCount, 1);
 });
 
 test('gateReview: no findings is clean', () => {
