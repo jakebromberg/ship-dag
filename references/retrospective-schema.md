@@ -1,6 +1,6 @@
 # Retrospective schema — cross-PR findings & plan adjustments
 
-The step-6.5 Retrospective subagent returns this shape. It **reuses the vocabulary** of `references/review-schema.md` — `category` (`correctness | security | simplification | efficiency | test-coverage`) and confidence (`CONFIRMED | PLAUSIBLE`) — but is deliberately a **different envelope**: the review envelope is single-issue and merge-gated (`clean | blocking | nits-only`), while a retrospective is multi-PR, multi-location, and gates nothing — everything it examines has already merged. review-schema.md mirrors the built-in `/code-review` `ReportFindings` contract exactly and must not be extended, which is why this is a separate document rather than new fields there.
+The step-6.5 Retrospective subagent returns this shape. It **reuses the vocabulary** of `references/review-schema.md` — `category` (`correctness | security | simplification | efficiency | test-coverage | convention | contract`) and confidence (`CONFIRMED | PLAUSIBLE`) — but is deliberately a **different envelope**: the review envelope is single-issue and merge-gated (`clean | blocking | nits-only`), while a retrospective is multi-PR, multi-location, and gates nothing — everything it examines has already merged. review-schema.md's `verdict` field mirrors the built-in `/code-review` `ReportFindings` contract exactly and must not be extended; `category` has already diverged from it (see review-schema.md), which is unrelated to why this is a separate document rather than new fields there.
 
 ## Result envelope
 

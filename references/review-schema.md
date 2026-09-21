@@ -9,7 +9,7 @@ The Opus review subagent returns findings in a **fixed schema** so the merge gat
   "issue": 123,
   "findings": [
     {
-      "category": "correctness | security | simplification | efficiency | test-coverage",
+      "category": "correctness | security | simplification | efficiency | test-coverage | convention | contract",
       "verdict":  "CONFIRMED | PLAUSIBLE",
       "file":     "path/to/file.ts",
       "line":     42,
@@ -20,7 +20,7 @@ The Opus review subagent returns findings in a **fixed schema** so the merge gat
 }
 ```
 
-`category` and `verdict` mirror the built-in `/code-review` `ReportFindings` contract exactly, so the optional augmentation (unioning `/code-review` output into `findings[]`) needs no translation.
+`verdict` mirrors the built-in `/code-review` `ReportFindings` contract exactly. `category` no longer does: `convention` and `contract` were added on top of the five `ReportFindings` categories, because logged review data showed reviewers emitting both — each under two spellings — with no fix available but widening the enum (see *The gate* below). A `/code-review` finding never carries either name, so the optional augmentation (unioning `/code-review` output into `findings[]`) still needs no translation for the original five; a `/code-review` finding's category is always one of them, so it is always recognized by this gate too.
 
 ## Where the object lives
 
@@ -37,7 +37,11 @@ A merge decision must not rest on a model's claim about its own output, and a re
 
 ## The gate
 
-`--block-on` is a comma-separated list of **categories** (default `correctness,security`). Auto-merge is **blocked** for an issue when its review has **any finding whose `category ∈ --block-on` AND `verdict == CONFIRMED`** — **or any finding whose `category` is not one of the five listed above, blank, or absent**. An unrecognized category is the same hazard as a missing `findings` array with a quieter failure mode: the gate cannot tell whether it names a correctness defect or a cosmetic nit, so it fails closed rather than defaulting to "nit". `unknownCategories[]` names every offending category (or `(blank)`) so an operator can act without opening the review file. Everything else (PLAUSIBLE findings in a known, non-blocking category) is surfaced but does **not** block.
+`--block-on` is a comma-separated list of **categories** (default `correctness,security` — unchanged by the `convention`/`contract` widening; see below). Auto-merge is **blocked** for an issue when its review has **any finding whose `category ∈ --block-on` AND `verdict == CONFIRMED`** — **or any finding whose `category` is not one of the seven listed above, blank, or absent**. An unrecognized category is the same hazard as a missing `findings` array with a quieter failure mode: the gate cannot tell whether it names a correctness defect or a cosmetic nit, so it fails closed rather than defaulting to "nit". `unknownCategories[]` names every offending category (or `(blank)`) so an operator can act without opening the review file. Everything else (PLAUSIBLE findings in a known, non-blocking category) is surfaced but does **not** block.
+
+Two of the seven have alternate spellings reviewers use in practice — `conventions` for `convention`, `contract-conformance` for `contract`. `review-gate.mjs` normalizes both to their canonical spelling *before* checking enum membership, on both the finding side and the `--block-on` side, so neither spelling fails closed and neither needs its own enum entry.
+
+`convention` and `contract` are **not** in `DEFAULT_BLOCK_ON`: a CONFIRMED finding in either currently merges silently, same as any other known-but-not-blocked category. Deciding whether either belongs in the default gate is deferred to a follow-up ticket that owns blocking policy; until it lands, an operator who wants either to block widens `--block-on` per-run (e.g. `--block-on correctness,security,contract`).
 
 - `verdict: "blocking"` → at least one blocking finding, **or** at least one unrecognized category → route to `/review-loop`, then re-review; escalate to HITL if it can't clear within `--max-review-iter`.
 - `verdict: "nits-only"` → mergeable; list the nits in the wave summary for the human.
