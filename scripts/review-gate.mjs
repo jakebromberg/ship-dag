@@ -200,6 +200,28 @@ export function readFlag(argv, flag) {
 }
 
 /**
+ * Parse `--expect-findings`: the count the Review subagent reported writing.
+ *
+ * Absent is `undefined` — the flag is optional, so existing callers, tests and
+ * ad-hoc operator invocations keep working and only the skill supplies it.
+ * Anything present must be a non-negative integer; a malformed value throws so
+ * `main()` can exit 2 (the operator's mistake) rather than silently dropping
+ * the check and restoring the very hazard the flag exists to close.
+ *
+ * @param {string|undefined|null} raw
+ * @returns {number|undefined}
+ */
+export function parseExpectFindings(raw) {
+  if (raw === undefined || raw === null) return undefined;
+  const trimmed = String(raw).trim();
+  // `Number()` accepts '', '1e3', 'Infinity' and ' 4 '; only the last is meant.
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`--expect-findings must be a non-negative integer, got ${renderUnusable(trimmed)}`);
+  }
+  return Number(trimmed);
+}
+
+/**
  * The positional argument, skipping every `--flag` *and* the value a
  * space-separated one consumes. Scanning for "the first argv entry that isn't a
  * `--flag`" took `--block-on correctness,security review.json`'s list as the
@@ -270,10 +292,25 @@ export function readPositional(argv, valueFlags = []) {
  *
  * @param {{issue?: number, findings: object[]}} review
  * @param {string[]} [blockOn]
+ * @param {number} [expectFindings]  the count the reviewer reported writing; a
+ *   disagreement throws rather than yielding a verdict
  */
-export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
+export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = undefined) {
   if (!review || !Array.isArray(review.findings)) {
     throw new Error('review has no findings array — refusing to treat an unreadable review as clean');
+  }
+  // The findings have to have *arrived*. The reviewer reports how many it
+  // wrote; this is the only place those two numbers meet. A file that reaches
+  // disk short — or empty — otherwise reads as a clean PR and auto-merges,
+  // which is how WXYC/Backend-Service#2587 shipped past a correctness finding
+  // its `.json.raw` sibling still holds. Checked before anything is computed:
+  // the cause of the drop is not recoverable and does not need to be, and a
+  // review we are going to refuse should not be scored first.
+  if (expectFindings !== undefined && review.findings.length !== expectFindings) {
+    throw new Error(
+      `review is short: the reviewer reported ${expectFindings} finding(s), the file holds ${review.findings.length} — ` +
+        'refusing to gate a review that did not arrive intact; re-run the reviewer rather than repairing the file',
+    );
   }
   // Normalized, not merely lowercased, and by the same function the finding
   // side uses: the CLI runs `blockOn` through `parseBlockOn` first, but a
@@ -367,30 +404,37 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON) {
  * (or `/review-loop`) the full findings without ever reading them itself.
  * @param {string} path
  * @param {string[]} [blockOn]
+ * @param {number} [expectFindings]
  */
-export function gateFile(path, blockOn = DEFAULT_BLOCK_ON) {
+export function gateFile(path, blockOn = DEFAULT_BLOCK_ON, expectFindings = undefined) {
   const review = JSON.parse(readFileSync(path, 'utf8'));
-  return { ...gateReview(review, blockOn), path };
+  return { ...gateReview(review, blockOn, expectFindings), path };
 }
 
 function main(argv) {
-  const path = readPositional(argv, ['--block-on']);
+  // Both value-taking flags are declared, or `--expect-findings 4 review.json`
+  // would take `4` as the review path — the defect `--block-on` shipped with.
+  const path = readPositional(argv, ['--block-on', '--expect-findings']);
   if (!path) {
-    process.stderr.write('usage: review-gate.mjs <review.json> [--block-on correctness,security]\n');
+    process.stderr.write(
+      'usage: review-gate.mjs <review.json> [--block-on correctness,security] [--expect-findings N]\n',
+    );
     process.exit(2);
   }
   // Parsed outside the gate's try/catch so a bad invocation exits 2 (the
   // operator's mistake) rather than 3 (an unreadable review).
   let blockOn;
+  let expectFindings;
   try {
     blockOn = parseBlockOn(readFlag(argv, '--block-on'));
+    expectFindings = parseExpectFindings(readFlag(argv, '--expect-findings'));
   } catch (err) {
     process.stderr.write(`review-gate: ${err.message}\n`);
     process.exit(2);
   }
   let out;
   try {
-    out = gateFile(path, blockOn);
+    out = gateFile(path, blockOn, expectFindings);
   } catch (err) {
     process.stderr.write(`review-gate: ${err.message}\n`);
     process.exit(3);

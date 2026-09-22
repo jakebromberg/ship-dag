@@ -21,6 +21,7 @@ import {
   DEFAULT_BLOCK_ON,
   MAX_LISTED,
   MAX_VALUE_CHARS,
+  parseExpectFindings,
 } from './review-gate.mjs';
 
 const finding = (over = {}) => ({
@@ -852,6 +853,20 @@ const BLOCKING_INSTRUCTION_SITES = {
   'references/review-schema.md': [/"blocking":\s*(?:true|false)/],
 };
 
+/**
+ * The reviewer must also be told its `findingCount` is cross-checked against
+ * the file. The gate can recompute a verdict from findings it can read; it
+ * cannot see a finding that never reached disk, so the reported count is the
+ * only witness — and a reviewer that believes the number is cosmetic has no
+ * reason to make it accurate. Same shape as the block above, deliberately: a
+ * fifth hand-rolled locator idiom in this file is what #48 exists to stop.
+ */
+const COUNT_IS_CHECKED = /`?findingCount`? is cross-checked against the file/;
+const PROMPT_INSTRUCTION_SITES = {
+  'SKILL.md': [COUNT_IS_CHECKED],
+  'workflow.js': [COUNT_IS_CHECKED],
+};
+
 test('every copy of the reviewer prompt still instructs the reviewer to emit blocking', () => {
   for (const [site, patterns] of Object.entries(BLOCKING_INSTRUCTION_SITES)) {
     const raw = readFileSync(join(REPO_ROOT, site), 'utf8');
@@ -863,6 +878,35 @@ test('every copy of the reviewer prompt still instructs the reviewer to emit blo
       );
     }
   }
+});
+
+test('every copy of the reviewer prompt still tells the reviewer its findingCount is checked', () => {
+  for (const [site, patterns] of Object.entries(PROMPT_INSTRUCTION_SITES)) {
+    const raw = readFileSync(join(REPO_ROOT, site), 'utf8');
+    for (const pattern of patterns) {
+      assert.match(
+        raw,
+        pattern,
+        `${site} no longer tells the reviewer its findingCount is cross-checked (${pattern}) — the count is the gate's only witness that the findings arrived, and a reviewer told nothing about it has no reason to make it accurate`,
+      );
+    }
+  }
+});
+
+/**
+ * Step 4d must actually pass the count. The flag being optional is what keeps
+ * ad-hoc invocations working; it is also what lets the skill quietly stop
+ * supplying it, restoring the exact hazard with every test still green.
+ */
+test('SKILL.md step 4d passes the reviewer\'s findingCount to the gate', () => {
+  const raw = readFileSync(join(REPO_ROOT, 'SKILL.md'), 'utf8');
+  const invocation = raw.split('\n').find((l) => l.includes('review-gate.mjs') && l.includes('--block-on'));
+  assert.ok(invocation, 'SKILL.md no longer shows a review-gate.mjs invocation');
+  assert.match(
+    invocation,
+    /--expect-findings/,
+    'step 4d invokes the gate without --expect-findings — the reviewer\'s count is back in the orchestrator\'s hands and discarded, which is how WXYC/Backend-Service#2587 merged past a correctness finding',
+  );
 });
 
 /**
@@ -896,4 +940,101 @@ test('every prose statement of the gate rule names every conjunct the gate appli
       assert.match(statement, conjunct, `${site} states the gate rule without ${conjunct}`);
     }
   }
+});
+
+// --- The review must actually arrive ------------------------------------
+//
+// `#25` hardened the gate against a finding it could not classify and `#27`
+// against a field value it could not use. Neither can see a finding that never
+// arrived. In run sd-20260919-075508, `WXYC%2FBackend-Service%232587.json` is
+// the 32-byte literal `{"issue": 2587, "findings": []}` while its `.json.raw`
+// sibling holds four findings, the first a correctness defect. The gate scored
+// it `clean` and the PR merged. The reviewer's own `findingCount` was in the
+// orchestrator's hands the whole time and was discarded.
+
+test('parseExpectFindings: absent is undefined, a count is a number', () => {
+  assert.equal(parseExpectFindings(undefined), undefined);
+  assert.equal(parseExpectFindings('0'), 0);
+  assert.equal(parseExpectFindings('4'), 4);
+  assert.equal(parseExpectFindings(' 4 '), 4);
+});
+
+test('parseExpectFindings: rejects anything that is not a non-negative integer', () => {
+  for (const bad of ['', '  ', '-1', '1.5', 'four', '4x', '1e3', 'NaN', 'Infinity']) {
+    assert.throws(() => parseExpectFindings(bad), /expect-findings/, `expected a throw for ${JSON.stringify(bad)}`);
+  }
+});
+
+test('gateReview: a matching expectation gates exactly as no expectation does', () => {
+  const review = { issue: 1, findings: [finding(), finding({ category: 'simplification' })] };
+  assert.deepEqual(gateReview(review, DEFAULT_BLOCK_ON, 2), gateReview(review));
+});
+
+test('gateReview: a short review is a hard error naming both counts, never a verdict', () => {
+  // The #2587 shape: the reviewer reported 4, the file holds 0.
+  // Both counts must appear: an operator reading only stderr has to be able to
+  // tell a total loss from a partial one without opening the file.
+  assert.throws(() => gateReview({ issue: 2587, findings: [] }, DEFAULT_BLOCK_ON, 4), (e) =>
+    /reported 4 /.test(e.message) && /holds 0\b/.test(e.message));
+  // And the partial-loss shape (#2597: 3 reported, 2 on disk).
+  assert.throws(() => gateReview({ issue: 2597, findings: [finding(), finding()] }, DEFAULT_BLOCK_ON, 3), (e) =>
+    /reported 3 /.test(e.message) && /holds 2\b/.test(e.message));
+});
+
+test('gateReview: a genuinely clean review with a matching expectation of 0 is not collateral', () => {
+  const g = gateReview({ issue: 7, findings: [] }, DEFAULT_BLOCK_ON, 0);
+  assert.equal(g.verdict, 'clean');
+  assert.equal(g.findingCount, 0);
+});
+
+test('gateReview: an over-long review is a mismatch too — the invariant is equality, not a floor', () => {
+  assert.throws(() => gateReview({ issue: 8, findings: [finding(), finding()] }, DEFAULT_BLOCK_ON, 1), (e) =>
+    /reported 1 /.test(e.message) && /holds 2\b/.test(e.message));
+});
+
+test('gateFile: carries the expectation through to the same hard error', () => {
+  const p = reviewFile({ issue: 2587, findings: [] });
+  assert.throws(() => gateFile(p, DEFAULT_BLOCK_ON, 4), (e) =>
+    /reported 4 /.test(e.message) && /holds 0\b/.test(e.message));
+  assert.equal(gateFile(p, DEFAULT_BLOCK_ON, 0).verdict, 'clean');
+});
+
+test('CLI: --expect-findings matching the file gates normally', () => {
+  const p = reviewFile({ issue: 620, findings: [finding()] });
+  const { code, stdout } = runCli([p, '--expect-findings', '1']);
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(stdout).findingCount, 1);
+});
+
+test('CLI: --expect-findings mismatching exits 3 and names both counts on stderr', () => {
+  const p = reviewFile({ issue: 2587, findings: [] });
+  const { code, stdout, stderr } = runCli([p, '--expect-findings', '4']);
+  assert.equal(code, 3, stderr);
+  assert.equal(stdout, '', 'a refused review must not emit a verdict on stdout');
+  assert.match(stderr, /4/);
+  assert.match(stderr, /0/);
+});
+
+test('CLI: --expect-findings is optional — every existing caller keeps working', () => {
+  const p = reviewFile({ issue: 620, findings: [finding()] });
+  const { code } = runCli([p]);
+  assert.equal(code, 0);
+});
+
+test('CLI: a malformed --expect-findings is a usage error (exit 2), not an unreadable review (exit 3)', () => {
+  const p = reviewFile({ issue: 620, findings: [finding()] });
+  for (const args of [[p, '--expect-findings', 'four'], [p, '--expect-findings', '-1'], [p, '--expect-findings='], [p, '--expect-findings']]) {
+    const { code, stderr } = runCli(args);
+    assert.equal(code, 2, `expected a usage error for ${args.join(' ')} — got ${code}: ${stderr}`);
+  }
+});
+
+test('CLI: --expect-findings is positional-independent — its value is never mistaken for the review path', () => {
+  // The same defect `--block-on` shipped with: `argv.find((a) => !a.startsWith('--'))`
+  // took the flag's value as the path when the flag came first.
+  const p = reviewFile({ issue: 620, findings: [finding()] });
+  const after = runCli([p, '--expect-findings', '1']);
+  const before = runCli(['--expect-findings', '1', p]);
+  assert.equal(before.code, 0, before.stderr);
+  assert.deepEqual(JSON.parse(before.stdout), JSON.parse(after.stdout));
 });
