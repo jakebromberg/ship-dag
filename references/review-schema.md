@@ -27,16 +27,16 @@ The Opus review subagent returns findings in a **fixed schema** so the merge gat
 
 ## Where the object lives
 
-The Review subagent **writes this object to a file** (`$STATE/reviews/<url-encoded-ref>.json`, path supplied by the main agent) and returns only `{ issue, path, findingCount, headline }`. Returning the findings inline instead parks every one of them in main-session context for the rest of the run — ~5k tokens for 13 findings on one PR in run sd-20260831-162148, when the gate needs only a verdict and a count. The findings are read back at the two moments they are actually used: routing a blocking PR to `/review-loop`, and showing a human what was found.
+The Review subagent **writes this object to a file** (`$STATE/reviews/<url-encoded-ref>.json`, path supplied by the main agent) and returns only `{ issue, path, findingCount, headline }`. **`findingCount` is load-bearing, not cosmetic**: every invocation of the gate passes it back as `--expect-findings`, and a disagreement with the file is a hard error rather than a verdict. Returning the findings inline instead parks every one of them in main-session context for the rest of the run — ~5k tokens for 13 findings on one PR in run sd-20260831-162148, when the gate needs only a verdict and a count. The findings are read back at the two moments they are actually used: routing a blocking PR to `/review-loop`, and showing a human what was found.
 
 Because of that, the envelope no longer carries an overall `verdict` from the subagent. `scripts/review-gate.mjs` recomputes it from `findings[]`:
 
 ```
-node scripts/review-gate.mjs <review.json> --block-on correctness,security
+node scripts/review-gate.mjs <review.json> --block-on correctness,security --expect-findings <N>
 → { issue, verdict, blockingCount, nitCount, selfClearedCount, findingCount, blocking[≤3], selfCleared[≤3], unknownCategories[], malformedBlocking[], path }
 ```
 
-A merge decision must not rest on a model's claim about its own output, and a review file with no `findings` array is a hard error rather than a silent `clean` — a truncated write must never auto-merge.
+A merge decision must not rest on a model's claim about its own output, and a review file with no `findings` array is a hard error rather than a silent `clean` — a truncated write must never auto-merge. The same applies to a file that arrives *short*: the gate can recompute a verdict from findings it can read, but it cannot see a finding that never reached disk, so `--expect-findings` is what closes that half. A count disagreement exits 3 with both numbers named, and the remedy is re-running the reviewer — never repairing the file, which is the likeliest way a short one is produced.
 
 ## The gate
 
