@@ -7,9 +7,10 @@
 1. **Underspecced issue** — triage (or the implement subagent) cannot resolve an ambiguity from the issue body + repo conventions. A guess would be a coin flip on intent.
 2. **Architectural fork or new dependency** — the work forces a design choice with lasting consequences, or pulls in a new third-party dependency.
 3. **Unclearable blocking finding** — the Opus gate blocks the PR (a finding whose `category ∈ --block-on` **and** `verdict == CONFIRMED` **and** whose `blocking` is not explicitly `false`, or one whose category is outside the enum at all) and `/review-loop` cannot clear it within `--max-review-iter`, or it needs a design decision rather than a mechanical fix.
-4. **Non-flaky CI failure** — CI fails for a real reason (not a known-flaky/infra retry). Per global rules, ≤2 manual retries on infra failure, then stop — never loop.
-5. **Merge conflict needing judgment** — a rebase conflict whose resolution isn't mechanical.
-6. **Oversize issue** (point A) — triage estimates the issue needs more than 200 added lines of production source. The fork is split-now vs accept-the-size, and it is a scope call the human owns. It costs minutes here and a whole branch later, so it is worth a grill even though nothing is ambiguous.
+4. **Unreadable review, twice** — `review-gate.mjs` exits 3 (unparseable review file, no `findings` array, or a finding count disagreeing with what the Review subagent reported writing) and a re-run of the reviewer exits 3 again. One exit 3 is a re-run; two is a signal that something is wrong with the reviewer or the state dir rather than with the PR. Never fall back to merging on CI alone, and never repair the file by hand — a review nobody can read is not a review.
+5. **Non-flaky CI failure** — CI fails for a real reason (not a known-flaky/infra retry). Per global rules, ≤2 manual retries on infra failure, then stop — never loop.
+6. **Merge conflict needing judgment** — a rebase conflict whose resolution isn't mechanical.
+7. **Oversize issue** (point A) — triage estimates the issue needs more than 200 added lines of production source. The fork is split-now vs accept-the-size, and it is a scope call the human owns. It costs minutes here and a whole branch later, so it is worth a grill even though nothing is ambiguous.
 7. **Rate-limit window can't be waited out cheaply** (point E) — the step-4 preflight (`scripts/rate-limit-preflight.mjs`), or the identical fork hit mid-recovery-recipe while waiting out a live rate-limit death, finds the five-hour window at/above threshold with the reset more than `--wait-max-minutes` away, or no reset time at all: wait / defer this wave (or issue) / stop the run.
 
 ## Protocol
