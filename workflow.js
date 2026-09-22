@@ -134,6 +134,11 @@ const results = await pipeline(
 )
 
 // The skill consumes these: run scripts/review-gate.mjs over each `review.path`
-// to get the verdict, then auto-merge the clean ones (in dependency order, with a
-// re-gate after any non-trivial rebase) and escalate blocked/blocking ones to HITL.
+// — passing that review's `findingCount` as `--expect-findings`, which is why
+// REVIEW_SCHEMA makes the field required; the count is the gate's only witness
+// that the findings reached disk, and discarding it here reopens the hole on the
+// fallback path that step 4d closes on the engine path — to get the verdict, then
+// auto-merge the clean ones (in dependency order, with a re-gate after any
+// non-trivial rebase, which passes the fresh count the same way) and escalate
+// blocked/blocking ones to HITL.
 return results.filter(Boolean)

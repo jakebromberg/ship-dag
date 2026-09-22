@@ -900,7 +900,14 @@ test('every copy of the reviewer prompt still tells the reviewer its findingCoun
  */
 test('SKILL.md step 4d passes the reviewer\'s findingCount to the gate', () => {
   const raw = readFileSync(join(REPO_ROOT, 'SKILL.md'), 'utf8');
-  const invocation = raw.split('\n').find((l) => l.includes('review-gate.mjs') && l.includes('--block-on'));
+  // Matched on the literal invocation, not on `review-gate.mjs` + `--block-on`
+  // appearing anywhere in a line: step 5's prose contains both strings *and*
+  // `--expect-findings`, so the loose locator passed only because step 4d
+  // happens to come first. Reorder the file and this test would have silently
+  // started asserting about prose while the command itself dropped the flag.
+  const lines = raw.split('\n').filter((l) => l.includes('node "$SD/scripts/review-gate.mjs"'));
+  assert.equal(lines.length, 1, `expected exactly one literal gate invocation in SKILL.md, found ${lines.length}`);
+  const invocation = lines[0];
   assert.ok(invocation, 'SKILL.md no longer shows a review-gate.mjs invocation');
   assert.match(
     invocation,
@@ -1037,4 +1044,29 @@ test('CLI: --expect-findings is positional-independent — its value is never mi
   const before = runCli(['--expect-findings', '1', p]);
   assert.equal(before.code, 0, before.stderr);
   assert.deepEqual(JSON.parse(before.stdout), JSON.parse(after.stdout));
+});
+
+test('gateReview: a string expectation is normalized, not compared raw', () => {
+  // A programmatic caller reads the count out of a report JSON or the
+  // environment and hands over `'2'`. A bare `!==` against a string fails every
+  // time, with the self-contradicting message "reported 2, the file holds 2".
+  const review = { issue: 1, findings: [finding(), finding()] };
+  assert.equal(gateReview(review, DEFAULT_BLOCK_ON, '2').verdict, gateReview(review).verdict);
+  assert.throws(() => gateReview(review, DEFAULT_BLOCK_ON, '3'), (e) =>
+    /reported 3 /.test(e.message) && /holds 2\b/.test(e.message));
+  // And a malformed one is still rejected rather than silently disabling the check.
+  assert.throws(() => gateReview(review, DEFAULT_BLOCK_ON, 'two'), /expect-findings/);
+});
+
+test('gateReview: the mismatch message does not claim a shortfall when the file is over-long', () => {
+  // The guard is equality, so "review is short" misdirects an operator into
+  // hunting a truncated write when the real fault is the reviewer's count.
+  let message = '';
+  try {
+    gateReview({ issue: 1, findings: [finding(), finding()] }, DEFAULT_BLOCK_ON, 1);
+  } catch (err) {
+    message = err.message;
+  }
+  assert.doesNotMatch(message, /short/i, `over-long mismatch reported as a shortfall: ${message}`);
+  assert.match(message, /mismatch/i);
 });

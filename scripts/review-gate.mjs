@@ -24,11 +24,13 @@
 //      stronger than the old inline path, where nothing recomputed it at all.
 //
 // Usage:
-//   node review-gate.mjs <review.json> [--block-on correctness,security]
-//   node review-gate.mjs <review.json> [--block-on=correctness,security]
+//   node review-gate.mjs <review.json> [--block-on correctness,security] [--expect-findings N]
+//   node review-gate.mjs <review.json> [--block-on=correctness,security] [--expect-findings=N]
 // Prints the gate decision as JSON on stdout and a one-line summary on stderr.
-// Exit 2 on a malformed invocation — including a `--block-on` naming a category
-// outside `CATEGORIES` — and 3 on an unreadable or malformed review.
+// Exit 2 on a malformed invocation — a `--block-on` naming a category outside
+// `CATEGORIES`, a non-integer `--expect-findings`, a flag with no value — and 3
+// on a review that cannot be scored: unreadable, no `findings` array, or a
+// finding count disagreeing with what the reviewer reported writing.
 
 import { readFileSync } from 'node:fs';
 import { isMain } from './lib/is-main.mjs';
@@ -306,10 +308,15 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
   // its `.json.raw` sibling still holds. Checked before anything is computed:
   // the cause of the drop is not recoverable and does not need to be, and a
   // review we are going to refuse should not be scored first.
-  if (expectFindings !== undefined && review.findings.length !== expectFindings) {
+  // Normalized here, not only in `main()`: a programmatic caller reading the
+  // count out of a report JSON or the environment hands over `'4'`, and a bare
+  // `!==` against a string fails every time with the self-contradicting message
+  // "reported 4 finding(s), the file holds 4".
+  const expected = parseExpectFindings(expectFindings === undefined ? undefined : String(expectFindings));
+  if (expected !== undefined && review.findings.length !== expected) {
     throw new Error(
-      `review is short: the reviewer reported ${expectFindings} finding(s), the file holds ${review.findings.length} — ` +
-        'refusing to gate a review that did not arrive intact; re-run the reviewer rather than repairing the file',
+      `finding count mismatch: the reviewer reported ${expected} finding(s), the file holds ${review.findings.length} — ` +
+        'refusing to gate a review whose contents and reported count disagree; re-run the reviewer rather than repairing the file',
     );
   }
   // Normalized, not merely lowercased, and by the same function the finding
