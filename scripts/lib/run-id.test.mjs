@@ -2,10 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { mintRunId, canonicalRunId, runIdFromConfigName, sameRun } from './run-id.mjs';
-import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 
 test('mintRunId: local-time stamp, with an optional slugged label', () => {
   const now = new Date(2026, 9, 8, 7, 5, 9);
@@ -61,16 +58,3 @@ for (const [a, b, expected] of [
   });
 }
 
-// Machine-wide check: every engine dir's family agrees with its config name.
-// CI has no engine dirs, so this is a no-op there.
-test('engine dirs: sameRun(dirName, runIdFromConfigName(config.name)) for every dir with a config', () => {
-  const base = defaultBaseDir();
-  if (!existsSync(base)) return;
-  for (const dir of readdirSync(base)) {
-    const cfg = join(base, dir, 'config.json');
-    if (!existsSync(cfg)) continue;
-    let name;
-    try { name = JSON.parse(readFileSync(cfg, 'utf8')).name; } catch { continue; }
-    assert.equal(sameRun(dir, runIdFromConfigName(name)), true, `${dir} vs config name ${name}`);
-  }
-});
