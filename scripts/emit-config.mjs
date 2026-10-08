@@ -44,7 +44,7 @@
 
 import { readFileSync } from 'node:fs';
 import { isMain } from './lib/is-main.mjs';
-import { load as loadTuning, resolve } from './lib/tuning.mjs';
+import { load as loadTuning } from './lib/tuning.mjs';
 
 /**
  * A filename/branch-safe slug from an issue title, or `issue-<number>` when the
@@ -92,16 +92,17 @@ export function unknownCiRepos(spec) {
   });
 }
 
-/** The implement effort tuning.json maps `complexity` to, or undefined (own keys only). */
+/** The implement effort tuning.json maps `complexity` to, or undefined (string own keys only). */
 function tunedEffort(tuning, complexity) {
-  return complexity ? resolve(tuning, `implement.${complexity}`) : undefined;
+  return typeof complexity === 'string' && Object.hasOwn(tuning.implement, complexity) ? tuning.implement[complexity] : undefined;
 }
 
 /**
  * Issues whose `complexity` is set but is not a key of tuning.json's implement map,
- * as `{ number, complexity }`. buildConfig drops both their complexity (the engine
- * schema rejects the whole config on an unknown one) and their effort, so the engine
- * default applies; the caller should surface them rather than drop them silently.
+ * as `{ number, complexity }`. buildConfig drops their complexity (the engine schema
+ * rejects the whole config on an unknown one) and stamps no tuned effort, so an issue
+ * without its own `effort` gets the engine default; the caller should surface them
+ * rather than drop them silently.
  */
 export function unknownComplexities(spec, tuning = loadTuning()) {
   return spec.issues
@@ -109,7 +110,6 @@ export function unknownComplexities(spec, tuning = loadTuning()) {
     .map((i) => ({ number: i.number, complexity: i.complexity }));
 }
 
-/** Build the engine config object from a ready-wave spec. */
 // Triage's per-issue line budget rides on the *description*, not on a new field.
 // The engine interpolates a fixed set of prompt variables (ISSUE_NUMBER, SLUG,
 // DESCRIPTION, ...) and leaves any unrecognized `{{...}}` placeholder intact, so
@@ -124,6 +124,12 @@ export function withLineBudget(description, sourceEstimate) {
   return `${description}\n\nSize budget: about ${Math.round(n)} added lines of production source. Tests, generated data, and docs sit outside the budget — do not trim them to fit. If the change runs more than half again past it, stop at the last green, coherent point and push that.`;
 }
 
+/**
+ * Build the engine config object from a ready-wave spec.
+ * @param spec   the ready-wave spec (shape in the header comment).
+ * @param tuning a validated version-1 tuning object (see lib/tuning.mjs `load`);
+ *               defaults to reading the shipped references/tuning.json from disk.
+ */
 export function buildConfig(spec, tuning = loadTuning()) {
   const repos = {};
   for (const r of distinctRepos(spec)) {
@@ -200,7 +206,7 @@ if (isMain(import.meta.url)) {
   if (badComplexity.length > 0) {
     console.error(
       `emit-config: WARNING — unknown complexity on ${badComplexity.map((i) => `#${i.number} (${i.complexity})`).join(', ')}. ` +
-        `Complexity and effort dropped; the engine default applies. Known: ${Object.keys(tuning.implement).join('/')}.`,
+        `Complexity dropped and no tuned effort stamped (an issue's own effort still applies, else the engine default). Known: ${Object.keys(tuning.implement).join('/')}.`,
     );
   }
 

@@ -304,7 +304,7 @@ test('the effort follows the tuning argument, not a hardcoded map', () => {
 // An out-of-enum complexity (including an inherited Object.prototype key) is dropped
 // along with its effort — the engine's schema rejects the whole config on an unknown
 // complexity — so the engine default applies, and it is named for the stderr warning.
-for (const complexity of ['__proto__', 'constructor', 'toString', 'Complex']) {
+for (const complexity of ['__proto__', 'constructor', 'toString', 'Complex', 'normal.length', ['normal']]) {
   test(`out-of-enum complexity ${complexity} emits no complexity or effort and is reported`, () => {
     const s = spec({ issues: [{ number: 1, repo: 'WXYC/library-metadata-lookup', complexity, digest: 'x' }] });
     const iss = buildConfig(s).issues[0];
@@ -326,4 +326,13 @@ test('the CLI warns on stderr about an out-of-enum complexity and emits no compl
   assert.match(r.stderr, /unknown complexity.*#7 \(Complex\)/);
   const iss = JSON.parse(r.stdout).issues[0];
   assert.ok(!('effort' in iss) && !('complexity' in iss));
+});
+
+test('an out-of-enum complexity keeps the issue\'s own effort, and the warning does not claim it was dropped', () => {
+  const s = spec({ issues: [{ number: 2, repo: 'WXYC/library-metadata-lookup', complexity: 'Complex', effort: 'high', digest: 'x' }] });
+  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+  const r = spawnSync('node', [cli, '-'], { input: JSON.stringify(s), encoding: 'utf-8' });
+  assert.equal(JSON.parse(r.stdout).issues[0].effort, 'high');
+  assert.match(r.stderr, /#2 \(Complex\)/);
+  assert.doesNotMatch(r.stderr, /effort dropped/i);
 });
