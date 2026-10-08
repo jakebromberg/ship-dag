@@ -44,6 +44,7 @@
 
 import { readFileSync } from 'node:fs';
 import { isMain } from './lib/is-main.mjs';
+import { load as loadTuning } from './lib/tuning.mjs';
 
 /**
  * A filename/branch-safe slug from an issue title, or `issue-<number>` when the
@@ -106,7 +107,7 @@ export function withLineBudget(description, sourceEstimate) {
   return `${description}\n\nSize budget: about ${Math.round(n)} added lines of production source. Tests, generated data, and docs sit outside the budget — do not trim them to fit. If the change runs more than half again past it, stop at the last green, coherent point and push that.`;
 }
 
-export function buildConfig(spec) {
+export function buildConfig(spec, tuning = loadTuning()) {
   const repos = {};
   for (const r of distinctRepos(spec)) {
     const profile = spec.repos?.[r] ?? {};
@@ -127,10 +128,13 @@ export function buildConfig(spec) {
       description: withLineBudget(issue.digest || 'See the GitHub issue for the canonical spec.', issue.sourceEstimate),
     };
     // Optional per-issue routing — omitted fields fall back to engine defaults
-    // (defaultModel sonnet; effort derived from complexity by the model-effort policy).
+    // (defaultModel sonnet). Effort is stamped from tuning.json's implement map when
+    // the issue has a complexity — an issue's own effort wins; no complexity, no effort
+    // (the engine default applies). Engine retry escalation still applies on top.
     if (issue.complexity) out.complexity = issue.complexity;
     if (issue.model) out.model = issue.model;
-    if (issue.effort) out.effort = issue.effort;
+    const effort = issue.effort || (issue.complexity && tuning.implement[issue.complexity]);
+    if (effort) out.effort = effort;
     if (issue.extraDirs && issue.extraDirs.length > 0) out.extraDirs = issue.extraDirs;
     return out;
   });

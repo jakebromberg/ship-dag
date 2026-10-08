@@ -272,3 +272,19 @@ test('every profile carrying a node_modules wipe retries it (macOS re-creates .D
     }
   }
 });
+
+// Frozen snapshot of the engine's COMPLEXITY_EFFORT (claude-orchestrator src/model-effort.ts);
+// ship-dag owns the policy now, so this is a snapshot, not a live pin.
+const ENGINE_COMPLEXITY_EFFORT = { mechanical: 'low', normal: 'medium', complex: 'high' };
+
+for (const [complexity, effort] of Object.entries(ENGINE_COMPLEXITY_EFFORT)) {
+  test(`complexity ${complexity} is stamped with effort ${effort} from tuning.json`, () => {
+    const c = buildConfig(spec({ issues: [{ number: 1, repo: 'WXYC/library-metadata-lookup', complexity, digest: 'x' }] }));
+    assert.equal(c.issues[0].effort, effort);
+  });
+}
+
+test('an issue\'s own effort wins over the tuning map', () => {
+  const c = buildConfig(spec({ issues: [{ number: 1, repo: 'WXYC/library-metadata-lookup', complexity: 'mechanical', effort: 'xhigh', digest: 'x' }] }));
+  assert.equal(c.issues[0].effort, 'xhigh');
+});
