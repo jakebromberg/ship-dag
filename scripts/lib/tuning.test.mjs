@@ -53,7 +53,9 @@ test('resolve walks dotted keys; the CLI prints the value', () => {
 
 test('workflow.js implEffortFor agrees with the implement map', () => {
   const src = readFileSync(root('workflow.js'), 'utf-8');
-  const fn = src.match(/function implEffortFor\(iss\) \{[\s\S]*?\n\}/)[0];
+  const m = src.match(/function implEffortFor\(iss\) \{[\s\S]*?\n\}/);
+  assert.ok(m, 'workflow.js: implEffortFor not found — update this pin');
+  const fn = m[0];
   const implEffortFor = new Function(`${fn}; return implEffortFor`)();
   for (const [complexity, effort] of Object.entries(tuning.implement)) {
     assert.equal(implEffortFor({ complexity }), effort, complexity);
@@ -63,7 +65,11 @@ test('workflow.js implEffortFor agrees with the implement map', () => {
 
 test('model-effort-matrix.md tables agree with tuning', () => {
   const md = readFileSync(root('references/model-effort-matrix.md'), 'utf-8');
-  const row = (step) => md.split('\n').find((l) => l.startsWith(`| ${step} |`)).split('|').map((c) => c.trim());
+  const row = (step) => {
+    const line = md.split('\n').find((l) => l.startsWith(`| ${step} |`));
+    assert.ok(line, `model-effort-matrix.md: no "${step}" row — update this pin`);
+    return line.split('|').map((c) => c.trim());
+  };
   const impl = row('Implement');
   assert.equal(impl[3], tuning.implement.normal, 'default');
   assert.match(impl[4], new RegExp(`\\*\\*${tuning.implement.complex}\\*\\*`), 'escalate');
