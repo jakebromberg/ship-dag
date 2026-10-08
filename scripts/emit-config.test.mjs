@@ -324,8 +324,8 @@ for (const [name, issue] of [
   test(`the CLI exits non-zero on ${name}, names the issue, and emits no config`, () => {
     const s = spec({ issues: [{ ...issue, repo: 'WXYC/library-metadata-lookup', digest: 'x' }] });
     const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
-    const r = spawnSync('node', [cli, '-'], { input: JSON.stringify(s), encoding: 'utf-8' });
-    assert.notEqual(r.status, 0);
+    const r = spawnSync(process.execPath, [cli, '-'], { input: JSON.stringify(s), encoding: 'utf-8' });
+    assert.equal(r.status, 2);
     assert.match(r.stderr, /unknown complexity.*#7 \(Complex\)/);
     assert.equal(r.stdout, '');
   });
