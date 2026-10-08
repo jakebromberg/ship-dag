@@ -99,10 +99,9 @@ function tunedEffort(tuning, complexity) {
 
 /**
  * Issues whose `complexity` is set but is not a key of tuning.json's implement map,
- * as `{ number, complexity }`. buildConfig drops their complexity (the engine schema
- * rejects the whole config on an unknown one) and stamps no tuned effort, so an issue
- * without its own `effort` gets the engine default; the caller should surface them
- * rather than drop them silently.
+ * as `{ number, complexity }`. buildConfig refuses a spec with any: running such an
+ * issue at the default effort could silently under-power it, and the engine schema
+ * rejects an unknown complexity anyway.
  */
 export function unknownComplexities(spec, tuning = loadTuning()) {
   return spec.issues
@@ -131,6 +130,11 @@ export function withLineBudget(description, sourceEstimate) {
  *               defaults to reading the shipped references/tuning.json from disk.
  */
 export function buildConfig(spec, tuning = loadTuning()) {
+  const unknown = unknownComplexities(spec, tuning);
+  if (unknown.length > 0) {
+    throw new Error(`unknown complexity on ${unknown.map((i) => `#${i.number} (${i.complexity})`).join(', ')}; `
+      + `known: ${Object.keys(tuning.implement).join('/')}. Fix the triage output and re-emit.`);
+  }
   const repos = {};
   for (const r of distinctRepos(spec)) {
     const profile = spec.repos?.[r] ?? {};
@@ -152,10 +156,9 @@ export function buildConfig(spec, tuning = loadTuning()) {
     };
     // Optional per-issue routing — omitted fields fall back to engine defaults
     // (defaultModel sonnet). Effort is stamped from tuning.json's implement map when
-    // the issue has a complexity — an issue's own effort wins; no complexity, no effort
-    // (the engine default applies). A complexity outside the map is dropped too, since
-    // the engine schema would reject the whole config. Engine retry escalation still
-    // applies on top.
+    // the issue has a complexity, and an issue's own effort wins. An issue with no
+    // complexity carries no effort and takes the config-level defaultEffort below,
+    // which also comes from tuning.json. Engine retry escalation still applies on top.
     const tuned = tunedEffort(tuning, issue.complexity);
     if (tuned) out.complexity = issue.complexity;
     if (issue.model) out.model = issue.model;
@@ -175,6 +178,7 @@ export function buildConfig(spec, tuning = loadTuning()) {
     branchPrefix: 'orchestrator/',
     defaultRepo: spec.repo,
     defaultModel: spec.defaultModel || 'sonnet',
+    defaultEffort: tuning.implement.normal,
     baseBranch: 'main',
     repos,
     retryOnCheckFailure: { maxRetries: spec.retryMaxRetries ?? 1 },
@@ -201,15 +205,12 @@ if (isMain(import.meta.url)) {
     );
   }
 
-  const tuning = loadTuning();
-  const badComplexity = unknownComplexities(spec, tuning);
-  if (badComplexity.length > 0) {
-    console.error(
-      `emit-config: WARNING — unknown complexity on ${badComplexity.map((i) => `#${i.number} (${i.complexity})`).join(', ')}. ` +
-        `Complexity dropped and no tuned effort stamped (an issue's own effort still applies, else the engine default). Known: ${Object.keys(tuning.implement).join('/')}.`,
-    );
+  let config;
+  try {
+    config = buildConfig(spec, loadTuning());
+  } catch (err) {
+    console.error(`emit-config: ${err.message}`);
+    process.exit(2);
   }
-
-  const config = buildConfig(spec, tuning);
   process.stdout.write(JSON.stringify(config, null, 2) + '\n');
 }
