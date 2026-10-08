@@ -28,6 +28,7 @@
 //   node telemetry.mjs append @rec.json      # ...from a file
 //   node telemetry.mjs append -              # ...from stdin
 //   node telemetry.mjs report [--since ISO]  # print leading indicators (JSON + table)
+//   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
 // else ~/.local/state/ship-dag/runs.jsonl.
@@ -36,6 +37,7 @@ import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
+import { mintRunId } from './lib/run-id.mjs';
 
 const COMPLEXITIES = new Set(['mechanical', 'normal', 'complex']);
 const PATHS = new Set(['engine', 'inline', 'workflow']);
@@ -302,7 +304,12 @@ function main(argv) {
     process.stderr.write(`${renderReport(rep)}\n`);
     return;
   }
-  process.stderr.write('usage: telemetry.mjs <append|report> ...\n');
+  if (cmd === 'run-id') {
+    const i = rest.indexOf('--label');
+    process.stdout.write(`${process.env.SHIP_DAG_RUN_ID || mintRunId({ label: i >= 0 ? rest[i + 1] : undefined })}\n`);
+    return;
+  }
+  process.stderr.write('usage: telemetry.mjs <append|report|run-id> ...\n');
   process.exit(2);
 }
 
