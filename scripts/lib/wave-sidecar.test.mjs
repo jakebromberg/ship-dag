@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { waveSidecar, waveContextMatches, readSidecar, appendWave, findWaveContext } from './wave-sidecar.mjs';
+import { waveSidecar, waveContextMatches, readSidecar, appendWave, findWaveContext, specBlockOn } from './wave-sidecar.mjs';
 import { load as loadTuning } from './tuning.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
 
@@ -56,6 +56,12 @@ test('waveSidecar accepts blockOn as an array, normalized like the comma string'
     [[], DEFAULT_BLOCK_ON],
   ]) {
     assert.deepEqual(waveSidecar(spec({ blockOn })).blockOn, want, JSON.stringify(blockOn));
+  }
+});
+
+test('specBlockOn refuses a non-string, non-array or unknown-category blockOn', () => {
+  for (const [blockOn, msg] of [[1, /comma string or an array/], [{ a: 1 }, /comma string or an array/], ['corectness', /corectness/], [['bogus'], /bogus/]]) {
+    assert.throws(() => specBlockOn(blockOn), msg, JSON.stringify(blockOn));
   }
 });
 
@@ -139,15 +145,15 @@ test('the CLI writes the sidecar at dirname(configDir) and prints the same confi
   assert.equal(blocked.stdout.replaceAll(bad, dir), ok.stdout);
 });
 
-test('the CLI warns and still prints the config when the sidecar entry cannot be built', () => {
+test('the CLI refuses an invalid blockOn with exit 2 before printing a config or writing the sidecar', () => {
   const cli = fileURLToPath(new URL('../emit-config.mjs', import.meta.url));
   const dir = tmp();
   const res = spawnSync(process.execPath, [cli, '-'], {
-    input: JSON.stringify(spec({ stateDir: dir, blockOn: 'bogus', repos: { [REPO]: { commands: ['x'] }, 'WXYC/other': { commands: ['x'] } } })),
+    input: JSON.stringify(spec({ stateDir: dir, blockOn: 'corectness', repos: { [REPO]: { commands: ['x'] }, 'WXYC/other': { commands: ['x'] } } })),
     encoding: 'utf-8',
   });
-  assert.equal(res.status, 0);
-  assert.match(res.stderr, /could not build the wave sidecar/);
-  assert.ok(JSON.parse(res.stdout).configDir);
+  assert.equal(res.status, 2);
+  assert.equal(res.stdout, '');
+  assert.match(res.stderr, /corectness/);
   assert.deepEqual(readdirSync(dir), [], 'no sidecar written');
 });
