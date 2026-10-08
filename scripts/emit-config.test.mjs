@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { deriveSlug, buildConfig, unknownCiRepos, unknownComplexities } from './emit-config.mjs';
+import { deriveSlug, buildConfig, unknownCiRepos, unknownComplexities, validateSpec } from './emit-config.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
 
 // A minimal well-formed spec the ready-wave hands the emitter.
@@ -317,19 +319,42 @@ test('in-enum and absent complexities are not reported', () => {
   assert.deepEqual(unknownComplexities(spec({ issues })), []);
 });
 
-for (const [name, issue] of [
-  ['an out-of-enum complexity', { number: 7, complexity: 'Complex' }],
-  ['an out-of-enum complexity even when the issue sets its own effort', { number: 7, complexity: 'Complex', effort: 'high' }],
-]) {
-  test(`the CLI exits non-zero on ${name}, names the issue, and emits no config`, () => {
-    const s = spec({ issues: [{ ...issue, repo: 'WXYC/library-metadata-lookup', digest: 'x' }] });
+// Every invalid-spec refusal, as one table. To add a rule (e.g. W3's unknown reach), add a row.
+// `mustName` are the issue or value each refusal must name on stderr.
+const REFUSALS = [
+  ['an out-of-enum complexity', { issues: [{ number: 7, complexity: 'Complex' }] }, [/unknown complexity.*#7 \(Complex\)/]],
+  ['an out-of-enum complexity even when the issue sets its own effort', { issues: [{ number: 7, complexity: 'Complex', effort: 'high' }] }, [/unknown complexity.*#7 \(Complex\)/]],
+  ['an unknown blockOn category', { blockOn: 'corectness' }, [/corectness/]],
+  ['a blockOn of the wrong type', { blockOn: 5 }, [/blockOn.*5/]],
+  ['an unknown complexity and an invalid blockOn together', { issues: [{ number: 7, complexity: 'Complex' }], blockOn: 'corectness' }, [/#7 \(Complex\)/, /corectness/]],
+];
+
+for (const [name, overrides, mustName] of REFUSALS) {
+  const issues = overrides.issues?.map((i) => ({ ...i, repo: 'WXYC/library-metadata-lookup', digest: 'x' }));
+  const refused = spec({ ...overrides, ...(issues && { issues }) });
+
+  test(`validateSpec and buildConfig refuse ${name}`, () => {
+    for (const m of mustName) {
+      assert.throws(() => validateSpec(refused), m);
+      assert.throws(() => buildConfig(refused), m);
+    }
+  });
+
+  test(`the CLI exits 2 on ${name}, names it, emits no config and writes no sidecar`, () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'emit-config-'));
     const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
-    const r = spawnSync(process.execPath, [cli, '-'], { input: JSON.stringify(s), encoding: 'utf-8' });
+    const r = spawnSync(process.execPath, [cli, '-'], { input: JSON.stringify({ ...refused, stateDir }), encoding: 'utf-8' });
     assert.equal(r.status, 2);
-    assert.match(r.stderr, /unknown complexity.*#7 \(Complex\)/);
+    for (const m of mustName) assert.match(r.stderr, m);
     assert.equal(r.stdout, '');
+    assert.deepEqual(readdirSync(stateDir), []);
   });
 }
+
+test('validateSpec accepts a valid spec, with or without a blockOn', () => {
+  validateSpec(spec());
+  validateSpec(spec({ blockOn: ['correctness', 'security'] }));
+});
 
 // An issue with no complexity takes the engine's config-level default, and that default
 // comes from tuning.json too, so the engine path and the Workflow fallback read one file.

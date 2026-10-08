@@ -129,17 +129,34 @@ export function withLineBudget(description, sourceEstimate) {
 }
 
 /**
+ * Refuse a spec the emitter must not run, throwing one error that lists every
+ * problem at once (unknown complexity, invalid blockOn). buildConfig calls this
+ * first, so the library and the CLI refuse exactly the same specs; a new spec
+ * rule is one more check here.
+ */
+export function validateSpec(spec, tuning = loadTuning()) {
+  const errors = [];
+  const unknown = unknownComplexities(spec, tuning);
+  if (unknown.length > 0) {
+    errors.push(`unknown complexity on ${unknown.map((i) => `#${i.number} (${i.complexity})`).join(', ')}; `
+      + `known: ${Object.keys(tuning.implement).join('/')}. Fix the triage output and re-emit.`);
+  }
+  try {
+    specBlockOn(spec.blockOn);
+  } catch (err) {
+    errors.push(err.message);
+  }
+  if (errors.length > 0) throw new Error(errors.join(' '));
+}
+
+/**
  * Build the engine config object from a ready-wave spec.
  * @param spec   the ready-wave spec (shape in the header comment).
  * @param tuning a validated version-1 tuning object (see lib/tuning.mjs `load`);
  *               defaults to reading the shipped references/tuning.json from disk.
  */
 export function buildConfig(spec, tuning = loadTuning()) {
-  const unknown = unknownComplexities(spec, tuning);
-  if (unknown.length > 0) {
-    throw new Error(`unknown complexity on ${unknown.map((i) => `#${i.number} (${i.complexity})`).join(', ')}; `
-      + `known: ${Object.keys(tuning.implement).join('/')}. Fix the triage output and re-emit.`);
-  }
+  validateSpec(spec, tuning);
   const repos = {};
   for (const r of distinctRepos(spec)) {
     const profile = spec.repos?.[r] ?? {};
@@ -215,8 +232,6 @@ if (isMain(import.meta.url)) {
   try {
     tuning = loadTuning();
     config = buildConfig(spec, tuning);
-    // An invalid blockOn would only fail at the review gate, after a whole engine wave.
-    specBlockOn(spec.blockOn);
   } catch (err) {
     console.error(`emit-config: ${err.message}`);
     process.exit(2);
