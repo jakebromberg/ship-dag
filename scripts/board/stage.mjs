@@ -8,10 +8,11 @@
 // own `gateReview`, so the board and the merge gate cannot disagree about what
 // blocks.
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { statusPathForRef, metadataPathForRef } from '../diagnose-failure.mjs';
-import { artifactStem, routeFailure } from '../lib/failure.mjs';
+import { routeFailure } from '../lib/failure.mjs';
+import { reviewRoundFiles, isUnreadableEmpty } from '../lib/review-rounds.mjs';
 import { gateReview } from '../review-gate.mjs';
 
 const readText = (path) => { try { return readFileSync(path, 'utf8'); } catch { return null; } };
@@ -49,9 +50,10 @@ export function deriveStage({ dir, ref, waveTs, reviewDirs, blockOn, prOpen }) {
     return 'Stalled';
   }
   if (!prOpen) return null;
-  const review = newestReview(reviewDirs, ref);
-  if (!review) return 'In review';
-  return scoreReview(review, blockOn);
+  const rounds = reviewRoundFiles(reviewDirs, ref);
+  if (!rounds.length) return 'In review';
+  // The newest round is the PR's current state; ingestion, not the board, takes the worst.
+  return scoreReview(rounds[rounds.length - 1].path, blockOn);
 }
 
 /** Whether a finished run that started at or after `waveTs` lists `ref`. */
@@ -65,34 +67,10 @@ function diedAfter(dir, ref, waveTs) {
   });
 }
 
-/**
- * The newest review file for `ref` across `reviewDirs`, by mtime. Only the
- * bare stem or the stem plus one tag counts (`<stem>.json`, `<stem>.r2.json`, and
- * the legacy `<stem>-r2.json`),
- * read non-recursively, so another issue's file (`#123` for `#12`), a `.raw`
- * salvage, or a per-pass file under `passes/` is never scored.
- */
-function newestReview(reviewDirs, ref) {
-  const stem = artifactStem(ref).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const name = new RegExp(`^${stem}([.-][A-Za-z0-9]+)?\\.json$`);
-  let best = null;
-  for (const d of reviewDirs) {
-    let names;
-    try { names = readdirSync(d); } catch { continue; }
-    for (const n of names) {
-      if (!name.test(n)) continue;
-      const path = join(d, n);
-      const st = statSync(path);
-      if (st.isFile() && (!best || st.mtimeMs > best.mtimeMs)) best = { path, mtimeMs: st.mtimeMs };
-    }
-  }
-  return best?.path ?? null;
-}
-
 function scoreReview(path, blockOn) {
   const review = readJson(path);
   if (!review) return 'Review unreadable';
-  if (Array.isArray(review.findings) && review.findings.length === 0 && existsSync(`${path}.raw`)) return 'Review unreadable';
+  if (isUnreadableEmpty(path, review)) return 'Review unreadable';
   try {
     return gateReview(review, blockOn).verdict === 'blocking' ? 'Fixing' : 'Reviewed';
   } catch {
