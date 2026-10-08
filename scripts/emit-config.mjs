@@ -43,8 +43,10 @@
 //   node emit-config.mjs <spec.json> > config.json
 
 import { readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
+import { waveSidecar, appendWave } from './lib/wave-sidecar.mjs';
 
 /**
  * A filename/branch-safe slug from an issue title, or `issue-<number>` when the
@@ -213,4 +215,10 @@ if (isMain(import.meta.url)) {
     process.exit(2);
   }
   process.stdout.write(JSON.stringify(config, null, 2) + '\n');
+  // After the config is out, so a sidecar failure can never change or block it.
+  try {
+    appendWave(dirname(config.configDir), waveSidecar(spec));
+  } catch (err) {
+    console.error(`emit-config: WARNING — could not build the wave sidecar: ${err.message}`);
+  }
 }
