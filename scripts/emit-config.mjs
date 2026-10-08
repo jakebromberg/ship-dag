@@ -29,6 +29,9 @@
 //     "stallTimeout":   1800,                       // optional (default 1800)
 //     "defaultModel":   "sonnet",                   // optional (default sonnet)
 //     "retryMaxRetries":1,                          // optional (default 1)
+//     "runId":          "sd-20261008-153059",       // optional; the run id (default: parsed from `name`) — recorded in the wave sidecar
+//     "wave":           "14b",                       // optional; the wave counter W (a number or a string such as "14b") — recorded in the wave sidecar
+//     "blockOn":        "correctness,security",      // optional; the run's --block-on, as that comma string or an array — recorded (parsed) in the wave sidecar
 //     "repos": {                                    // per-repo base branch + CI profile
 //       "owner/repo": { "baseBranch": "main", "commands": ["ruff check .", "pytest -q"] }
 //     },
@@ -208,8 +211,10 @@ if (isMain(import.meta.url)) {
   }
 
   let config;
+  let tuning;
   try {
-    config = buildConfig(spec, loadTuning());
+    tuning = loadTuning();
+    config = buildConfig(spec, tuning);
   } catch (err) {
     console.error(`emit-config: ${err.message}`);
     process.exit(2);
@@ -217,7 +222,7 @@ if (isMain(import.meta.url)) {
   process.stdout.write(JSON.stringify(config, null, 2) + '\n');
   // After the config is out, so a sidecar failure can never change or block it.
   try {
-    appendWave(dirname(config.configDir), waveSidecar(spec));
+    appendWave(dirname(config.configDir), waveSidecar(spec, { tuning }));
   } catch (err) {
     console.error(`emit-config: WARNING — could not build the wave sidecar: ${err.message}`);
   }
