@@ -92,6 +92,22 @@ export function unknownCiRepos(spec) {
   });
 }
 
+/** The implement effort tuning.json maps `complexity` to, or undefined (own keys only). */
+function tunedEffort(tuning, complexity) {
+  return complexity && Object.hasOwn(tuning.implement, complexity) ? tuning.implement[complexity] : undefined;
+}
+
+/**
+ * Issues whose `complexity` is set but is not a key of tuning.json's implement map,
+ * as `{ number, complexity }`. buildConfig stamps no effort for them (the engine
+ * default applies); the caller should surface them rather than drop them silently.
+ */
+export function unknownComplexities(spec, tuning = loadTuning()) {
+  return spec.issues
+    .filter((i) => i.complexity && tunedEffort(tuning, i.complexity) === undefined)
+    .map((i) => ({ number: i.number, complexity: i.complexity }));
+}
+
 /** Build the engine config object from a ready-wave spec. */
 // Triage's per-issue line budget rides on the *description*, not on a new field.
 // The engine interpolates a fixed set of prompt variables (ISSUE_NUMBER, SLUG,
@@ -129,11 +145,12 @@ export function buildConfig(spec, tuning = loadTuning()) {
     };
     // Optional per-issue routing — omitted fields fall back to engine defaults
     // (defaultModel sonnet). Effort is stamped from tuning.json's implement map when
-    // the issue has a complexity — an issue's own effort wins; no complexity, no effort
-    // (the engine default applies). Engine retry escalation still applies on top.
+    // the issue has a complexity — an issue's own effort wins; no complexity (or one
+    // outside the map), no effort (the engine default applies). Engine retry
+    // escalation still applies on top.
     if (issue.complexity) out.complexity = issue.complexity;
     if (issue.model) out.model = issue.model;
-    const effort = issue.effort || (issue.complexity && tuning.implement[issue.complexity]);
+    const effort = issue.effort || tunedEffort(tuning, issue.complexity);
     if (effort) out.effort = effort;
     if (issue.extraDirs && issue.extraDirs.length > 0) out.extraDirs = issue.extraDirs;
     return out;
@@ -175,6 +192,15 @@ if (isMain(import.meta.url)) {
     );
   }
 
-  const config = buildConfig(spec);
+  const tuning = loadTuning();
+  const badComplexity = unknownComplexities(spec, tuning);
+  if (badComplexity.length > 0) {
+    console.error(
+      `emit-config: WARNING — unknown complexity on ${badComplexity.map((i) => `#${i.number} (${i.complexity})`).join(', ')}. ` +
+        `No effort stamped; the engine default applies. Known: ${Object.keys(tuning.implement).join('/')}.`,
+    );
+  }
+
+  const config = buildConfig(spec, tuning);
   process.stdout.write(JSON.stringify(config, null, 2) + '\n');
 }
