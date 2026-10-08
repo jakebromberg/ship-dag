@@ -1,6 +1,8 @@
 // Tests for the telemetry log + report. Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
@@ -323,4 +325,12 @@ test('report: raw readRecords output — a legacy kind-less line partitions as a
   } finally {
     rmSync(p, { force: true });
   }
+});
+
+test('run-id subcommand: echoes SHIP_DAG_RUN_ID when set, else mints (with --label)', () => {
+  const run = (env, ...args) => execFileSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'run-id', ...args],
+    { env: { ...process.env, SHIP_DAG_RUN_ID: '', ...env }, encoding: 'utf8' }).trim();
+  assert.equal(run({ SHIP_DAG_RUN_ID: 'sd-20260101-000000-x' }, '--label', 'ignored'), 'sd-20260101-000000-x');
+  assert.match(run({}), /^sd-\d{8}-\d{6}$/);
+  assert.match(run({}, '--label', 'My Label'), /^sd-\d{8}-\d{6}-my-label$/);
 });
