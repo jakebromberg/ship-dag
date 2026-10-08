@@ -301,15 +301,14 @@ test('the effort follows the tuning argument, not a hardcoded map', () => {
   assert.deepEqual(c.issues.map((i) => i.effort), ['xhigh', 'max']);
 });
 
-// An out-of-enum complexity (including an inherited Object.prototype key) is dropped
-// along with its effort — the engine's schema rejects the whole config on an unknown
-// complexity — so the engine default applies, and it is named for the stderr warning.
+// An out-of-enum complexity (including an inherited Object.prototype key) fails loudly:
+// silently running the issue at the default effort could under-power it, and before
+// tuning.json the engine rejected such a config outright.
 for (const complexity of ['__proto__', 'constructor', 'toString', 'Complex', 'normal.length', ['normal']]) {
-  test(`out-of-enum complexity ${complexity} emits no complexity or effort and is reported`, () => {
+  test(`out-of-enum complexity ${complexity} is reported and refused`, () => {
     const s = spec({ issues: [{ number: 1, repo: 'WXYC/library-metadata-lookup', complexity, digest: 'x' }] });
-    const iss = buildConfig(s).issues[0];
-    assert.ok(!('effort' in iss) && !('complexity' in iss));
     assert.deepEqual(unknownComplexities(s), [{ number: 1, complexity }]);
+    assert.throws(() => buildConfig(s), /unknown complexity.*#1/);
   });
 }
 
@@ -318,21 +317,27 @@ test('in-enum and absent complexities are not reported', () => {
   assert.deepEqual(unknownComplexities(spec({ issues })), []);
 });
 
-test('the CLI warns on stderr about an out-of-enum complexity and emits no complexity or effort', () => {
-  const s = spec({ issues: [{ number: 7, repo: 'WXYC/library-metadata-lookup', complexity: 'Complex', digest: 'x' }] });
-  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
-  const r = spawnSync('node', [cli, '-'], { input: JSON.stringify(s), encoding: 'utf-8' });
-  assert.equal(r.status, 0);
-  assert.match(r.stderr, /unknown complexity.*#7 \(Complex\)/);
-  const iss = JSON.parse(r.stdout).issues[0];
-  assert.ok(!('effort' in iss) && !('complexity' in iss));
-});
+for (const [name, issue] of [
+  ['an out-of-enum complexity', { number: 7, complexity: 'Complex' }],
+  ['an out-of-enum complexity even when the issue sets its own effort', { number: 7, complexity: 'Complex', effort: 'high' }],
+]) {
+  test(`the CLI exits non-zero on ${name}, names the issue, and emits no config`, () => {
+    const s = spec({ issues: [{ ...issue, repo: 'WXYC/library-metadata-lookup', digest: 'x' }] });
+    const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+    const r = spawnSync('node', [cli, '-'], { input: JSON.stringify(s), encoding: 'utf-8' });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /unknown complexity.*#7 \(Complex\)/);
+    assert.equal(r.stdout, '');
+  });
+}
 
-test('an out-of-enum complexity keeps the issue\'s own effort, and the warning does not claim it was dropped', () => {
-  const s = spec({ issues: [{ number: 2, repo: 'WXYC/library-metadata-lookup', complexity: 'Complex', effort: 'high', digest: 'x' }] });
-  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
-  const r = spawnSync('node', [cli, '-'], { input: JSON.stringify(s), encoding: 'utf-8' });
-  assert.equal(JSON.parse(r.stdout).issues[0].effort, 'high');
-  assert.match(r.stderr, /#2 \(Complex\)/);
-  assert.doesNotMatch(r.stderr, /effort dropped/i);
+// An issue with no complexity takes the engine's config-level default, and that default
+// comes from tuning.json too, so the engine path and the Workflow fallback read one file.
+test('the config-level defaultEffort follows tuning.implement.normal', () => {
+  const issues = [{ number: 1, repo: 'WXYC/library-metadata-lookup', digest: 'x' }];
+  assert.equal(buildConfig(spec({ issues })).defaultEffort, loadTuning().implement.normal);
+  const tuning = { ...loadTuning(), implement: { mechanical: 'low', normal: 'xhigh', complex: 'max' } };
+  const c = buildConfig(spec({ issues }), tuning);
+  assert.equal(c.defaultEffort, 'xhigh');
+  assert.ok(!('effort' in c.issues[0]), 'the issue itself still carries no effort');
 });
