@@ -7,7 +7,7 @@
 // JSONL, like runs.jsonl: each wave is one `appendFileSync`, so nothing already
 // written is ever rewritten, overlapping emits can't drop an entry, and a corrupt
 // line costs only itself.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { parseBlockOn } from '../review-gate.mjs';
 import { runIdFromConfigName } from './run-id.mjs';
@@ -100,10 +100,28 @@ export function appendWave(dir, entry, { warn = (m) => console.error(m) } = {}) 
   const path = join(dir, SIDECAR_NAME);
   try {
     mkdirSync(dir, { recursive: true });
-    appendFileSync(path, `${JSON.stringify(entry)}\n`);
+    // A torn last line (no trailing newline) would swallow this entry into it, so
+    // start on a fresh line: the torn line then costs only itself.
+    const lead = endsMidLine(path) ? '\n' : '';
+    appendFileSync(path, `${lead}${JSON.stringify(entry)}\n`);
     return true;
   } catch (err) {
     warn(`emit-config: WARNING — could not write the wave sidecar in ${dir}: ${err.message}`);
     return false;
+  }
+}
+
+/** Whether the file at `path` exists, is non-empty, and doesn't end in a newline. */
+function endsMidLine(path) {
+  if (!existsSync(path)) return false;
+  const fd = openSync(path, 'r');
+  try {
+    const { size } = fstatSync(fd);
+    if (size === 0) return false;
+    const last = Buffer.alloc(1);
+    readSync(fd, last, 0, 1, size - 1);
+    return last[0] !== 0x0a;
+  } finally {
+    closeSync(fd);
   }
 }
