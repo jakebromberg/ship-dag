@@ -88,7 +88,7 @@ test('appendWave keeps both waves and findWaveContext picks the right one', () =
   assert.deepEqual(hit.blockOn, ['security']);
   assert.equal(hit.tuningVersion, 'v-wave1');
   assert.equal(findWaveContext(dir, ['nope#1']), null);
-  assert.deepEqual(readdirSync(dir), [SIDECAR_NAME], 'no temp file left behind');
+  assert.deepEqual(readdirSync(dir), [SIDECAR_NAME], 'only the sidecar is written');
 });
 
 test('the sidecar is JSONL: one entry per line, appended without rewriting what is there', () => {
@@ -113,6 +113,15 @@ test('a corrupt line costs only itself: later waves still record and read back, 
   assert.deepEqual(readSidecar(path, { warn: (m) => warnings.push(m) }).map((e) => e.wave), [1, 2]);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /2 unreadable line/);
+});
+
+test('a torn last line (no trailing newline) costs only itself: the next wave still records', () => {
+  const dir = tmp();
+  const path = join(dir, SIDECAR_NAME);
+  appendWave(dir, waveSidecar(spec({ wave: 1 })));
+  writeFileSync(path, readFileSync(path, 'utf-8') + '{"wave": 2, "torn');
+  assert.equal(appendWave(dir, waveSidecar(spec({ wave: 3 }))), true);
+  assert.deepEqual(readSidecar(path, { warn: () => {} }).map((e) => e.wave), [1, 3]);
 });
 
 test('appendWave creates a state dir that does not exist yet', () => {
