@@ -61,6 +61,8 @@ for (const [name, files, over, want] of [
   ['a review with no findings array is Review unreadable', { status: 'succeeded', metadata: PR, reviews: { 'STEM.json': { issue: 12 } } }, {}, 'Review unreadable'],
   ['the newest round wins: an older blocking review, a newer clean .r2',
     { status: 'succeeded', metadata: PR, reviews: { 'STEM.json': { findings: [finding('correctness')] }, 'STEM.r2.json': { findings: [] } }, ages: { 'STEM.json': 60 } }, {}, 'Reviewed'],
+  ['a legacy -rN round file counts as a round',
+    { status: 'succeeded', metadata: PR, reviews: { 'STEM.json': { findings: [] }, 'STEM-r2.json': { findings: [finding('correctness')] } }, ages: { 'STEM.json': 60 } }, {}, 'Fixing'],
   ["#123's review is never read as #12's",
     { status: 'succeeded', metadata: PR, reviews: { 'o%2Fr%23123.json': { findings: [finding('correctness')] } } }, {}, 'In review'],
   ['a per-pass file under reviews/passes/ is never scored',
