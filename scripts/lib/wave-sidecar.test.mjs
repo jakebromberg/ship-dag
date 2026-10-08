@@ -43,6 +43,20 @@ test('waveSidecar defaults: spec.runId wins, wave null, default blockOn', () => 
   assert.deepEqual(e.blockOn, DEFAULT_BLOCK_ON);
 });
 
+test('waveSidecar accepts blockOn as an array, normalized like the comma string', () => {
+  for (const [blockOn, want] of [
+    [['contract-conformance', ' Security'], ['contract', 'security']],
+    ['contract-conformance, security', ['contract', 'security']],
+    [[], DEFAULT_BLOCK_ON],
+  ]) {
+    assert.deepEqual(waveSidecar(spec({ blockOn })).blockOn, want, JSON.stringify(blockOn));
+  }
+});
+
+test('waveSidecar stamps tuningVersion from the injected tuning object', () => {
+  assert.equal(waveSidecar(spec(), { tuning: { version: 'v-injected' } }).tuningVersion, 'v-injected');
+});
+
 test('waveContextMatches compares the ref set, order-insensitive', () => {
   const e = waveSidecar(spec());
   assert.ok(waveContextMatches(e, [`WXYC/other#2`, `${REPO}#1`]));
@@ -52,15 +66,15 @@ test('waveContextMatches compares the ref set, order-insensitive', () => {
 
 test('appendWave keeps both waves and findWaveContext picks the right one', () => {
   const dir = tmp();
-  const w1 = waveSidecar(spec({ wave: 1, blockOn: 'security' }));
-  const w2 = waveSidecar(spec({ wave: 2, issues: [{ number: 9, complexity: 'normal' }] }));
+  const w1 = waveSidecar(spec({ wave: 1, blockOn: 'security' }), { tuning: { version: 'v-wave1' } });
+  const w2 = waveSidecar(spec({ wave: 2, issues: [{ number: 9, complexity: 'normal' }] }), { tuning: { version: 'v-wave2' } });
   appendWave(dir, w1);
   appendWave(dir, w2);
   assert.equal(readSidecar(join(dir, 'ship-dag-wave.json')).length, 2);
   const hit = findWaveContext(dir, [`${REPO}#1`, 'WXYC/other#2']);
   assert.equal(hit.wave, 1);
   assert.deepEqual(hit.blockOn, ['security']);
-  assert.equal(hit.tuningVersion, 1);
+  assert.equal(hit.tuningVersion, 'v-wave1');
   assert.equal(findWaveContext(dir, ['nope#1']), null);
   assert.deepEqual(readdirSync(dir), ['ship-dag-wave.json'], 'no temp file left behind');
 });
@@ -100,4 +114,17 @@ test('the CLI writes the sidecar at dirname(configDir) and prints the same confi
   assert.equal(blocked.status, 0);
   assert.match(blocked.stderr, /wave sidecar/);
   assert.equal(blocked.stdout.replaceAll('/nonexistent/zzz', dir), ok.stdout.replaceAll(dir, dir));
+});
+
+test('the CLI warns and still prints the config when the sidecar entry cannot be built', () => {
+  const cli = fileURLToPath(new URL('../emit-config.mjs', import.meta.url));
+  const dir = tmp();
+  const res = spawnSync(process.execPath, [cli, '-'], {
+    input: JSON.stringify(spec({ stateDir: dir, blockOn: 'bogus', repos: { [REPO]: { commands: ['x'] }, 'WXYC/other': { commands: ['x'] } } })),
+    encoding: 'utf-8',
+  });
+  assert.equal(res.status, 0);
+  assert.match(res.stderr, /could not build the wave sidecar/);
+  assert.ok(JSON.parse(res.stdout).configDir);
+  assert.deepEqual(readdirSync(dir), [], 'no sidecar written');
 });
