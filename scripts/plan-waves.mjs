@@ -28,8 +28,11 @@
 //     "nodes": [{ "number": 3, "ref": "owner/repo#3", "repo": "owner/repo",
 //                 "title": "...", "labels": [...], "bodyLen": 1200, "refCount": 2 }, ...],
 //     "edges": [{ "blocked": "owner/repo#3", "blockedBy": "owner/repo#1" }, ...],
-//     "done":  ["owner/repo#1", "owner/repo#2"]              // already merged/closed
+//     "done":  ["owner/repo#1", "owner/repo#2"],             // already merged/closed
+//     "members": ["owner/repo#1", "owner/repo#3", ...]       // fetch only: every leaf in scope, closed included
 //   }
+//   `members` is for readers that report on the whole issue set (the status
+//   board); planning ignores it. A hand-built spec may omit it.
 //   Edge endpoints and `done` entries may be a number, `"#N"`, `"N"`, or a
 //   fully-qualified `"owner/repo#N"`; all are normalized to refs before planning.
 //
@@ -294,7 +297,8 @@ const defaultWarn = (m) => console.error(m);
  *
  * Rules, each matching how depth-1 already behaves:
  *  - A CLOSED sub-issue is out of scope, and closing an epic takes its whole
- *    sub-tree with it — the walk does not descend into it.
+ *    sub-tree with it — the walk does not descend into it. A closed leaf is
+ *    still recorded in `closedLeaves`, never as a node, so a report can count it.
  *  - A container whose own sub-issue query reports *no sub-issues connection*
  *    (`SubIssuesUnavailable`) is kept as a leaf, with a warning; any other
  *    failure (rate limit, network, auth, a malformed page, or a sub-issue the
@@ -328,7 +332,7 @@ const defaultWarn = (m) => console.error(m);
  * @param {number|string} rootNumber
  * @param {(argv:string[]) => string} runGh
  * @param {(m:string) => void} [warn]  where warnings go (default `console.error`)
- * @returns {{rootRef:string, leaves:Array<{number:number,repo:string,ref:string}>,
+ * @returns {{rootRef:string, leaves:Array<{number:number,repo:string,ref:string}>, closedLeaves:string[],
  *            containerNodes:Array<{number:number,repo:string,ref:string}>,
  *            containers:Map<string,string[]>, parentOf:Map<string,string>, heldWaves:Set<string>}}
  */
@@ -337,6 +341,7 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
   const containers = new Map(); // container ref -> its direct child refs (open and closed)
   const parentOf = new Map(); // ref -> containing epic's ref, for the ancestor test
   const leaves = [];
+  const closedLeaves = []; // refs of closed childless sub-issues: shipped (or dropped) work, never nodes
   const containerNodes = []; // open containers below the root: edges, but never nodes
   const heldWaves = new Set(); // wave sub-epics with nothing open under them: never nodes, edges satisfied
   const visited = new Set([root.ref]);
@@ -373,6 +378,9 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
       if (!parentOf.has(kid.ref)) parentOf.set(kid.ref, epicNode.ref);
       const hasKids = Boolean(k.subIssuesSummary && k.subIssuesSummary.total > 0);
       if (k.state === 'CLOSED') {
+        // A closed sub-epic takes its sub-tree out of scope unread; only a closed
+        // leaf is recorded, so `members` can count finished work.
+        if (!hasKids) closedLeaves.push(kid.ref);
         if (!(kid.wave && hasKids)) continue;
         kid.closedWave = true;
       } else if (!hasKids) {
@@ -421,12 +429,12 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
     warn(`warning: ${c.ref} is a closed wave sub-epic with open sub-issues `
       + `(${leavesUnder(c.ref, containers).join(', ')}); shipping them anyway — return them to the epic or reopen the wave`);
   }
-  return { rootRef: root.ref, leaves, containerNodes, containers, parentOf, heldWaves };
+  return { rootRef: root.ref, leaves, closedLeaves, containerNodes, containers, parentOf, heldWaves };
 }
 
 /** A hierarchy with no containment — the `--label` path, where the rewrites below are no-ops. */
 function flatHierarchy() {
-  return { rootRef: null, leaves: [], containerNodes: [], containers: new Map(), parentOf: new Map(), heldWaves: new Set() };
+  return { rootRef: null, leaves: [], closedLeaves: [], containerNodes: [], containers: new Map(), parentOf: new Map(), heldWaves: new Set() };
 }
 
 // ---- container-edge rewriting -------------------------------------------
@@ -529,6 +537,12 @@ function rewriteContainerEdges(edges, { containers, parentOf }) {
  * is itself an epic is replaced by the issues underneath it, and its own
  * dependencies are pushed down onto them. `--label` selects a flat set and is
  * unaffected. `warn` (default `console.error`) receives the walk's warnings.
+ *
+ * `members` lists every leaf in scope, closed ones included — the open nodes
+ * plus the closed childless sub-issues the walk saw (epic) or the label's closed
+ * issues (label). A closed sub-epic is not descended into, so its children are
+ * not members. Planning ignores the field; it exists so a report can count
+ * finished work, which `nodes` and `done` alone cannot.
  */
 export function fetchSpec(repo, { epic, label, warn = defaultWarn }, runGh = realRunGh) {
   const [owner, name] = repo.split('/');
@@ -538,17 +552,15 @@ export function fetchSpec(repo, { epic, label, warn = defaultWarn }, runGh = rea
   //    the epic's for a cross-repo sub-issue). The epic path walks the whole
   //    sub-issue tree; intermediate epics come back separately, as containers.
   let openNodes = [];
+  let closedRefs = [];
   let hierarchy = flatHierarchy();
   if (label) {
-    const list = JSON.parse(runGh(['issue', 'list', '--repo', repo, '--label', label,
-      '--state', 'open', '--limit', String(LIST_LIMIT), '--json', 'number']));
-    if (list.length >= LIST_LIMIT) {
-      warn(`warning: issue list hit the ${LIST_LIMIT} cap; the DAG may be truncated`);
-    }
-    openNodes = list.map((i) => ({ number: i.number, repo }));
+    openNodes = listLabel(repo, label, 'open', runGh, warn).map((i) => ({ number: i.number, repo }));
+    closedRefs = listLabel(repo, label, 'closed', runGh, warn).map((i) => refOf({ number: i.number, repo }));
   } else if (epic) {
     hierarchy = fetchHierarchy(repo, epic, runGh, warn);
     openNodes = hierarchy.leaves.map((l) => ({ number: l.number, repo: l.repo }));
+    closedRefs = hierarchy.closedLeaves;
   } else {
     throw new Error('fetch needs --epic N or --label L');
   }
@@ -613,7 +625,18 @@ export function fetchSpec(repo, { epic, label, warn = defaultWarn }, runGh = rea
     if (state === 'CLOSED') done.push(depRef);
   }
 
-  return { repo, nodes, edges: uniqueEdges, done };
+  const members = [...new Set([...nodes.map((n) => n.ref), ...closedRefs])];
+  return { repo, nodes, edges: uniqueEdges, done, members };
+}
+
+/** One state of a label's issues, warning rather than truncating silently at the list cap. */
+function listLabel(repo, label, state, runGh, warn) {
+  const list = JSON.parse(runGh(['issue', 'list', '--repo', repo, '--label', label,
+    '--state', state, '--limit', String(LIST_LIMIT), '--json', 'number']));
+  if (list.length >= LIST_LIMIT) {
+    warn(`warning: ${state} issue list hit the ${LIST_LIMIT} cap; the DAG may be truncated`);
+  }
+  return list;
 }
 
 // ---- CLI ----------------------------------------------------------------

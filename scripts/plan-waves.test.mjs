@@ -83,6 +83,8 @@ function subIssuesResponse(tree, argv) {
 // strings the native `dependencies/blocked_by` endpoint would return for that
 // node; a node with no entry (or when `fixtures.blockedBy` is omitted entirely)
 // gets `[]`, matching a repo with no native dependencies configured.
+// `fixtures.closedList` (optional) is what `issue list --state closed` returns;
+// `fixtures.list` answers every other listing.
 // `fixtures.tree` (optional) describes a whole sub-issue hierarchy keyed by epic
 // ref — see `subIssuesResponse`. Without it, GraphQL calls fall back to the
 // fixed `fixtures.graphql` envelope.
@@ -90,7 +92,10 @@ function fakeGh(fixtures) {
   const calls = [];
   const run = (argv) => {
     calls.push(argv);
-    if (argv[0] === 'issue' && argv[1] === 'list') return JSON.stringify(fixtures.list || []);
+    if (argv[0] === 'issue' && argv[1] === 'list') {
+      const state = argv[argv.indexOf('--state') + 1];
+      return JSON.stringify((state === 'closed' ? fixtures.closedList : fixtures.list) || []);
+    }
     if (argv[0] === 'issue' && argv[1] === 'view') {
       const n = Number(argv[2]);
       if (!fixtures.issues[n]) throw new Error(`no such issue #${n}`);
@@ -986,3 +991,50 @@ for (const { name, tree, issues, nodes, warns, edges = [], done = [] } of [
     warns.forEach((re, i) => assert.match(seen[i], re));
   });
 }
+
+// ---- members: every leaf in scope, closed ones included ------------------
+
+for (const [name, tree, opens, members] of [
+  ['a closed leaf is a member though not a node',
+    { 'o/r#1': [{ number: 10 }, { number: 11, state: 'CLOSED' }] }, [10], ['o/r#10', 'o/r#11']],
+  ['a closed sub-epic is out of scope, and so are its children',
+    { 'o/r#1': [{ number: 10 }, { number: 20, state: 'CLOSED' }], 'o/r#20': [{ number: 21 }] }, [10], ['o/r#10']],
+  ['an open epic whose children are all closed contributes itself and them',
+    { 'o/r#1': [{ number: 10 }, { number: 20 }], 'o/r#20': [{ number: 21, state: 'CLOSED' }] }, [10, 20],
+    ['o/r#10', 'o/r#20', 'o/r#21']],
+  ['an open container is not a member, its leaves are',
+    { 'o/r#1': [{ number: 20 }], 'o/r#20': [{ number: 21 }, { number: 22, state: 'CLOSED' }] }, [20, 21],
+    ['o/r#21', 'o/r#22']],
+  ['a closed cross-repo leaf keeps its own repo',
+    { 'o/r#1': [{ number: 10 }, { number: 4, repo: 'x/y', state: 'CLOSED' }] }, [10], ['o/r#10', 'x/y#4']],
+]) {
+  // `opens` lists every open issue the walk reads, containers included (they are
+  // read for their edges); `members` is the expected leaf set.
+  test(`fetchSpec members: ${name}`, () => {
+    const gh = fakeGh({ tree, issues: Object.fromEntries(opens.map((n) => [n, issue(n)])) });
+    const spec = fetchSpec('o/r', { epic: 1, warn: () => {} }, gh);
+    assert.deepEqual([...spec.members].sort(), members);
+  });
+}
+
+test('fetchSpec members on the label path adds the closed listing to the open one', () => {
+  const gh = fakeGh({ list: [{ number: 5 }], closedList: [{ number: 3 }], issues: { 5: issue(5) } });
+  const spec = fetchSpec('o/r', { label: 'ship' }, gh);
+  assert.deepEqual([...spec.members].sort(), ['o/r#3', 'o/r#5']);
+  assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#5'], 'a closed issue never becomes a node');
+  const closedCall = gh.calls.find((a) => a[1] === 'list' && a.includes('closed'));
+  assert.ok(closedCall.includes('--limit'), 'the closed listing is capped like the open one');
+});
+
+test('fetchSpec warns through warn when the closed label listing hits the cap', () => {
+  const seen = [];
+  const full = Array.from({ length: 1000 }, (_, i) => ({ number: i + 100 }));
+  fetchSpec('o/r', { label: 'ship', warn: (m) => seen.push(m) }, fakeGh({ list: [], closedList: full, issues: {} }));
+  assert.equal(seen.length, 1);
+  assert.match(seen[0], /closed issue list hit the 1000 cap/);
+});
+
+test('planWaves ignores members', () => {
+  const spec = { repo: 'o/r', nodes: [5, 6], edges: [{ blocked: 6, blockedBy: 5 }], done: [] };
+  assert.deepEqual(planWaves({ ...spec, members: ['o/r#3', 'o/r#5', 'o/r#6'] }), planWaves(spec));
+});
