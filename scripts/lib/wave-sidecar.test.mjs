@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { waveSidecar, waveContextMatches, readSidecar, appendWave, findWaveContext, specBlockOn } from './wave-sidecar.mjs';
+import { waveSidecar, waveContextMatches, readSidecar, appendWave, findWaveContext, specBlockOn, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { load as loadTuning } from './tuning.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
 
@@ -82,31 +82,43 @@ test('appendWave keeps both waves and findWaveContext picks the right one', () =
   const w2 = waveSidecar(spec({ wave: 2, issues: [{ number: 9, complexity: 'normal' }] }), { tuning: { version: 'v-wave2' } });
   appendWave(dir, w1);
   appendWave(dir, w2);
-  assert.equal(readSidecar(join(dir, 'ship-dag-wave.json')).length, 2);
+  assert.equal(readSidecar(join(dir, SIDECAR_NAME)).length, 2);
   const hit = findWaveContext(dir, [`${REPO}#1`, 'WXYC/other#2']);
   assert.equal(hit.wave, 1);
   assert.deepEqual(hit.blockOn, ['security']);
   assert.equal(hit.tuningVersion, 'v-wave1');
   assert.equal(findWaveContext(dir, ['nope#1']), null);
-  assert.deepEqual(readdirSync(dir), ['ship-dag-wave.json'], 'no temp file left behind');
+  assert.deepEqual(readdirSync(dir), [SIDECAR_NAME], 'no temp file left behind');
 });
 
-test('a corrupt or non-array sidecar is left untouched with a warning', () => {
-  for (const content of ['{not json', '{"a":1}']) {
-    const dir = tmp();
-    const path = join(dir, 'ship-dag-wave.json');
-    writeFileSync(path, content);
-    const warnings = [];
-    assert.equal(appendWave(dir, waveSidecar(spec()), { warn: (m) => warnings.push(m) }), false);
-    assert.equal(readFileSync(path, 'utf-8'), content);
-    assert.equal(warnings.length, 1);
-  }
+test('the sidecar is JSONL: one entry per line, appended without rewriting what is there', () => {
+  assert.equal(SIDECAR_NAME, 'ship-dag-wave.jsonl');
+  const dir = tmp();
+  appendWave(dir, waveSidecar(spec({ wave: 1 })));
+  const path = join(dir, SIDECAR_NAME);
+  const first = readFileSync(path, 'utf-8');
+  appendWave(dir, waveSidecar(spec({ wave: 2 })));
+  const after = readFileSync(path, 'utf-8');
+  assert.ok(after.startsWith(first), 'the first wave\'s bytes are untouched');
+  assert.deepEqual(after.trimEnd().split('\n').map((l) => JSON.parse(l).wave), [1, 2]);
+});
+
+test('a corrupt line costs only itself: later waves still record and read back, with a warning', () => {
+  const dir = tmp();
+  const path = join(dir, SIDECAR_NAME);
+  appendWave(dir, waveSidecar(spec({ wave: 1 })));
+  writeFileSync(path, readFileSync(path, 'utf-8') + '{not json\n[1,2]\n');
+  assert.equal(appendWave(dir, waveSidecar(spec({ wave: 2 }))), true);
+  const warnings = [];
+  assert.deepEqual(readSidecar(path, { warn: (m) => warnings.push(m) }).map((e) => e.wave), [1, 2]);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /2 unreadable line/);
 });
 
 test('appendWave creates a state dir that does not exist yet', () => {
   const dir = join(tmp(), 'engine', 'run1');
   assert.equal(appendWave(dir, waveSidecar(spec())), true);
-  assert.equal(readSidecar(join(dir, 'ship-dag-wave.json')).length, 1);
+  assert.equal(readSidecar(join(dir, SIDECAR_NAME)).length, 1);
 });
 
 test('appendWave refuses a relative or missing dir instead of writing under the cwd', () => {
@@ -134,7 +146,7 @@ test('the CLI writes the sidecar at dirname(configDir) and prints the same confi
   const dir = tmp();
   const ok = run(dir);
   assert.equal(ok.status, 0);
-  const entries = JSON.parse(readFileSync(join(dir, 'ship-dag-wave.json'), 'utf-8'));
+  const entries = readSidecar(join(dir, SIDECAR_NAME));
   assert.equal(entries.length, 1);
   assert.equal(entries[0].wave, 3);
   // A stateDir whose sidecar cannot be written still prints a config (modulo the dir paths).

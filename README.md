@@ -49,7 +49,7 @@ The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [cl
 | `scripts/engine/` | The engine-invocation path: `run.mts` (entry), `hooks.mts` (worktree + cutover), `repos-dir.mjs` (org-root resolution), `prompt.md`. |
 | `references/tuning.json` | Versioned effort policy (review floor, reach→effort, implement map); `scripts/lib/tuning.mjs` loads, validates and resolves it. |
 | `scripts/telemetry.mjs` | Per-issue + per-retro-pass run records (model-assignment efficacy). |
-| `scripts/lib/wave-sidecar.mjs` | Append-only `ship-dag-wave.json` sidecar: `waveSidecar`, `appendWave`, `waveContextMatches`, `findWaveContext`. |
+| `scripts/lib/wave-sidecar.mjs` | Append-only `ship-dag-wave.jsonl` sidecar (one line per wave): `waveSidecar`, `appendWave`, `waveContextMatches`, `findWaveContext`. |
 | `scripts/lib/run-id.mjs` | Run-id helpers: `mintRunId`, `canonicalRunId`, `runIdFromConfigName`, and `sameRun` (folds wave/retry suffixes, prefix, case). |
 | `references/` | CI profiles, model/effort matrix, escalation policy, review + retrospective + eval schemas. |
 | `eval/` | Offline eval harness for the model-assignment study. |
