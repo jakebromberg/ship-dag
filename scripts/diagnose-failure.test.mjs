@@ -8,7 +8,9 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { engineFixture, stamped } from './lib/engine-fixture.mjs';
-import { logPathForRef, owningReport, digestPathForRef, diagnose, ownerId, MAX_REASON_CHARS } from './diagnose-failure.mjs';
+import {
+  logPathForRef, statusPathForRef, metadataPathForRef, owningReport, digestPathForRef, diagnose, ownerId, MAX_REASON_CHARS,
+} from './diagnose-failure.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 
@@ -33,9 +35,15 @@ const quotaDeath = () =>
   line({ type: 'assistant', message: { role: 'assistant' }, error: 'rate_limit', is_api_error_message: true }) +
   line({ type: 'result', subtype: 'success', is_error: true, num_turns: 67, result: "You've hit your session limit · resets 7:10pm (America/Los_Angeles)" });
 
-test('logPathForRef: percent-encodes the composite ref the way the engine names its logs', () => {
-  assert.equal(logPathForRef('/s', REF), '/s/state/logs/issue-daisysguide%2Fbackend%23620.log');
-});
+for (const [name, fn, want] of [
+  ['logPathForRef', logPathForRef, '/s/state/logs/issue-daisysguide%2Fbackend%23620.log'],
+  ['statusPathForRef', statusPathForRef, '/s/state/status/issue-daisysguide%2Fbackend%23620.status'],
+  ['metadataPathForRef', metadataPathForRef, '/s/state/metadata/issue-daisysguide%2Fbackend%23620.json'],
+]) {
+  test(`${name}: percent-encodes the composite ref the way the engine names its files`, () => {
+    assert.equal(fn('/s', REF), want);
+  });
+}
 
 /** A state dir of `reports` (stem -> {startedAt, rows}) and, optionally, a digest for REF; `files` writes anything else. */
 function waves(reports, { digest, files } = {}) {

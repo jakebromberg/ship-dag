@@ -56,6 +56,26 @@ export function logPathForRef(stateDir, ref) {
 }
 
 /**
+ * The engine's status file for a composite ref (`pending`/`running`/`succeeded`/
+ * `failed`/`interrupted`; absent until the engine first touches the issue).
+ * @param {string} stateDir
+ * @param {string} ref
+ */
+export function statusPathForRef(stateDir, ref) {
+  return join(stateDir, 'state', 'status', `issue-${artifactStem(ref)}.status`);
+}
+
+/**
+ * The engine's metadata file for a composite ref — `prNumber`/`prUrl` once a PR
+ * opens, plus start/finish times and the exit code.
+ * @param {string} stateDir
+ * @param {string} ref
+ */
+export function metadataPathForRef(stateDir, ref) {
+  return join(stateDir, 'state', 'metadata', `issue-${artifactStem(ref)}.json`);
+}
+
+/**
  * Where the engine's post-run pass writes this ref's diagnosis, if it ran.
  * @param {string} stateDir
  * @param {string} ref
