@@ -1,0 +1,137 @@
+// Tests for the status board's pure model. Run: node --test scripts/board/
+//
+// Every function here is pure, so each is pinned by a table of small graphs
+// written as edge lists: `[blocker, blocked]` pairs over short refs.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, formatPacific,
+} from './model.mjs';
+
+const R = (n) => `o/r#${n}`;
+const edgesOf = (pairs) => pairs.map(([a, b]) => ({ blockedBy: R(a), blocked: R(b) }));
+
+// ---- classify ------------------------------------------------------------
+
+for (const [want, ticket] of [
+  ['dropped', { state: 'CLOSED', stateReason: 'NOT_PLANNED', hasOpenPr: false, owned: true, openBlockers: 1 }],
+  ['shipped', { state: 'CLOSED', stateReason: 'COMPLETED', hasOpenPr: false, owned: false, openBlockers: 0 }],
+  ['shipped', { state: 'CLOSED', stateReason: null, hasOpenPr: true, owned: false, openBlockers: 0 }],
+  ['flight', { state: 'OPEN', hasOpenPr: true, owned: true, openBlockers: 2 }],
+  ['you', { state: 'OPEN', hasOpenPr: false, owned: true, openBlockers: 2 }],
+  ['blocked', { state: 'OPEN', hasOpenPr: false, owned: false, openBlockers: 1 }],
+  ['ready', { state: 'OPEN', hasOpenPr: false, owned: false, openBlockers: 0 }],
+]) {
+  test(`classify → ${want} for ${JSON.stringify(ticket)}`, () => {
+    assert.equal(classify(ticket), want);
+  });
+}
+
+// ---- buildGraph ----------------------------------------------------------
+
+test('buildGraph lays a chain out one step per ticket and reports it as the longest chain', () => {
+  const g = buildGraph([R(1), R(2), R(3)], edgesOf([[1, 2], [2, 3]]));
+  assert.deepEqual(g.steps, [[R(1)], [R(2)], [R(3)]]);
+  assert.deepEqual(g.chain, [R(1), R(2), R(3)]);
+  assert.deepEqual([...g.ancestors.get(R(3))].sort(), [R(1), R(2)]);
+  assert.deepEqual([...g.descendants.get(R(1))].sort(), [R(2), R(3)]);
+});
+
+test('buildGraph drops a direct edge implied by a longer path (transitive reduction)', () => {
+  // 1→2→4, 1→3→4, and the shortcut 1→4: the shortcut is implied, so not drawn.
+  const g = buildGraph([1, 2, 3, 4].map(R), edgesOf([[1, 2], [2, 4], [1, 3], [3, 4], [1, 4]]));
+  assert.deepEqual([...g.direct.get(R(4))].sort(), [R(2), R(3)]);
+  assert.deepEqual([...g.preds.get(R(4))].sort(), [R(1), R(2), R(3)], 'preds keeps every edge');
+  assert.deepEqual(g.steps, [[R(1)], [R(2), R(3)], [R(4)]]);
+});
+
+test('buildGraph places a ticket at its longest path from a ready ticket, not its shortest', () => {
+  const g = buildGraph([1, 2, 3, 4].map(R), edgesOf([[1, 2], [2, 3], [1, 4], [3, 4]]));
+  assert.equal(g.stepOf.get(R(4)), 3);
+});
+
+test('buildGraph ignores edges to tickets outside the open set', () => {
+  const g = buildGraph([R(2)], edgesOf([[1, 2]]));
+  assert.deepEqual(g.steps, [[R(2)]]);
+  assert.equal(g.preds.get(R(2)).size, 0);
+});
+
+test('buildGraph reports a cycle as unorderable instead of giving it a step', () => {
+  const g = buildGraph([1, 2, 3, 4].map(R), edgesOf([[1, 2], [2, 3], [3, 2], [3, 4]]));
+  assert.deepEqual(g.steps, [[R(1)]]);
+  assert.deepEqual([...g.unorderable].sort(), [R(2), R(3), R(4)]);
+  assert.equal(g.stepOf.has(R(2)), false);
+});
+
+test('buildGraph on no open tickets is empty', () => {
+  const g = buildGraph([], []);
+  assert.deepEqual(g.steps, []);
+  assert.deepEqual(g.chain, []);
+});
+
+// ---- orderSteps ----------------------------------------------------------
+
+test('orderSteps puts the ticket that unblocks most first, then keeps children under their parents', () => {
+  // Step 0: 1 unblocks one ticket, 2 unblocks two. Step 1: 3 (under 1) and 4 (under 2).
+  const g = buildGraph([1, 2, 3, 4, 5].map(R), edgesOf([[1, 3], [2, 4], [4, 5]]));
+  assert.deepEqual(orderSteps(g), [[R(2), R(1)], [R(4), R(3)], [R(5)]]);
+});
+
+// ---- projectWaves / leadingWaveNumber ------------------------------------
+
+for (const [id, n] of [['31', 31], ['31b', 31], ['4b', 4], ['1′', 1], ['', 0], [undefined, 0]]) {
+  test(`leadingWaveNumber(${JSON.stringify(id)}) is ${n}`, () => assert.equal(leadingWaveNumber(id), n));
+}
+
+test('projectWaves: building now keeps the wave id; dependents follow it numerically', () => {
+  // 1 is building in wave 31b; 2 waits on it; 3 waits on 2; 4 has no blockers and isn't building.
+  const g = buildGraph([1, 2, 3, 4].map(R), edgesOf([[1, 2], [2, 3]]));
+  const status = new Map([[R(1), 'flight'], [R(2), 'blocked'], [R(3), 'blocked'], [R(4), 'ready']]);
+  const w = projectWaves(g, status, { id: '31b', refs: new Set([R(1)]) });
+  assert.deepEqual(w.get(R(1)), { label: '31b', now: true });
+  assert.deepEqual(w.get(R(2)), { label: '32', now: false });
+  assert.deepEqual(w.get(R(3)), { label: '33', now: false });
+  assert.deepEqual(w.get(R(4)), { label: '32', now: false });
+});
+
+test('projectWaves: a ticket of yours takes no wave, and what waits on it goes after its own blockers', () => {
+  // 1 (building, wave 5) → 2 (yours) → 3.
+  const g = buildGraph([1, 2, 3].map(R), edgesOf([[1, 2], [2, 3]]));
+  const status = new Map([[R(1), 'flight'], [R(2), 'you'], [R(3), 'blocked']]);
+  const w = projectWaves(g, status, { id: '5', refs: new Set([R(1)]) });
+  assert.deepEqual(w.get(R(2)), { label: null, now: false });
+  assert.deepEqual(w.get(R(3)), { label: '6', now: false });
+});
+
+test('projectWaves with no wave yet starts at 1, and skips unorderable tickets', () => {
+  const g = buildGraph([1, 2, 3].map(R), edgesOf([[2, 3], [3, 2]]));
+  const status = new Map([[R(1), 'ready'], [R(2), 'blocked'], [R(3), 'blocked']]);
+  const w = projectWaves(g, status, null);
+  assert.deepEqual(w.get(R(1)), { label: '1', now: false });
+  assert.equal(w.has(R(2)), false);
+});
+
+// ---- makeShortRef --------------------------------------------------------
+
+test('makeShortRef uses the repo name, an explicit abbreviation, or owner/repo when names collide', () => {
+  const short = makeShortRef(['a/api', 'a/web', 'b/web', 'a/ios'], { 'a/ios': 'iOS' });
+  assert.equal(short('a/api#3'), 'api#3');
+  assert.equal(short('a/ios#9'), 'iOS#9');
+  assert.equal(short('a/web#1'), 'a/web#1');
+  assert.equal(short('b/web#2'), 'b/web#2');
+});
+
+// ---- formatPacific -------------------------------------------------------
+
+for (const [iso, style, want] of [
+  ['2026-10-08T20:02:00Z', 'long', 'Thu Oct 8, 1:02 PM PDT'],
+  ['2026-10-08T20:02:00Z', 'short', 'Oct 8, 1:02 PM PDT'],
+  ['2026-12-01T08:05:00Z', 'short', 'Dec 1, 12:05 AM PST'],
+  ['2026-11-01T08:30:00Z', 'short', 'Nov 1, 1:30 AM PDT'],
+  ['2026-11-01T09:30:00Z', 'short', 'Nov 1, 1:30 AM PST'],
+  [null, 'short', ''],
+]) {
+  test(`formatPacific(${iso}, ${style}) → ${JSON.stringify(want)}`, () => {
+    assert.equal(formatPacific(iso, style), want);
+  });
+}
