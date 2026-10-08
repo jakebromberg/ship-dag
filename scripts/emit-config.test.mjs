@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { deriveSlug, buildConfig, unknownCiRepos } from './emit-config.mjs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { deriveSlug, buildConfig, unknownCiRepos, unknownComplexities } from './emit-config.mjs';
+import { load as loadTuning } from './lib/tuning.mjs';
 
 // A minimal well-formed spec the ready-wave hands the emitter.
 function spec(overrides = {}) {
@@ -287,4 +290,37 @@ for (const [complexity, effort] of Object.entries(ENGINE_COMPLEXITY_EFFORT)) {
 test('an issue\'s own effort wins over the tuning map', () => {
   const c = buildConfig(spec({ issues: [{ number: 1, repo: 'WXYC/library-metadata-lookup', complexity: 'mechanical', effort: 'xhigh', digest: 'x' }] }));
   assert.equal(c.issues[0].effort, 'xhigh');
+});
+
+// The default-tuning tests above can't tell a tuning-driven lookup from a hardcoded
+// map identical to it; a non-default map can.
+test('the effort follows the tuning argument, not a hardcoded map', () => {
+  const tuning = { ...loadTuning(), implement: { mechanical: 'xhigh', normal: 'xhigh', complex: 'max' } };
+  const issues = ['mechanical', 'complex'].map((complexity, i) => ({ number: i + 1, repo: 'WXYC/library-metadata-lookup', complexity, digest: 'x' }));
+  const c = buildConfig(spec({ issues }), tuning);
+  assert.deepEqual(c.issues.map((i) => i.effort), ['xhigh', 'max']);
+});
+
+// An out-of-enum complexity (including an inherited Object.prototype key) emits no
+// effort, so the engine default applies, and is named for the CLI's stderr warning.
+for (const complexity of ['__proto__', 'constructor', 'toString', 'Complex']) {
+  test(`out-of-enum complexity ${complexity} emits no effort and is reported`, () => {
+    const s = spec({ issues: [{ number: 1, repo: 'WXYC/library-metadata-lookup', complexity, digest: 'x' }] });
+    assert.ok(!('effort' in buildConfig(s).issues[0]));
+    assert.deepEqual(unknownComplexities(s), [{ number: 1, complexity }]);
+  });
+}
+
+test('in-enum and absent complexities are not reported', () => {
+  const issues = [{ number: 1, complexity: 'normal' }, { number: 2 }].map((i) => ({ ...i, repo: 'WXYC/library-metadata-lookup', digest: 'x' }));
+  assert.deepEqual(unknownComplexities(spec({ issues })), []);
+});
+
+test('the CLI warns on stderr about an out-of-enum complexity and emits no effort', () => {
+  const s = spec({ issues: [{ number: 7, repo: 'WXYC/library-metadata-lookup', complexity: 'Complex', digest: 'x' }] });
+  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+  const r = spawnSync('node', [cli, '-'], { input: JSON.stringify(s), encoding: 'utf-8' });
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /unknown complexity.*#7 \(Complex\)/);
+  assert.ok(!('effort' in JSON.parse(r.stdout).issues[0]));
 });
