@@ -16,15 +16,18 @@ const refOf = (issue, spec) => `${issue.repo || spec.repo}#${issue.number}`;
 
 /**
  * Build one sidecar entry from a ready-wave spec.
- * @param {object} spec the ready-wave spec emit-config was handed
- * @param {{now?: () => string}} [opts]
+ * @param {object} spec the ready-wave spec emit-config was handed; `blockOn` may be
+ *   the `--block-on` comma string or an array of categories (workflow.js's form)
+ * @param {{now?: () => string, tuning?: {version: unknown}}} [opts] `tuning` is the
+ *   object the config was built from; defaults to reading the shipped tuning.json
  */
-export function waveSidecar(spec, { now = () => new Date().toISOString() } = {}) {
+export function waveSidecar(spec, { now = () => new Date().toISOString(), tuning = loadTuning() } = {}) {
+  const { blockOn } = spec;
   return {
     runId: spec.runId || runIdFromConfigName(spec.name),
     wave: spec.wave ?? null,
-    tuningVersion: loadTuning().version,
-    blockOn: parseBlockOn(spec.blockOn),
+    tuningVersion: tuning.version,
+    blockOn: parseBlockOn(Array.isArray(blockOn) ? blockOn.join(',') : blockOn),
     emittedAt: now(),
     issues: spec.issues.map((issue) => ({
       ref: refOf(issue, spec),
