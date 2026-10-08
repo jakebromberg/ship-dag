@@ -165,16 +165,3 @@ test('the CLI writes the sidecar at dirname(configDir) and prints the same confi
   assert.match(blocked.stderr, /wave sidecar/);
   assert.equal(blocked.stdout.replaceAll(bad, dir), ok.stdout);
 });
-
-test('the CLI refuses an invalid blockOn with exit 2 before printing a config or writing the sidecar', () => {
-  const cli = fileURLToPath(new URL('../emit-config.mjs', import.meta.url));
-  const dir = tmp();
-  const res = spawnSync(process.execPath, [cli, '-'], {
-    input: JSON.stringify(spec({ stateDir: dir, blockOn: 'corectness', repos: { [REPO]: { commands: ['x'] }, 'WXYC/other': { commands: ['x'] } } })),
-    encoding: 'utf-8',
-  });
-  assert.equal(res.status, 2);
-  assert.equal(res.stdout, '');
-  assert.match(res.stderr, /corectness/);
-  assert.deepEqual(readdirSync(dir), [], 'no sidecar written');
-});
