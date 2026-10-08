@@ -31,7 +31,7 @@
 //     "retryMaxRetries":1,                          // optional (default 1)
 //     "runId":          "sd-20261008-153059",       // optional; the run id (default: parsed from `name`) — recorded in the wave sidecar
 //     "wave":           "14b",                       // optional; the wave counter W (a number or a string such as "14b") — recorded in the wave sidecar
-//     "blockOn":        "correctness,security",      // optional; the run's --block-on, as that comma string or an array — recorded (parsed) in the wave sidecar
+//     "blockOn":        "correctness,security",      // optional; the run's --block-on, as that comma string or an array — recorded (parsed) in the wave sidecar; an unknown category exits 2
 //     "repos": {                                    // per-repo base branch + CI profile
 //       "owner/repo": { "baseBranch": "main", "commands": ["ruff check .", "pytest -q"] }
 //     },
@@ -49,7 +49,7 @@ import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
-import { waveSidecar, appendWave } from './lib/wave-sidecar.mjs';
+import { waveSidecar, appendWave, specBlockOn } from './lib/wave-sidecar.mjs';
 
 /**
  * A filename/branch-safe slug from an issue title, or `issue-<number>` when the
@@ -215,6 +215,8 @@ if (isMain(import.meta.url)) {
   try {
     tuning = loadTuning();
     config = buildConfig(spec, tuning);
+    // An invalid blockOn would only fail at the review gate, after a whole engine wave.
+    specBlockOn(spec.blockOn);
   } catch (err) {
     console.error(`emit-config: ${err.message}`);
     process.exit(2);

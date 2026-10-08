@@ -15,6 +15,18 @@ export const SIDECAR_NAME = 'ship-dag-wave.json';
 const refOf = (issue, spec) => `${issue.repo || spec.repo}#${issue.number}`;
 
 /**
+ * A spec's `blockOn` parsed like `--block-on`: the comma string or an array of
+ * categories (workflow.js's form); absent means the default list. Throws on any
+ * other type or an unknown category, so emit-config can refuse the spec up front.
+ */
+export function specBlockOn(blockOn) {
+  if (blockOn != null && typeof blockOn !== 'string' && !Array.isArray(blockOn)) {
+    throw new Error(`spec blockOn must be a comma string or an array, got ${JSON.stringify(blockOn)}`);
+  }
+  return parseBlockOn(Array.isArray(blockOn) ? blockOn.join(',') : blockOn);
+}
+
+/**
  * Build one sidecar entry from a ready-wave spec.
  * @param {object} spec the ready-wave spec emit-config was handed; `blockOn` may be
  *   the `--block-on` comma string or an array of categories (workflow.js's form)
@@ -22,12 +34,11 @@ const refOf = (issue, spec) => `${issue.repo || spec.repo}#${issue.number}`;
  *   object the config was built from; defaults to reading the shipped tuning.json
  */
 export function waveSidecar(spec, { now = () => new Date().toISOString(), tuning = loadTuning() } = {}) {
-  const { blockOn } = spec;
   return {
     runId: spec.runId || runIdFromConfigName(spec.name),
     wave: spec.wave ?? null,
     tuningVersion: tuning.version,
-    blockOn: parseBlockOn(Array.isArray(blockOn) ? blockOn.join(',') : blockOn),
+    blockOn: specBlockOn(spec.blockOn),
     emittedAt: now(),
     issues: spec.issues.map((issue) => ({
       ref: refOf(issue, spec),
