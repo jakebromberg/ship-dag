@@ -8,6 +8,7 @@ import { isMain } from './is-main.mjs';
 
 export const TUNING_PATH = fileURLToPath(new URL('../../references/tuning.json', import.meta.url));
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const COMPLEXITIES = ['mechanical', 'normal', 'complex'];
 
 /** Throw unless `t` is a well-formed version-1 tuning object; returns `t`. */
 export function validate(t) {
@@ -21,7 +22,9 @@ export function validate(t) {
   if (!Number.isInteger(r.passes) || r.passes < 1) bad('review.passes must be a positive integer');
   for (const k of ['serial', 'scopedRegate']) if (typeof r[k] !== 'boolean') bad(`review.${k} must be a boolean`);
   for (const k of ['in-diff', 'repo', 'external']) effort(`review.reachEffort.${k}`, r.reachEffort?.[k]);
-  for (const k of ['mechanical', 'normal', 'complex']) effort(`implement.${k}`, t.implement?.[k]);
+  for (const k of COMPLEXITIES) effort(`implement.${k}`, t.implement?.[k]);
+  // The keys are triage's complexity enum, which the engine schema also enforces.
+  for (const k of Object.keys(t.implement)) if (!COMPLEXITIES.includes(k)) bad(`unknown implement tier ${JSON.stringify(k)}`);
   return t;
 }
 
@@ -30,9 +33,9 @@ export function load(path = TUNING_PATH) {
   return validate(JSON.parse(readFileSync(path, 'utf-8')));
 }
 
-/** The value at a dotted key, or undefined. */
+/** The value at a dotted key, or undefined (own keys of objects only; never descends into a leaf). */
 export function resolve(tuning, key) {
-  return key.split('.').reduce((o, k) => (o != null && Object.hasOwn(o, k) ? o[k] : undefined), tuning);
+  return key.split('.').reduce((o, k) => (o !== null && typeof o === 'object' && Object.hasOwn(o, k) ? o[k] : undefined), tuning);
 }
 
 if (isMain(import.meta.url)) {

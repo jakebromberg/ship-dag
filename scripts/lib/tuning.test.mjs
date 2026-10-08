@@ -31,6 +31,7 @@ test('validate rejects malformed tuning', () => {
     'non-boolean serial': (t) => (t.review.serial = 'yes'),
     'missing reach': (t) => delete t.review.reachEffort.external,
     'missing implement tier': (t) => delete t.implement.complex,
+    'extra implement tier': (t) => (t.implement.trivial = 'low'),
     'missing review': (t) => delete t.review,
   };
   for (const [name, mutate] of Object.entries(cases)) {
@@ -44,6 +45,7 @@ test('resolve walks dotted keys; the CLI prints the value', () => {
   assert.equal(resolve(tuning, 'implement.normal'), 'medium');
   assert.equal(resolve(tuning, 'review.reachEffort.in-diff'), 'medium');
   assert.equal(resolve(tuning, 'nope.x'), undefined);
+  for (const key of ['implement.normal.length', 'implement.normal.0']) assert.equal(resolve(tuning, key), undefined, key);
   const cli = (key) => execFileSync('node', [root('scripts/lib/tuning.mjs'), 'resolve', key], { encoding: 'utf-8' }).trim();
   assert.equal(cli('review.effortFloor'), 'high');
   assert.throws(() => cli('nope'), /Command failed/);
