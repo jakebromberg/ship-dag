@@ -301,12 +301,14 @@ test('the effort follows the tuning argument, not a hardcoded map', () => {
   assert.deepEqual(c.issues.map((i) => i.effort), ['xhigh', 'max']);
 });
 
-// An out-of-enum complexity (including an inherited Object.prototype key) emits no
-// effort, so the engine default applies, and is named for the CLI's stderr warning.
+// An out-of-enum complexity (including an inherited Object.prototype key) is dropped
+// along with its effort — the engine's schema rejects the whole config on an unknown
+// complexity — so the engine default applies, and it is named for the stderr warning.
 for (const complexity of ['__proto__', 'constructor', 'toString', 'Complex']) {
-  test(`out-of-enum complexity ${complexity} emits no effort and is reported`, () => {
+  test(`out-of-enum complexity ${complexity} emits no complexity or effort and is reported`, () => {
     const s = spec({ issues: [{ number: 1, repo: 'WXYC/library-metadata-lookup', complexity, digest: 'x' }] });
-    assert.ok(!('effort' in buildConfig(s).issues[0]));
+    const iss = buildConfig(s).issues[0];
+    assert.ok(!('effort' in iss) && !('complexity' in iss));
     assert.deepEqual(unknownComplexities(s), [{ number: 1, complexity }]);
   });
 }
@@ -316,11 +318,12 @@ test('in-enum and absent complexities are not reported', () => {
   assert.deepEqual(unknownComplexities(spec({ issues })), []);
 });
 
-test('the CLI warns on stderr about an out-of-enum complexity and emits no effort', () => {
+test('the CLI warns on stderr about an out-of-enum complexity and emits no complexity or effort', () => {
   const s = spec({ issues: [{ number: 7, repo: 'WXYC/library-metadata-lookup', complexity: 'Complex', digest: 'x' }] });
   const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
   const r = spawnSync('node', [cli, '-'], { input: JSON.stringify(s), encoding: 'utf-8' });
   assert.equal(r.status, 0);
   assert.match(r.stderr, /unknown complexity.*#7 \(Complex\)/);
-  assert.ok(!('effort' in JSON.parse(r.stdout).issues[0]));
+  const iss = JSON.parse(r.stdout).issues[0];
+  assert.ok(!('effort' in iss) && !('complexity' in iss));
 });

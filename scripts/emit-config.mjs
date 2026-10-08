@@ -44,7 +44,7 @@
 
 import { readFileSync } from 'node:fs';
 import { isMain } from './lib/is-main.mjs';
-import { load as loadTuning } from './lib/tuning.mjs';
+import { load as loadTuning, resolve } from './lib/tuning.mjs';
 
 /**
  * A filename/branch-safe slug from an issue title, or `issue-<number>` when the
@@ -94,13 +94,14 @@ export function unknownCiRepos(spec) {
 
 /** The implement effort tuning.json maps `complexity` to, or undefined (own keys only). */
 function tunedEffort(tuning, complexity) {
-  return complexity && Object.hasOwn(tuning.implement, complexity) ? tuning.implement[complexity] : undefined;
+  return complexity ? resolve(tuning, `implement.${complexity}`) : undefined;
 }
 
 /**
  * Issues whose `complexity` is set but is not a key of tuning.json's implement map,
- * as `{ number, complexity }`. buildConfig stamps no effort for them (the engine
- * default applies); the caller should surface them rather than drop them silently.
+ * as `{ number, complexity }`. buildConfig drops both their complexity (the engine
+ * schema rejects the whole config on an unknown one) and their effort, so the engine
+ * default applies; the caller should surface them rather than drop them silently.
  */
 export function unknownComplexities(spec, tuning = loadTuning()) {
   return spec.issues
@@ -145,12 +146,14 @@ export function buildConfig(spec, tuning = loadTuning()) {
     };
     // Optional per-issue routing — omitted fields fall back to engine defaults
     // (defaultModel sonnet). Effort is stamped from tuning.json's implement map when
-    // the issue has a complexity — an issue's own effort wins; no complexity (or one
-    // outside the map), no effort (the engine default applies). Engine retry
-    // escalation still applies on top.
-    if (issue.complexity) out.complexity = issue.complexity;
+    // the issue has a complexity — an issue's own effort wins; no complexity, no effort
+    // (the engine default applies). A complexity outside the map is dropped too, since
+    // the engine schema would reject the whole config. Engine retry escalation still
+    // applies on top.
+    const tuned = tunedEffort(tuning, issue.complexity);
+    if (tuned) out.complexity = issue.complexity;
     if (issue.model) out.model = issue.model;
-    const effort = issue.effort || tunedEffort(tuning, issue.complexity);
+    const effort = issue.effort || tuned;
     if (effort) out.effort = effort;
     if (issue.extraDirs && issue.extraDirs.length > 0) out.extraDirs = issue.extraDirs;
     return out;
@@ -197,7 +200,7 @@ if (isMain(import.meta.url)) {
   if (badComplexity.length > 0) {
     console.error(
       `emit-config: WARNING — unknown complexity on ${badComplexity.map((i) => `#${i.number} (${i.complexity})`).join(', ')}. ` +
-        `No effort stamped; the engine default applies. Known: ${Object.keys(tuning.implement).join('/')}.`,
+        `Complexity and effort dropped; the engine default applies. Known: ${Object.keys(tuning.implement).join('/')}.`,
     );
   }
 
