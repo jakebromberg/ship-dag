@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "review": {
+    "effortFloor": "high",
+    "passes": 1,
+    "serial": true,
+    "reachEffort": { "in-diff": "medium", "repo": "high", "external": "xhigh" },
+    "scopedRegate": false
+  },
+  "implement": { "mechanical": "low", "normal": "medium", "complex": "high" }
+}
