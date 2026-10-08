@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -22,6 +22,12 @@ const spec = (overrides = {}) => ({
 });
 const tmp = () => mkdtempSync(join(tmpdir(), 'sidecar-'));
 const silent = () => {};
+/** A dir no one can create, even as root: its parent is a regular file. */
+const uncreatable = () => {
+  const file = join(tmp(), 'a-file');
+  writeFileSync(file, '');
+  return join(file, 'run');
+};
 
 test('waveSidecar builds one entry', () => {
   const e = waveSidecar(spec({ wave: '14b', blockOn: 'contract-conformance, security' }), { now: () => 'T' });
@@ -91,9 +97,25 @@ test('a corrupt or non-array sidecar is left untouched with a warning', () => {
   }
 });
 
+test('appendWave creates a state dir that does not exist yet', () => {
+  const dir = join(tmp(), 'engine', 'run1');
+  assert.equal(appendWave(dir, waveSidecar(spec())), true);
+  assert.equal(readSidecar(join(dir, 'ship-dag-wave.json')).length, 1);
+});
+
+test('appendWave refuses a relative or missing dir instead of writing under the cwd', () => {
+  for (const dir of ['undefined', 'rel/dir', undefined]) {
+    const warnings = [];
+    assert.equal(appendWave(dir, waveSidecar(spec()), { warn: (m) => warnings.push(m) }), false, String(dir));
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /absolute/);
+  }
+  assert.ok(!existsSync('undefined') && !existsSync('rel'), 'nothing created under the cwd');
+});
+
 test('appendWave warns instead of throwing when the dir is unwritable', () => {
   const warnings = [];
-  assert.equal(appendWave('/nonexistent/x/y', waveSidecar(spec()), { warn: (m) => warnings.push(m) }), false);
+  assert.equal(appendWave(uncreatable(), waveSidecar(spec()), { warn: (m) => warnings.push(m) }), false);
   assert.equal(warnings.length, 1);
 });
 
@@ -110,10 +132,11 @@ test('the CLI writes the sidecar at dirname(configDir) and prints the same confi
   assert.equal(entries.length, 1);
   assert.equal(entries[0].wave, 3);
   // A stateDir whose sidecar cannot be written still prints a config (modulo the dir paths).
-  const blocked = run('/nonexistent/zzz');
+  const bad = uncreatable();
+  const blocked = run(bad);
   assert.equal(blocked.status, 0);
   assert.match(blocked.stderr, /wave sidecar/);
-  assert.equal(blocked.stdout.replaceAll('/nonexistent/zzz', dir), ok.stdout.replaceAll(dir, dir));
+  assert.equal(blocked.stdout.replaceAll(bad, dir), ok.stdout);
 });
 
 test('the CLI warns and still prints the config when the sidecar entry cannot be built', () => {

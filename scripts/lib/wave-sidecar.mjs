@@ -3,8 +3,8 @@
 // artifacts cannot: the parsed `blockOn`, the `tuningVersion`, and per-issue
 // routing, so a wave re-ingested later is judged under the policy it ran with.
 // Point-A defers are not recorded here (SKILL.md step 3d writes those).
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { parseBlockOn } from '../review-gate.mjs';
 import { runIdFromConfigName } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
@@ -60,12 +60,19 @@ export function findWaveContext(dir, refs) {
 }
 
 /**
- * Append `entry` to `dir`'s sidecar atomically (temp file + rename). Never throws:
- * a failure warns and returns false, and an unreadable existing file is left as-is.
+ * Append `entry` to `dir`'s sidecar atomically (temp file + rename), creating `dir`
+ * when it does not exist yet. Never throws: a failure warns and returns false, an
+ * unreadable existing file is left as-is, and a relative or missing `dir` (a spec
+ * with no absolute `stateDir`) is refused rather than resolved against the cwd.
  */
 export function appendWave(dir, entry, { warn = (m) => console.error(m) } = {}) {
+  if (typeof dir !== 'string' || !isAbsolute(dir)) {
+    warn(`emit-config: WARNING — not writing the wave sidecar: the state dir ${JSON.stringify(dir)} is not an absolute path`);
+    return false;
+  }
   const path = join(dir, SIDECAR_NAME);
   try {
+    mkdirSync(dir, { recursive: true });
     const entries = readSidecar(path);
     entries.push(entry);
     const tmp = `${path}.${process.pid}.tmp`;
