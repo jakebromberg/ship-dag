@@ -67,13 +67,14 @@ function diedAfter(dir, ref, waveTs) {
 
 /**
  * The newest review file for `ref` across `reviewDirs`, by mtime. Only the
- * bare stem or the stem plus one dot-tag counts (`<stem>.json`, `<stem>.r2.json`),
+ * bare stem or the stem plus one tag counts (`<stem>.json`, `<stem>.r2.json`, and
+ * the legacy `<stem>-r2.json`),
  * read non-recursively, so another issue's file (`#123` for `#12`), a `.raw`
  * salvage, or a per-pass file under `passes/` is never scored.
  */
 function newestReview(reviewDirs, ref) {
   const stem = artifactStem(ref).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const name = new RegExp(`^${stem}(\\.[A-Za-z0-9]+)?\\.json$`);
+  const name = new RegExp(`^${stem}([.-][A-Za-z0-9]+)?\\.json$`);
   let best = null;
   for (const d of reviewDirs) {
     let names;
