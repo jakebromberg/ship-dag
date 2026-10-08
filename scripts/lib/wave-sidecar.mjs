@@ -1,15 +1,19 @@
-// wave-sidecar.mjs — the append-only `ship-dag-wave.json` emit-config drops in
-// the run's state dir. One entry per emitted wave records what the engine's own
+// wave-sidecar.mjs — the append-only `ship-dag-wave.jsonl` emit-config drops in
+// the run's state dir. One line per emitted wave records what the engine's own
 // artifacts cannot: the parsed `blockOn`, the `tuningVersion`, and per-issue
 // routing, so a wave re-ingested later is judged under the policy it ran with.
 // Point-A defers are not recorded here (SKILL.md step 3d writes those).
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+//
+// JSONL, like runs.jsonl: each wave is one `appendFileSync`, so nothing already
+// written is ever rewritten, overlapping emits can't drop an entry, and a corrupt
+// line costs only itself.
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { parseBlockOn } from '../review-gate.mjs';
 import { runIdFromConfigName } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
-export const SIDECAR_NAME = 'ship-dag-wave.json';
+export const SIDECAR_NAME = 'ship-dag-wave.jsonl';
 
 /** The `owner/repo#N` ref of a spec issue. */
 const refOf = (issue, spec) => `${issue.repo || spec.repo}#${issue.number}`;
@@ -57,12 +61,24 @@ export function waveContextMatches(entry, refs) {
   return have.size === want.size && [...want].every((r) => have.has(r));
 }
 
-/** The entries in the sidecar at `path` ([] when absent); throws on unreadable or non-array content. */
-export function readSidecar(path) {
+/**
+ * The entries in the sidecar at `path`, oldest first ([] when absent). A line that
+ * doesn't parse to an object is skipped and counted in one warning, so one bad line
+ * never hides the waves around it.
+ */
+export function readSidecar(path, { warn = (m) => console.error(m) } = {}) {
   if (!existsSync(path)) return [];
-  const parsed = JSON.parse(readFileSync(path, 'utf-8'));
-  if (!Array.isArray(parsed)) throw new Error('not a JSON array');
-  return parsed;
+  const entries = [];
+  let bad = 0;
+  for (const line of readFileSync(path, 'utf-8').split('\n')) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { bad += 1; continue; }
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) entries.push(entry);
+    else bad += 1;
+  }
+  if (bad) warn(`wave sidecar ${path}: skipped ${bad} unreadable line${bad === 1 ? '' : 's'}`);
+  return entries;
 }
 
 /** The entry in `dir`'s sidecar whose ref set equals `refs`, or null (the latest, if re-emitted). */
@@ -71,10 +87,10 @@ export function findWaveContext(dir, refs) {
 }
 
 /**
- * Append `entry` to `dir`'s sidecar atomically (temp file + rename), creating `dir`
- * when it does not exist yet. Never throws: a failure warns and returns false, an
- * unreadable existing file is left as-is, and a relative or missing `dir` (a spec
- * with no absolute `stateDir`) is refused rather than resolved against the cwd.
+ * Append `entry` to `dir`'s sidecar as one line, creating `dir` when it does not
+ * exist yet. Never throws: a failure warns and returns false, and a relative or
+ * missing `dir` (a spec with no absolute `stateDir`) is refused rather than
+ * resolved against the cwd.
  */
 export function appendWave(dir, entry, { warn = (m) => console.error(m) } = {}) {
   if (typeof dir !== 'string' || !isAbsolute(dir)) {
@@ -84,11 +100,7 @@ export function appendWave(dir, entry, { warn = (m) => console.error(m) } = {}) 
   const path = join(dir, SIDECAR_NAME);
   try {
     mkdirSync(dir, { recursive: true });
-    const entries = readSidecar(path);
-    entries.push(entry);
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(entries, null, 2)}\n`);
-    renameSync(tmp, path);
+    appendFileSync(path, `${JSON.stringify(entry)}\n`);
     return true;
   } catch (err) {
     warn(`emit-config: WARNING — could not write the wave sidecar in ${dir}: ${err.message}`);
