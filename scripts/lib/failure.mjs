@@ -170,13 +170,16 @@ export function terminalEvent(transcriptText) {
  * - `review-gate` — a PR is open (whatever the row's status). The implement
  *   work landed; gate it exactly like a `succeeded` row. Never retry it: the
  *   branch already exists and the work may already be merged.
+ * - `find-pr` — a `succeeded` row with no PR. The session finished but the
+ *   engine never captured its PR (it recognises one only by the branch it
+ *   checked out). Look the PR up by issue before gating anything.
  * - `point-E` — no PR, and the session died on quota. Infra failure, not a
  *   model failure: resume in place per the point-E recovery recipe. Re-running
  *   the engine for this issue would collide with its existing branch.
  * - `point-B` — no PR, ordinary implement stall. Grill the human.
  *
  * @param {{status?: string, prNumber?: number|null, failureReason?: string|null}} row
- * @returns {"review-gate"|"point-E"|"point-B"}
+ * @returns {"review-gate"|"find-pr"|"point-E"|"point-B"}
  */
 export function routeFailure(row) {
   const { status, prNumber, failureReason } = row ?? {};
@@ -184,7 +187,7 @@ export function routeFailure(row) {
   // 0 can't read as "a PR exists" — routing a PR-less stall to a gate with
   // nothing to review is the expensive direction to be wrong in.
   if (typeof prNumber === 'number' && prNumber > 0) return 'review-gate';
-  if (status === 'succeeded') return 'review-gate';
+  if (status === 'succeeded') return 'find-pr';
   if (failureReason === 'rate-limited') return 'point-E';
   return 'point-B';
 }
