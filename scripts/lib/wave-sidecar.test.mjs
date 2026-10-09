@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { waveSidecar as wave_, waveContextMatches, readSidecar, appendWave, findWaveContext, findWaveConfig, specBlockOn, SIDECAR_NAME } from './wave-sidecar.mjs';
+import { waveSidecar as wave_, waveContextMatches, readSidecar, appendWave, findWaveContext, findWaveConfig, entryFromConfig, specBlockOn, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { load as loadTuning } from './tuning.mjs';
 import { buildConfig } from '../emit-config.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
@@ -123,6 +123,20 @@ test('appendWave keeps both waves and findWaveContext picks the right one', () =
   assert.deepEqual(readdirSync(dir), [SIDECAR_NAME], 'only the sidecar is written');
 });
 
+// A re-emit of one ref set (a retry with escalated routing) is not the routing an earlier report ran under.
+for (const [asOf, want] of [[undefined, 2], ['2026-10-08T19:00:00.000Z', 1], ['2026-10-08T17:00:00.000Z', null]]) {
+  test(`findWaveContext takes the latest matching entry emitted at or before ${asOf ?? 'any time'}`, () => {
+    const dir = tmp();
+    try {
+      appendWave(dir, wave(spec({ wave: 1 }), { now: () => '2026-10-08T18:00:00.000Z' }));
+      appendWave(dir, wave(spec({ wave: 2 }), { now: () => '2026-10-08T20:00:00.000Z' }));
+      assert.equal(findWaveContext(dir, [`${REPO}#1`, 'WXYC/other#2'], asOf && Date.parse(asOf))?.wave ?? null, want);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 test('the sidecar is JSONL: one entry per line, appended without rewriting what is there', () => {
   assert.equal(SIDECAR_NAME, 'ship-dag-wave.jsonl');
   const dir = tmp();
@@ -207,18 +221,26 @@ test('findWaveConfig picks the config whose issue refs equal the set, skipping u
     writeFileSync(join(dir, 'config-b.json'), cfg(['a/b#1', 'c/d#2']));
     writeFileSync(join(dir, 'config-torn.json'), '{');
     writeFileSync(join(dir, 'notes.json'), cfg(['a/b#1', 'c/d#3']));
+    writeFileSync(join(dir, 'config-no-issues.json'), JSON.stringify({ name: 'ship-dag-run1' }));
     assert.equal(findWaveConfig(dir, ['c/d#2', 'a/b#1']).issues.length, 2);
     assert.equal(findWaveConfig(dir, ['a/b#1']).issues.length, 1);
     assert.equal(findWaveConfig(dir, ['c/d#3', 'a/b#1']), null, 'only config*.json files are candidates');
+    assert.equal(findWaveConfig(dir, []), null, 'a config without an issues array matches no ref set, not the empty one');
     assert.equal(findWaveConfig(join(dir, 'missing'), ['a/b#1']), null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-// Two configs for one ref set (a re-emitted wave): the newer file wins, whatever the names sort as.
-for (const [newer, want] of [['config-wave1b.json', 'opus'], ['config.json', 'sonnet']]) {
-  test(`findWaveConfig takes the newest of two configs sharing a ref set by mtime (${newer} newer)`, () => {
+// Two configs for one ref set (a re-emitted wave): the newer file wins, whatever the names sort as,
+// unless it was written after `asOf` (ms), the report's start.
+for (const [newer, asOf, want] of [
+  ['config-wave1b.json', undefined, 'opus'],
+  ['config.json', undefined, 'sonnet'],
+  ['config-wave1b.json', 1_500_000_000_000, 'sonnet'],
+  ['config-wave1b.json', 500_000_000_000, null],
+]) {
+  test(`findWaveConfig takes the newest of two configs sharing a ref set by mtime (${newer} newer, as of ${asOf ?? 'any time'})`, () => {
     const dir = tmp();
     try {
       writeFileSync(join(dir, 'config.json'), cfg(['a/b#1'], { defaultModel: 'sonnet' }));
@@ -227,9 +249,20 @@ for (const [newer, want] of [['config-wave1b.json', 'opus'], ['config.json', 'so
         const at = name === newer ? 2_000_000_000 : 1_000_000_000;
         utimesSync(join(dir, name), at, at);
       }
-      assert.equal(findWaveConfig(dir, ['a/b#1']).defaultModel, want);
+      assert.equal(findWaveConfig(dir, ['a/b#1'], asOf)?.defaultModel ?? null, want);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 }
+
+test('entryFromConfig routes each config issue as waveSidecar does, and carries no blockOn or tuningVersion', () => {
+  const s = spec({ defaultModel: 'haiku', issues: [{ number: 1, complexity: 'complex', model: 'opus' }, { number: 2, repo: 'WXYC/other', effort: 'low' }, { number: 3 }] });
+  const config = buildConfig(s);
+  const entry = entryFromConfig(config);
+  const routing = ({ ref, effort, model }) => ({ ref, effort, model });
+  assert.equal(entry.runId, 'run1');
+  assert.deepEqual(entry.issues.map(routing), wave(s).issues.map(routing));
+  assert.deepEqual(entry.issues.map((i) => i.complexity), ['complex', undefined, undefined]);
+  assert.deepEqual([entry.blockOn, entry.tuningVersion], [undefined, undefined]);
+});

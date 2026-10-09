@@ -349,9 +349,13 @@ const secs = (iso) => Date.parse(iso) / 1000;
 const stateRow = (ref, over = {}) => ({ ref, number: Number(ref.split('#')[1]), status: 'succeeded', prUrl: 'https://x/11', prNumber: 11, ...over });
 const stateReport = (rows, over = {}) => ({ configName: `ship-dag-${RUN}`, startedAt: T0, finishedAt: T1, issues: rows, ...over });
 
+/** When the configs below were emitted: before the wave that starts at T0, as emit-config always is. */
+const EMITTED = '2026-10-08T18:55:00.000Z';
+
 /**
  * Run `fn` on a throwaway engine state dir, removed afterwards. `reports` maps file name → report,
- * `files` maps a path under the dir → contents (a string is written as is, anything else as JSON).
+ * `configs` maps file name → config (written with mtime EMITTED), and `files` maps a path under the
+ * dir → contents (a string is written as is, anything else as JSON).
  */
 function withStateDir({ reports = {}, sidecar = [], configs = {}, files = {} }, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'ingest-wave-'));
@@ -359,7 +363,10 @@ function withStateDir({ reports = {}, sidecar = [], configs = {}, files = {} }, 
     mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
     for (const [name, rep] of Object.entries(reports)) writeFileSync(join(dir, 'state', 'reports', name), typeof rep === 'string' ? rep : JSON.stringify(rep));
     for (const entry of sidecar) appendWave(dir, entry);
-    for (const [name, cfg] of Object.entries(configs)) writeFileSync(join(dir, name), JSON.stringify(cfg));
+    for (const [name, cfg] of Object.entries(configs)) {
+      writeFileSync(join(dir, name), JSON.stringify(cfg));
+      utimesSync(join(dir, name), secs(EMITTED), secs(EMITTED));
+    }
     for (const [rel, body] of Object.entries(files)) {
       mkdirSync(dirname(join(dir, rel)), { recursive: true });
       writeFileSync(join(dir, rel), typeof body === 'string' ? body : JSON.stringify(body));
@@ -377,7 +384,14 @@ const reviewFile = (dir, ref, tag, findings, at) => {
   writeFileSync(path, typeof findings === 'string' ? findings : JSON.stringify({ issue: 1, findings }));
   utimesSync(path, secs(at), secs(at));
 };
-const blocker = { category: 'correctness', verdict: 'CONFIRMED', file: 'a.js', line: 1, summary: 's' };
+/** Write `ref`'s failure digest with mtime `at` (by default inside a wave started at T0); a string `body` is written as is. */
+const digestFile = (dir, ref, body, at = '2026-10-08T19:30:00.000Z') => {
+  const path = join(dir, 'state', 'failure-digest', `issue-${artifactStem(ref)}.json`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, typeof body === 'string' ? body : JSON.stringify(body));
+  utimesSync(path, secs(at), secs(at));
+};
+const blocker ={ category: 'correctness', verdict: 'CONFIRMED', file: 'a.js', line: 1, summary: 's' };
 const sidecarEntry = (refs = [REF]) => ({
   runId: RUN, wave: 1, tuningVersion: 7, blockOn: ['correctness'],
   issues: refs.map((ref) => ({ ref, complexity: 'complex', effort: 'high', effortSource: 'tuning', model: 'opus' })),
@@ -402,8 +416,8 @@ const exitCode = (fn) => { try { fn(); } catch (err) { return err.code; } return
 test('ingest-wave records a terminal wave from its report, sidecar, digest and rounds', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { status: 'failed', prUrl: null, prNumber: null })]) },
   sidecar: [sidecarEntry([REF, REF2])],
-  files: { [`state/failure-digest/issue-${artifactStem(REF2)}.json`]: { failureReason: 'rate-limited' } },
 }, (dir) => {
+  digestFile(dir, REF2, { failureReason: 'rate-limited' });
   reviewFile(dir, REF, '', [blocker], '2026-10-08T19:10:00.000Z');
   reviewFile(dir, REF, '.r2', [], '2026-10-08T19:20:00.000Z');
   const { records, log } = ingest(dir);
@@ -463,13 +477,31 @@ test('ingest-wave: a torn round file reads as blocking, never clean', () => with
 test('ingest-wave: a torn failure digest is warned about and leaves failureReason null', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })]) },
   sidecar: [sidecarEntry()],
-  files: { [`state/failure-digest/issue-${artifactStem(REF)}.json`]: '{"failureReason": "rate-' },
 }, (dir) => {
+  digestFile(dir, REF, '{"failureReason": "rate-');
   const warnings = [];
   const [rec] = ingest(dir, {}, { warn: (m) => warnings.push(m) }).records;
   assert.deepEqual([rec.implStatus, rec.failureReason], ['error', null]);
   assert.ok(warnings.some((m) => /unreadable digest/.test(m)), warnings.join('\n'));
 }));
+
+// A retry or a later wave rewrites the ref's digest, so one written outside this wave is not its failure.
+for (const [when, at, want] of [
+  ['during this wave', '2026-10-08T19:30:00.000Z', 'rate-limited'],
+  ['before this wave started', '2026-10-08T18:00:00.000Z', null],
+  ['after a retry listing the ref started', '2026-10-08T20:30:00.000Z', null],
+]) {
+  test(`ingest-wave: a failure digest written ${when} is ${want ? '' : 'not '}this wave's`, () => withStateDir({
+    reports: {
+      'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })], { startedAt: T0, finishedAt: T1 }),
+      'w2.json': stateReport([stateRow(REF)], { startedAt: T1, finishedAt: T2 }),
+    },
+    sidecar: [sidecarEntry()],
+  }, (dir) => {
+    digestFile(dir, REF, { failureReason: 'rate-limited' }, at);
+    assert.equal(ingest(dir).records[0].failureReason, want);
+  }));
+}
 
 test('ingest-wave: a pre-sidecar wave takes its routing from the matching config, default policy and tuning version 0', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) },
@@ -482,9 +514,39 @@ test('ingest-wave: a pre-sidecar wave takes its routing from the matching config
     ] }),
   },
 }, (dir) => {
-  const [a, b] = ingest(dir).records;
+  const warnings = [];
+  const [a, b] = ingest(dir, {}, { warn: (m) => warnings.push(m) }).records;
   assert.deepEqual([a.runId, a.complexity, a.effort, a.model, a.policySource, a.tuningVersion], [RUN, 'complex', 'high', 'opus', 'default', 0]);
   assert.deepEqual([b.complexity, b.effort, b.model, b.policySource, b.tuningVersion], ['normal', 'medium', 'sonnet', 'default', 0]);
+  assert.ok(warnings.some((m) => /config/.test(m) && /tuningVersion 0/.test(m)), warnings.join('\n'));
+}));
+
+// A whole-wave retry re-emits the same ref set, possibly with escalated routing, after this report started.
+for (const source of ['sidecar entry', 'config']) {
+  test(`ingest-wave: a ${source} re-emitted after this report started is not this wave's routing`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF)]) },
+    sidecar: source === 'config' ? [] : [
+      { ...sidecarEntry(), emittedAt: EMITTED },
+      { ...sidecarEntry(), emittedAt: T1, issues: [{ ref: REF, complexity: 'complex', model: 'haiku' }] },
+    ],
+    configs: source === 'config' ? { 'config.json': config([REF], { defaultModel: 'opus' }), 'config-r2.json': config([REF], { defaultModel: 'haiku' }) } : {},
+  }, (dir) => {
+    if (source === 'config') utimesSync(join(dir, 'config-r2.json'), secs(T1), secs(T1));
+    assert.equal(ingest(dir).records[0].model, 'opus');
+  }));
+}
+
+test('ingest-wave: an empty report beside a config without an issues array records nothing', () => withStateDir({
+  reports: { 'w1.json': stateReport([]) },
+  configs: { 'config-other.json': { name: 'ship-dag-x' } },
+}, (dir) => {
+  assert.deepEqual(ingest(dir).log, []);
+}));
+
+test('ingest-wave: a report with no configName, and no sidecar entry or config to name the run, exits 3', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)], { configName: undefined }) },
+}, (dir) => {
+  assert.equal(exitCode(() => ingest(dir)), 3);
 }));
 
 test('ingest-wave: a wave with no sidecar entry or config warns and records default routing at tuning version 0', () => withStateDir({
@@ -526,8 +588,9 @@ for (const [name, rel] of [['not in a reports dir', 'state/w1.json'], ['in a rep
   }));
 }
 
+const prLess = stateRow(REF, { status: 'failed', prUrl: null, prNumber: null });
 const badOutcomes = [
-  // [name, outcomes, what the message must name besides the ref]
+  // [name, outcomes, what the message must name besides the ref, the report's row]
   ['an unknown ref', { 'WXYC/nope#5': {} }, /WXYC\/nope#5/],
   ['a non-object', [], /object/],
   ['pr zero', { [REF]: { pr: 0 } }, /pr/],
@@ -540,10 +603,11 @@ const badOutcomes = [
   ['tokens a string', { [REF]: { tokens: '9' } }, /tokens/],
   ['an unknown field', { [REF]: { finalstate: 'blocked-hitl' } }, /finalstate/],
   ['an unknown hitl field', { [REF]: { hitl: { pointB: true, pointA: true } } }, /hitl\.pointA/],
+  ['finalState merged where neither the row nor --outcomes has a PR', { [REF]: { finalState: 'merged' } }, /finalState/, prLess],
 ];
-for (const [name, outcomes, want] of badOutcomes) {
+for (const [name, outcomes, want, row = stateRow(REF)] of badOutcomes) {
   test(`ingest-wave: --outcomes with ${name} exits 2`, () => withStateDir({
-    reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+    reports: { 'w1.json': stateReport([row]) }, sidecar: [sidecarEntry()],
   }, (dir) => {
     assert.throws(() => ingest(dir, outcomes), (err) => err.code === 2 && want.test(err.message)
       && (name === 'a non-object' || name === 'an unknown ref' || err.message.includes(REF)));
@@ -555,6 +619,13 @@ test('ingest-wave: a well-formed --outcomes entry is applied', () => withStateDi
 }, (dir) => {
   const [rec] = ingest(dir, { [REF]: { finalState: 'blocked-hitl', bounces: 2, hitl: { pointB: true }, findings: ['f'], tokens: null } }).records;
   assert.deepEqual([rec.finalState, rec.bounces, rec.hitl.pointB, rec.findings, rec.tokens], ['blocked-hitl', 2, true, ['f'], null]);
+}));
+
+test('ingest-wave: finalState merged on a PR-less row is accepted alongside the PR --outcomes supplies', () => withStateDir({
+  reports: { 'w1.json': stateReport([prLess]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
+  const [rec] = ingest(dir, { [REF]: { finalState: 'merged', pr: 42 } }).records;
+  assert.deepEqual([rec.finalState, rec.pr], ['merged', 42]);
 }));
 
 for (const [name, report] of [
