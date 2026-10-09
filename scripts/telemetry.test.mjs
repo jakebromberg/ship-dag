@@ -720,16 +720,29 @@ test('ingest-wave: attaches cost.implement summed over a ref\'s sessions, only t
   assert.deepEqual(records.map((r) => r.cost), [{ implement: costOf(['a', 'b'], 1.5) }]);
 }));
 
-test('ingest-wave: a session an earlier record of the run family lists is not counted again', () => withStateDir({
+test('ingest-wave: a session an earlier record of the run family lists is not counted again; another ref\'s or run family\'s record does not exclude it', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
   files: logOf(REF, sess('a', 1), sess('b', 0.5)),
 }, (dir) => {
   const path = tmpLog();
   try {
-    const prior = { runId: `${RUN}-b`, repo: 'WXYC/dj-site', issue: 1, complexity: 'normal', triageStatus: 'clear', path: 'engine', finalState: 'error', implStatus: 'error', cost: { implement: costOf(['a'], 1) } };
-    appendRecord(prior, { path });
+    const prior = (over, ids) => appendRecord({ runId: `${RUN}-b`, repo: 'WXYC/dj-site', issue: 1, complexity: 'normal', triageStatus: 'clear', path: 'engine', finalState: 'error', implStatus: 'error', cost: { implement: costOf(ids, 1) }, ...over }, { path });
+    prior({}, ['a']);
+    prior({ issue: 2 }, ['b']); // same run family and repo, another issue
+    prior({ repo: 'WXYC/Backend-Service' }, ['b']); // same run family and issue number, another repo
+    prior({ runId: 'sd-20261001-090000' }, ['b']); // same ref, another run family
+    prior({ cost: null }, []); // a null cost reads as none
     assert.deepEqual(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).records[0].cost, { implement: costOf(['b'], 0.5) });
   } finally { rmSync(path, { force: true }); }
+}));
+
+test('ingest-wave: what implementCost warns about reaches ingestWave\'s warn', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+  files: logOf(REF, JSON.stringify({ type: 'result', total_cost_usd: 1 })),
+}, (dir) => {
+  const warned = [];
+  assert.equal(ingest(dir, {}, { warn: (m) => warned.push(m) }).records[0].cost, undefined);
+  assert.ok(warned.some((m) => /no session_id/.test(m)), warned.join('\n'));
 }));
 
 test('ingest-wave: a row with no log or no session result gets no cost', () => withStateDir({
@@ -739,9 +752,10 @@ test('ingest-wave: a row with no log or no session result gets no cost', () => w
   assert.deepEqual(ingest(dir).records.map((r) => r.cost), [undefined, undefined]);
 }));
 
-test('normalizeRecord: validates cost.implement; a record without cost stays valid', () => {
+test('normalizeRecord: validates cost.implement; a record without cost, or with cost null, stays valid', () => {
   assert.deepEqual(normalizeRecord(base({ cost: { implement: costOf(['a'], 1) } }), FIXED).cost, { implement: costOf(['a'], 1) });
   assert.equal(normalizeRecord(base(), FIXED).cost, undefined);
+  assert.equal(normalizeRecord(base({ cost: null }), FIXED).cost, null);
   for (const cost of [5, [], { implement: 3 }, { implement: { ...costOf(['a'], 1), costUsd: 'x' } }, { implement: { ...costOf(['a'], 1), sessions: 1.5 } }, { implement: { ...costOf(['a'], 1), sessionIds: [1] } }, { implement: { ...costOf(['a'], 1), input: -1 } }]) {
     assert.throws(() => normalizeRecord(base({ cost }), FIXED), /bad cost/, JSON.stringify(cost));
   }

@@ -28,7 +28,7 @@
 import { isRateLimitDeathLine } from './rate-limit.mjs';
 
 /** JSON key present on every stream-json result record — a cheap prefilter that skips `JSON.parse` on the ~99% of transcript lines that cannot be one. */
-const RESULT_TYPE_KEY = '"type":"result"';
+export const RESULT_TYPE_KEY = '"type":"result"';
 
 /** Cap on the terminal `result` string. It is an assistant turn — unbounded in principle — and a diagnosis is read straight into an agent context. */
 export const MAX_REASON_CHARS = 500;

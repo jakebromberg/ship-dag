@@ -16,8 +16,10 @@
 //   retro: { kind, ts, runId, wave, mergedPrs[], proposedRefactors, approvedRefactors,
 //            declinedRefactors, proposedAdjustments, approvedAdjustments,
 //            declinedAdjustments, filed[], adjusted[], declinedTitles[], tokens }
-// cost is optional: { implement: {costUsd, input, output, cacheRead, cacheCreate, sessions, sessionIds[]} },
-// the sum over the session results in the ref's transcript that no earlier record of the run family lists.
+// cost is optional (null reads as absent): { implement: {costUsd, input, output, cacheRead, cacheCreate,
+// sessions, sessionIds[]} }, summed from the ref's transcript over the sessions that wrote a result
+// record and that no earlier record of the ref's run family (sameRun) lists. A session killed before
+// writing one (a stall, a hard death) is not counted, so the figure can fall short of the real spend.
 // implStatus / ciStatus / reviewVerdict are nullable: an issue that stops at
 // HITL point A (needs-decision) never reaches implement, so it logs those null.
 // failureReason is also nullable — set to "rate-limited" alongside
@@ -45,7 +47,7 @@ import { parseArgs } from 'node:util';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { mintRunId, sameRun } from './lib/run-id.mjs';
-import { implementCost } from './lib/transcript-cost.mjs';
+import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords } from './lib/wave-records.mjs';
 import { entryFromConfig, findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
@@ -132,12 +134,14 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   };
 }
 
-const isCount = (v) => Number.isInteger(v) && v >= 0;
-const COST_FIELDS = { costUsd: (v) => Number.isFinite(v) && v >= 0, input: isCount, output: isCount, cacheRead: isCount, cacheCreate: isCount, sessions: isCount };
+const COST_FIELDS = { costUsd: isUsd, input: isCount, output: isCount, cacheRead: isCount, cacheCreate: isCount, sessions: isCount };
 
-/** Throw on a `cost` that is not `{implement?: {costUsd, input, output, cacheRead, cacheCreate, sessions, sessionIds[]}}`. */
+/**
+ * Throw on a `cost` that is not `{implement?: {costUsd, input, output, cacheRead, cacheCreate, sessions, sessionIds[]}}`.
+ * A null `cost` reads as absent, like `tokens: null`.
+ */
 function validateCost(cost) {
-  if (cost === undefined) return;
+  if (cost == null) return;
   const impl = cost?.implement;
   const ok = cost && typeof cost === 'object' && !Array.isArray(cost)
     && (impl === undefined || (impl && typeof impl === 'object'
@@ -352,9 +356,11 @@ function readJsonDir(dir) {
 }
 
 /**
- * Record a wave from its engine artifacts: derive its issue records (`deriveWaveRecords`) and append
- * the ones the log lacks. `reportPath` is `<stateDir>/state/reports/<id>.json`; everything else is
- * read from beside it. Appends are best-effort: a failed one is warned about and the rest continue.
+ * Record a wave from its engine artifacts: derive its issue records (`deriveWaveRecords`), attach to
+ * each the `cost.implement` read from its ref's transcript (`implementCost`, over the sessions no
+ * earlier record of the run family lists), and append the ones the log lacks. `reportPath` is
+ * `<stateDir>/state/reports/<id>.json`; everything else is read from beside it. Appends are
+ * best-effort: a failed one is warned about and the rest continue.
  * @param {string} reportPath
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl:{pointB}, finalState, bounces, findings, tokens}`
  * @param {{path?: string, warn?: (m: string) => void}} [opts]
@@ -439,7 +445,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   // the run family lists is not counted again.
   for (const rec of records) {
     const counted = existing.filter((e) => e.repo === rec.repo && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
-    const implement = implementCost(logPathForRef(stateDir, `${rec.repo}#${rec.issue}`), counted);
+    const implement = implementCost(logPathForRef(stateDir, `${rec.repo}#${rec.issue}`), counted, warn);
     if (implement) rec.cost = { implement };
   }
   let appended = 0;
