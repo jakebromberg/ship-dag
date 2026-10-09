@@ -854,6 +854,16 @@ test('ingest-wave: a skipped row never reached implement, so its record takes no
   assert.deepEqual(records.map((r) => [r.implStatus, r.cost]), [[null, undefined]]);
 }));
 
+test('ingest-wave: a point-E row derives two records, and its sessions are counted once between them', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry()],
+  files: logOf(REF, sess('a', 1), sess('b', 0.5)),
+}, (dir) => {
+  digestFile(dir, REF, { failureReason: 'rate-limited' });
+  const { records } = ingest(dir, { [REF]: { pr: 12, finalState: 'merged' } });
+  assert.equal(records.length, 2);
+  assert.deepEqual(records.flatMap((r) => r.cost?.implement?.sessionIds ?? []), ['a', 'b']);
+}));
+
 test('ingest-wave: a row with no log or no session result gets no cost', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) }, sidecar: [sidecarEntry([REF, REF2])],
   files: logOf(REF2, '{"type":"assistant"}'),
