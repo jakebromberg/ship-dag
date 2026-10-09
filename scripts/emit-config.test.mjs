@@ -309,8 +309,8 @@ test('the effort follows the tuning argument, not a hardcoded map', () => {
 for (const complexity of ['__proto__', 'constructor', 'toString', 'Complex', 'normal.length', ['normal']]) {
   test(`out-of-enum complexity ${complexity} is reported and refused`, () => {
     const s = spec({ issues: [{ number: 1, repo: 'WXYC/library-metadata-lookup', complexity, digest: 'x' }] });
-    assert.deepEqual(unknownComplexities(s), [{ number: 1, complexity }]);
-    assert.throws(() => buildConfig(s), /unknown complexity.*#1/);
+    assert.deepEqual(unknownComplexities(s), [{ number: 1, ref: 'WXYC/library-metadata-lookup#1', complexity }]);
+    assert.throws(() => buildConfig(s), /unknown complexity.*WXYC\/library-metadata-lookup#1/);
   });
 }
 
@@ -322,20 +322,21 @@ test('in-enum and absent complexities are not reported', () => {
 // Every invalid-spec refusal, as one table. To add a rule (e.g. W3's unknown reach), add a row.
 // `mustName` are the issue or value each refusal must name on stderr.
 const REFUSALS = [
-  ['an out-of-enum complexity', { issues: [{ number: 7, complexity: 'Complex' }] }, [/unknown complexity.*#7 \(Complex\)/]],
-  ['an out-of-enum complexity even when the issue sets its own effort', { issues: [{ number: 7, complexity: 'Complex', effort: 'high' }] }, [/unknown complexity.*#7 \(Complex\)/]],
+  ['an out-of-enum complexity', { issues: [{ number: 7, complexity: 'Complex' }] }, [/unknown complexity.*WXYC\/library-metadata-lookup#7 \(Complex\)/]],
+  ['an out-of-enum complexity even when the issue sets its own effort', { issues: [{ number: 7, complexity: 'Complex', effort: 'high' }] }, [/unknown complexity.*WXYC\/library-metadata-lookup#7 \(Complex\)/]],
   ['an unknown blockOn category', { blockOn: 'corectness' }, [/corectness/]],
   ['a blockOn of the wrong type', { blockOn: 5 }, [/blockOn.*5/]],
-  ['an unknown reach', { issues: [{ number: 7, reach: 'galaxy' }] }, [/unknown reach.*#7 \("galaxy"\)/]],
-  ['an array reach, printed as its JSON', { issues: [{ number: 7, reach: ['repo'] }] }, [/unknown reach.*#7 \(\["repo"\]\)/]],
-  ['an inherited-key reach', { issues: [{ number: 7, reach: 'constructor' }] }, [/unknown reach.*#7 \("constructor"\)/]],
-  ['decisions as a string', { issues: [{ number: 7, decisions: 'use JSONL' }] }, [/decisions.*#7/]],
-  ['decisions with a non-string element', { issues: [{ number: 7, decisions: ['ok', 3] }] }, [/decisions.*#7/]],
-  ['an unknown complexity and an invalid blockOn together', { issues: [{ number: 7, complexity: 'Complex' }], blockOn: 'corectness' }, [/#7 \(Complex\)/, /corectness/]],
+  ['an unknown reach', { issues: [{ number: 7, reach: 'galaxy' }] }, [/unknown reach.*WXYC\/library-metadata-lookup#7 \("galaxy"\)/]],
+  ['an array reach, printed as its JSON', { issues: [{ number: 7, reach: ['repo'] }] }, [/unknown reach.*WXYC\/library-metadata-lookup#7 \(\["repo"\]\)/]],
+  ['an inherited-key reach', { issues: [{ number: 7, reach: 'constructor' }] }, [/unknown reach.*WXYC\/library-metadata-lookup#7 \("constructor"\)/]],
+  ['decisions as a string', { issues: [{ number: 7, decisions: 'use JSONL' }] }, [/decisions.*WXYC\/library-metadata-lookup#7/]],
+  ['decisions with a non-string element', { issues: [{ number: 7, decisions: ['ok', 3] }] }, [/decisions.*WXYC\/library-metadata-lookup#7/]],
+  ['an unknown complexity and an invalid blockOn together', { issues: [{ number: 7, complexity: 'Complex' }], blockOn: 'corectness' }, [/WXYC\/library-metadata-lookup#7 \(Complex\)/, /corectness/]],
+  ['an invalid issue sharing its number with a valid one in another repo', { issues: [{ number: 7, repo: 'WXYC/wxyc-ios-64', complexity: 'Complex' }, { number: 7, repo: 'WXYC/library-metadata-lookup', complexity: 'normal' }] }, [/unknown complexity on WXYC\/wxyc-ios-64#7 \(Complex\); /]],
 ];
 
 for (const [name, overrides, mustName] of REFUSALS) {
-  const issues = overrides.issues?.map((i) => ({ ...i, repo: 'WXYC/library-metadata-lookup', digest: 'x' }));
+  const issues = overrides.issues?.map((i) => ({ repo: 'WXYC/library-metadata-lookup', digest: 'x', ...i }));
   const refused = spec({ ...overrides, ...(issues && { issues }) });
 
   test(`validateSpec and buildConfig refuse ${name}`, () => {
