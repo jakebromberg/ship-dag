@@ -332,7 +332,11 @@ const REFUSALS = [
   ['decisions as a string', { issues: [{ number: 7, decisions: 'use JSONL' }] }, [/decisions.*WXYC\/library-metadata-lookup#7/]],
   ['decisions with a non-string element', { issues: [{ number: 7, decisions: ['ok', 3] }] }, [/decisions.*WXYC\/library-metadata-lookup#7/]],
   ['an unknown complexity and an invalid blockOn together', { issues: [{ number: 7, complexity: 'Complex' }], blockOn: 'corectness' }, [/WXYC\/library-metadata-lookup#7 \(Complex\)/, /corectness/]],
-  ['an invalid issue sharing its number with a valid one in another repo', { issues: [{ number: 7, repo: 'WXYC/wxyc-ios-64', complexity: 'Complex' }, { number: 7, repo: 'WXYC/library-metadata-lookup', complexity: 'normal' }] }, [/unknown complexity on WXYC\/wxyc-ios-64#7 \(Complex\); /]],
+  // The valid #7 comes first and lives in the spec's own repo, so a lookup by number
+  // or a hardcoded spec.repo would name the wrong issue and turn these rows red.
+  ['an invalid complexity sharing its number with a valid issue in another repo', { issues: [{ number: 7, complexity: 'normal' }, { number: 7, repo: 'WXYC/wxyc-ios-64', complexity: 'Complex' }] }, [/unknown complexity on WXYC\/wxyc-ios-64#7 \(Complex\); /]],
+  ['an invalid reach sharing its number with a valid issue in another repo', { issues: [{ number: 7, reach: 'repo' }, { number: 7, repo: 'WXYC/wxyc-ios-64', reach: 'galaxy' }] }, [/unknown reach on WXYC\/wxyc-ios-64#7 \("galaxy"\); /]],
+  ['invalid decisions sharing a number with a valid issue in another repo', { issues: [{ number: 7, decisions: [] }, { number: 7, repo: 'WXYC/wxyc-ios-64', decisions: 'x' }] }, [/decisions must be an array of strings on WXYC\/wxyc-ios-64#7\./]],
 ];
 
 for (const [name, overrides, mustName] of REFUSALS) {
