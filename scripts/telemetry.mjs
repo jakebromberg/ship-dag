@@ -138,16 +138,19 @@ const COST_FIELDS = { costUsd: isUsd, input: isCount, output: isCount, cacheRead
 
 /**
  * Throw on a `cost` that is not `{implement?: {costUsd, input, output, cacheRead, cacheCreate, sessions, sessionIds[]}}`.
- * A null `cost` reads as absent, like `tokens: null`.
+ * A null `cost` reads as absent, like `tokens: null`. `sessionIds` lists each counted session once, so
+ * a later ingest can skip them: it holds `sessions` distinct strings.
  */
 function validateCost(cost) {
   if (cost == null) return;
-  const impl = cost?.implement;
-  const ok = cost && typeof cost === 'object' && !Array.isArray(cost)
-    && (impl === undefined || (impl && typeof impl === 'object'
-      && Object.entries(COST_FIELDS).every(([k, valid]) => valid(impl[k]))
-      && Array.isArray(impl.sessionIds) && impl.sessionIds.every((id) => typeof id === 'string')));
-  if (!ok) throw new Error(`bad cost: ${JSON.stringify(cost)}`);
+  const bad = () => new Error(`bad cost: ${JSON.stringify(cost)}`);
+  if (typeof cost !== 'object' || Array.isArray(cost)) throw bad();
+  const impl = cost.implement;
+  if (impl === undefined) return;
+  const ids = impl?.sessionIds;
+  const ok = impl && typeof impl === 'object' && Object.entries(COST_FIELDS).every(([k, valid]) => valid(impl[k]))
+    && Array.isArray(ids) && ids.every((id) => typeof id === 'string') && new Set(ids).size === impl.sessions && ids.length === impl.sessions;
+  if (!ok) throw bad();
 }
 
 /**
@@ -445,7 +448,9 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   // the run family lists is not counted again.
   for (const rec of records) {
     const counted = existing.filter((e) => e.repo === rec.repo && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
-    const implement = implementCost(logPathForRef(stateDir, `${rec.repo}#${rec.issue}`), counted, warn);
+    // The engine named the log from the row's ref as written, so find that rather than rebuild it.
+    const ref = refs.find((r) => r.startsWith(`${rec.repo}#`) && Number(r.slice(rec.repo.length + 1)) === rec.issue);
+    const implement = implementCost(logPathForRef(stateDir, ref), counted, warn);
     if (implement) rec.cost = { implement };
   }
   let appended = 0;

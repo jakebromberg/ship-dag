@@ -45,8 +45,9 @@ function eachLine(path, onLine) {
  * Sum the implement cost over the sessions in the transcript at `path` whose `session_id` is not in
  * `counted` (the ids an earlier record for the ref's run family already lists), counting each session
  * once: its `costUsd` is its last result's `total_cost_usd` (by `result_index`, else file order) and
- * its tokens are its results' `usage` summed. A non-number value is warned about and not summed, and
- * so is a result with no `session_id`, which could not be counted once.
+ * its tokens are its results' `usage` summed (an absent `usage` field counts as 0). A non-number value
+ * or a missing `total_cost_usd` is warned about and not summed, and so is a result with no
+ * `session_id`, which could not be counted once.
  * @param {string} path
  * @param {string[]} [counted]
  * @param {(m: string) => void} [warn]
@@ -55,10 +56,10 @@ function eachLine(path, onLine) {
  */
 export function implementCost(path, counted = [], warn = () => {}) {
   const sessions = new Map();
-  /** `v` when `ok`; undefined when absent, or (warned) when it is not a valid `field`. */
-  const valid = (v, ok, field) => {
-    if (v === undefined || ok(v)) return v;
-    warn(`${path}: a session result's ${field} ${JSON.stringify(v)} is not a valid number; not summed`);
+  /** `v` when `ok`; otherwise undefined, warned unless `v` is an absent `optional` field. */
+  const valid = (v, ok, field, optional) => {
+    if (ok(v) || (optional && v === undefined)) return v;
+    warn(`${path}: a session result has ${v === undefined ? `no ${field}` : `${field} ${JSON.stringify(v)}, not a valid number`}; not summed`);
   };
   const add = (rec) => {
     const id = rec.session_id;
@@ -69,7 +70,7 @@ export function implementCost(path, counted = [], warn = () => {}) {
     if (counted.includes(id)) return;
     if (!sessions.has(id)) sessions.set(id, { at: -Infinity, costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0 });
     const s = sessions.get(id);
-    for (const [k, field] of Object.entries(USAGE)) s[k] += valid(rec.usage?.[field], isCount, `usage.${field}`) ?? 0;
+    for (const [k, field] of Object.entries(USAGE)) s[k] += valid(rec.usage?.[field], isCount, `usage.${field}`, true) ?? 0;
     const usd = valid(rec.total_cost_usd, isUsd, 'total_cost_usd');
     const at = Number.isInteger(rec.result_index) ? rec.result_index : s.at;
     if (usd !== undefined && at >= s.at) Object.assign(s, { costUsd: usd, at });

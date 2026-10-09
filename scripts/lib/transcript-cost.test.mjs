@@ -47,6 +47,7 @@ const cases = [
     [/total_cost_usd "0\.5"/, /usage\.input_tokens "7"/]],
   ['a bad later running total keeps the last good one', [result('a', 1, { result_index: 0 }), result('a', null, { result_index: 1 })], [],
     costOf(['a'], 1, 2), [/total_cost_usd null/]],
+  ['a result with no total_cost_usd is warned about, not taken for $0 silently', [result('a', undefined)], [], costOf(['a'], 0), [/no total_cost_usd/]],
   ['a result with no session_id is warned about and not summed', [result(undefined, 1), result('b', 0.5)], [], costOf(['b'], 0.5), [/no session_id/]],
 ];
 for (const [name, lines, listed, want, warnings = []] of cases) {
