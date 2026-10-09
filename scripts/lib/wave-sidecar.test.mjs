@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -198,15 +198,38 @@ test('the CLI writes the sidecar at dirname(configDir) and prints the same confi
   assert.equal(blocked.stdout.replaceAll(bad, dir), ok.stdout);
 });
 
+const cfg = (refs, over = {}) => JSON.stringify({ name: 'ship-dag-run1', issues: refs.map((r) => ({ repo: r.split('#')[0], number: Number(r.split('#')[1]) })), ...over });
+
 test('findWaveConfig picks the config whose issue refs equal the set, skipping unreadable files', () => {
   const dir = tmp();
-  const cfg = (...refs) => JSON.stringify({ name: 'ship-dag-run1', issues: refs.map((r) => ({ repo: r.split('#')[0], number: Number(r.split('#')[1]) })) });
-  writeFileSync(join(dir, 'config-a.json'), cfg('a/b#1'));
-  writeFileSync(join(dir, 'config-b.json'), cfg('a/b#1', 'c/d#2'));
-  writeFileSync(join(dir, 'config-torn.json'), '{');
-  writeFileSync(join(dir, 'notes.json'), cfg('a/b#1', 'c/d#3'));
-  assert.equal(findWaveConfig(dir, ['c/d#2', 'a/b#1']).issues.length, 2);
-  assert.equal(findWaveConfig(dir, ['a/b#1']).issues.length, 1);
-  assert.equal(findWaveConfig(dir, ['c/d#3', 'a/b#1']), null, 'only config*.json files are candidates');
-  assert.equal(findWaveConfig(join(dir, 'missing'), ['a/b#1']), null);
+  try {
+    writeFileSync(join(dir, 'config-a.json'), cfg(['a/b#1']));
+    writeFileSync(join(dir, 'config-b.json'), cfg(['a/b#1', 'c/d#2']));
+    writeFileSync(join(dir, 'config-torn.json'), '{');
+    writeFileSync(join(dir, 'notes.json'), cfg(['a/b#1', 'c/d#3']));
+    assert.equal(findWaveConfig(dir, ['c/d#2', 'a/b#1']).issues.length, 2);
+    assert.equal(findWaveConfig(dir, ['a/b#1']).issues.length, 1);
+    assert.equal(findWaveConfig(dir, ['c/d#3', 'a/b#1']), null, 'only config*.json files are candidates');
+    assert.equal(findWaveConfig(join(dir, 'missing'), ['a/b#1']), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
+
+// Two configs for one ref set (a re-emitted wave): the newer file wins, whatever the names sort as.
+for (const [newer, want] of [['config-wave1b.json', 'opus'], ['config.json', 'sonnet']]) {
+  test(`findWaveConfig takes the newest of two configs sharing a ref set by mtime (${newer} newer)`, () => {
+    const dir = tmp();
+    try {
+      writeFileSync(join(dir, 'config.json'), cfg(['a/b#1'], { defaultModel: 'sonnet' }));
+      writeFileSync(join(dir, 'config-wave1b.json'), cfg(['a/b#1'], { defaultModel: 'opus' }));
+      for (const name of ['config.json', 'config-wave1b.json']) {
+        const at = name === newer ? 2_000_000_000 : 1_000_000_000;
+        utimesSync(join(dir, name), at, at);
+      }
+      assert.equal(findWaveConfig(dir, ['a/b#1']).defaultModel, want);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
