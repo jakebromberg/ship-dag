@@ -51,6 +51,8 @@ The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [cl
 | `scripts/telemetry.mjs` | Per-issue + per-retro-pass run records (model-assignment efficacy). |
 | `scripts/lib/wave-sidecar.mjs` | Append-only `ship-dag-wave.jsonl` sidecar (one line per wave): `waveSidecar` (built from the config `buildConfig` returned), `appendWave`, `waveContextMatches`, `findWaveContext`. |
 | `scripts/lib/run-id.mjs` | Run-id helpers: `mintRunId`, `canonicalRunId`, `runIdFromConfigName`, and `sameRun` (folds wave/retry suffixes, prefix, case). |
+| `scripts/lib/review-rounds.mjs` | The one review-round matcher: `reviewRoundFiles` (a ref's round files across `reviews/` dirs, legacy `-rN`/`.iterN`/`.passN*` tags included, oldest first by mtime) and `isUnreadableEmpty` (the empty-beside-`.raw` signature). |
+| `scripts/lib/wave-records.mjs` | `deriveWaveRecords`: a wave's telemetry issue records from its report, sidecar entry, failure digests, review rounds and `--outcomes` (worst verdict, bounces, routing, dedupe by `sameRun`). |
 | `references/` | CI profiles, model/effort matrix, escalation policy, review + retrospective + eval schemas. |
 | `eval/` | Offline eval harness for the model-assignment study. |
 | `docs/` | [Field report](./docs/field-report.md) from the first production run, plus a runnable anonymized [telemetry sample](./docs/examples/run-sample.jsonl). |
