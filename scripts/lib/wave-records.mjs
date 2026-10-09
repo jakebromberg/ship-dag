@@ -26,6 +26,10 @@ const TERMINAL = new Set(['succeeded', 'failed', 'blocked', 'skipped']);
 const NOT_YET = new Set(['pending', 'running', 'interrupted']);
 // What routeFailure counts as a PR, so the half-supplied check and the record agree with it.
 const isPr = (n) => typeof n === 'number' && n > 0;
+// A succeeded row is supplied by a PR, in the report or --outcomes, or by an outcome
+// saying it never merged: point B left a find-pr row without one.
+const NOT_MERGED = new Set(['blocked-hitl', 'deferred', 'error']);
+const supplied = (row, outcome) => isPr(row.prNumber) || isPr(outcome?.pr) || NOT_MERGED.has(outcome?.finalState);
 
 /** One round's verdict: unparseable, or empty beside its `.raw` (`isUnreadableEmpty`), is `blocking`, and is warned about. */
 function roundVerdict({ path, review }, blockOn, warn) {
@@ -54,7 +58,7 @@ const sameRecord = (a, b) => sameRun(a.runId, b.runId) && a.repo === b.repo && a
  * @returns {{records: object[]}}
  * @throws when a terminal row exists but no run id can be determined (no `entry.runId`, no
  *   `report.configName`), or a `succeeded` row has no PR in the report or the outcomes
- *   and no outcome `finalState` other than `merged`
+ *   and no outcome `finalState` of `blocked-hitl`, `deferred` or `error`
  */
 export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing = [], warn = (m) => console.error(m), tuningVersion } = {}) {
   const all = Array.isArray(report?.issues) ? report.issues : [];
@@ -66,8 +70,8 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
   const blockOn = entry?.blockOn ?? DEFAULT_BLOCK_ON;
   const version = entry?.tuningVersion ?? tuningVersion ?? loadTuning().version;
 
-  const halfSupplied = rows.filter((r) => r.status === 'succeeded' && !isPr(r.prNumber) && !isPr(outcomes?.[r.ref]?.pr) && !(outcomes?.[r.ref]?.finalState && outcomes[r.ref].finalState !== 'merged')).map((r) => r.ref);
-  if (halfSupplied.length) throw new Error(`half-supplied wave: succeeded with no PR in the report or --outcomes: ${halfSupplied.join(', ')}`);
+  const halfSupplied = rows.filter((r) => r.status === 'succeeded' && !supplied(r, outcomes?.[r.ref])).map((r) => r.ref);
+  if (halfSupplied.length) throw new Error(`half-supplied wave: succeeded with no PR in the report or --outcomes, and no --outcomes finalState of blocked-hitl, deferred or error: ${halfSupplied.join(', ')}`);
 
   const seen = [...existing];
   const records = [];
@@ -78,9 +82,10 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     const planned = (entry?.issues ?? []).find((i) => i.ref === row.ref);
     const pr = isPr(row.prNumber) ? row.prNumber : isPr(outcome.pr) ? outcome.pr : null;
     // Digests are written for non-succeeded rows and never removed, so a succeeded
-    // row's digest is a stale one from an earlier wave.
+    // row's digest is a stale one from an earlier wave; and a session that succeeded
+    // did not die on quota, whatever the row says.
     const digest = row.status === 'succeeded' ? null : digests?.[row.ref];
-    const rateLimited = (digest?.failureReason ?? row.failureReason) === 'rate-limited';
+    const rateLimited = row.status !== 'succeeded' && (digest?.failureReason ?? row.failureReason) === 'rate-limited';
     const skipped = row.status === 'skipped';
     // `skipped` never reached implement. `blocked` is not an engine status, but
     // SKILL.md step 5 and the failure-routing tests hand it in as one, so it stays.
