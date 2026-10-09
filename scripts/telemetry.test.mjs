@@ -705,3 +705,44 @@ test('ingest-wave CLI: usage, bad outcomes, an unreadable log and a malformed re
   assert.match(ok.stderr, /1 appended/);
   assert.deepEqual(readRecords(log).map((r) => r.finalState), ['blocked-hitl']);
 }));
+
+// --- cost.implement ---
+const sess = (id, cost) => JSON.stringify({ type: 'result', session_id: id, total_cost_usd: cost, usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 } });
+const logOf = (ref, ...lines) => ({ [`state/logs/issue-${artifactStem(ref)}.log`]: lines.join('\n') });
+const costOf = (ids, cost) => ({ costUsd: cost, input: ids.length, output: 2 * ids.length, cacheRead: 3 * ids.length, cacheCreate: 4 * ids.length, sessions: ids.length, sessionIds: ids });
+
+test('ingest-wave: attaches cost.implement summed over a ref\'s sessions, only to rows it records', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { status: 'running', prUrl: null, prNumber: null })]) },
+  sidecar: [sidecarEntry([REF, REF2])],
+  files: { ...logOf(REF, sess('a', 1), sess('b', 0.5)), ...logOf(REF2, sess('c', 9)) },
+}, (dir) => {
+  const { records } = ingest(dir);
+  assert.deepEqual(records.map((r) => r.cost), [{ implement: costOf(['a', 'b'], 1.5) }]);
+}));
+
+test('ingest-wave: a session an earlier record of the run family lists is not counted again', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+  files: logOf(REF, sess('a', 1), sess('b', 0.5)),
+}, (dir) => {
+  const path = tmpLog();
+  try {
+    const prior = { runId: `${RUN}-b`, repo: 'WXYC/dj-site', issue: 1, complexity: 'normal', triageStatus: 'clear', path: 'engine', finalState: 'error', implStatus: 'error', cost: { implement: costOf(['a'], 1) } };
+    appendRecord(prior, { path });
+    assert.deepEqual(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).records[0].cost, { implement: costOf(['b'], 0.5) });
+  } finally { rmSync(path, { force: true }); }
+}));
+
+test('ingest-wave: a row with no log or no session result gets no cost', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) }, sidecar: [sidecarEntry([REF, REF2])],
+  files: logOf(REF2, '{"type":"assistant"}'),
+}, (dir) => {
+  assert.deepEqual(ingest(dir).records.map((r) => r.cost), [undefined, undefined]);
+}));
+
+test('normalizeRecord: validates cost.implement; a record without cost stays valid', () => {
+  assert.deepEqual(normalizeRecord(base({ cost: { implement: costOf(['a'], 1) } }), FIXED).cost, { implement: costOf(['a'], 1) });
+  assert.equal(normalizeRecord(base(), FIXED).cost, undefined);
+  for (const cost of [5, [], { implement: 3 }, { implement: { ...costOf(['a'], 1), costUsd: 'x' } }, { implement: { ...costOf(['a'], 1), sessions: 1.5 } }, { implement: { ...costOf(['a'], 1), sessionIds: [1] } }, { implement: { ...costOf(['a'], 1), input: -1 } }]) {
+    assert.throws(() => normalizeRecord(base({ cost }), FIXED), /bad cost/, JSON.stringify(cost));
+  }
+});

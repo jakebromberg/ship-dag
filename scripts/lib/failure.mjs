@@ -66,13 +66,18 @@ export function parseTerminalResultLine(line) {
   } catch {
     return null;
   }
-  if (!obj || obj.type !== 'result' || obj.hook_event_name) return null;
+  if (!isSessionResult(obj)) return null;
   return {
     subtype: obj.subtype ?? null,
     isError: obj.is_error === true,
     numTurns: typeof obj.num_turns === 'number' ? obj.num_turns : null,
     reason: typeof obj.result === 'string' ? obj.result : null,
   };
+}
+
+/** Whether a parsed transcript record is a session's `result` rather than a hook's (tagged `hook_event_name`). */
+export function isSessionResult(record) {
+  return !!record && record.type === 'result' && !record.hook_event_name;
 }
 
 /**

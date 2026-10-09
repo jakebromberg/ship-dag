@@ -12,10 +12,12 @@
 // logs stay valid) or "retro" (one run-scoped record per step-6.5 pass):
 //   issue: { kind, ts, runId, repo, issue, complexity, triageStatus, assignment, path,
 //            implStatus, ciStatus, reviewVerdict, failureReason, findings[], bounces,
-//            hitl:{pointA,pointB}, finalState, pr, tokens }
+//            hitl:{pointA,pointB}, finalState, pr, tokens, cost? }
 //   retro: { kind, ts, runId, wave, mergedPrs[], proposedRefactors, approvedRefactors,
 //            declinedRefactors, proposedAdjustments, approvedAdjustments,
 //            declinedAdjustments, filed[], adjusted[], declinedTitles[], tokens }
+// cost is optional: { implement: {costUsd, input, output, cacheRead, cacheCreate, sessions, sessionIds[]} },
+// the sum over the session results in the ref's transcript that no earlier record of the run family lists.
 // implStatus / ciStatus / reviewVerdict are nullable: an issue that stops at
 // HITL point A (needs-decision) never reaches implement, so it logs those null.
 // failureReason is also nullable — set to "rate-limited" alongside
@@ -42,11 +44,12 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { mintRunId } from './lib/run-id.mjs';
+import { mintRunId, sameRun } from './lib/run-id.mjs';
+import { implementCost } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords } from './lib/wave-records.mjs';
 import { entryFromConfig, findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
-import { digestPathForRef } from './diagnose-failure.mjs';
+import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
 
 const COMPLEXITIES = new Set(['mechanical', 'normal', 'complex']);
 const PATHS = new Set(['engine', 'inline', 'workflow']);
@@ -113,6 +116,7 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   if (!CI_STATUSES.has(ciStatus)) throw new Error(`bad ciStatus: ${rec.ciStatus}`);
   const failureReason = rec.failureReason ?? null;
   if (!FAILURE_REASONS.has(failureReason)) throw new Error(`bad failureReason: ${rec.failureReason}`);
+  validateCost(rec.cost);
   return {
     ...rec,
     kind: 'issue',
@@ -126,6 +130,20 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
     hitl: { pointA: !!(rec.hitl && rec.hitl.pointA), pointB: !!(rec.hitl && rec.hitl.pointB) },
     tokens: rec.tokens ?? null,
   };
+}
+
+const isCount = (v) => Number.isInteger(v) && v >= 0;
+const COST_FIELDS = { costUsd: (v) => Number.isFinite(v) && v >= 0, input: isCount, output: isCount, cacheRead: isCount, cacheCreate: isCount, sessions: isCount };
+
+/** Throw on a `cost` that is not `{implement?: {costUsd, input, output, cacheRead, cacheCreate, sessions, sessionIds[]}}`. */
+function validateCost(cost) {
+  if (cost === undefined) return;
+  const impl = cost?.implement;
+  const ok = cost && typeof cost === 'object' && !Array.isArray(cost)
+    && (impl === undefined || (impl && typeof impl === 'object'
+      && Object.entries(COST_FIELDS).every(([k, valid]) => valid(impl[k]))
+      && Array.isArray(impl.sessionIds) && impl.sessionIds.every((id) => typeof id === 'string')));
+  if (!ok) throw new Error(`bad cost: ${JSON.stringify(cost)}`);
 }
 
 /**
@@ -416,6 +434,13 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     }
     if (/^no run id/.test(err.message)) throw new IngestError(3, `${file}: ${err.message}`);
     throw err;
+  }
+  // A row with no record leaves its sessions for the ref's next one; a session an earlier record of
+  // the run family lists is not counted again.
+  for (const rec of records) {
+    const counted = existing.filter((e) => e.repo === rec.repo && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
+    const implement = implementCost(logPathForRef(stateDir, `${rec.repo}#${rec.issue}`), counted);
+    if (implement) rec.cost = { implement };
   }
   let appended = 0;
   for (const rec of records) {
