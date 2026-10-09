@@ -46,10 +46,11 @@ export function cites(body, repo, n, home = repo) {
 }
 
 /**
- * Run `fn`, retrying a GitHub rate-limit error with doubling waits (2s, 4s, ...). After `retries`
- * retries it throws, naming `repo`; any other error is thrown as is.
+ * Run `fn`, retrying a GitHub rate-limit error with doubling waits (2s, 4s, ... 32s: about the minute
+ * GitHub's search limit spans). After `retries` retries it throws, naming `repo`; any other error is
+ * thrown as is.
  */
-export async function withBackoff(fn, { repo, retries = 3, baseMs = 2000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+export async function withBackoff(fn, { repo, retries = 5, baseMs = 2000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   for (let attempt = 0; ; attempt += 1) {
     try { return await fn(); } catch (err) {
       if (!RATE_LIMITED.test(err.message)) throw err;
@@ -68,12 +69,20 @@ async function ghJson(args, what, { gh, repo, sleep, warn }) {
   }
 }
 
-/** The PR numbers `cand` says it reverts: `Reverts [owner/repo]#N` lines, and each `This reverts commit <sha>`, resolved through GitHub. */
-async function revertedPrs(cand, repo, ctx) {
+/**
+ * The PR numbers `cand`'s body says it reverts (`Reverts [owner/repo]#N` lines, and each `This reverts
+ * commit <sha>` resolved through GitHub), or null when it names none. `unresolved()` hears of a sha
+ * GitHub could not resolve.
+ */
+async function revertedPrs(cand, repo, { unresolved, ...ctx }) {
   const body = cand.body ?? '';
-  const prs = [...body.matchAll(/^Reverts (?:([\w.-]+\/[\w.-]+))?#(\d+)\b/gim)].filter((m) => !m[1] || same(m[1], repo)).map((m) => Number(m[2]));
-  for (const [, sha] of body.matchAll(/This reverts commit ([0-9a-f]{7,40})/gi)) {
+  const lines = [...body.matchAll(/^Reverts (?:([\w.-]+\/[\w.-]+))?#(\d+)\b/gim)];
+  const shas = [...body.matchAll(/This reverts commit ([0-9a-f]{7,40})/gi)].map((m) => m[1]);
+  if (!lines.length && !shas.length) return null;
+  const prs = lines.filter((m) => !m[1] || same(m[1], repo)).map((m) => Number(m[2]));
+  for (const sha of shas) {
     const pulls = await ghJson(['api', `repos/${repo}/commits/${sha}/pulls`], `${repo}#${cand.number} reverts ${sha}, which is not resolved to a PR`, { ...ctx, repo });
+    if (!pulls) unresolved();
     prs.push(...(pulls ?? []).map((p) => p.number));
   }
   return prs;
@@ -81,13 +90,16 @@ async function revertedPrs(cand, repo, ctx) {
 
 /**
  * Merge day `day`'s window candidates for `repo` (Revert-, fix- or regression-titled PRs and bug-labelled
- * issues, each with the `reverts` it names): from `cacheDir`, else searched for, and cached only once
- * the day's window has closed. A search that reaches GitHub's result cap throws rather than truncate.
+ * issues, each with the `reverts` its body names): from `cacheDir` (an unreadable file is a miss), else
+ * searched for, and cached once the day's window has closed and every reverted sha was resolved. A
+ * search that reaches GitHub's result cap throws rather than truncate.
  */
 async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
   const dir = join(cacheDir, repo.replace('/', '__'));
   const file = join(dir, `${day}.json`);
-  if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
+  if (existsSync(file)) {
+    try { return JSON.parse(readFileSync(file, 'utf8')); } catch (err) { ctx.warn(`escapes: ${file}: unreadable cache (${err.message}); searching again`); }
+  }
   const created = `${day}..${new Date(Date.parse(day) + WINDOW_DAYS * DAY).toISOString().slice(0, 10)}`;
   const search = async (kind, ...q) => {
     const found = JSON.parse(await withBackoff(() => ctx.gh(['search', kind, '--repo', repo, '--created', created, '--limit', String(SEARCH_CAP), '--json', 'number,title,body,labels,createdAt', ...q]), { repo, sleep: ctx.sleep }));
@@ -102,18 +114,23 @@ async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
     ...await search('issues', '--label', 'bug'),
   ];
   const candidates = [...new Map(found.map((c) => [c.number, c])).values()];
-  for (const c of candidates) c.reverts = await revertedPrs(c, repo, ctx);
-  if (now >= Date.parse(day) + (WINDOW_DAYS + 1) * DAY) {
+  let complete = true;
+  for (const c of candidates) c.reverts = await revertedPrs(c, repo, { ...ctx, unresolved: () => { complete = false; } });
+  if (complete && now >= Date.parse(day) + (WINDOW_DAYS + 1) * DAY) {
     mkdirSync(dir, { recursive: true });
     writeFileSync(file, JSON.stringify(candidates));
   }
   return candidates;
 }
 
-/** How `cand` escapes from the merged `pr` (`{repo, number, title, subjects, cited: [[repo, n]]}`), or null. */
+/**
+ * How `cand` escapes from the merged `pr` (`{repo, number, title, subjects, cited: [[repo, n]]}`), or null.
+ * A revert whose body names what it reverts is judged by that alone; only one naming nothing falls back
+ * to its `Revert "<X>"` title, X being the PR title or a commit subject.
+ */
 function classify(cand, pr) {
   const reverted = /^Revert "(.*)"$/.exec(cand.title ?? '')?.[1];
-  if (cand.reverts?.includes(pr.number) || (reverted !== undefined && [pr.title, ...pr.subjects].includes(reverted))) return 'revert';
+  if (cand.reverts ? cand.reverts.includes(pr.number) : reverted !== undefined && [pr.title, ...pr.subjects].includes(reverted)) return 'revert';
   const signal = (cand.labels ?? []).some((l) => same(l.name, 'bug')) || FIX.test(cand.title ?? '');
   return signal && pr.cited.some(([repo, n]) => cites(cand.body, repo, n, pr.repo)) ? 'follow-up-fix' : null;
 }
@@ -123,12 +140,14 @@ const subject = (c) => (c.messageHeadline.endsWith('…') && c.messageBody?.star
 
 /**
  * For each PR `{repo, pr, tuningVersion}` that merged and whose 30-day window has closed by `now` (epoch
- * ms), the reverts and follow-up fixes found: `[{repo, pr, tuningVersion, mergedAt, escapes: [{number, kind}]}]`.
- * A PR GitHub cannot show is skipped with a warning; a rate limit that outlasts the backoff throws.
+ * ms; one in the future is taken as the present, since GitHub is searched as of today), the reverts and
+ * follow-up fixes found: `[{repo, pr, tuningVersion, mergedAt, escapes: [{number, kind}]}]`. A PR
+ * GitHub cannot show is skipped with a warning; a rate limit that outlasts the backoff throws.
  * @param {{gh?: (args: string[]) => Promise<string>, cacheDir?: string, now?: number, sleep?: (ms: number) => Promise<void>, warn?: (m: string) => void}} [opts]
  */
 export async function findEscapes(prs, { gh = ghCli, cacheDir = escapesDir(), now = Date.now(), sleep, warn = (m) => console.error(m) } = {}) {
   const ctx = { gh, sleep, warn };
+  now = Math.min(now, Date.now());
   const windows = new Map();
   const out = [];
   for (const m of prs) {
@@ -166,10 +185,11 @@ function prOf(repo, pr) {
 
 /**
  * The PRs ship-dag opened, `[{repo, pr, tuningVersion}]`, once per `owner/repo#PR` (case-insensitive):
- * merged telemetry records' `pr` (the newest record wins), then each report row's `prNumber` under
- * `baseDir/<run>/state/reports/` (its `tuningVersion` from the run's sidecar), then, for a sidecar ref
- * neither gave a PR, its one merged closing PR on an `orchestrator/` branch (none or several: skipped,
- * with a warning). Whether each merged, and when, is `findEscapes`' to ask.
+ * telemetry records' `pr` whatever their finalState (the newest record wins), then each report row's
+ * `prNumber` under `baseDir/<run>/state/reports/` (its `tuningVersion` from the run's newest sidecar entry
+ * emitted by the time the report started), then, for a sidecar ref neither gave a PR, its one merged
+ * closing PR on an `orchestrator/` branch, under the ref's newest entry's version (none or several:
+ * skipped, with a warning). Whether each merged, and when, is `findEscapes`' to ask.
  */
 export async function shipDagPrs(records, { baseDir = defaultBaseDir(), gh = ghCli, sleep, warn = (m) => console.error(m) } = {}) {
   const byPr = new Map();
@@ -177,26 +197,31 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), gh = ghC
   const add = (p, tuningVersion) => { const k = `${p.repo}#${p.pr}`.toLowerCase(); if (!byPr.has(k)) byPr.set(k, { ...p, tuningVersion }); };
   for (const r of records.toReversed()) {
     const p = r.kind === 'retro' ? null : prOf(r.repo, r.pr);
-    if (p) covered.add(`${r.repo}#${r.issue}`.toLowerCase());
-    if (p && r.finalState === 'merged') add(p, r.tuningVersion ?? 0);
+    if (!p) continue;
+    covered.add(`${r.repo}#${r.issue}`.toLowerCase());
+    add(p, r.tuningVersion ?? 0);
   }
-  const sidecarRefs = [];
+  const sidecarRefs = new Map(); // lowercased ref → [ref, tuningVersion, emittedAt] of its newest entry
   for (const run of lsdir(baseDir)) {
     const entries = readSidecar(join(baseDir, run, SIDECAR_NAME), { warn });
     const reports = join(baseDir, run, 'state', 'reports');
     for (const name of lsdir(reports).filter((n) => n.endsWith('.json'))) {
       let rep;
       try { rep = JSON.parse(readFileSync(join(reports, name), 'utf8')); } catch { warn(`escapes: ${join(reports, name)}: unreadable; skipped`); continue; }
+      const startedAt = Date.parse(rep?.startedAt);
       for (const row of Array.isArray(rep?.issues) ? rep.issues : []) {
         const p = typeof row?.ref === 'string' ? prOf(row.ref.split('#')[0], row.prNumber) : null;
         if (!p) continue;
         covered.add(row.ref.toLowerCase());
-        add(p, entries.findLast((e) => e.issues?.some((i) => same(i.ref, row.ref)))?.tuningVersion ?? 0);
+        add(p, entries.findLast((e) => e.issues?.some((i) => same(i.ref, row.ref)) && !(Date.parse(e.emittedAt) > startedAt))?.tuningVersion ?? 0);
       }
     }
-    for (const e of entries) for (const i of e.issues ?? []) sidecarRefs.push([i.ref, e.tuningVersion ?? 0]);
+    for (const e of entries) {
+      const at = Date.parse(e.emittedAt) || 0;
+      for (const i of e.issues ?? []) if (!(sidecarRefs.get(String(i.ref).toLowerCase())?.[2] > at)) sidecarRefs.set(String(i.ref).toLowerCase(), [i.ref, e.tuningVersion ?? 0, at]);
+    }
   }
-  for (const [ref, tuningVersion] of sidecarRefs) {
+  for (const [ref, tuningVersion] of sidecarRefs.values()) {
     if (typeof ref !== 'string' || covered.has(ref.toLowerCase())) continue;
     covered.add(ref.toLowerCase()); // ask about each ref once
     const [repo, n] = ref.split('#');
