@@ -114,7 +114,9 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
     if (rec[k] === undefined || rec[k] === null) throw new Error(`missing required key: ${k}`);
   }
   if (!COMPLEXITIES.has(rec.complexity)) throw new Error(`bad complexity: ${rec.complexity}`);
-  if (rec.complexitySource !== undefined && !COMPLEXITY_SOURCES.has(rec.complexitySource)) throw new Error(`bad complexitySource: ${rec.complexitySource}`);
+  if (rec.complexitySource != null && !COMPLEXITY_SOURCES.has(rec.complexitySource)) throw new Error(`bad complexitySource: ${rec.complexitySource}`);
+  // reportId decides whether two PR-less failures are one event, so only a report stem is let in.
+  if (rec.reportId != null && (typeof rec.reportId !== 'string' || !rec.reportId)) throw new Error(`bad reportId: ${JSON.stringify(rec.reportId)}`);
   if (!PATHS.has(rec.path)) throw new Error(`bad path: ${rec.path}`);
   if (!FINAL_STATES.has(rec.finalState)) throw new Error(`bad finalState: ${rec.finalState}`);
   const implStatus = rec.implStatus ?? null;
@@ -448,8 +450,8 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     // did, and epic #64 reads a missing version as 0, never as today's.
     ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, {
       existing, warn, tuningVersion: 0, reportId: basename(file, '.json'),
-      // The engine runs no post-session check for a repo whose config entry has none.
-      noCheckRepos: Object.entries(config?.repos ?? {}).filter(([, r]) => !r?.postSessionCheck).map(([repo]) => repo),
+      // The engine (resolveRepoSettings) runs a repo's own postSessionCheck, else the config's top-level one, else none.
+      noCheckRepos: [...new Set((config?.issues ?? []).map((i) => i.repo))].filter((repo) => !(config.repos?.[repo]?.postSessionCheck ?? config.postSessionCheck)),
     }));
   } catch (err) {
     // deriveWaveRecords' refusals, each cause with its own remedy; anything else is a bug, not a bad artifact, and is thrown as is.

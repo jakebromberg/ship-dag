@@ -281,6 +281,11 @@ const contractCases = [
     ([r]) => assert.deepEqual(r.findings, ['correctness a.js:1 B'])],
   ['1 findings: an unreadable round before a blocking one does not hide its findings', { rounds: [round('', null), round('.r2', [finding('correctness')]), round('.r3', [])] }, {},
     ([r]) => assert.deepEqual([r.reviewVerdict, r.findings], ['blocking', ['correctness a.js:1 s']])],
+  ['1 findings: an unreadable round after a blocking one does not empty its findings', { rounds: [round('', [finding('correctness')]), round('.r2', null)], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {},
+    ([r]) => assert.deepEqual([r.reviewVerdict, r.findings], ['blocking', ['correctness a.js:1 s']])],
+  ['1 findings: a field the gate leaves null is left out, a blank category named as the gate names it',
+    { rounds: [round('', [finding('correctness', { line: null }), finding('', { file: null, line: null })])], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {},
+    ([r]) => assert.deepEqual(r.findings, ['correctness a.js s', '(blank) s'])],
   ['2a a rate-limit death is deferred', { report: report([noPr]), digests: DIGEST }, {}, ([r]) => assert.deepEqual(pick(r), ['error', 'rate-limited', 'deferred', null])],
   ['2a a hand-written deferred/error death is not duplicated (review finding 1)', { report: report([noPr]), digests: DIGEST }, { existing: [HAND] }, (rs) => assert.equal(rs.length, 0)],
   // A clean round on disk for the continuation's PR, which the death must not read.
@@ -289,6 +294,14 @@ const contractCases = [
       assert.deepEqual(rs.map(pick), [['error', 'rate-limited', 'deferred', null], ['pushed', null, 'merged', 12]]);
       assert.deepEqual(rs.map((r) => [r.bounces, r.reviewVerdict, r.reviewPath]), [[0, null, null], [2, 'clean', `/s/reviews/${STEM}.json`]]);
     }],
+  ['2b point E: a death the continuation settles with a finalState alone is recorded beside its outcome',
+    { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { finalState: 'blocked-hitl', hitl: { pointB: true } } } }, {},
+    (rs) => assert.deepEqual(rs.map((r) => [...pick(r), r.hitl.pointB]), [['error', 'rate-limited', 'deferred', null, false], ['error', null, 'blocked-hitl', null, true]])],
+  ['2b point E: an outcome finalState of deferred is the death itself', { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { finalState: 'deferred' } } }, {},
+    (rs) => assert.deepEqual(rs.map(pick), [['error', 'rate-limited', 'deferred', null]])],
+  ['2b point E: re-ingesting with the outcome after the death adds only the outcome (review: one death, not two)',
+    { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, { reportId: 'w1', existing: [{ ...HAND, implStatus: 'error', reportId: 'w1' }] },
+    (rs) => assert.deepEqual(rs.map(pick), [['error', null, 'blocked-hitl', null]])],
   ['2b point E: a blocked row is no rate-limit death, so only the outcome is recorded', { report: report([blockedNoPr]), digests: DIGEST, outcomes: { [REF]: { pr: 12, finalState: 'merged' } } }, {},
     (rs) => assert.deepEqual(rs.map(pick), [['pushed', null, 'merged', 12]])],
   ['2b point E: re-ingesting adds none', { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { pr: 12, finalState: 'merged' } } },

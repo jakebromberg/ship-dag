@@ -32,6 +32,8 @@ const NOT_MERGED = new Set(['blocked-hitl', 'deferred', 'error']);
 /** An `owner/repo#N` ref, capturing `owner/repo` and `N`: the one pattern ingest-wave checks a report against too. */
 export const REF_RE = /^([^/#]+\/[^#]+)#(\d+)$/;
 const supplied = (row, outcome) => isPr(row.prNumber) || isPr(outcome?.pr) || NOT_MERGED.has(outcome?.finalState);
+/** A gate `blocking` entry as one string, the shape `--outcomes` takes and hand-written records carry; a field the gate left null is left out. */
+const findingLine = ({ category, file, line, summary }) => [category ?? '(blank)', file && (line == null ? file : `${file}:${line}`), summary].filter(Boolean).join(' ');
 
 /** One round's `{verdict, blocking}`: unparseable, or empty beside its `.raw` (`isUnreadableEmpty`), is `blocking` with nothing to list, and is warned about. */
 function roundVerdict({ path, review }, blockOn, warn) {
@@ -104,8 +106,9 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     const digest = row.status === 'succeeded' ? null : digests?.[row.ref];
     const rateLimited = row.status !== 'succeeded' && (digest?.failureReason ?? row.failureReason) === 'rate-limited';
     const skipped = row.status === 'skipped';
-    // One record of this row: `outcome` and `pr` are what the record reads, since a death resumed in place is the row without them.
-    const build = (outcome, pr) => {
+    // One record of this row: `outcome` and `pr` are what the record reads, since a death resumed in place is the
+    // row without them, and `dead` whether this record is the rate-limit death.
+    const build = (outcome, pr, dead) => {
       // `skipped` never reached implement. `blocked` is not an engine status, but
       // SKILL.md step 5 and the failure-routing tests hand it in as one, so it stays.
       const implStatus = skipped ? null : routeFailure({ ...row, prNumber: pr }) === 'review-gate' ? 'pushed' : row.status === 'blocked' ? 'blocked' : 'error';
@@ -123,11 +126,15 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       });
       // The last round blocking with no finalState to say where it went (point B after /review-loop gave up) is not a merge to guess.
       if (verdicts.at(-1) === 'blocking' && !outcome.finalState) lastBlocks.push(row.ref);
-      // The latest round at the highest severity: a later block is what the PR was last held on.
-      const worst = gated.reduce((w, g) => (SEVERITY[g.verdict] >= SEVERITY[w.verdict] ? g : w), { verdict: 'clean', blocking: [] });
+      // The latest round at the highest severity that lists something: a later block is what the PR was last
+      // held on, and an unreadable round (blocking, nothing listed) does not hide an earlier one's findings.
+      const worst = gated.reduce((w, g) => {
+        const d = SEVERITY[g.verdict] - SEVERITY[w.verdict];
+        return d > 0 || (d === 0 && (g.blocking.length > 0 || w.blocking.length === 0)) ? g : w;
+      }, { verdict: 'clean', blocking: [] });
       // Telemetry reads a rate-limit as an infra death beside implStatus "error"; a
       // rate-limited row that still opened a PR (backend#620) is gated, not dead.
-      const failureReason = rateLimited && implStatus === 'error' ? 'rate-limited' : null;
+      const failureReason = dead && implStatus === 'error' ? 'rate-limited' : null;
 
       return {
         runId,
@@ -147,8 +154,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         reviewVerdict: verdicts.length ? worst.verdict : null,
         reviewPath: refRounds.at(-1)?.path ?? null,
         failureReason,
-        // One string per gate entry, the shape --outcomes takes and hand-written records carry.
-        findings: outcome.findings ?? worst.blocking.map((f) => `${f.category} ${f.file}:${f.line} ${f.summary}`),
+        findings: outcome.findings ?? worst.blocking.map(findingLine),
         bounces: Math.max(outcome.bounces ?? 0, bounced.filter(Boolean).length),
         hitl: { pointA: false, pointB: !!outcome.hitl?.pointB },
         // A quota death is deferred, not abandoned: point E resumes it in place.
@@ -161,13 +167,12 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       };
     };
 
-    const recs = [build(outcome, pr)];
-    // Point E emits the death at death time, apart from the continuation's record: when only --outcomes
-    // supplies the PR, the row is the death and the PR is the continuation.
-    if (rateLimited && !isPr(row.prNumber) && isPr(outcome.pr)) {
-      const death = build({}, null);
-      if (death.failureReason) recs.unshift(death);
-    }
+    // Point E emits the death at death time, apart from the continuation's record: when --outcomes says where the
+    // continuation went (a PR, or a finalState other than the death's own deferred), the row is the death and the
+    // outcome is the continuation, which carries no rate-limit of its own.
+    const resumed = rateLimited && !isPr(row.prNumber) && (isPr(outcome.pr) || (outcome.finalState ?? 'deferred') !== 'deferred');
+    const death = resumed ? build({}, null, true) : null;
+    const recs = death?.failureReason ? [death, build(outcome, pr, false)] : [build(outcome, pr, rateLimited)];
     for (const rec of recs) {
       if (seen.some((s) => sameRecord(s, rec))) continue;
       seen.push(rec);
