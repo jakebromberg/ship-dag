@@ -144,11 +144,11 @@ export function validateSpec(spec, tuning = loadTuning()) {
       + `known: ${Object.keys(tuning.implement).join('/')}. Fix the triage output and re-emit.`);
   }
   const reaches = Object.keys(tuning.review.reachEffort);
-  const badReach = spec.issues.filter((i) => i.reach !== undefined && !(typeof i.reach === 'string' && reaches.includes(i.reach)));
+  const badReach = spec.issues.filter((i) => i.reach != null && !(typeof i.reach === 'string' && reaches.includes(i.reach)));
   if (badReach.length > 0) {
-    errors.push(`unknown reach on ${badReach.map((i) => `#${i.number} (${i.reach})`).join(', ')}; known: ${reaches.join('/')}.`);
+    errors.push(`unknown reach on ${badReach.map((i) => `#${i.number} (${JSON.stringify(i.reach)})`).join(', ')}; known: ${reaches.join('/')}.`);
   }
-  const badDecisions = spec.issues.filter((i) => i.decisions !== undefined && !(Array.isArray(i.decisions) && i.decisions.every((d) => typeof d === 'string')));
+  const badDecisions = spec.issues.filter((i) => i.decisions != null && !(Array.isArray(i.decisions) && i.decisions.every((d) => typeof d === 'string')));
   if (badDecisions.length > 0) {
     errors.push(`decisions must be an array of strings on ${badDecisions.map((i) => `#${i.number}`).join(', ')}.`);
   }
