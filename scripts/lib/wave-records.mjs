@@ -167,10 +167,11 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       };
     };
 
-    // Point E emits the death at death time, apart from the continuation's record: when --outcomes says where the
-    // continuation went (a PR, or a finalState other than the death's own deferred), the row is the death and the
-    // outcome is the continuation, which carries no rate-limit of its own.
-    const resumed = rateLimited && !isPr(row.prNumber) && (isPr(outcome.pr) || (outcome.finalState ?? 'deferred') !== 'deferred');
+    // Point E emits the death at death time, apart from the continuation's record: when --outcomes shows a
+    // continuation ran (its PR, or the point B it stalled at), the row is the death and the outcome is the
+    // continuation, which carries no rate-limit of its own. Without either, the outcome is the death's own, and
+    // stays a quota death: one must never read as a model failure.
+    const resumed = rateLimited && !isPr(row.prNumber) && (isPr(outcome.pr) || outcome.hitl?.pointB === true);
     const death = resumed ? build({}, null, true) : null;
     const recs = death?.failureReason ? [death, build(outcome, pr, false)] : [build(outcome, pr, rateLimited)];
     for (const rec of recs) {
