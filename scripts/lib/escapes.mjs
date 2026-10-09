@@ -1,21 +1,25 @@
 // escapes.mjs — the escaped-defect proxy: for each PR ship-dag merged, did a revert or a bug-signalled
 // follow-up that cites it show up within 30 days? Candidates are fetched once per repo per merge-day
-// window (four `gh search` calls), cached once that day's window has closed, and matched to merged PRs
-// locally. `gh` is injected (`async (args) => stdout`) and the engine base dir is a parameter, so
+// window (five `gh search` calls), cached once that day's window has closed and settled, and matched to
+// merged PRs locally. `gh` is injected (`async (args) => stdout`) and the engine base dir is a parameter, so
 // nothing here touches GitHub or the real state dir unless asked to.
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { groupBy } from './stats.mjs';
-import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
+import { findWaveContext, readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
 
 const DAY = 86_400_000;
 const WINDOW_DAYS = 30;
 const RATE_LIMITED = /rate limit/i;
 // GitHub search returns at most 1000 results, so a search that reaches it may have dropped some.
 const SEARCH_CAP = 1000;
+// A day is cached only this long after its window closes, so a candidate GitHub indexes late still counts.
+const SETTLE_DAYS = 1;
+// Bump when the searches or the cached shape change, so stale caches are not read.
+const CACHE_VERSION = 1;
 const FIX = /\b(?:fix(?:es|ed|ing)?|regressions?)\b/i;
 const PR_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/i;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -25,10 +29,9 @@ const lsdir = (dir) => { try { return readdirSync(dir); } catch { return []; } }
 /** The GraphQL query for the PRs that close issue `$n` of `$owner/$name`, merged or not. */
 export const CLOSING_PRS_QUERY = 'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){issue(number:$n){closedByPullRequestsReferences(first:50,includeClosedPrs:true){nodes{number headRefName mergedAt repository{nameWithOwner}}}}}}';
 
-/** Resolve the candidate cache directory the way `telemetryPath` resolves the log. */
+/** Resolve the candidate cache directory: `$SHIP_DAG_ESCAPES_DIR`, else `escapes` beside the engine base dir. */
 export function escapesDir(env = process.env) {
-  if (env.SHIP_DAG_ESCAPES_DIR) return env.SHIP_DAG_ESCAPES_DIR;
-  return `${env.XDG_STATE_HOME || `${env.HOME}/.local/state`}/ship-dag/escapes`;
+  return env.SHIP_DAG_ESCAPES_DIR || join(dirname(defaultBaseDir(env)), 'escapes');
 }
 
 /** The default `gh`: run the CLI and return stdout. */
@@ -71,10 +74,10 @@ async function ghJson(args, what, { gh, repo, sleep, warn }) {
 
 /**
  * The PR numbers `cand`'s body says it reverts (`Reverts [owner/repo]#N` lines, and each `This reverts
- * commit <sha>` resolved through GitHub), or null when it names none. `unresolved()` hears of a sha
- * GitHub could not resolve.
+ * commit <sha>` resolved through GitHub), or null when it names none. A sha GitHub could not resolve
+ * marks `cand.unresolved`.
  */
-async function revertedPrs(cand, repo, { unresolved, ...ctx }) {
+async function revertedPrs(cand, repo, ctx) {
   const body = cand.body ?? '';
   const lines = [...body.matchAll(/^Reverts (?:([\w.-]+\/[\w.-]+))?#(\d+)\b/gim)];
   const shas = [...body.matchAll(/This reverts commit ([0-9a-f]{7,40})/gi)].map((m) => m[1]);
@@ -82,20 +85,21 @@ async function revertedPrs(cand, repo, { unresolved, ...ctx }) {
   const prs = lines.filter((m) => !m[1] || same(m[1], repo)).map((m) => Number(m[2]));
   for (const sha of shas) {
     const pulls = await ghJson(['api', `repos/${repo}/commits/${sha}/pulls`], `${repo}#${cand.number} reverts ${sha}, which is not resolved to a PR`, { ...ctx, repo });
-    if (!pulls) unresolved();
+    if (!pulls) cand.unresolved = true;
     prs.push(...(pulls ?? []).map((p) => p.number));
   }
   return prs;
 }
 
 /**
- * Merge day `day`'s window candidates for `repo` (Revert-, fix- or regression-titled PRs and bug-labelled
- * issues, each with the `reverts` its body names): from `cacheDir` (an unreadable file is a miss), else
- * searched for, and cached once the day's window has closed and every reverted sha was resolved. A
- * search that reaches GitHub's result cap throws rather than truncate.
+ * Merge day `day`'s window candidates for `repo` (Revert-titled PRs, PRs whose body says `This reverts
+ * commit`, fix- or regression-titled PRs and bug-labelled issues, each with the `reverts` its body
+ * names): from `cacheDir` (an unreadable file is a miss), else searched for, and cached once the day's
+ * window has closed and settled and every reverted sha was resolved. A search that reaches GitHub's
+ * result cap throws rather than truncate.
  */
 async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
-  const dir = join(cacheDir, repo.replace('/', '__'));
+  const dir = join(cacheDir, `v${CACHE_VERSION}`, repo.replace('/', '__'));
   const file = join(dir, `${day}.json`);
   if (existsSync(file)) {
     try { return JSON.parse(readFileSync(file, 'utf8')); } catch (err) { ctx.warn(`escapes: ${file}: unreadable cache (${err.message}); searching again`); }
@@ -109,14 +113,14 @@ async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
   // One search per title word: GitHub applies `in:title` to neither side of an OR.
   const found = [
     ...await search('prs', '--match', 'title', 'Revert'),
+    ...await search('prs', '--match', 'body', 'This reverts commit'),
     ...await search('prs', '--match', 'title', 'fix'),
     ...await search('prs', '--match', 'title', 'regression'),
     ...await search('issues', '--label', 'bug'),
   ];
   const candidates = [...new Map(found.map((c) => [c.number, c])).values()];
-  let complete = true;
-  for (const c of candidates) c.reverts = await revertedPrs(c, repo, { ...ctx, unresolved: () => { complete = false; } });
-  if (complete && now >= Date.parse(day) + (WINDOW_DAYS + 1) * DAY) {
+  for (const c of candidates) c.reverts = await revertedPrs(c, repo, ctx);
+  if (!candidates.some((c) => c.unresolved) && now >= Date.parse(day) + (WINDOW_DAYS + 1 + SETTLE_DAYS) * DAY) {
     mkdirSync(dir, { recursive: true });
     writeFileSync(file, JSON.stringify(candidates));
   }
@@ -125,12 +129,13 @@ async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
 
 /**
  * How `cand` escapes from the merged `pr` (`{repo, number, title, subjects, cited: [[repo, n]]}`), or null.
- * A revert whose body names what it reverts is judged by that alone; only one naming nothing falls back
- * to its `Revert "<X>"` title, X being the PR title or a commit subject.
+ * A revert whose body names what it reverts is judged by that alone; one naming nothing, or a sha GitHub
+ * could not resolve, also by its `Revert "<X>"` title, X being the PR title or a commit subject.
  */
 function classify(cand, pr) {
   const reverted = /^Revert "(.*)"$/.exec(cand.title ?? '')?.[1];
-  if (cand.reverts ? cand.reverts.includes(pr.number) : reverted !== undefined && [pr.title, ...pr.subjects].includes(reverted)) return 'revert';
+  const byTitle = reverted !== undefined && [pr.title, ...pr.subjects].includes(reverted);
+  if (cand.reverts?.includes(pr.number) || ((!cand.reverts || cand.unresolved) && byTitle)) return 'revert';
   const signal = (cand.labels ?? []).some((l) => same(l.name, 'bug')) || FIX.test(cand.title ?? '');
   return signal && pr.cited.some(([repo, n]) => cites(cand.body, repo, n, pr.repo)) ? 'follow-up-fix' : null;
 }
@@ -186,10 +191,10 @@ function prOf(repo, pr) {
 /**
  * The PRs ship-dag opened, `[{repo, pr, tuningVersion}]`, once per `owner/repo#PR` (case-insensitive):
  * telemetry records' `pr` whatever their finalState (the newest record wins), then each report row's
- * `prNumber` under `baseDir/<run>/state/reports/` (its `tuningVersion` from the run's newest sidecar entry
- * emitted by the time the report started), then, for a sidecar ref neither gave a PR, its one merged
- * closing PR on an `orchestrator/` branch, under the ref's newest entry's version (none or several:
- * skipped, with a warning). Whether each merged, and when, is `findEscapes`' to ask.
+ * `prNumber` under `baseDir/<run>/state/reports/` (its `tuningVersion` from the sidecar entry ingest-wave
+ * reads for the report: `findWaveContext` as of its start), then, for a sidecar ref neither gave a PR,
+ * its one merged closing PR on an `orchestrator/` branch, under the ref's newest entry's version (none
+ * or several: skipped, with a warning). Whether each merged, and when, is `findEscapes`' to ask.
  */
 export async function shipDagPrs(records, { baseDir = defaultBaseDir(), gh = ghCli, sleep, warn = (m) => console.error(m) } = {}) {
   const byPr = new Map();
@@ -208,12 +213,13 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), gh = ghC
     for (const name of lsdir(reports).filter((n) => n.endsWith('.json'))) {
       let rep;
       try { rep = JSON.parse(readFileSync(join(reports, name), 'utf8')); } catch { warn(`escapes: ${join(reports, name)}: unreadable; skipped`); continue; }
-      const startedAt = Date.parse(rep?.startedAt);
-      for (const row of Array.isArray(rep?.issues) ? rep.issues : []) {
+      const rows = Array.isArray(rep?.issues) ? rep.issues : [];
+      const tuningVersion = findWaveContext(join(baseDir, run), rows.map((r) => r?.ref), { asOf: Date.parse(rep?.startedAt), warn })?.tuningVersion ?? 0;
+      for (const row of rows) {
         const p = typeof row?.ref === 'string' ? prOf(row.ref.split('#')[0], row.prNumber) : null;
         if (!p) continue;
         covered.add(row.ref.toLowerCase());
-        add(p, entries.findLast((e) => e.issues?.some((i) => same(i.ref, row.ref)) && !(Date.parse(e.emittedAt) > startedAt))?.tuningVersion ?? 0);
+        add(p, tuningVersion);
       }
     }
     for (const e of entries) {
