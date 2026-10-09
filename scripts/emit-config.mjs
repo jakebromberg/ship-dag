@@ -73,6 +73,11 @@ function repoOfIssue(issue, spec) {
   return issue.repo || spec.repo;
 }
 
+/** An issue named `owner/repo#N`, so a refusal in a cross-repo wave says which repo's triage output to fix. */
+function issueRef(issue, spec) {
+  return `${repoOfIssue(issue, spec)}#${issue.number}`;
+}
+
 /**
  * The distinct set of repos the wave's issues reference, in first-seen order.
  * The `repos:` map is built from exactly these — never a superset — because the
@@ -106,14 +111,14 @@ function tunedEffort(tuning, complexity) {
 
 /**
  * Issues whose `complexity` is set but is not a key of tuning.json's implement map,
- * as `{ number, complexity }`. buildConfig refuses a spec with any: running such an
+ * as `{ number, ref, complexity }` (`ref` is `owner/repo#N`). buildConfig refuses a spec with any: running such an
  * issue at the default effort could silently under-power it, and the engine schema
  * rejects an unknown complexity anyway.
  */
 export function unknownComplexities(spec, tuning = loadTuning()) {
   return spec.issues
     .filter((i) => i.complexity && tunedEffort(tuning, i.complexity) === undefined)
-    .map((i) => ({ number: i.number, complexity: i.complexity }));
+    .map((i) => ({ number: i.number, ref: issueRef(i, spec), complexity: i.complexity }));
 }
 
 // Triage's per-issue line budget rides on the *description*, not on a new field.
@@ -140,17 +145,17 @@ export function validateSpec(spec, tuning = loadTuning()) {
   const errors = [];
   const unknown = unknownComplexities(spec, tuning);
   if (unknown.length > 0) {
-    errors.push(`unknown complexity on ${unknown.map((i) => `#${i.number} (${i.complexity})`).join(', ')}; `
+    errors.push(`unknown complexity on ${unknown.map((i) => `${i.ref} (${i.complexity})`).join(', ')}; `
       + `known: ${Object.keys(tuning.implement).join('/')}. Fix the triage output and re-emit.`);
   }
   const reaches = Object.keys(tuning.review.reachEffort);
   const badReach = spec.issues.filter((i) => i.reach != null && !(typeof i.reach === 'string' && reaches.includes(i.reach)));
   if (badReach.length > 0) {
-    errors.push(`unknown reach on ${badReach.map((i) => `#${i.number} (${JSON.stringify(i.reach)})`).join(', ')}; known: ${reaches.join('/')}.`);
+    errors.push(`unknown reach on ${badReach.map((i) => `${issueRef(i, spec)} (${JSON.stringify(i.reach)})`).join(', ')}; known: ${reaches.join('/')}.`);
   }
   const badDecisions = spec.issues.filter((i) => i.decisions != null && !(Array.isArray(i.decisions) && i.decisions.every((d) => typeof d === 'string')));
   if (badDecisions.length > 0) {
-    errors.push(`decisions must be an array of strings on ${badDecisions.map((i) => `#${i.number}`).join(', ')}.`);
+    errors.push(`decisions must be an array of strings on ${badDecisions.map((i) => issueRef(i, spec)).join(', ')}.`);
   }
   try {
     specBlockOn(spec.blockOn);
