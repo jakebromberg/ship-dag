@@ -177,10 +177,6 @@ test('outcomes supply hitl.pointB, a manual finalState and a missing PR', () => 
   assert.deepEqual([r.pr, r.hitl, r.finalState], [91, { pointA: false, pointB: true }, 'blocked-hitl']);
 });
 
-test('a succeeded row with no PR anywhere refuses the wave', () => {
-  assert.throws(() => derive({ report: report([row({ prNumber: null, prUrl: null })]) }), /half-supplied.*WXYC\/dj-site#1/);
-});
-
 test('no entry and no configName refuses the wave rather than recording runId null', () => {
   assert.throws(() => derive({ entry: null, report: report([row()], { configName: undefined }) }), /no run id/);
 });
@@ -232,6 +228,8 @@ const prLessCases = [
   ['error', true, false, 'error'],
   [undefined, false, true],
   ['merged', false, true],
+  ['Merged', false, true],
+  ['blocked', false, true],
   ['blocked-hitl', false, false, 'blocked-hitl'],
   ['deferred', false, false, 'deferred'],
   ['error', false, false, 'error'],
@@ -240,11 +238,20 @@ for (const [finalState, hasPr, refused, want] of prLessCases) {
   test(`a succeeded row with ${hasPr ? 'a' : 'no'} PR and outcome finalState ${finalState} ${refused ? 'refuses the wave' : 'is recorded beside the rest of the wave'}`, () => {
     const rows = [row({ ref: REF5, number: 5, ...(hasPr ? {} : { prNumber: null, prUrl: null }) }), row({ ref: REF6, number: 6, prNumber: 7 })];
     const outcomes = finalState ? { [REF5]: { finalState, hitl: { pointB: finalState === 'blocked-hitl' } } } : {};
-    const go = () => derive({ report: report(rows), outcomes, entry: entry({ issues: [] }) });
-    if (refused) return assert.throws(go, /half-supplied.*WXYC\/dj-site#5/);
+    // A blocking round on disk for #5, which a PR-less row must not read as its verdict.
+    const rounds = { [REF5]: [{ path: '/s/reviews/WXYC%2Fdj-site%235.json', review: { findings: [finding('correctness')] } }] };
+    const go = () => deriveWaveRecords(report(rows), entry({ issues: [] }), {}, rounds, outcomes, { warn: () => {} });
+    if (refused) return assert.throws(go, /half-supplied wave: succeeded with no PR in the report or --outcomes, and no --outcomes finalState of blocked-hitl, deferred or error: WXYC\/dj-site#5$/);
     const [five, six] = go().records;
     assert.deepEqual([five.pr, five.ciStatus, five.finalState, five.hitl.pointB], [hasPr ? 11 : null, hasPr ? 'pass' : null, want, finalState === 'blocked-hitl']);
     assert.deepEqual([six.pr, six.ciStatus, six.finalState], [7, 'pass', 'merged']);
-    if (!hasPr) assert.deepEqual([five.implStatus, five.reviewVerdict, five.reviewPath], ['error', null, null]);
+    if (!hasPr) assert.deepEqual([five.implStatus, five.reviewVerdict, five.bounces, five.reviewPath], ['error', null, 0, null]);
   });
 }
+
+test('a PR-less succeeded row is never a rate-limit death, whatever the row says', () => {
+  const rows = [row({ ref: REF5, number: 5, prNumber: null, prUrl: null, failureReason: 'rate-limited' })];
+  const outcomes = { [REF5]: { finalState: 'blocked-hitl', hitl: { pointB: true } } };
+  const r = derive({ report: report(rows), outcomes, entry: entry({ issues: [] }) }).records[0];
+  assert.deepEqual([r.implStatus, r.failureReason], ['error', null]);
+});
