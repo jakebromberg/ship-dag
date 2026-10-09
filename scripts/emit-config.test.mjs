@@ -326,8 +326,9 @@ const REFUSALS = [
   ['an out-of-enum complexity even when the issue sets its own effort', { issues: [{ number: 7, complexity: 'Complex', effort: 'high' }] }, [/unknown complexity.*#7 \(Complex\)/]],
   ['an unknown blockOn category', { blockOn: 'corectness' }, [/corectness/]],
   ['a blockOn of the wrong type', { blockOn: 5 }, [/blockOn.*5/]],
-  ['an unknown reach', { issues: [{ number: 7, reach: 'galaxy' }] }, [/unknown reach.*#7 \(galaxy\)/]],
-  ['an inherited-key reach', { issues: [{ number: 7, reach: 'constructor' }] }, [/unknown reach.*#7 \(constructor\)/]],
+  ['an unknown reach', { issues: [{ number: 7, reach: 'galaxy' }] }, [/unknown reach.*#7 \("galaxy"\)/]],
+  ['an array reach, printed as its JSON', { issues: [{ number: 7, reach: ['repo'] }] }, [/unknown reach.*#7 \(\["repo"\]\)/]],
+  ['an inherited-key reach', { issues: [{ number: 7, reach: 'constructor' }] }, [/unknown reach.*#7 \("constructor"\)/]],
   ['decisions as a string', { issues: [{ number: 7, decisions: 'use JSONL' }] }, [/decisions.*#7/]],
   ['decisions with a non-string element', { issues: [{ number: 7, decisions: ['ok', 3] }] }, [/decisions.*#7/]],
   ['an unknown complexity and an invalid blockOn together', { issues: [{ number: 7, complexity: 'Complex' }], blockOn: 'corectness' }, [/#7 \(Complex\)/, /corectness/]],
@@ -355,11 +356,12 @@ for (const [name, overrides, mustName] of REFUSALS) {
   });
 }
 
-test('validateSpec accepts a valid reach and decisions, and their absence', () => {
+test('validateSpec accepts a valid reach and decisions, and their absence (null counts as absent, like complexity)', () => {
   const issues = [
     { number: 1, reach: 'repo', decisions: ['use JSONL', 'no new dep'] },
     { number: 2, reach: 'in-diff', decisions: [] },
     { number: 3 },
+    { number: 4, reach: null, decisions: null },
   ].map((i) => ({ ...i, repo: 'WXYC/library-metadata-lookup', digest: 'x' }));
   validateSpec(spec({ issues }));
 });
