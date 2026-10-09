@@ -239,7 +239,7 @@ if (isMain(import.meta.url)) {
   process.stdout.write(JSON.stringify(config, null, 2) + '\n');
   // After the config is out, so a sidecar failure can never change or block it.
   try {
-    appendWave(dirname(config.configDir), waveSidecar(spec, { tuning }));
+    appendWave(dirname(config.configDir), waveSidecar(spec, { config, tuning }));
   } catch (err) {
     console.error(`emit-config: WARNING — could not build the wave sidecar: ${err.message}`);
   }
