@@ -77,3 +77,16 @@ test('implementCost: a line longer than many chunks is read whole, and the lines
   [result('a', 1), JSON.stringify({ type: 'assistant', text: 'é'.repeat(200000) }), result('b', 0.5)],
   (p) => assert.deepEqual(implementCost(p), costOf(['a', 'b'], 1.5)),
 ));
+
+// A result record that itself spans chunks, with the 64KB boundary falling inside a two-byte
+// character of its session_id: losing the rejoin drops the record, and decoding each chunk on its
+// own turns that character into U+FFFD and changes the id.
+test('implementCost: a result record split across chunks mid-character is read whole', () => {
+  const id = 'é'.repeat(40000);
+  const line = result(id, 0.5);
+  const lead = (k) => JSON.stringify({ type: 'assistant', text: 'x'.repeat(k) });
+  const idStart = (k) => lead(k).length + 1 + line.indexOf(id);
+  const k = (65536 - idStart(0)) % 2 === 1 ? 0 : 1;
+  assert.equal((65536 - idStart(k)) % 2, 1, 'the boundary must split a two-byte character');
+  withLog([lead(k), line, result('b', 1)], (p) => assert.deepEqual(implementCost(p), costOf([id, 'b'], 1.5)));
+});

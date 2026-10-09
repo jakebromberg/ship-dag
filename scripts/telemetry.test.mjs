@@ -771,7 +771,7 @@ test('normalizeRecord: validates cost.implement; a record without cost, or with 
   assert.deepEqual(normalizeRecord(base({ cost: { implement: costOf(['a'], 1) } }), FIXED).cost, { implement: costOf(['a'], 1) });
   assert.equal(normalizeRecord(base(), FIXED).cost, undefined);
   assert.equal(normalizeRecord(base({ cost: null }), FIXED).cost, null);
-  for (const cost of [5, [], { implement: 3 }, { implement: { ...costOf(['a'], 1), sessions: 2 } }, { implement: { ...costOf(['a', 'a'], 1) } },{ implement: { ...costOf(['a'], 1), costUsd: 'x' } }, { implement: { ...costOf(['a'], 1), sessions: 1.5 } }, { implement: { ...costOf(['a'], 1), sessionIds: [1] } }, { implement: { ...costOf(['a'], 1), input: -1 } }]) {
+  for (const cost of [5, [], { implement: 3 }, { implement: { ...costOf(['a'], 1), sessions: 2 } }, { implement: { ...costOf(['a', 'a'], 1) } }, { implement: { ...costOf(['a', 'a'], 1), sessions: 1 } }, { implement: { ...costOf(['a'], 1), costUsd: 'x' } }, { implement: { ...costOf(['a'], 1), sessions: 1.5 } }, { implement: { ...costOf(['a'], 1), sessionIds: [1] } }, { implement: { ...costOf(['a'], 1), input: -1 } }]) {
     assert.throws(() => normalizeRecord(base({ cost }), FIXED), /bad cost/, JSON.stringify(cost));
   }
 });
