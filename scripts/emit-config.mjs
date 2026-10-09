@@ -37,7 +37,9 @@
 //     },
 //     "issues": [
 //       { "number": 924, "repo": "owner/repo", "title": "...", "complexity": "normal",
-//         "model": "opus", "effort": "high", "digest": "2-3 sentence plan", "extraDirs": ["../wxyc-shared"] }
+//         "model": "opus", "effort": "high", "digest": "2-3 sentence plan", "extraDirs": ["../wxyc-shared"],
+//         "reach": "repo",                         // optional; in-diff|repo|external (a key of tuning review.reachEffort; unknown exits 2) — recorded in the wave sidecar, not the engine config
+//         "decisions": ["use JSONL"] }             // optional; array of strings (anything else exits 2) — recorded in the wave sidecar, not the engine config
 //     ]
 //   }
 //
@@ -130,7 +132,7 @@ export function withLineBudget(description, sourceEstimate) {
 
 /**
  * Refuse a spec the emitter must not run, throwing one error that lists every
- * problem at once (unknown complexity, invalid blockOn). buildConfig calls this
+ * problem at once (unknown complexity, reach or decisions, invalid blockOn). buildConfig calls this
  * first, so the library and the CLI refuse exactly the same specs; a new spec
  * rule is one more check here.
  */
@@ -140,6 +142,15 @@ export function validateSpec(spec, tuning = loadTuning()) {
   if (unknown.length > 0) {
     errors.push(`unknown complexity on ${unknown.map((i) => `#${i.number} (${i.complexity})`).join(', ')}; `
       + `known: ${Object.keys(tuning.implement).join('/')}. Fix the triage output and re-emit.`);
+  }
+  const reaches = Object.keys(tuning.review.reachEffort);
+  const badReach = spec.issues.filter((i) => i.reach !== undefined && !(typeof i.reach === 'string' && reaches.includes(i.reach)));
+  if (badReach.length > 0) {
+    errors.push(`unknown reach on ${badReach.map((i) => `#${i.number} (${i.reach})`).join(', ')}; known: ${reaches.join('/')}.`);
+  }
+  const badDecisions = spec.issues.filter((i) => i.decisions !== undefined && !(Array.isArray(i.decisions) && i.decisions.every((d) => typeof d === 'string')));
+  if (badDecisions.length > 0) {
+    errors.push(`decisions must be an array of strings on ${badDecisions.map((i) => `#${i.number}`).join(', ')}.`);
   }
   try {
     specBlockOn(spec.blockOn);
