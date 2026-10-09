@@ -97,6 +97,30 @@ for (const [status, over, want] of statusCases) {
   });
 }
 
+// Rounds on disk for a row that never reached review this wave are not its verdict.
+for (const [status, over] of [['skipped', { prNumber: null }], ['failed', { prNumber: null }]]) {
+  test(`row status ${status} with no PR ignores rounds on disk`, () => {
+    const r = derive({ report: report([row({ status, ...over })]), rounds: [round('', [finding('correctness')]), round('.r2', [])] }).records[0];
+    assert.deepEqual([r.reviewVerdict, r.bounces, r.reviewPath], [null, 0, null]);
+  });
+}
+
+test('a wave with no terminal row records nothing, even with no run id', () => {
+  assert.deepEqual(derive({ entry: null, report: report([row({ status: 'pending' })], { configName: undefined }) }).records, []);
+});
+
+test('a null row is warned about and skipped; the rest of the wave is recorded', () => {
+  const warned = [];
+  assert.equal(derive({ report: report([null, row()]) }, { warn: (m) => warned.push(m) }).records.length, 1);
+  assert.match(warned.join('\n'), /unknown status/);
+});
+
+test('a round gateReview cannot read is blocking, and says why', () => {
+  const warned = [];
+  assert.equal(derive({ rounds: [round('', null)] }, { warn: (m) => warned.push(m) }).records[0].reviewVerdict, 'blocking');
+  assert.match(warned.join('\n'), new RegExp(`${STEM}\\.json: .*read as blocking`));
+});
+
 for (const status of [undefined, 'cancelled']) {
   test(`row status ${status}: not recorded, and warned about as unknown`, () => {
     const warned = [];
