@@ -42,14 +42,17 @@ export function specBlockOn(blockOn) {
  *   built from, and defaults to reading the shipped tuning.json
  */
 export function waveSidecar(spec, { config, now = () => new Date().toISOString(), tuning = loadTuning() } = {}) {
+  if (!config || !Array.isArray(config.issues)) throw new Error('waveSidecar needs the config buildConfig returned for this spec');
   return {
     runId: spec.runId || runIdFromConfigName(spec.name),
     wave: spec.wave ?? null,
     tuningVersion: tuning.version,
     blockOn: specBlockOn(spec.blockOn),
     emittedAt: now(),
-    issues: spec.issues.map((issue) => {
-      const built = config.issues.find((i) => i.number === issue.number);
+    // buildConfig maps spec issues to config issues one-to-one and in order, so pair
+    // them by position: a number alone is ambiguous when two repos share it.
+    issues: spec.issues.map((issue, index) => {
+      const built = config.issues[index];
       return {
         ref: `${built.repo}#${built.number}`,
         complexity: issue.complexity ?? null,
