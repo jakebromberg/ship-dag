@@ -286,6 +286,8 @@ class IngestError extends Error {
 }
 
 const isPositiveInt = (v) => Number.isInteger(v) && v > 0;
+// What routeFailure (and so deriveWaveRecords) counts as a report row's PR.
+const isPr = (n) => typeof n === 'number' && n > 0;
 const OUTCOME_RULES = {
   pr: [isPositiveInt, 'a positive integer'],
   finalState: [(v) => FINAL_STATES.has(v), `one of ${[...FINAL_STATES].join('|')}`],
@@ -296,8 +298,9 @@ const OUTCOME_RULES = {
 
 /**
  * Throw an exit-2 IngestError naming the ref and field of the first `--outcomes` violation: a bad
- * value, a field outside `OUTCOME_RULES` and `hitl.pointB` (a misspelled one would be dropped), or
- * `finalState: "merged"` where neither the report row nor the outcome has a PR.
+ * value, a field outside `OUTCOME_RULES` and `hitl.pointB` (a misspelled one would be dropped), a
+ * `pr` other than the report row's (which would win), or `finalState: "merged"` where neither the
+ * report row nor the outcome has a PR.
  */
 function validateOutcomes(outcomes, rows) {
   if (!outcomes || typeof outcomes !== 'object' || Array.isArray(outcomes)) throw new IngestError(2, '--outcomes must be an object keyed by ref');
@@ -310,7 +313,10 @@ function validateOutcomes(outcomes, rows) {
     for (const [field, [ok, want]] of Object.entries(OUTCOME_RULES)) {
       if (o[field] !== undefined && !ok(o[field])) throw new IngestError(2, `--outcomes ${ref}: ${field} must be ${want}, got ${JSON.stringify(o[field])}`);
     }
-    if (o.finalState === 'merged' && !isPositiveInt(row.prNumber) && o.pr === undefined) {
+    if (o.pr !== undefined && isPr(row.prNumber) && o.pr !== row.prNumber) {
+      throw new IngestError(2, `--outcomes ${ref}: pr ${o.pr} is not the report row's PR ${row.prNumber}`);
+    }
+    if (o.finalState === 'merged' && !isPr(row.prNumber) && o.pr === undefined) {
       throw new IngestError(2, `--outcomes ${ref}: finalState merged needs a PR, and neither the report row nor --outcomes has one`);
     }
     if (o.hitl === undefined) continue;
@@ -357,9 +363,10 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   validateOutcomes(outcomes, report.issues);
 
   // Routing emitted after this report started is a later re-emit's (a retry's), not this wave's.
-  let entry = findWaveContext(stateDir, refs, startedAt);
+  // An older layout kept the config under <stateDir>/state/.
+  let entry = findWaveContext(stateDir, refs, { asOf: startedAt, warn });
   if (!entry) {
-    const config = findWaveConfig(stateDir, refs, startedAt);
+    const config = findWaveConfig(stateDir, refs, { asOf: startedAt }) ?? findWaveConfig(join(stateDir, 'state'), refs, { asOf: startedAt });
     entry = config && entryFromConfig(config);
     warn(entry
       ? `ingest-wave: no sidecar entry in ${stateDir} matches this wave's issues; routing from its config, recorded under the default policy at tuningVersion 0`
@@ -367,14 +374,17 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   }
 
   // A digest or review round belongs to this wave when it was written after this report started and
-  // before the next report listing the same ref did: a retry or a later wave rewrites the ref's
-  // digest and re-reviews it.
+  // before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
+  // and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
+  // run of other rows) re-runs nothing, so later rounds still review this row's PR.
   const others = readJsonDir(dirname(file)).map(([, rep]) => rep).filter((rep) => Array.isArray(rep?.issues) && Date.parse(rep.startedAt) > startedAt);
-  const ends = Object.fromEntries(refs.map((ref) => [ref, Math.min(Infinity, ...others.filter((rep) => rep.issues.some((r) => r?.ref === ref)).map((rep) => Date.parse(rep.startedAt)))]));
+  const reran = (rep, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
+  const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => Date.parse(rep.startedAt)))]));
   const inWave = (ref, mtimeMs) => mtimeMs >= startedAt && mtimeMs < ends[ref];
 
+  // deriveWaveRecords records only terminal rows and ignores a succeeded row's (stale) digest.
   const digests = {};
-  for (const r of report.issues.filter((i) => i.status !== 'succeeded')) {
+  for (const r of report.issues.filter((i) => ['failed', 'blocked', 'skipped'].includes(i.status))) {
     const p = digestPathForRef(stateDir, r.ref);
     let mtimeMs;
     try { ({ mtimeMs } = statSync(p)); } catch { continue; }
