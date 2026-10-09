@@ -44,7 +44,10 @@ test('normalizeRecord: accepts reportId and complexitySource, and a record witho
   const r = normalizeRecord(base({ reportId: 'w1', complexitySource: 'default' }), FIXED);
   assert.deepEqual([r.reportId, r.complexitySource], ['w1', 'default']);
   assert.doesNotThrow(() => normalizeRecord(base(), FIXED));
+  assert.doesNotThrow(() => normalizeRecord(base({ reportId: null, complexitySource: null }), FIXED));
   assert.throws(() => normalizeRecord(base({ complexitySource: 'guess' }), FIXED), /bad complexitySource/);
+  // reportId decides whether two PR-less failures are one event, so only a real stem is let in.
+  for (const reportId of [7, '', ['w1']]) assert.throws(() => normalizeRecord(base({ reportId }), FIXED), /bad reportId/);
 });
 
 test('normalizeRecord: point-A defer record — nullable downstream fields default to null', () => {
@@ -448,6 +451,20 @@ test('ingest-wave stamps the report stem as reportId, and records ciStatus none 
   }, (d) => ingest(d).records[0].ciStatus);
   assert.equal(withCheck, 'pass');
 }));
+
+// The engine's rule (claude-orchestrator resolveRepoSettings): a repo's own postSessionCheck, else the config's top-level one.
+const CHECK = { commands: ['npm test'] };
+for (const [name, over, want] of [
+  ['a top-level check under a plain repo entry', { postSessionCheck: CHECK, repos: { 'WXYC/dj-site': { baseBranch: 'main' } } }, 'pass'],
+  ['a repo missing from the repos map, with no top-level check', { repos: { 'WXYC/other': { baseBranch: 'main', postSessionCheck: CHECK } } }, 'none'],
+  ['no repos map, with a top-level check', { postSessionCheck: CHECK }, 'pass'],
+]) {
+  test(`ingest-wave: ${name} records ciStatus ${want}`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()], configs: { 'config.json': config([REF], over) },
+  }, (dir) => {
+    assert.equal(ingest(dir).records[0].ciStatus, want);
+  }));
+}
 
 // Which repos run no post-session check comes only from a config; without one, "pass" is unchecked.
 for (const [name, configs, want] of [['no config matches', {}, 1], ['a config matches', { 'config.json': config([REF, REF2]) }, 0]]) {
