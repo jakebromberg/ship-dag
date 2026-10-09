@@ -264,7 +264,7 @@ const DIGEST = { [REF]: { status: 'failed', failureReason: 'rate-limited' } };
 const noPr = row({ status: 'failed', prNumber: null, prUrl: null });
 const BLOCKED = [round('', [finding('correctness')])];
 const FOUR = [round('', [finding('correctness'), finding('security'), finding('convention'), finding('contract')]), round('.r2', [])];
-const HAND = { runId: 'sd-20261008-1', repo: 'WXYC/dj-site', issue: 1, finalState: 'deferred', failureReason: 'rate-limited' };
+const HAND = { runId: 'sd-20261008-1', repo: 'WXYC/dj-site', issue: 1, implStatus: 'error', finalState: 'deferred', failureReason: 'rate-limited' };
 // The `--outcomes` shape, and the one hand-written records carry: `<category> <file>:<line> <summary>`.
 const line = (f) => `${f.category} ${f.file}:${f.line} ${f.summary}`;
 const pick = (r) => [r.implStatus, r.failureReason, r.finalState, r.pr];
@@ -287,7 +287,7 @@ const contractCases = [
     { rounds: [round('', [finding('correctness', { line: null }), finding('', { file: null, line: null })])], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {},
     ([r]) => assert.deepEqual(r.findings, ['correctness a.js s', '(blank) s'])],
   ['2a a rate-limit death is deferred', { report: report([noPr]), digests: DIGEST }, {}, ([r]) => assert.deepEqual(pick(r), ['error', 'rate-limited', 'deferred', null])],
-  ['2a a hand-written deferred/error death is not duplicated (review finding 1)', { report: report([noPr]), digests: DIGEST }, { existing: [HAND] }, (rs) => assert.equal(rs.length, 0)],
+  ['2a a hand-written deferred/error death is not duplicated (review finding 1)', { report: report([noPr]), digests: DIGEST }, { existing: [HAND], reportId: 'w1' }, (rs) => assert.equal(rs.length, 0)],
   // A clean round on disk for the continuation's PR, which the death must not read.
   ['2b point E: the death and the outcome are both recorded', { report: report([noPr]), digests: DIGEST, rounds: [round('', [])], outcomes: { [REF]: { pr: 12, finalState: 'merged', bounces: 2 } } }, {},
     (rs) => {
