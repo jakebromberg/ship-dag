@@ -1,29 +1,61 @@
 // Tests for the escaped-defect proxy. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { escapesDir, cites, findEscapes, withBackoff, escapeReport, mergedPrs } from './escapes.mjs';
+import { escapesDir, cites, findEscapes, withBackoff, escapeReport, shipDagPrs, CLOSING_PRS_QUERY } from './escapes.mjs';
 
 const NOW = Date.parse('2026-09-30T00:00:00Z');
 const tmp = () => mkdtempSync(join(tmpdir(), 'ship-dag-escapes-'));
 const MERGED = '2026-08-01T10:00:00Z';
 const PR = { repo: 'o/r', pr: 5, tuningVersion: 1 };
+const VIEW = 'pr view 5 --repo o/r --json mergedAt,title,commits,closingIssuesReferences';
+const closing = (owner, name, number) => ({ number, repository: { name, owner: { login: owner } } });
+// GitHub truncates a long commit headline with "…" and carries the rest into the body.
+const view = (over) => ({
+  mergedAt: MERGED,
+  title: 'Add thing',
+  commits: [{ oid: 'abc1234def', messageHeadline: 'test(intake): share the auth_user, intake_items and manager-token seeders…', messageBody: '… across the intake specs\n\nMore detail.' }],
+  closingIssuesReferences: [closing('o', 'r', 4), closing('o', 'other', 40)],
+  ...over,
+});
+const search = (kind, ...q) => ['search', kind, '--repo', 'o/r', '--created', '2026-08-01..2026-08-31', '--limit', '1000', '--json', 'number,title,body,labels,createdAt', ...q].join(' ');
+const SEARCH = {
+  revert: search('prs', '--match', 'title', 'Revert'),
+  fix: search('prs', '--match', 'title', 'fix'),
+  regression: search('prs', '--match', 'title', 'regression'),
+  bug: search('issues', '--label', 'bug'),
+};
 
-/** A fake gh keyed on subcommand: pr view → details; search prs/issues → canned lists. */
-function fakeGh({ prs = [], issues = [], details = {} } = {}) {
+/**
+ * A fake gh that answers only the exact calls in its table (PR #5's view and its four window searches,
+ * empty, unless overridden) and records any other call in `unexpected`. A value may be a function
+ * (called per request) and may return an Error, which the call throws.
+ */
+function fakeGh(routes = {}) {
+  const table = { [VIEW]: view(), [SEARCH.revert]: [], [SEARCH.fix]: [], [SEARCH.regression]: [], [SEARCH.bug]: [], ...routes };
   const calls = [];
+  const unexpected = [];
   const gh = async (args) => {
-    calls.push(args);
-    if (args[0] === 'pr') return JSON.stringify({ mergedAt: MERGED, title: 'Add thing', commits: [{ oid: 'abc1234def' }], closingIssuesReferences: [{ number: 4 }], ...details });
-    if (args[1] === 'issues') return JSON.stringify(issues);
-    return JSON.stringify(prs);
+    const key = args.join(' ');
+    calls.push(key);
+    if (!Object.hasOwn(table, key)) { unexpected.push(key); throw new Error(`unexpected gh call: ${key}`); }
+    const out = typeof table[key] === 'function' ? table[key]() : table[key];
+    if (out instanceof Error) throw out;
+    return JSON.stringify(out);
   };
-  return { gh, calls };
+  return { gh, calls, unexpected };
 }
 const cand = (over) => ({ number: 9, title: 'x', body: '', labels: [], createdAt: '2026-08-10T00:00:00Z', ...over });
-const run = (fake, over = {}) => findEscapes([PR], { gh: fake.gh, cacheDir: tmp(), now: NOW, sleep: async () => {}, ...over });
+/** Run findEscapes over `prs` against `fake`, asserting it made no unexpected call; the rows, plus warnings. */
+async function run(fake, { prs = [PR], ...over } = {}) {
+  const warnings = [];
+  const rows = await findEscapes(prs, { gh: fake.gh, cacheDir: tmp(), now: NOW, sleep: async () => {}, warn: (m) => warnings.push(m), ...over });
+  assert.deepEqual(fake.unexpected, []);
+  return Object.assign(rows, { warnings });
+}
+const kinds = ([row]) => row.escapes.map((e) => [e.number, e.kind]);
 
 test('escapesDir: env override, XDG, then home', () => {
   assert.equal(escapesDir({ SHIP_DAG_ESCAPES_DIR: '/e', XDG_STATE_HOME: '/x' }), '/e');
@@ -31,34 +63,102 @@ test('escapesDir: env override, XDG, then home', () => {
   assert.equal(escapesDir({ HOME: '/h' }), '/h/.local/state/ship-dag/escapes');
 });
 
-test('cites: #N or the PR url, but not #N as a prefix of another number', () => {
-  assert.ok(cites('fixes #5', 'o/r', 5));
-  assert.ok(cites('see https://github.com/o/r/pull/5', 'o/r', 5));
-  assert.ok(!cites('see #55 and #15', 'o/r', 5));
-  assert.ok(!cites('see https://github.com/o/other/pull/5', 'o/r', 5));
-  assert.ok(!cites(null, 'o/r', 5));
+for (const [body, repo, n, home, want] of [
+  ['fixes #5', 'o/r', 5, 'o/r', true],
+  ['regressed by o/r#5', 'o/r', 5, 'o/r', true],
+  ['regressed by O/R#5', 'o/r', 5, 'o/r', true],
+  ['see https://github.com/o/r/pull/5', 'o/r', 5, 'o/r', true],
+  ['see https://github.com/O/R/pull/5#discussion', 'o/r', 5, 'o/r', true],
+  ['see https://github.com/o/r/issues/5', 'o/r', 5, 'o/r', true],
+  ['see #55 and #15', 'o/r', 5, 'o/r', false],
+  ['see o/r#55 and https://github.com/o/r/pull/55', 'o/r', 5, 'o/r', false],
+  ['see o/other#5', 'o/r', 5, 'o/r', false],
+  ['see xo/r#5', 'o/r', 5, 'o/r', false],
+  ['see https://github.com/o/other/pull/5', 'o/r', 5, 'o/r', false],
+  [null, 'o/r', 5, 'o/r', false],
+  // A cross-repo closing issue is cited only by its qualified reference or URL, never as a bare #N.
+  ['broke #40', 'o/other', 40, 'o/r', false],
+  ['broke o/other#40', 'o/other', 40, 'o/r', true],
+  ['broke https://github.com/o/other/issues/40', 'o/other', 40, 'o/r', true],
+  // The repo is escaped before it goes into the RegExp: "." is not a wildcard.
+  ['see a/bxc#5', 'a/b.c', 5, 'a/b.c', false],
+  ['see a/b.c#5', 'a/b.c', 5, 'a/b.c', true],
+]) {
+  test(`cites(${JSON.stringify(body)}, ${repo}, ${n}, home ${home}) is ${want}`, () => {
+    assert.equal(cites(body, repo, n, home), want);
+  });
+}
+
+test('the window searches: Revert, fix and regression in the title, bug-labelled issues, over the merge day + 30 days', async () => {
+  const fake = fakeGh();
+  await run(fake);
+  assert.deepEqual(fake.calls, [VIEW, SEARCH.revert, SEARCH.fix, SEARCH.regression, SEARCH.bug]);
 });
 
-test('revert by title', async () => {
-  const [r] = await run(fakeGh({ prs: [cand({ number: 20, title: 'Revert "Add thing"' })] }));
-  assert.deepEqual(r.escapes.map((e) => [e.number, e.kind]), [[20, 'revert']]);
+for (const [name, title, want] of [
+  ['the PR title (the Revert button)', 'Revert "Add thing"', [[20, 'revert']]],
+  ['a commit subject, rebuilt from a truncated headline (git revert)', 'Revert "test(intake): share the auth_user, intake_items and manager-token seeders across the intake specs"', [[20, 'revert']]],
+  ['a title that only contains the PR title', 'Revert "Add thing twice"', []],
+  ['the truncated headline itself', 'Revert "test(intake): share the auth_user, intake_items and manager-token seeders…"', []],
+]) {
+  test(`revert by title: ${name}`, async () => {
+    assert.deepEqual(kinds(await run(fakeGh({ [SEARCH.revert]: [cand({ number: 20, title })] }))), want);
+  });
+}
+
+test('revert by body: each "This reverts commit <sha>" is resolved to its PRs through GitHub', async () => {
+  const sha = '793ac9b8b38b25e20079666b0bbed2737c8ae46b'; // a commit on main, not one of the PR's head commits
+  const other = 'f00dfeed';
+  const fake = fakeGh({
+    [SEARCH.revert]: [cand({ number: 21, title: 'Back it out', body: `This reverts commit ${sha}.` }), cand({ number: 22, title: 'Revert something else', body: `This reverts commit ${other}.` })],
+    [`api repos/o/r/commits/${sha}/pulls`]: [{ number: 5 }],
+    [`api repos/o/r/commits/${other}/pulls`]: [{ number: 7 }],
+  });
+  assert.deepEqual(kinds(await run(fake)), [[21, 'revert']]);
 });
 
-test('revert by body naming a commit of the PR', async () => {
-  const [r] = await run(fakeGh({ prs: [cand({ number: 21, title: 'Back it out', body: 'This reverts commit abc1234def0000.' })] }));
-  assert.deepEqual(r.escapes.map((e) => [e.number, e.kind]), [[21, 'revert']]);
+test('revert by body: a sha GitHub cannot resolve is warned about and skipped', async () => {
+  const fake = fakeGh({
+    [SEARCH.revert]: [cand({ number: 21, title: 'Back it out', body: 'This reverts commit deadbeef.' })],
+    'api repos/o/r/commits/deadbeef/pulls': new Error('HTTP 422: No commit found for SHA: deadbeef'),
+  });
+  const rows = await run(fake);
+  assert.deepEqual(kinds(rows), []);
+  assert.match(rows.warnings.join('\n'), /o\/r#21.*deadbeef.*No commit found/);
 });
 
-test('a bug-labelled issue citing the PR, or its closing issue', async () => {
-  const issues = [cand({ number: 30, body: 'broken since #5', labels: [{ name: 'bug' }] }), cand({ number: 31, body: 'regressed after #4', labels: [{ name: 'bug' }] })];
-  const [r] = await run(fakeGh({ issues }));
-  assert.deepEqual(r.escapes.map((e) => [e.number, e.kind]), [[30, 'follow-up-fix'], [31, 'follow-up-fix']]);
+for (const [body, want] of [
+  ['Reverts o/r#5', [[23, 'revert']]],
+  ['Reverts O/R#5\n\nWhy: it broke things', [[23, 'revert']]],
+  ['Reverts #5', [[23, 'revert']]],
+  ['Reverts o/other#5', []],
+  ['Reverts #55', []],
+  ['This change reverts #5 in part', []],
+]) {
+  test(`revert by body: ${JSON.stringify(body)}`, async () => {
+    assert.deepEqual(kinds(await run(fakeGh({ [SEARCH.revert]: [cand({ number: 23, title: 'Revert "Something"', body })] }))), want);
+  });
+}
+
+test('a bug-labelled issue citing the PR, or its same-repo closing issue, whatever the label case', async () => {
+  const issues = [cand({ number: 30, body: 'broken since #5', labels: [{ name: 'bug' }] }), cand({ number: 31, body: 'regressed after #4', labels: [{ name: 'Bug' }] })];
+  assert.deepEqual(kinds(await run(fakeGh({ [SEARCH.bug]: issues }))), [[30, 'follow-up-fix'], [31, 'follow-up-fix']]);
 });
 
-test('a fix PR citing the PR counts; one with no bug signal does not', async () => {
-  const prs = [cand({ number: 40, title: 'Fix crash', body: 'follow-up to #5' }), cand({ number: 41, title: 'Add docs', body: 'after #5' })];
-  const [r] = await run(fakeGh({ prs }));
-  assert.deepEqual(r.escapes.map((e) => e.number), [40]);
+test('a cross-repo closing issue counts only when cited by its qualified reference', async () => {
+  const issues = [cand({ number: 32, body: 'see #40', labels: [{ name: 'bug' }] }), cand({ number: 33, body: 'see o/other#40', labels: [{ name: 'bug' }] })];
+  assert.deepEqual(kinds(await run(fakeGh({ [SEARCH.bug]: issues }))), [[33, 'follow-up-fix']]);
+});
+
+test('a fix or regression PR citing the PR counts, by whole word; one without the signal does not', async () => {
+  const fixes = [
+    cand({ number: 40, title: 'Fix crash', body: 'follow-up to #5' }),
+    cand({ number: 41, title: 'Add docs', body: 'after #5' }),
+    cand({ number: 42, title: 'prefix-match the typing term', body: 'after #5' }),
+    cand({ number: 43, title: 'Fixes the empty state', body: 'after #5' }),
+  ];
+  const regressions = [cand({ number: 44, title: 'Close a regression in search', body: 'https://github.com/o/r/pull/5' })];
+  assert.deepEqual(kinds(await run(fakeGh({ [SEARCH.fix]: fixes, [SEARCH.regression]: regressions }))).map(([n]) => n), [40, 43, 44]);
 });
 
 test('a citation outside the 30-day window, or from an unrelated issue, is not counted', async () => {
@@ -66,23 +166,61 @@ test('a citation outside the 30-day window, or from an unrelated issue, is not c
     cand({ number: 50, body: 'broke #5', labels: [{ name: 'bug' }], createdAt: '2026-09-15T00:00:00Z' }),
     cand({ number: 51, body: 'unrelated crash #6', labels: [{ name: 'bug' }] }),
   ];
-  const [r] = await run(fakeGh({ issues }));
-  assert.deepEqual(r.escapes, []);
+  assert.deepEqual((await run(fakeGh({ [SEARCH.bug]: issues })))[0].escapes, []);
 });
 
-test('only PRs whose window has closed are counted', async () => {
-  const fake = fakeGh();
-  assert.deepEqual(await run(fake, { now: Date.parse('2026-08-20T00:00:00Z') }), []);
+test('only merged PRs whose window has closed are counted', async () => {
+  assert.equal((await run(fakeGh({ [SEARCH.revert]: new Error('not searched') }), { now: Date.parse('2026-08-20T00:00:00Z') })).length, 0);
+  assert.equal((await run(fakeGh({ [VIEW]: view({ mergedAt: null }) }))).length, 0);
 });
 
-test('candidates are fetched once per repo per window, then cached', async () => {
+test('candidates are fetched once per repo per merge day, and cached once that day\'s window has closed', async () => {
+  const fake = fakeGh({ 'pr view 6 --repo o/r --json mergedAt,title,commits,closingIssuesReferences': view({ mergedAt: '2026-08-01T20:00:00Z' }) });
+  const cacheDir = tmp();
+  const searches = () => fake.calls.filter((c) => c.startsWith('search')).length;
+  await run(fake, { prs: [PR, { ...PR, pr: 6 }], cacheDir });
+  assert.equal(searches(), 4);
+  await run(fake, { cacheDir });
+  assert.equal(searches(), 4);
+  assert.ok(existsSync(join(cacheDir, 'o__r', '2026-08-01.json')));
+});
+
+test('a PR whose window has closed is counted, but its merge day is not cached until every window keyed to it has', async () => {
   const fake = fakeGh();
   const cacheDir = tmp();
-  await findEscapes([PR, { ...PR, pr: 6 }], { gh: fake.gh, cacheDir, now: NOW, sleep: async () => {} });
-  const searches = () => fake.calls.filter((c) => c[0] === 'search').length;
-  assert.equal(searches(), 3);
-  await findEscapes([PR], { gh: fake.gh, cacheDir, now: NOW, sleep: async () => {} });
-  assert.equal(searches(), 3);
+  const now = Date.parse('2026-08-31T12:00:00Z'); // #5's window closed at 10:00; the day's closes at 2026-09-01T00:00
+  assert.equal((await run(fake, { cacheDir, now })).length, 1);
+  assert.ok(!existsSync(join(cacheDir, 'o__r', '2026-08-01.json')));
+  await run(fake, { cacheDir, now });
+  assert.equal(fake.calls.filter((c) => c.startsWith('search')).length, 8);
+});
+
+test('a search that reaches GitHub\'s 1000-result cap fails naming the repo and query, and caches nothing', async () => {
+  const cacheDir = tmp();
+  const full = Array.from({ length: 1000 }, (_, i) => cand({ number: 1000 + i }));
+  await assert.rejects(run(fakeGh({ [SEARCH.fix]: full }), { cacheDir }), /o\/r: gh search prs --match title fix --created 2026-08-01\.\.2026-08-31 .*1000/);
+  assert.ok(!existsSync(join(cacheDir, 'o__r')));
+});
+
+test('a rate-limited search is retried through findEscapes, with growing waits', async () => {
+  let n = 0;
+  const waits = [];
+  const fake = fakeGh({ [SEARCH.fix]: () => (++n < 3 ? new Error('HTTP 403: API rate limit exceeded') : [cand({ number: 40, title: 'Fix crash', body: '#5' })]) });
+  const rows = await run(fake, { sleep: async (ms) => waits.push(ms) });
+  assert.deepEqual(kinds(rows), [[40, 'follow-up-fix']]);
+  assert.deepEqual(waits, [2000, 4000]);
+});
+
+test('a PR GitHub cannot show is warned about and skipped; the rest are still reported', async () => {
+  const fake = fakeGh({ 'pr view 6 --repo o/r --json mergedAt,title,commits,closingIssuesReferences': new Error('GraphQL: Could not resolve to a PullRequest with the number of 6.') });
+  const rows = await run(fake, { prs: [{ ...PR, pr: 6 }, PR] });
+  assert.deepEqual(rows.map((r) => r.pr), [5]);
+  assert.match(rows.warnings.join('\n'), /o\/r#6.*Could not resolve/);
+});
+
+test('a rate limit that outlasts the backoff on a PR view fails the run, naming the repo', async () => {
+  const fake = fakeGh({ [VIEW]: new Error('API rate limit exceeded') });
+  await assert.rejects(run(fake), /o\/r.*rate limit/);
 });
 
 test('withBackoff: retries a rate limit with growing waits, then fails naming the repo', async () => {
@@ -108,13 +246,66 @@ test('escapeReport: rate by merge month and by tuningVersion', () => {
   assert.deepEqual(rep.byTuningVersion['1'], { prs: 2, escaped: 1, rate: 0.5 });
 });
 
-test('mergedPrs: merged records with a PR, once each, newest wins; retro and PR-less records skipped', () => {
-  const recs = [
-    { repo: 'o/r', pr: 5, finalState: 'merged', tuningVersion: 0 },
-    { repo: 'o/r', pr: 5, finalState: 'merged', tuningVersion: 2 },
-    { repo: 'o/r', pr: null, finalState: 'merged' },
-    { repo: 'o/r', pr: 6, finalState: 'error' },
+/** An engine base dir holding one run: its report rows and its sidecar entries. */
+function engineDir(rows, entries) {
+  const base = tmp();
+  mkdirSync(join(base, 'sd-1', 'state', 'reports'), { recursive: true });
+  writeFileSync(join(base, 'sd-1', 'state', 'reports', 'r.json'), JSON.stringify({ startedAt: '2026-08-01T00:00:00Z', issues: rows }));
+  writeFileSync(join(base, 'sd-1', 'ship-dag-wave.jsonl'), entries.map((e) => JSON.stringify(e)).join('\n'));
+  return base;
+}
+const closers = (repo, n) => `api graphql -f query=${CLOSING_PRS_QUERY} -f owner=${repo.split('/')[0]} -f name=${repo.split('/')[1]} -F n=${n}`;
+const closersOf = (...nodes) => ({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
+const byKey = (prs) => prs.toSorted((a, b) => `${a.repo}#${a.pr}`.localeCompare(`${b.repo}#${b.pr}`));
+
+test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record wins), then engine report rows', async () => {
+  const records = [
+    { repo: 'o/r', issue: 9, pr: 5, finalState: 'merged', tuningVersion: 0 },
+    { repo: 'o/r', issue: 9, pr: 5, finalState: 'merged', tuningVersion: 2 },
+    { repo: 'o/r', issue: 8, pr: 'https://github.com/o/r2/pull/12', finalState: 'merged' },
+    { repo: 'o/r', issue: 1, pr: 11, finalState: 'merged', tuningVersion: 1 },
+    { repo: 'o/r', issue: 7, pr: null, finalState: 'merged' },
+    { repo: 'o/r', issue: 6, pr: 6, finalState: 'error' },
     { kind: 'retro', wave: 1, mergedPrs: [] },
   ];
-  assert.deepEqual(mergedPrs(recs), [{ repo: 'o/r', pr: 5, tuningVersion: 2 }]);
+  const base = engineDir(
+    [{ ref: 'O/R#1', status: 'succeeded', prNumber: 11 }, { ref: 'o/r#3', status: 'succeeded', prNumber: 13 }, { ref: 'o/r#2', status: 'failed' }],
+    [{ tuningVersion: 3, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#3' }] }],
+  );
+  const fake = fakeGh({ [closers('o/r', 2)]: closersOf() });
+  const warnings = [];
+  const prs = await shipDagPrs(records, { baseDir: base, gh: fake.gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
+  assert.deepEqual(byKey(prs), [
+    { repo: 'o/r', pr: 11, tuningVersion: 1 },
+    { repo: 'o/r', pr: 13, tuningVersion: 3 },
+    { repo: 'o/r', pr: 5, tuningVersion: 2 },
+    { repo: 'o/r2', pr: 12, tuningVersion: 0 },
+  ]);
+  assert.deepEqual(fake.calls, []);
+  assert.deepEqual(fake.unexpected, []);
+});
+
+test('shipDagPrs: a sidecar ref with no PR from either source falls back to its one merged orchestrator/ closing PR', async () => {
+  const base = engineDir([{ ref: 'o/r#1', status: 'failed' }], [{ tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }, { ref: 'o/r#3' }, { ref: 'o/r#4' }, { ref: 'o/r#6' }] }]);
+  const merged = (number, headRefName) => ({ number, headRefName, mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } });
+  const fake = fakeGh({
+    [closers('o/r', 1)]: closersOf(merged(21, 'orchestrator/one'), { ...merged(22, 'orchestrator/one-retry'), mergedAt: null }),
+    [closers('o/r', 2)]: closersOf(merged(23, 'orchestrator/a'), merged(24, 'orchestrator/b')),
+    [closers('o/r', 3)]: closersOf(merged(25, 'feature/hand-made')),
+    [closers('o/r', 4)]: new Error('GraphQL: Could not resolve to an Issue with the number of 4.'),
+  });
+  const warnings = [];
+  const records = [{ repo: 'o/r', issue: 6, pr: 60, finalState: 'merged' }];
+  const prs = await shipDagPrs(records, { baseDir: base, gh: fake.gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
+  assert.deepEqual(byKey(prs), [{ repo: 'o/r', pr: 21, tuningVersion: 2 }, { repo: 'o/r', pr: 60, tuningVersion: 0 }]);
+  assert.deepEqual(fake.unexpected, []);
+  assert.equal(fake.calls.length, 4);
+  assert.match(warnings.join('\n'), /o\/r#2: 2 merged orchestrator\/ PRs/);
+  assert.match(warnings.join('\n'), /o\/r#3: 0 merged orchestrator\/ PRs/);
+  assert.match(warnings.join('\n'), /o\/r#4.*Could not resolve/);
+});
+
+test('shipDagPrs: a missing engine dir contributes nothing', async () => {
+  const prs = await shipDagPrs([{ repo: 'o/r', issue: 9, pr: 5, finalState: 'merged' }], { baseDir: join(tmp(), 'absent'), gh: fakeGh().gh });
+  assert.deepEqual(prs, [{ repo: 'o/r', pr: 5, tuningVersion: 0 }]);
 });
