@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -130,12 +130,25 @@ for (const [asOf, want] of [[undefined, 2], ['2026-10-08T19:00:00.000Z', 1], ['2
     try {
       appendWave(dir, wave(spec({ wave: 1 }), { now: () => '2026-10-08T18:00:00.000Z' }));
       appendWave(dir, wave(spec({ wave: 2 }), { now: () => '2026-10-08T20:00:00.000Z' }));
-      assert.equal(findWaveContext(dir, [`${REPO}#1`, 'WXYC/other#2'], asOf && Date.parse(asOf))?.wave ?? null, want);
+      assert.equal(findWaveContext(dir, [`${REPO}#1`, 'WXYC/other#2'], { asOf: asOf && Date.parse(asOf) })?.wave ?? null, want);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 }
+
+test('findWaveContext reports a torn sidecar line through the warn it is handed', () => {
+  const dir = tmp();
+  try {
+    appendWave(dir, wave(spec({ wave: 1 })));
+    appendFileSync(join(dir, SIDECAR_NAME), '{torn\n');
+    const warnings = [];
+    assert.equal(findWaveContext(dir, [`${REPO}#1`, 'WXYC/other#2'], { warn: (m) => warnings.push(m) }).wave, 1);
+    assert.match(warnings.join('\n'), /skipped 1 unreadable line/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('the sidecar is JSONL: one entry per line, appended without rewriting what is there', () => {
   assert.equal(SIDECAR_NAME, 'ship-dag-wave.jsonl');
@@ -249,7 +262,7 @@ for (const [newer, asOf, want] of [
         const at = name === newer ? 2_000_000_000 : 1_000_000_000;
         utimesSync(join(dir, name), at, at);
       }
-      assert.equal(findWaveConfig(dir, ['a/b#1'], asOf)?.defaultModel ?? null, want);
+      assert.equal(findWaveConfig(dir, ['a/b#1'], { asOf })?.defaultModel ?? null, want);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

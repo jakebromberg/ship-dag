@@ -440,19 +440,26 @@ test('ingest-wave: re-ingest is a no-op, and a hand-written record for the same 
   assert.equal(readRecords(hand).length, 1);
 }));
 
-test('ingest-wave: rounds from an earlier or later wave of the same ref are not this wave\'s', () => withStateDir({
-  reports: {
-    'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
-    'w2.json': stateReport([stateRow(REF)], { startedAt: T1, finishedAt: T2 }),
-  },
-  sidecar: [sidecarEntry()],
-}, (dir) => {
-  reviewFile(dir, REF, '', [blocker], '2026-10-08T18:00:00.000Z'); // before this wave
-  reviewFile(dir, REF, '.r2', [], '2026-10-08T19:30:00.000Z'); // this wave
-  reviewFile(dir, REF, '.r3', [blocker], '2026-10-08T20:30:00.000Z'); // the next wave's
-  const [rec] = ingest(dir).records;
-  assert.deepEqual([rec.reviewVerdict, rec.bounces, rec.reviewPath.endsWith('.r2.json')], ['clean', 0, true]);
-}));
+// A later report that re-ran the ref (a new PR) ends this wave's window; one that only carries the
+// row over with the same PR (a --retry-failed run of other rows) does not, since its rounds review this PR.
+for (const [name, later, want] of [
+  ['re-ran it with a new PR', stateRow(REF, { prUrl: 'https://x/12', prNumber: 12 }), ['clean', 0, '.r2.json']],
+  ['carried it over with the same PR', stateRow(REF), ['blocking', 0, '.r3.json']],
+]) {
+  test(`ingest-wave: rounds before this wave are not its, nor after a later report that ${name}`, () => withStateDir({
+    reports: {
+      'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
+      'w2.json': stateReport([later, stateRow(REF2, { status: 'failed', prUrl: null, prNumber: null })], { startedAt: T1, finishedAt: T2 }),
+    },
+    sidecar: [sidecarEntry()],
+  }, (dir) => {
+    reviewFile(dir, REF, '', [blocker], '2026-10-08T18:00:00.000Z'); // before this wave
+    reviewFile(dir, REF, '.r2', [], '2026-10-08T19:30:00.000Z'); // this wave
+    reviewFile(dir, REF, '.r3', [blocker], '2026-10-08T20:30:00.000Z'); // after w2 started
+    const [rec] = ingest(dir).records;
+    assert.deepEqual([rec.reviewVerdict, rec.bounces, rec.reviewPath.slice(-want[2].length)], want);
+  }));
+}
 
 test('ingest-wave: a later report listing only other refs does not end this ref\'s window', () => withStateDir({
   reports: {
@@ -543,6 +550,24 @@ test('ingest-wave: an empty report beside a config without an issues array recor
   assert.deepEqual(ingest(dir).log, []);
 }));
 
+test('ingest-wave: a pre-sidecar config kept under <stateDir>/state/ is found too', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) },
+  files: { 'state/config.json': config([REF], { defaultModel: 'opus' }) },
+}, (dir) => {
+  utimesSync(join(dir, 'state', 'config.json'), secs(EMITTED), secs(EMITTED));
+  const [rec] = ingest(dir).records;
+  assert.deepEqual([rec.model, rec.policySource], ['opus', 'default']);
+}));
+
+test('ingest-wave: a torn sidecar line is reported through the warn it is handed', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) },
+  files: { 'ship-dag-wave.jsonl': `{torn\n${JSON.stringify(sidecarEntry())}\n` },
+}, (dir) => {
+  const warnings = [];
+  assert.equal(ingest(dir, {}, { warn: (m) => warnings.push(m) }).records[0].policySource, 'sidecar');
+  assert.match(warnings.join('\n'), /skipped 1 unreadable line/);
+}));
+
 test('ingest-wave: a report with no configName, and no sidecar entry or config to name the run, exits 3', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF)], { configName: undefined }) },
 }, (dir) => {
@@ -603,6 +628,7 @@ const badOutcomes = [
   ['tokens a string', { [REF]: { tokens: '9' } }, /tokens/],
   ['an unknown field', { [REF]: { finalstate: 'blocked-hitl' } }, /finalstate/],
   ['an unknown hitl field', { [REF]: { hitl: { pointB: true, pointA: true } } }, /hitl\.pointA/],
+  ['a pr other than the report row\'s', { [REF]: { pr: 42 } }, /pr 42.*11/],
   ['finalState merged where neither the row nor --outcomes has a PR', { [REF]: { finalState: 'merged' } }, /finalState/, prLess],
 ];
 for (const [name, outcomes, want, row = stateRow(REF)] of badOutcomes) {
@@ -640,10 +666,13 @@ for (const [name, report] of [
   }));
 }
 
-test('ingest-wave: a wave with no terminal row records nothing', () => withStateDir({
+test('ingest-wave: a wave with no terminal row records nothing, and reads no digest for it', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF, { status: 'running', prNumber: null })]) }, sidecar: [sidecarEntry()],
 }, (dir) => {
-  assert.deepEqual(ingest(dir).log, []);
+  digestFile(dir, REF, { failureReason: 'rate-limited' }, '2026-10-08T18:00:00.000Z'); // an earlier wave's
+  const warnings = [];
+  assert.deepEqual(ingest(dir, {}, { warn: (m) => warnings.push(m) }).log, []);
+  assert.deepEqual(warnings.filter((m) => /digest/.test(m)), []);
 }));
 
 test('ingest-wave: a failed append is warned about and the rest continue', () => withStateDir({

@@ -111,19 +111,20 @@ export function readSidecar(path, { warn = (m) => console.error(m) } = {}) {
 /**
  * The entry in `dir`'s sidecar whose ref set equals `refs`, or null: the latest (if re-emitted) whose
  * `emittedAt` is not after `asOf` (epoch ms, so a re-emit after a report started is not its wave's;
- * an entry without a parseable `emittedAt` always qualifies).
+ * an entry without a parseable `emittedAt` always qualifies). `warn` gets `readSidecar`'s warning.
  */
-export function findWaveContext(dir, refs, asOf = Infinity) {
-  return readSidecar(join(dir, SIDECAR_NAME)).findLast((e) => waveContextMatches(e, refs) && !(Date.parse(e.emittedAt) > asOf)) ?? null;
+export function findWaveContext(dir, refs, { asOf = Infinity, warn } = {}) {
+  return readSidecar(join(dir, SIDECAR_NAME), { warn }).findLast((e) => waveContextMatches(e, refs) && !(Date.parse(e.emittedAt) > asOf)) ?? null;
 }
 
 /**
  * The newest `config*.json` in `dir` by mtime, written at or before `asOf` (epoch ms), whose issues
  * (`${repo}#${number}`) equal `refs` as a set, or null; on an mtime tie the last name wins. The
- * fallback for a wave emitted before the sidecar existed; an unreadable file or dir, or a config
- * without an `issues` array, is skipped.
+ * fallback for a wave emitted before the sidecar existed (a run that wrote every wave's config to
+ * one `config.json` keeps only its last wave's); an unreadable file or dir, or a config without an
+ * `issues` array, is skipped.
  */
-export function findWaveConfig(dir, refs, asOf = Infinity) {
+export function findWaveConfig(dir, refs, { asOf = Infinity } = {}) {
   let names;
   try { names = readdirSync(dir).filter((n) => /^config.*\.json$/.test(n)).sort(); } catch { return null; }
   let newest = null;
