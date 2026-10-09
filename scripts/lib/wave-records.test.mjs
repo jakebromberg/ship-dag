@@ -220,3 +220,31 @@ test("reviewPath is the last round's path, null with no rounds; the run id is th
   assert.equal(r.runId, 'ship-dag-sd-20261008-1-w2');
   assert.equal(derive().records[0].reviewPath, null);
 });
+
+const REF5 = 'WXYC/dj-site#5';
+const REF6 = 'WXYC/dj-site#6';
+const prLessCases = [
+  // [finalState, hasPr, refused, wantFinalState]
+  [undefined, true, false, 'merged'],
+  ['merged', true, false, 'merged'],
+  ['blocked-hitl', true, false, 'blocked-hitl'],
+  ['deferred', true, false, 'deferred'],
+  ['error', true, false, 'error'],
+  [undefined, false, true],
+  ['merged', false, true],
+  ['blocked-hitl', false, false, 'blocked-hitl'],
+  ['deferred', false, false, 'deferred'],
+  ['error', false, false, 'error'],
+];
+for (const [finalState, hasPr, refused, want] of prLessCases) {
+  test(`a succeeded row with ${hasPr ? 'a' : 'no'} PR and outcome finalState ${finalState} ${refused ? 'refuses the wave' : 'is recorded beside the rest of the wave'}`, () => {
+    const rows = [row({ ref: REF5, number: 5, ...(hasPr ? {} : { prNumber: null, prUrl: null }) }), row({ ref: REF6, number: 6, prNumber: 7 })];
+    const outcomes = finalState ? { [REF5]: { finalState, hitl: { pointB: finalState === 'blocked-hitl' } } } : {};
+    const go = () => derive({ report: report(rows), outcomes, entry: entry({ issues: [] }) });
+    if (refused) return assert.throws(go, /half-supplied.*WXYC\/dj-site#5/);
+    const [five, six] = go().records;
+    assert.deepEqual([five.pr, five.ciStatus, five.finalState, five.hitl.pointB], [hasPr ? 11 : null, hasPr ? 'pass' : null, want, finalState === 'blocked-hitl']);
+    assert.deepEqual([six.pr, six.ciStatus, six.finalState], [7, 'pass', 'merged']);
+    if (!hasPr) assert.deepEqual([five.implStatus, five.reviewVerdict, five.reviewPath], ['error', null, null]);
+  });
+}

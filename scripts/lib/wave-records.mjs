@@ -54,6 +54,7 @@ const sameRecord = (a, b) => sameRun(a.runId, b.runId) && a.repo === b.repo && a
  * @returns {{records: object[]}}
  * @throws when a terminal row exists but no run id can be determined (no `entry.runId`, no
  *   `report.configName`), or a `succeeded` row has no PR in the report or the outcomes
+ *   and no outcome `finalState` other than `merged`
  */
 export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing = [], warn = (m) => console.error(m), tuningVersion } = {}) {
   const all = Array.isArray(report?.issues) ? report.issues : [];
@@ -65,7 +66,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
   const blockOn = entry?.blockOn ?? DEFAULT_BLOCK_ON;
   const version = entry?.tuningVersion ?? tuningVersion ?? loadTuning().version;
 
-  const halfSupplied = rows.filter((r) => r.status === 'succeeded' && !isPr(r.prNumber) && !isPr(outcomes?.[r.ref]?.pr)).map((r) => r.ref);
+  const halfSupplied = rows.filter((r) => r.status === 'succeeded' && !isPr(r.prNumber) && !isPr(outcomes?.[r.ref]?.pr) && !(outcomes?.[r.ref]?.finalState && outcomes[r.ref].finalState !== 'merged')).map((r) => r.ref);
   if (halfSupplied.length) throw new Error(`half-supplied wave: succeeded with no PR in the report or --outcomes: ${halfSupplied.join(', ')}`);
 
   const seen = [...existing];
@@ -108,7 +109,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       model: planned?.model ?? null,
       path: 'engine',
       implStatus,
-      ciStatus: row.status === 'succeeded' ? 'pass' : null,
+      ciStatus: row.status === 'succeeded' && pr ? 'pass' : null,
       reviewVerdict: verdicts.length ? verdicts.reduce((w, v) => (SEVERITY[v] > SEVERITY[w] ? v : w)) : null,
       reviewPath: refRounds.at(-1)?.path ?? null,
       // Telemetry reads a rate-limit as an infra death beside implStatus "error"; a
