@@ -35,7 +35,8 @@ const verdictCases = [
 ];
 for (const [name, rounds, want] of verdictCases) {
   test(`reviewVerdict: ${name}`, () => {
-    assert.equal(derive({ rounds }).records[0].reviewVerdict, want);
+    // A blocking last round needs the operator's finalState (item 5 below).
+    assert.equal(derive({ rounds, outcomes: { [REF]: { finalState: 'blocked-hitl' } } }).records[0].reviewVerdict, want);
   });
 }
 
@@ -117,7 +118,7 @@ test('a null row is warned about and skipped; the rest of the wave is recorded',
 
 test('a round gateReview cannot read is blocking, and says why', () => {
   const warned = [];
-  assert.equal(derive({ rounds: [round('', null)] }, { warn: (m) => warned.push(m) }).records[0].reviewVerdict, 'blocking');
+  assert.equal(derive({ rounds: [round('', null)], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, { warn: (m) => warned.push(m) }).records[0].reviewVerdict, 'blocking');
   assert.match(warned.join('\n'), new RegExp(`${STEM}\\.json: .*read as blocking`));
 });
 
@@ -132,7 +133,7 @@ for (const status of [undefined, 'cancelled']) {
 // failureReason rides only beside implStatus "error": a rate-limited digest on a row
 // that opened a PR (backend#620), or a stale one beside a succeeded row, records null.
 const reasonCases = [
-  ['a failed row with no PR', { status: 'failed', prNumber: null, prUrl: null }, ['error', 'error', 'rate-limited', null]],
+  ['a failed row with no PR', { status: 'failed', prNumber: null, prUrl: null }, ['error', 'deferred', 'rate-limited', null]],
   ['a failed row that still opened a PR', { status: 'failed', prNumber: 625 }, ['pushed', 'merged', null, 625]],
   ['a succeeded row beside a stale digest', {}, ['pushed', 'merged', null, 11]],
 ];
@@ -192,7 +193,7 @@ test("the matching entry's blockOn gates the verdict; no entry falls back and is
   const rounds = [round('', [finding('convention')])];
   const own = derive({ rounds }).records[0];
   assert.deepEqual([own.reviewVerdict, own.policySource, own.tuningVersion], ['nits-only', 'sidecar', 1]);
-  const fallback = derive({ entry: null, rounds }).records[0];
+  const fallback = derive({ entry: null, rounds, outcomes: { [REF]: { finalState: 'blocked-hitl' } } }).records[0];
   assert.ok(DEFAULT_BLOCK_ON.includes('convention'));
   assert.deepEqual([fallback.reviewVerdict, fallback.policySource, fallback.tuningVersion], ['blocking', 'default', loadTuning().version]);
   assert.equal(fallback.runId, 'sd-20261008-1');
@@ -205,7 +206,8 @@ test("two waves in one sidecar: each record takes the matching entry's blockOn",
   appendWave(dir, entry({ wave: 2, blockOn: ['convention'], issues: [issueEntry({ ref: OTHER })] }));
   for (const [ref, want] of [[REF, 'nits-only'], [OTHER, 'blocking']]) {
     const rounds = { [ref]: [round('', [finding('convention')])] };
-    const r = deriveWaveRecords(report([row({ ref })]), findWaveContext(dir, [ref]), {}, rounds, {}, { warn: () => {} }).records[0];
+    const outcomes = { [ref]: { finalState: 'blocked-hitl' } };
+    const r = deriveWaveRecords(report([row({ ref })]), findWaveContext(dir, [ref]), {}, rounds, outcomes, { warn: () => {} }).records[0];
     assert.deepEqual([r.reviewVerdict, r.policySource], [want, 'sidecar']);
   }
 });
@@ -238,8 +240,8 @@ for (const [finalState, hasPr, refused, want] of prLessCases) {
   test(`a succeeded row with ${hasPr ? 'a' : 'no'} PR and outcome finalState ${finalState} ${refused ? 'refuses the wave' : 'is recorded beside the rest of the wave'}`, () => {
     const rows = [row({ ref: REF5, number: 5, ...(hasPr ? {} : { prNumber: null, prUrl: null }) }), row({ ref: REF6, number: 6, prNumber: 7 })];
     const outcomes = finalState ? { [REF5]: { finalState, hitl: { pointB: finalState === 'blocked-hitl' } } } : {};
-    // A blocking round on disk for #5, which a PR-less row must not read as its verdict.
-    const rounds = { [REF5]: [{ path: '/s/reviews/WXYC%2Fdj-site%235.json', review: { findings: [finding('correctness')] } }] };
+    // A blocking round on disk for a PR-less #5, which that row must not read as its verdict.
+    const rounds = hasPr ? {} : { [REF5]: [{ path: '/s/reviews/WXYC%2Fdj-site%235.json', review: { findings: [finding('correctness')] } }] };
     const go = () => deriveWaveRecords(report(rows), entry({ issues: [] }), {}, rounds, outcomes, { warn: () => {} });
     if (refused) return assert.throws(go, /half-supplied wave: succeeded with no PR in the report or --outcomes, and no --outcomes finalState of blocked-hitl, deferred or error: WXYC\/dj-site#5$/);
     const [five, six] = go().records;
@@ -254,4 +256,75 @@ test('a PR-less succeeded row is never a rate-limit death, whatever the row says
   const outcomes = { [REF5]: { finalState: 'blocked-hitl', hitl: { pointB: true } } };
   const r = derive({ report: report(rows), outcomes, entry: entry({ issues: [] }) }).records[0];
   assert.deepEqual([r.implStatus, r.failureReason], ['error', null]);
+});
+
+// ---- #100: the record contract T2a deferred ---------------------------------------------------
+
+const DIGEST = { [REF]: { status: 'failed', failureReason: 'rate-limited' } };
+const noPr = row({ status: 'failed', prNumber: null, prUrl: null });
+const BLOCKED = [round('', [finding('correctness')])];
+const FOUR = [round('', [finding('correctness'), finding('security'), finding('convention'), finding('contract')]), round('.r2', [])];
+const HAND = { runId: 'sd-20261008-1', repo: 'WXYC/dj-site', issue: 1, finalState: 'deferred', failureReason: 'rate-limited' };
+const summary = (f) => ({ category: f.category, file: f.file, line: f.line, summary: f.summary });
+const pick = (r) => [r.implStatus, r.failureReason, r.finalState, r.pr];
+// [name, derive() args, derive() opts, check(records)]
+const contractCases = [
+  ['1 findings: the worst round\'s blocking summaries, at most 3', { entry: entry({ blockOn: DEFAULT_BLOCK_ON }), rounds: FOUR, outcomes: { [REF]: { finalState: 'merged' } } }, {},
+    ([r]) => assert.deepEqual(r.findings, FOUR[0].review.findings.slice(0, 3).map(summary))],
+  ['1 findings: outcomes.findings wins', { rounds: BLOCKED, outcomes: { [REF]: { finalState: 'merged', findings: ['x'] } } }, {},
+    ([r]) => assert.deepEqual(r.findings, ['x'])],
+  ['1 findings: nits only is []', { rounds: [round('', [finding('efficiency')])] }, {}, ([r]) => assert.deepEqual(r.findings, [])],
+  ['2a a rate-limit death is deferred', { report: report([noPr]), digests: DIGEST }, {}, ([r]) => assert.deepEqual(pick(r), ['error', 'rate-limited', 'deferred', null])],
+  ['2a a hand-written deferred/error death is not duplicated (review finding 1)', { report: report([noPr]), digests: DIGEST }, { existing: [HAND] }, (rs) => assert.equal(rs.length, 0)],
+  ['2b point E: the death and the outcome are both recorded', { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { pr: 12, finalState: 'merged', bounces: 2 } } }, {},
+    (rs) => { assert.deepEqual(rs.map(pick), [['error', 'rate-limited', 'deferred', null], ['pushed', null, 'merged', 12]]); assert.deepEqual([rs[0].bounces, rs[0].reviewVerdict, rs[0].reviewPath], [0, null, null]); }],
+  ['2b point E: re-ingesting adds none', { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { pr: 12, finalState: 'merged' } } },
+    { reportId: 'w1', existing: [{ ...HAND, reportId: 'w1' }, { ...HAND, finalState: 'merged', failureReason: null, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 0)],
+  ['3 a repo without a post-session check records ciStatus none', {}, { noCheckRepos: ['WXYC/dj-site'] }, ([r]) => assert.equal(r.ciStatus, 'none')],
+  ['3 a repo with one still records pass', {}, { noCheckRepos: ['WXYC/other'] }, ([r]) => assert.equal(r.ciStatus, 'pass')],
+  ['3 a failed row records no ciStatus either way', { report: report([row({ status: 'failed' })]) }, { noCheckRepos: ['WXYC/dj-site'] }, ([r]) => assert.equal(r.ciStatus, null)],
+  ['4 complexitySource entry', { entry: entry({ issues: [issueEntry({ complexity: 'complex' })] }) }, {}, ([r]) => assert.deepEqual([r.complexity, r.complexitySource], ['complex', 'entry'])],
+  ['4 complexitySource default: a null complexity', { entry: entry({ issues: [issueEntry({ complexity: null })] }) }, {}, ([r]) => assert.deepEqual([r.complexity, r.complexitySource], ['normal', 'default'])],
+  ['4 complexitySource default: no entry', { entry: null }, {}, ([r]) => assert.deepEqual([r.complexity, r.complexitySource], ['normal', 'default'])],
+  ['5 a PR row whose last round blocks, with a finalState, is recorded', { rounds: BLOCKED, outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {}, ([r]) => assert.equal(r.finalState, 'blocked-hitl')],
+  ['5 a PR row whose last round is clean after a block is merged', { rounds: [...BLOCKED, round('.r2', [])] }, {}, ([r]) => assert.equal(r.finalState, 'merged')],
+  ['6 reportId is stamped on each record', {}, { reportId: 'w1' }, ([r]) => assert.equal(r.reportId, 'w1')],
+  ['6 the same key under another reportId is a second event', {}, { reportId: 'w2', existing: [{ ...MERGED, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 1)],
+  ['6 the same key under the same reportId is a re-ingest', {}, { reportId: 'w1', existing: [{ ...MERGED, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 0)],
+  ['6 a hand-written record has no reportId, so the key alone applies', {}, { reportId: 'w1', existing: [MERGED] }, (rs) => assert.equal(rs.length, 0)],
+  ['6 a record without a reportId against a stamped one: the key alone applies', {}, { existing: [{ ...MERGED, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 0)],
+];
+for (const [name, args, opts, check] of contractCases) {
+  test(`record contract ${name}`, () => check(derive(args, opts).records));
+}
+
+test('record contract 5: a PR row whose last round blocks, with no finalState, is half-supplied and names the ref', () => {
+  assert.throws(() => derive({ rounds: BLOCKED }), /^Error: half-supplied wave: .*WXYC\/dj-site#1$/);
+});
+
+test('record contract 7: a row without an owner/repo#N ref is malformed, not half-supplied', () => {
+  for (const bad of [row({ ref: undefined }), row({ ref: 'dj-site-1' })]) {
+    assert.throws(() => derive({ report: report([bad]) }), /^Error: malformed report row: /);
+  }
+});
+
+test('record contract 7: an empty round beside .raw warns and reads as blocking', () => {
+  const warned = [];
+  const r = derive({ rounds: [round('', [], rawDir)], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, { warn: (m) => warned.push(m) }).records[0];
+  assert.equal(r.reviewVerdict, 'blocking');
+  assert.deepEqual(warned, [`${join(rawDir, `${STEM}.json`)}: empty beside .raw; read as blocking`]);
+});
+
+// Review finding 6's gaps.
+test('a #1 round set listed by reviewRoundFiles ignores a #12 neighbour on disk', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wave-records-neighbour-'));
+  writeFileSync(join(dir, `${STEM}.json`), JSON.stringify({ issue: 1, findings: [] }));
+  writeFileSync(join(dir, 'WXYC%2Fdj-site%2312.json'), JSON.stringify({ issue: 12, findings: [finding('correctness')] }));
+  const rounds = reviewRoundFiles([dir], REF).map(({ path }) => ({ path, review: JSON.parse(readFileSync(path, 'utf8')) }));
+  const r = derive({ rounds }).records[0];
+  assert.deepEqual([r.reviewVerdict, r.reviewPath], ['clean', join(dir, `${STEM}.json`)]);
+});
+
+test('opts.tuningVersion stands in when there is no entry, even at 0', () => {
+  assert.equal(derive({ entry: null }, { tuningVersion: 0 }).records[0].tuningVersion, 0);
 });
