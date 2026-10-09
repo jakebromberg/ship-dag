@@ -86,6 +86,14 @@ test('routeFailure: a FAILED row that nevertheless opened a PR goes to the revie
   assert.equal(routeFailure({ status: 'blocked', prNumber: 625 }), 'review-gate');
 });
 
+test('routeFailure: a succeeded row with no PR goes to find-pr, not the review gate', () => {
+  // sd-20261008-153059 #87: the session pushed a self-chosen branch, so the
+  // engine recorded `succeeded` with no PR; there is nothing to gate yet.
+  assert.equal(routeFailure({ status: 'succeeded' }), 'find-pr');
+  assert.equal(routeFailure({ status: 'succeeded', prNumber: null }), 'find-pr');
+  assert.equal(routeFailure({ status: 'succeeded', prNumber: 0 }), 'find-pr');
+});
+
 test('routeFailure: a rate-limited row with no PR resumes in place at point E', () => {
   assert.equal(routeFailure({ status: 'failed', prNumber: null, failureReason: 'rate-limited' }), 'point-E');
 });
