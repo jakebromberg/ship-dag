@@ -736,6 +736,13 @@ test('ingest-wave: a session an earlier record of the run family lists is not co
   } finally { rmSync(path, { force: true }); }
 }));
 
+test('ingest-wave: reads the transcript the engine named from the report row\'s ref, as written', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow('WXYC/dj-site#01')]) }, sidecar: [sidecarEntry(['WXYC/dj-site#01'])],
+  files: logOf('WXYC/dj-site#01', sess('a', 1)),
+}, (dir) => {
+  assert.deepEqual(ingest(dir).records.map((r) => r.cost), [{ implement: costOf(['a'], 1) }]);
+}));
+
 test('ingest-wave: what implementCost warns about reaches ingestWave\'s warn', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
   files: logOf(REF, JSON.stringify({ type: 'result', total_cost_usd: 1 })),
@@ -756,7 +763,7 @@ test('normalizeRecord: validates cost.implement; a record without cost, or with 
   assert.deepEqual(normalizeRecord(base({ cost: { implement: costOf(['a'], 1) } }), FIXED).cost, { implement: costOf(['a'], 1) });
   assert.equal(normalizeRecord(base(), FIXED).cost, undefined);
   assert.equal(normalizeRecord(base({ cost: null }), FIXED).cost, null);
-  for (const cost of [5, [], { implement: 3 }, { implement: { ...costOf(['a'], 1), costUsd: 'x' } }, { implement: { ...costOf(['a'], 1), sessions: 1.5 } }, { implement: { ...costOf(['a'], 1), sessionIds: [1] } }, { implement: { ...costOf(['a'], 1), input: -1 } }]) {
+  for (const cost of [5, [], { implement: 3 }, { implement: { ...costOf(['a'], 1), sessions: 2 } }, { implement: { ...costOf(['a', 'a'], 1) } },{ implement: { ...costOf(['a'], 1), costUsd: 'x' } }, { implement: { ...costOf(['a'], 1), sessions: 1.5 } }, { implement: { ...costOf(['a'], 1), sessionIds: [1] } }, { implement: { ...costOf(['a'], 1), input: -1 } }]) {
     assert.throws(() => normalizeRecord(base({ cost }), FIXED), /bad cost/, JSON.stringify(cost));
   }
 });
