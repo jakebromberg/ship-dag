@@ -13,8 +13,9 @@
 //   issue: { kind, ts, runId, reportId, repo, issue, complexity, complexitySource, triageStatus,
 //            assignment, path, implStatus, ciStatus, reviewVerdict, failureReason, findings[],
 //            bounces, hitl:{pointA,pointB}, finalState, pr, tokens, cost? }
-// reportId (ingest-wave only) is the stem of the report a record was derived from, so two
-// records are one event only if their reportIds match; hand-written records have none.
+// reportId (ingest-wave only) is the stem of the report a record was derived from: two PR-less
+// failures (implStatus "error", the rows a retry re-runs) are one event only if their reportIds
+// match, while any other record a later report re-lists unchanged stays one; hand-written records have none.
 // complexitySource is "entry" (the wave's routing named the complexity) or "default" (it did
 // not, and `complexity` is the "normal" ingest-wave assumed); absent on older records.
 //   retro: { kind, ts, runId, wave, mergedPrs[], proposedRefactors, approvedRefactors,
@@ -53,7 +54,7 @@ import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { mintRunId, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
-import { deriveWaveRecords } from './lib/wave-records.mjs';
+import { deriveWaveRecords, REF_RE } from './lib/wave-records.mjs';
 import { entryFromConfig, findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
@@ -389,7 +390,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   let report;
   try { report = JSON.parse(readFileSync(file, 'utf8')); } catch (err) { throw new IngestError(3, `${file}: cannot read the report: ${err.message}`); }
   if (!Array.isArray(report?.issues)) throw new IngestError(3, `${file}: the report has no issues array`);
-  const bad = report.issues.find((r) => !/^[^/#]+\/[^#]+#\d+$/.test(r?.ref ?? ''));
+  const bad = report.issues.find((r) => !REF_RE.test(r?.ref ?? ''));
   if (bad) throw new IngestError(3, `${file}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}`);
   const startedAt = typeof report.startedAt === 'string' ? Date.parse(report.startedAt) : NaN;
   if (Number.isNaN(startedAt)) throw new IngestError(3, `${file}: the report has no parseable startedAt: ${JSON.stringify(report.startedAt)}`);
@@ -405,6 +406,10 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     warn(entry
       ? `ingest-wave: no sidecar entry in ${stateDir} matches this wave's issues; routing from its config, recorded under the default policy at tuningVersion 0`
       : `ingest-wave: no sidecar entry or config in ${stateDir} matches this wave's issues; complexity and routing are unknown`);
+  }
+  // Only a config says which repos run no post-session check, so without one every succeeded row reads "pass".
+  if (!config && report.issues.some((r) => r?.status === 'succeeded')) {
+    warn(`ingest-wave: no config in ${stateDir} matches this wave's issues, so which repos run no post-session check is unknown; succeeded rows record ciStatus "pass"`);
   }
 
   // A digest or review round belongs to this wave when it was written after this report started and
@@ -447,12 +452,17 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
       noCheckRepos: Object.entries(config?.repos ?? {}).filter(([, r]) => !r?.postSessionCheck).map(([repo]) => repo),
     }));
   } catch (err) {
-    // deriveWaveRecords' two refusals; anything else is a bug, not a bad artifact, and is thrown as is.
+    // deriveWaveRecords' refusals, each cause with its own remedy; anything else is a bug, not a bad artifact, and is thrown as is.
     if (/^half-supplied wave/.test(err.message)) {
-      throw new IngestError(2, `${err.message}. For a find-pr row, pass the PR step 5's lookup found as --outcomes '{"<ref>":{"pr":N}}', `
-        + `or, when point B left it without one, '{"<ref>":{"finalState":"blocked-hitl","hitl":{"pointB":true}}}'`);
+      const remedies = [
+        err.noPr?.length && `For a find-pr row, pass the PR step 5's lookup found as --outcomes '{"<ref>":{"pr":N}}', `
+          + `or, when point B left it without one, '{"<ref>":{"finalState":"blocked-hitl","hitl":{"pointB":true}}}'`,
+        err.lastBlocks?.length && `For a PR whose last round blocks, pass '{"<ref>":{"finalState":"blocked-hitl","hitl":{"pointB":true}}}' when it went to point B unmerged, `
+          + `or '{"<ref>":{"finalState":"merged","bounces":N}}' when it merged after a /review-loop fix whose round file is missing`,
+      ].filter(Boolean);
+      throw new IngestError(2, [err.message, ...remedies].join('. '));
     }
-    if (/^no run id/.test(err.message)) throw new IngestError(3, `${file}: ${err.message}`);
+    if (/^(no run id|malformed report row)/.test(err.message)) throw new IngestError(3, `${file}: ${err.message}`);
     throw err;
   }
   // A row with no record, or a skipped one (implStatus null: it never reached implement), leaves its

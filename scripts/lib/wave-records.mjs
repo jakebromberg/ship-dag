@@ -29,7 +29,8 @@ const isPr = (n) => typeof n === 'number' && n > 0;
 // A succeeded row is supplied by a PR, in the report or --outcomes, or by an outcome
 // saying it never merged: point B left a find-pr row without one.
 const NOT_MERGED = new Set(['blocked-hitl', 'deferred', 'error']);
-const REF_RE = /^(.+)#(\d+)$/;
+/** An `owner/repo#N` ref, capturing `owner/repo` and `N`: the one pattern ingest-wave checks a report against too. */
+export const REF_RE = /^([^/#]+\/[^#]+)#(\d+)$/;
 const supplied = (row, outcome) => isPr(row.prNumber) || isPr(outcome?.pr) || NOT_MERGED.has(outcome?.finalState);
 
 /** One round's `{verdict, blocking}`: unparseable, or empty beside its `.raw` (`isUnreadableEmpty`), is `blocking` with nothing to list, and is warned about. */
@@ -46,11 +47,13 @@ function roundVerdict({ path, review }, blockOn, warn) {
 
 /**
  * Whether `a` and `b` are the same event: `sameRun`, ref, finalState, and failureReason (absent reads as
- * null), and, when both carry a `reportId`, that too. A hand-written record has none, so the rest decides.
+ * null). Differing `reportId`s make them two only when both are PR-less failures (`implStatus: "error"`),
+ * the rows a retry re-runs: every report re-lists the other rows as they stood, so a record with a PR,
+ * or a skipped one, recurs unchanged. A hand-written record has no `reportId`, so the rest decides.
  */
 const sameRecord = (a, b) => sameRun(a.runId, b.runId) && a.repo === b.repo && a.issue === b.issue
   && a.finalState === b.finalState && (a.failureReason ?? null) === (b.failureReason ?? null)
-  && (!a.reportId || !b.reportId || a.reportId === b.reportId);
+  && (!a.reportId || !b.reportId || a.reportId === b.reportId || a.implStatus !== 'error' || b.implStatus !== 'error');
 
 /**
  * Derive one telemetry issue record per row of the wave `report` that is terminal for this wave.
@@ -63,13 +66,14 @@ const sameRecord = (a, b) => sameRun(a.runId, b.runId) && a.repo === b.repo && a
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl, finalState, bounces, findings, tokens}`
  * @param {{existing?: object[], warn?: (m: string) => void, tuningVersion?: unknown, reportId?: string, noCheckRepos?: Iterable<string>}} [opts]
  *   a record matching an `existing` one (or an earlier row's) on `sameRun`, ref, finalState and failureReason is dropped,
- *   unless both carry a `reportId` and the two differ; `reportId` (the report's file stem) is stamped on each record;
+ *   unless both are PR-less failures carrying different `reportId`s; `reportId` (the report's file stem) is stamped on each record;
  *   a succeeded row in a `noCheckRepos` repo (no `postSessionCheck`, so the engine ran none) records `ciStatus: "none"`
  * @returns {{records: object[]}}
  * @throws when a terminal row has no `owner/repo#N` ref (`malformed report row`), or exists but no run
- *   id can be determined (no `entry.runId`, no `report.configName`), or (`half-supplied wave`) a `succeeded`
- *   row has no PR in the report or the outcomes and no outcome `finalState` of `blocked-hitl`, `deferred`
- *   or `error`, or a row with a PR and no outcome `finalState` has a blocking last round
+ *   id can be determined (no `entry.runId`, no `report.configName`), or (`half-supplied wave`, naming every
+ *   ref under each cause and carrying them as `err.noPr` and `err.lastBlocks`) a `succeeded` row has no PR in
+ *   the report or the outcomes and no outcome `finalState` of `blocked-hitl`, `deferred` or `error`, or a row
+ *   with a PR and no outcome `finalState` has a blocking last round
  */
 export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing = [], warn = (m) => console.error(m), tuningVersion, reportId = null, noCheckRepos = [] } = {}) {
   const all = Array.isArray(report?.issues) ? report.issues : [];
@@ -84,8 +88,8 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
   const blockOn = entry?.blockOn ?? DEFAULT_BLOCK_ON;
   const version = entry?.tuningVersion ?? tuningVersion ?? loadTuning().version;
 
-  const halfSupplied = rows.filter((r) => r.status === 'succeeded' && !supplied(r, outcomes?.[r.ref])).map((r) => r.ref);
-  if (halfSupplied.length) throw new Error(`half-supplied wave: succeeded with no PR in the report or --outcomes, and no --outcomes finalState of blocked-hitl, deferred or error: ${halfSupplied.join(', ')}`);
+  const noPr = rows.filter((r) => r.status === 'succeeded' && !supplied(r, outcomes?.[r.ref])).map((r) => r.ref);
+  const lastBlocks = [];
 
   const seen = [...existing];
   const records = [];
@@ -118,10 +122,9 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         if (trigger && i > 0 && (trigger === 'review-loop') !== bounced[i]) warn(`${row.ref}: ${r.path} says trigger "${trigger}" but its predecessor ${verdicts[i - 1]}`);
       });
       // The last round blocking with no finalState to say where it went (point B after /review-loop gave up) is not a merge to guess.
-      if (verdicts.at(-1) === 'blocking' && !outcome.finalState) {
-        throw new Error(`half-supplied wave: a PR whose last review round blocks, with no --outcomes finalState: ${row.ref}`);
-      }
-      const worst = gated.reduce((w, g) => (SEVERITY[g.verdict] > SEVERITY[w.verdict] ? g : w), { verdict: 'clean', blocking: [] });
+      if (verdicts.at(-1) === 'blocking' && !outcome.finalState) lastBlocks.push(row.ref);
+      // The latest round at the highest severity: a later block is what the PR was last held on.
+      const worst = gated.reduce((w, g) => (SEVERITY[g.verdict] >= SEVERITY[w.verdict] ? g : w), { verdict: 'clean', blocking: [] });
       // Telemetry reads a rate-limit as an infra death beside implStatus "error"; a
       // rate-limited row that still opened a PR (backend#620) is gated, not dead.
       const failureReason = rateLimited && implStatus === 'error' ? 'rate-limited' : null;
@@ -144,7 +147,8 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         reviewVerdict: verdicts.length ? worst.verdict : null,
         reviewPath: refRounds.at(-1)?.path ?? null,
         failureReason,
-        findings: outcome.findings ?? worst.blocking,
+        // One string per gate entry, the shape --outcomes takes and hand-written records carry.
+        findings: outcome.findings ?? worst.blocking.map((f) => `${f.category} ${f.file}:${f.line} ${f.summary}`),
         bounces: Math.max(outcome.bounces ?? 0, bounced.filter(Boolean).length),
         hitl: { pointA: false, pointB: !!outcome.hitl?.pointB },
         // A quota death is deferred, not abandoned: point E resumes it in place.
@@ -169,6 +173,13 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       seen.push(rec);
       records.push(rec);
     }
+  }
+  const causes = [
+    [noPr, 'succeeded with no PR in the report or --outcomes, and no --outcomes finalState of blocked-hitl, deferred or error'],
+    [lastBlocks, 'a PR whose last review round blocks, with no --outcomes finalState'],
+  ].filter(([refs]) => refs.length);
+  if (causes.length) {
+    throw Object.assign(new Error(`half-supplied wave: ${causes.map(([refs, why]) => `${why}: ${refs.join(', ')}`).join('; ')}`), { noPr, lastBlocks });
   }
   return { records };
 }
