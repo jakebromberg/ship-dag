@@ -10,9 +10,13 @@
 // Record schema (see references/ for the authored version). Records carry a
 // `kind` discriminator — "issue" (default; stamped when absent, so pre-existing
 // logs stay valid) or "retro" (one run-scoped record per step-6.5 pass):
-//   issue: { kind, ts, runId, repo, issue, complexity, triageStatus, assignment, path,
-//            implStatus, ciStatus, reviewVerdict, failureReason, findings[], bounces,
-//            hitl:{pointA,pointB}, finalState, pr, tokens, cost? }
+//   issue: { kind, ts, runId, reportId, repo, issue, complexity, complexitySource, triageStatus,
+//            assignment, path, implStatus, ciStatus, reviewVerdict, failureReason, findings[],
+//            bounces, hitl:{pointA,pointB}, finalState, pr, tokens, cost? }
+// reportId (ingest-wave only) is the stem of the report a record was derived from, so two
+// records are one event only if their reportIds match; hand-written records have none.
+// complexitySource is "entry" (the wave's routing named the complexity) or "default" (it did
+// not, and `complexity` is the "normal" ingest-wave assumed); absent on older records.
 //   retro: { kind, ts, runId, wave, mergedPrs[], proposedRefactors, approvedRefactors,
 //            declinedRefactors, proposedAdjustments, approvedAdjustments,
 //            declinedAdjustments, filed[], adjusted[], declinedTitles[], tokens }
@@ -66,6 +70,7 @@ const FAILURE_REASONS = new Set(['rate-limited', null]);
 const REVIEW_VERDICTS = new Set(['clean', 'blocking', 'nits-only', null]);
 const TRIAGE_STATUSES = new Set(['clear', 'needs-decision']);
 const CI_STATUSES = new Set(['pass', 'fail', 'none', null]);
+const COMPLEXITY_SOURCES = new Set(['entry', 'default']);
 const TIERS = ['mechanical', 'normal', 'complex'];
 const REQUIRED = ['runId', 'repo', 'issue', 'complexity', 'triageStatus', 'path', 'finalState'];
 const KINDS = new Set(['issue', 'retro']);
@@ -108,6 +113,7 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
     if (rec[k] === undefined || rec[k] === null) throw new Error(`missing required key: ${k}`);
   }
   if (!COMPLEXITIES.has(rec.complexity)) throw new Error(`bad complexity: ${rec.complexity}`);
+  if (rec.complexitySource !== undefined && !COMPLEXITY_SOURCES.has(rec.complexitySource)) throw new Error(`bad complexitySource: ${rec.complexitySource}`);
   if (!PATHS.has(rec.path)) throw new Error(`bad path: ${rec.path}`);
   if (!FINAL_STATES.has(rec.finalState)) throw new Error(`bad finalState: ${rec.finalState}`);
   const implStatus = rec.implStatus ?? null;
@@ -393,8 +399,8 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   // Routing emitted after this report started is a later re-emit's (a retry's), not this wave's.
   // An older layout kept the config under <stateDir>/state/.
   let entry = findWaveContext(stateDir, refs, { asOf: startedAt, warn });
+  const config = findWaveConfig(stateDir, refs, { asOf: startedAt }) ?? findWaveConfig(join(stateDir, 'state'), refs, { asOf: startedAt });
   if (!entry) {
-    const config = findWaveConfig(stateDir, refs, { asOf: startedAt }) ?? findWaveConfig(join(stateDir, 'state'), refs, { asOf: startedAt });
     entry = config && entryFromConfig(config);
     warn(entry
       ? `ingest-wave: no sidecar entry in ${stateDir} matches this wave's issues; routing from its config, recorded under the default policy at tuningVersion 0`
@@ -435,7 +441,11 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   try {
     // A sidecar entry carries its wave's tuningVersion; a wave without one ran before the sidecar
     // did, and epic #64 reads a missing version as 0, never as today's.
-    ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing, warn, tuningVersion: 0 }));
+    ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, {
+      existing, warn, tuningVersion: 0, reportId: basename(file, '.json'),
+      // The engine runs no post-session check for a repo whose config entry has none.
+      noCheckRepos: Object.entries(config?.repos ?? {}).filter(([, r]) => !r?.postSessionCheck).map(([repo]) => repo),
+    }));
   } catch (err) {
     // deriveWaveRecords' two refusals; anything else is a bug, not a bad artifact, and is thrown as is.
     if (/^half-supplied wave/.test(err.message)) {

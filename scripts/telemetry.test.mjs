@@ -40,6 +40,13 @@ test('normalizeRecord: rejects bad enums and missing required keys', () => {
   assert.throws(() => normalizeRecord('not an object', FIXED), /must be an object/);
 });
 
+test('normalizeRecord: accepts reportId and complexitySource, and a record without them stays valid', () => {
+  const r = normalizeRecord(base({ reportId: 'w1', complexitySource: 'default' }), FIXED);
+  assert.deepEqual([r.reportId, r.complexitySource], ['w1', 'default']);
+  assert.doesNotThrow(() => normalizeRecord(base(), FIXED));
+  assert.throws(() => normalizeRecord(base({ complexitySource: 'guess' }), FIXED), /bad complexitySource/);
+});
+
 test('normalizeRecord: point-A defer record — nullable downstream fields default to null', () => {
   const r = normalizeRecord(
     { runId: 'r', repo: 'WXYC/x', issue: 2, complexity: 'complex', triageStatus: 'needs-decision', path: 'inline', finalState: 'blocked-hitl', hitl: { pointA: true } },
@@ -424,7 +431,22 @@ test('ingest-wave records a terminal wave from its report, sidecar, digest and r
   assert.deepEqual(log.map((r) => r.issue), [1, 2]);
   const [merged, errored] = records;
   assert.deepEqual([merged.finalState, merged.pr, merged.reviewVerdict, merged.bounces, merged.complexity, merged.model, merged.policySource, merged.tuningVersion], ['merged', 11, 'blocking', 1, 'complex', 'opus', 'sidecar', 7]);
-  assert.deepEqual([errored.finalState, errored.implStatus, errored.failureReason], ['error', 'error', 'rate-limited']);
+  assert.deepEqual([errored.finalState, errored.implStatus, errored.failureReason], ['deferred', 'error', 'rate-limited']);
+}));
+
+test('ingest-wave stamps the report stem as reportId, and records ciStatus none for a repo whose config has no postSessionCheck', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) },
+  sidecar: [sidecarEntry([REF, REF2])],
+  configs: { 'config.json': config([REF, REF2], { repos: { 'WXYC/dj-site': { baseBranch: 'main' } } }) },
+}, (dir) => {
+  const { records } = ingest(dir);
+  assert.deepEqual(records.map((r) => [r.reportId, r.ciStatus]), [['w1', 'none'], ['w1', 'none']]);
+  const withCheck = withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF)]) },
+    sidecar: [sidecarEntry()],
+    configs: { 'config.json': config([REF], { repos: { 'WXYC/dj-site': { baseBranch: 'main', postSessionCheck: { commands: ['npm test'] } } } }) },
+  }, (d) => ingest(d).records[0].ciStatus);
+  assert.equal(withCheck, 'pass');
 }));
 
 test('ingest-wave: re-ingest is a no-op, and a hand-written record for the same key is not duplicated', () => withStateDir({
@@ -456,7 +478,7 @@ for (const [name, later, want] of [
     reviewFile(dir, REF, '', [blocker], '2026-10-08T18:00:00.000Z'); // before this wave
     reviewFile(dir, REF, '.r2', [], '2026-10-08T19:30:00.000Z'); // this wave
     reviewFile(dir, REF, '.r3', [blocker], '2026-10-08T20:30:00.000Z'); // after w2 started
-    const [rec] = ingest(dir).records;
+    const [rec] = ingest(dir, { [REF]: { finalState: 'blocked-hitl' } }).records;
     assert.deepEqual([rec.reviewVerdict, rec.bounces, rec.reviewPath.slice(-want[2].length)], want);
   }));
 }
@@ -470,7 +492,7 @@ test('ingest-wave: a later report listing only other refs does not end this ref\
 }, (dir) => {
   reviewFile(dir, REF, '', [blocker], '2026-10-08T19:30:00.000Z');
   reviewFile(dir, REF, '.r2', [], '2026-10-08T20:30:00.000Z'); // after w2 started, e.g. a re-gate after rebase
-  const [rec] = ingest(dir).records;
+  const [rec] = ingest(dir, { [REF]: { finalState: 'blocked-hitl' } }).records;
   assert.deepEqual([rec.reviewVerdict, rec.bounces, rec.reviewPath.endsWith('.r2.json')], ['blocking', 1, true]);
 }));
 
@@ -478,7 +500,7 @@ test('ingest-wave: a torn round file reads as blocking, never clean', () => with
   reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
 }, (dir) => {
   reviewFile(dir, REF, '', '{"findings": [', '2026-10-08T19:10:00.000Z');
-  assert.equal(ingest(dir).records[0].reviewVerdict, 'blocking');
+  assert.equal(ingest(dir, { [REF]: { finalState: 'blocked-hitl' } }).records[0].reviewVerdict, 'blocking');
 }));
 
 test('ingest-wave: a torn failure digest is warned about and leaves failureReason null', () => withStateDir({
