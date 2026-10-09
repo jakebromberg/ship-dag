@@ -27,10 +27,13 @@ const NOT_YET = new Set(['pending', 'running', 'interrupted']);
 // What routeFailure counts as a PR, so the half-supplied check and the record agree with it.
 const isPr = (n) => typeof n === 'number' && n > 0;
 
-/** One round's verdict: unparseable, or empty beside its `.raw` (`isUnreadableEmpty`), is `blocking`. */
-function roundVerdict({ path, review }, blockOn) {
+/** One round's verdict: unparseable, or empty beside its `.raw` (`isUnreadableEmpty`), is `blocking`, and is warned about. */
+function roundVerdict({ path, review }, blockOn, warn) {
   if (isUnreadableEmpty(path, review)) return 'blocking';
-  try { return gateReview(review, blockOn).verdict; } catch { return 'blocking'; }
+  try { return gateReview(review, blockOn).verdict; } catch (err) {
+    warn(`${path}: ${err.message}; read as blocking`);
+    return 'blocking';
+  }
 }
 
 /** Whether `a` and `b` are the same event: `sameRun`, ref, finalState, and failureReason (absent reads as null). */
@@ -41,20 +44,22 @@ const sameRecord = (a, b) => sameRun(a.runId, b.runId) && a.repo === b.repo && a
  * Derive one telemetry issue record per row of the wave `report` that is terminal for this wave.
  * @param {object} report parsed `<stateDir>/state/reports/<id>.json`
  * @param {object|null} entry this wave's sidecar entry (`findWaveContext`), or null
- * @param {Record<string, object>} digests failure digests by ref; read only for rows that did not succeed
+ * @param {Record<string, object>} digests this wave's failure digests by ref (`<stateDir>/state/failure-digest/`,
+ *   rewritten for every row that did not succeed); read only for those rows
  * @param {Record<string, Array<{path: string, review: object|null}>>} rounds each ref's rounds, oldest first
  *   as `reviewRoundFiles` returns them; `review` is the parsed file, null when unparseable
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl, finalState, bounces, findings, tokens}`
  * @param {{existing?: object[], warn?: (m: string) => void, tuningVersion?: unknown}} [opts]
  *   a record matching an `existing` one (or an earlier row's) on `sameRun`, ref, finalState and failureReason is dropped
  * @returns {{records: object[]}}
- * @throws when no run id can be determined (no `entry.runId`, no `report.configName`), or a
- *   `succeeded` row has no PR in the report or the outcomes
+ * @throws when a terminal row exists but no run id can be determined (no `entry.runId`, no
+ *   `report.configName`), or a `succeeded` row has no PR in the report or the outcomes
  */
 export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing = [], warn = (m) => console.error(m), tuningVersion } = {}) {
   const all = Array.isArray(report?.issues) ? report.issues : [];
-  for (const r of all) if (!TERMINAL.has(r.status) && !NOT_YET.has(r.status)) warn(`${r.ref}: unknown status ${JSON.stringify(r.status)}, not recorded`);
-  const rows = all.filter((r) => TERMINAL.has(r.status));
+  for (const r of all) if (!TERMINAL.has(r?.status) && !NOT_YET.has(r?.status)) warn(`${r?.ref}: unknown status ${JSON.stringify(r?.status)}, not recorded`);
+  const rows = all.filter((r) => TERMINAL.has(r?.status));
+  if (!rows.length) return { records: [] };
   const runId = entry?.runId || runIdFromConfigName(report?.configName);
   if (!runId) throw new Error('no run id: the wave has no sidecar entry with a runId and the report has no configName');
   const blockOn = entry?.blockOn ?? DEFAULT_BLOCK_ON;
@@ -80,8 +85,9 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     // SKILL.md step 5 and the failure-routing tests hand it in as one, so it stays.
     const implStatus = skipped ? null : routeFailure({ ...row, prNumber: pr }) === 'review-gate' ? 'pushed' : row.status === 'blocked' ? 'blocked' : 'error';
 
-    const refRounds = rounds?.[row.ref] ?? [];
-    const verdicts = refRounds.map((r) => roundVerdict(r, blockOn));
+    // Only a row the gate reviewed has rounds; older ones on disk are not this row's verdict.
+    const refRounds = implStatus === 'pushed' ? rounds?.[row.ref] ?? [] : [];
+    const verdicts = refRounds.map((r) => roundVerdict(r, blockOn, warn));
     // A round is a bounce when the round before it blocked; a re-gate after a clean
     // round (a rebase moving the base) is not.
     const bounced = verdicts.map((_, i) => i > 0 && verdicts[i - 1] === 'blocking');
