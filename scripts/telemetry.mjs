@@ -28,16 +28,22 @@
 //   node telemetry.mjs append @rec.json      # ...from a file
 //   node telemetry.mjs append -              # ...from stdin
 //   node telemetry.mjs report [--since ISO]  # print leading indicators (JSON + table)
+//   node telemetry.mjs ingest-wave <report> [--outcomes <json|@file>]
+//                                            # append a wave's records, derived from its engine artifacts
 //   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
 // else ~/.local/state/ship-dag/runs.jsonl.
 
-import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { mintRunId } from './lib/run-id.mjs';
+import { mintRunId, runIdFromConfigName } from './lib/run-id.mjs';
+import { deriveWaveRecords } from './lib/wave-records.mjs';
+import { findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
+import { reviewRoundFiles } from './lib/review-rounds.mjs';
+import { digestPathForRef } from './diagnose-failure.mjs';
 
 const COMPLEXITIES = new Set(['mechanical', 'normal', 'complex']);
 const PATHS = new Set(['engine', 'inline', 'workflow']);
@@ -271,6 +277,109 @@ export function renderReport(rep) {
   return lines.join('\n');
 }
 
+/** A failed ingest; `code` is the CLI exit status: 2 for a bad invocation or half-supplied wave, 3 for a malformed artifact. */
+class IngestError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+
+const isPositiveInt = (v) => Number.isInteger(v) && v > 0;
+const OUTCOME_RULES = {
+  pr: [isPositiveInt, 'a positive integer'],
+  finalState: [(v) => FINAL_STATES.has(v), `one of ${[...FINAL_STATES].join('|')}`],
+  bounces: [(v) => Number.isInteger(v) && v >= 0, 'a non-negative integer'],
+  findings: [(v) => Array.isArray(v) && v.every((f) => typeof f === 'string'), 'an array of strings'],
+  tokens: [(v) => v === null || (typeof v === 'number' && Number.isFinite(v)), 'a number or null'],
+};
+
+/** Throw an exit-2 IngestError naming the ref and field of the first `--outcomes` violation. */
+function validateOutcomes(outcomes, refs) {
+  if (!outcomes || typeof outcomes !== 'object' || Array.isArray(outcomes)) throw new IngestError(2, '--outcomes must be an object keyed by ref');
+  for (const [ref, o] of Object.entries(outcomes)) {
+    if (!refs.includes(ref)) throw new IngestError(2, `--outcomes names ${ref}, which is not in the report`);
+    if (!o || typeof o !== 'object' || Array.isArray(o)) throw new IngestError(2, `--outcomes ${ref} must be an object`);
+    for (const [field, [ok, want]] of Object.entries(OUTCOME_RULES)) {
+      if (o[field] !== undefined && !ok(o[field])) throw new IngestError(2, `--outcomes ${ref}: ${field} must be ${want}, got ${JSON.stringify(o[field])}`);
+    }
+    if (o.hitl !== undefined && typeof o.hitl?.pointB !== 'boolean') throw new IngestError(2, `--outcomes ${ref}: hitl.pointB must be a boolean, got ${JSON.stringify(o.hitl?.pointB)}`);
+  }
+}
+
+/** The sidecar-shaped entry for a wave that predates the sidecar, built from its config (no blockOn, so the default policy). */
+const entryFromConfig = (config) => ({
+  runId: runIdFromConfigName(config.name),
+  issues: config.issues.map((i) => ({ ref: `${i.repo}#${i.number}`, complexity: i.complexity, effort: i.effort ?? config.defaultEffort, model: i.model ?? config.defaultModel })),
+});
+
+/** Parse every JSON file in `dir` into `[name, value]`, skipping what doesn't parse. */
+function readJsonDir(dir) {
+  let names;
+  try { names = readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return []; }
+  return names.flatMap((n) => { try { return [[n, JSON.parse(readFileSync(join(dir, n), 'utf8'))]]; } catch { return []; } });
+}
+
+/**
+ * Record a wave from its engine artifacts: derive its issue records (`deriveWaveRecords`) and append
+ * the ones the log lacks. `reportPath` is `<stateDir>/state/reports/<id>.json`; everything else is
+ * read from beside it. Appends are best-effort: a failed one is warned about and the rest continue.
+ * @param {string} reportPath
+ * @param {Record<string, object>} outcomes per-ref `{pr, hitl:{pointB}, finalState, bounces, findings, tokens}`
+ * @param {{path?: string, warn?: (m: string) => void}} [opts]
+ * @returns {{records: object[], appended: number}} `records` are the ones derived as new
+ * @throws {IngestError} code 2 for bad `--outcomes` or a half-supplied wave, 3 for a malformed artifact
+ */
+export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn = (m) => console.error(m) } = {}) {
+  const file = resolve(reportPath);
+  const stateDir = dirname(dirname(dirname(file)));
+  let report;
+  try { report = JSON.parse(readFileSync(file, 'utf8')); } catch (err) { throw new IngestError(3, `${file}: cannot read the report: ${err.message}`); }
+  if (!Array.isArray(report?.issues)) throw new IngestError(3, `${file}: the report has no issues array`);
+  const bad = report.issues.find((r) => !/^[^/#]+\/[^#]+#\d+$/.test(r?.ref ?? ''));
+  if (bad) throw new IngestError(3, `${file}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}`);
+  const refs = report.issues.map((r) => r.ref);
+  validateOutcomes(outcomes, refs);
+
+  let entry = findWaveContext(stateDir, refs);
+  if (!entry) {
+    const config = findWaveConfig(stateDir, refs);
+    entry = config && entryFromConfig(config);
+    if (!entry) warn(`ingest-wave: no sidecar entry or config in ${stateDir} matches this wave's issues; complexity and routing are unknown`);
+  }
+
+  const digests = {};
+  for (const r of report.issues.filter((i) => i.status !== 'succeeded')) {
+    const p = digestPathForRef(stateDir, r.ref);
+    if (!existsSync(p)) continue;
+    try { digests[r.ref] = JSON.parse(readFileSync(p, 'utf8')); } catch (err) { warn(`${p}: unreadable digest (${err.message}); ignored`); }
+  }
+
+  // A round belongs to this wave when it was written after this report started and before the next
+  // report listing the same ref did (a retry or a later wave re-reviews the ref).
+  const startedAt = Date.parse(report.startedAt);
+  const others = readJsonDir(dirname(file)).map(([, rep]) => rep).filter((rep) => Array.isArray(rep?.issues) && Date.parse(rep.startedAt) > startedAt);
+  const rounds = {};
+  for (const ref of refs) {
+    const end = Math.min(Infinity, ...others.filter((rep) => rep.issues.some((r) => r?.ref === ref)).map((rep) => Date.parse(rep.startedAt)));
+    rounds[ref] = reviewRoundFiles([join(stateDir, 'reviews')], ref)
+      .filter((f) => !(f.mtimeMs < startedAt) && f.mtimeMs < end)
+      .map((f) => {
+        try { return { path: f.path, review: JSON.parse(readFileSync(f.path, 'utf8')) }; } catch { return { path: f.path, review: null }; }
+      });
+  }
+
+  let records;
+  try {
+    ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing: readRecords(path), warn }));
+  } catch (err) {
+    if (/^half-supplied wave/.test(err.message)) throw new IngestError(2, `${err.message}. For a find-pr row, pass the PR step 5's lookup found as --outcomes '{"<ref>":{"pr":N}}'`);
+    throw new IngestError(3, err.message);
+  }
+  let appended = 0;
+  for (const rec of records) {
+    try { appendRecord(rec, { path }); appended += 1; } catch (err) { warn(`ingest-wave: could not append ${rec.repo}#${rec.issue} (${rec.finalState}): ${err.message}`); }
+  }
+  return { records, appended };
+}
+
 function readArg(src) {
   if (src === '-') return readFileSync(0, 'utf8');
   if (src.startsWith('@')) return readFileSync(src.slice(1), 'utf8');
@@ -304,12 +413,26 @@ function main(argv) {
     process.stderr.write(`${renderReport(rep)}\n`);
     return;
   }
+  if (cmd === 'ingest-wave') {
+    const i = rest.indexOf('--outcomes');
+    const file = rest.find((a, j) => !a.startsWith('--') && (i < 0 || j !== i + 1));
+    if (!file || (i >= 0 && !rest[i + 1])) { process.stderr.write('usage: ingest-wave <report> [--outcomes <json|@file>]\n'); process.exit(2); }
+    try {
+      const outcomes = i >= 0 ? JSON.parse(readArg(rest[i + 1])) : {};
+      const { records, appended } = ingestWave(file, outcomes);
+      process.stderr.write(`ingest-wave: ${records.length} new record(s), ${appended} appended → ${telemetryPath()}\n`);
+    } catch (err) {
+      process.stderr.write(`ingest-wave: ${err.message}\n`);
+      process.exit(err instanceof IngestError ? err.code : 2);
+    }
+    return;
+  }
   if (cmd === 'run-id') {
     const i = rest.indexOf('--label');
     process.stdout.write(`${process.env.SHIP_DAG_RUN_ID || mintRunId({ label: i >= 0 ? rest[i + 1] : undefined })}\n`);
     return;
   }
-  process.stderr.write('usage: telemetry.mjs <append|report|run-id> ...\n');
+  process.stderr.write('usage: telemetry.mjs <append|report|ingest-wave|run-id> ...\n');
   process.exit(2);
 }
 

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { waveSidecar as wave_, waveContextMatches, readSidecar, appendWave, findWaveContext, specBlockOn, SIDECAR_NAME } from './wave-sidecar.mjs';
+import { waveSidecar as wave_, waveContextMatches, readSidecar, appendWave, findWaveContext, findWaveConfig, specBlockOn, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { load as loadTuning } from './tuning.mjs';
 import { buildConfig } from '../emit-config.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
@@ -196,4 +196,17 @@ test('the CLI writes the sidecar at dirname(configDir) and prints the same confi
   assert.equal(blocked.status, 0);
   assert.match(blocked.stderr, /wave sidecar/);
   assert.equal(blocked.stdout.replaceAll(bad, dir), ok.stdout);
+});
+
+test('findWaveConfig picks the config whose issue refs equal the set, skipping unreadable files', () => {
+  const dir = tmp();
+  const cfg = (...refs) => JSON.stringify({ name: 'ship-dag-run1', issues: refs.map((r) => ({ repo: r.split('#')[0], number: Number(r.split('#')[1]) })) });
+  writeFileSync(join(dir, 'config-a.json'), cfg('a/b#1'));
+  writeFileSync(join(dir, 'config-b.json'), cfg('a/b#1', 'c/d#2'));
+  writeFileSync(join(dir, 'config-torn.json'), '{');
+  writeFileSync(join(dir, 'notes.json'), cfg('a/b#1', 'c/d#3'));
+  assert.equal(findWaveConfig(dir, ['c/d#2', 'a/b#1']).issues.length, 2);
+  assert.equal(findWaveConfig(dir, ['a/b#1']).issues.length, 1);
+  assert.equal(findWaveConfig(dir, ['c/d#3', 'a/b#1']), null, 'only config*.json files are candidates');
+  assert.equal(findWaveConfig(join(dir, 'missing'), ['a/b#1']), null);
 });

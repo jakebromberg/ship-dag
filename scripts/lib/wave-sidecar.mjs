@@ -13,7 +13,7 @@
 // JSONL, like runs.jsonl: each wave is one `appendFileSync`, so nothing already
 // written is ever rewritten, overlapping emits can't drop an entry, and a corrupt
 // line costs only itself.
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { parseBlockOn } from '../review-gate.mjs';
 import { runIdFromConfigName } from './run-id.mjs';
@@ -96,6 +96,22 @@ export function readSidecar(path, { warn = (m) => console.error(m) } = {}) {
 /** The entry in `dir`'s sidecar whose ref set equals `refs`, or null (the latest, if re-emitted). */
 export function findWaveContext(dir, refs) {
   return readSidecar(join(dir, SIDECAR_NAME)).findLast((e) => waveContextMatches(e, refs)) ?? null;
+}
+
+/**
+ * The newest `config*.json` in `dir` whose issues (`${repo}#${number}`) equal `refs` as a set, or null.
+ * The fallback for a wave emitted before the sidecar existed; an unreadable file or dir is skipped.
+ */
+export function findWaveConfig(dir, refs) {
+  let names;
+  try { names = readdirSync(dir).filter((n) => /^config.*\.json$/.test(n)).sort(); } catch { return null; }
+  for (const name of names.reverse()) {
+    let config;
+    try { config = JSON.parse(readFileSync(join(dir, name), 'utf-8')); } catch { continue; }
+    const issues = Array.isArray(config?.issues) ? config.issues.map((i) => ({ ref: `${i?.repo}#${i?.number}` })) : [];
+    if (waveContextMatches({ issues }, refs)) return config;
+  }
+  return null;
 }
 
 /**

@@ -1,12 +1,14 @@
 // Tests for the telemetry log + report. Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
-import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath } from './telemetry.mjs';
+import { join, dirname } from 'node:path';
+import { rmSync, readFileSync, existsSync, appendFileSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave } from './telemetry.mjs';
+import { appendWave } from './lib/wave-sidecar.mjs';
+import { artifactStem } from './lib/failure.mjs';
 
 const approx = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 const FIXED = () => '2026-07-23T00:00:00.000Z';
@@ -333,4 +335,195 @@ test('run-id subcommand: echoes SHIP_DAG_RUN_ID when set, else mints (with --lab
   assert.equal(run({ SHIP_DAG_RUN_ID: 'sd-20260101-000000-x' }, '--label', 'ignored'), 'sd-20260101-000000-x');
   assert.match(run({}), /^sd-\d{8}-\d{6}$/);
   assert.match(run({}, '--label', 'My Label'), /^sd-\d{8}-\d{6}-my-label$/);
+});
+
+// ---- ingest-wave ----------------------------------------------------------
+
+const REF = 'WXYC/dj-site#1';
+const REF2 = 'WXYC/dj-site#2';
+const RUN = 'sd-20261008-153059';
+const T0 = '2026-10-08T19:00:00.000Z';
+const T1 = '2026-10-08T20:00:00.000Z';
+const secs = (iso) => Date.parse(iso) / 1000;
+const stateRow = (ref, over = {}) => ({ ref, number: Number(ref.split('#')[1]), status: 'succeeded', prUrl: 'https://x/11', prNumber: 11, ...over });
+const stateReport = (rows, over = {}) => ({ configName: `ship-dag-${RUN}`, startedAt: T0, finishedAt: T1, issues: rows, ...over });
+
+/** A throwaway engine state dir; `reports` maps file name → report, `files` maps a path under the dir → contents. */
+function stateDir({ reports = {}, sidecar = [], configs = {}, files = {} } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'ingest-wave-'));
+  mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
+  for (const [name, rep] of Object.entries(reports)) writeFileSync(join(dir, 'state', 'reports', name), typeof rep === 'string' ? rep : JSON.stringify(rep));
+  for (const entry of sidecar) appendWave(dir, entry);
+  for (const [name, cfg] of Object.entries(configs)) writeFileSync(join(dir, name), JSON.stringify(cfg));
+  for (const [rel, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    writeFileSync(join(dir, rel), typeof body === 'string' ? body : JSON.stringify(body));
+  }
+  return dir;
+}
+const reportPath = (dir, name = 'w1.json') => join(dir, 'state', 'reports', name);
+const reviewFile = (dir, ref, tag, findings, at) => {
+  const path = join(dir, 'reviews', `${artifactStem(ref)}${tag}.json`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ issue: 1, findings }));
+  utimesSync(path, secs(at), secs(at));
+};
+const blocker = { category: 'correctness', verdict: 'CONFIRMED', file: 'a.js', line: 1, summary: 's' };
+const sidecarEntry = (refs = [REF]) => ({
+  runId: RUN, wave: 1, tuningVersion: 7, blockOn: ['correctness'],
+  issues: refs.map((ref) => ({ ref, complexity: 'complex', effort: 'high', effortSource: 'tuning', model: 'opus' })),
+});
+const config = (refs = [REF], over = {}) => ({
+  name: `ship-dag-${RUN}`, defaultModel: 'sonnet', defaultEffort: 'medium',
+  issues: refs.map((ref) => ({ repo: ref.split('#')[0], number: Number(ref.split('#')[1]) })),
+  ...over,
+});
+const ingest = (dir, outcomes = {}, opts = {}) => {
+  const path = tmpLog();
+  try {
+    return { ...ingestWave(reportPath(dir), outcomes, { path, warn: () => {}, ...opts }), log: readRecords(path), path };
+  } finally {
+    rmSync(path, { force: true });
+  }
+};
+const exitCode = (fn) => { try { fn(); } catch (err) { return err.code; } return 0; };
+
+test('ingest-wave records a terminal wave from its report, sidecar, digest and rounds', () => {
+  const dir = stateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { status: 'failed', prUrl: null, prNumber: null })]) },
+    sidecar: [sidecarEntry([REF, REF2])],
+    files: { [`state/failure-digest/issue-${artifactStem(REF2)}.json`]: { failureReason: 'rate-limited' } },
+  });
+  reviewFile(dir, REF, '', [blocker], '2026-10-08T19:10:00.000Z');
+  reviewFile(dir, REF, '.r2', [], '2026-10-08T19:20:00.000Z');
+  const { records, log } = ingest(dir);
+  assert.deepEqual(log.map((r) => r.issue), [1, 2]);
+  const [merged, errored] = records;
+  assert.deepEqual([merged.finalState, merged.pr, merged.reviewVerdict, merged.bounces, merged.complexity, merged.model, merged.policySource], ['merged', 11, 'blocking', 1, 'complex', 'opus', 'sidecar']);
+  assert.deepEqual([errored.finalState, errored.implStatus, errored.failureReason], ['error', 'error', 'rate-limited']);
+});
+
+test('ingest-wave: re-ingest is a no-op, and a hand-written record for the same key is not duplicated', () => {
+  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()] });
+  const path = tmpLog();
+  try {
+    assert.equal(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).appended, 1);
+    assert.equal(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).appended, 0);
+    assert.equal(readRecords(path).length, 1);
+    const hand = tmpLog();
+    appendRecord(base({ runId: RUN, repo: 'WXYC/dj-site', issue: 1, finalState: 'merged' }), { path: hand });
+    assert.equal(ingestWave(reportPath(dir), {}, { path: hand, warn: () => {} }).appended, 0);
+    assert.equal(readRecords(hand).length, 1);
+    rmSync(hand, { force: true });
+  } finally {
+    rmSync(path, { force: true });
+  }
+});
+
+test('ingest-wave: rounds from an earlier or later wave of the same ref are not this wave\'s', () => {
+  const T2 = '2026-10-08T21:00:00.000Z';
+  const dir = stateDir({
+    reports: {
+      'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
+      'w2.json': stateReport([stateRow(REF)], { startedAt: T1, finishedAt: T2 }),
+    },
+    sidecar: [sidecarEntry()],
+  });
+  reviewFile(dir, REF, '', [blocker], '2026-10-08T18:00:00.000Z'); // before this wave
+  reviewFile(dir, REF, '.r2', [], '2026-10-08T19:30:00.000Z'); // this wave
+  reviewFile(dir, REF, '.r3', [blocker], '2026-10-08T20:30:00.000Z'); // the next wave's
+  const [rec] = ingest(dir).records;
+  assert.deepEqual([rec.reviewVerdict, rec.bounces, rec.reviewPath.endsWith('.r2.json')], ['clean', 0, true]);
+});
+
+test('ingest-wave: a pre-sidecar wave takes its routing from the matching config and is marked default policy', () => {
+  const dir = stateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) },
+    sidecar: [sidecarEntry(['WXYC/other#9'])],
+    configs: {
+      'config-other.json': config(['WXYC/other#9']),
+      'config.json': config([REF, REF2], { issues: [
+        { repo: 'WXYC/dj-site', number: 1, complexity: 'complex', effort: 'high', model: 'opus' },
+        { repo: 'WXYC/dj-site', number: 2 },
+      ] }),
+    },
+  });
+  const [a, b] = ingest(dir).records;
+  assert.deepEqual([a.runId, a.complexity, a.effort, a.model, a.policySource], [RUN, 'complex', 'high', 'opus', 'default']);
+  assert.deepEqual([b.complexity, b.effort, b.model, b.policySource], ['normal', 'medium', 'sonnet', 'default']);
+});
+
+test('ingest-wave: a find-pr row records the PR from --outcomes', () => {
+  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF, { prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry()] });
+  assert.equal(ingest(dir, { [REF]: { pr: 42 } }).records[0].pr, 42);
+});
+
+test('ingest-wave refuses a half-supplied wave (exit 2), naming find-pr and --outcomes', () => {
+  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry([REF, REF2])] });
+  const path = tmpLog();
+  assert.throws(() => ingestWave(reportPath(dir), {}, { path, warn: () => {} }), (err) => err.code === 2 && err.message.includes(REF2) && /find-pr/.test(err.message) && /--outcomes/.test(err.message));
+  assert.equal(existsSync(path), false, 'nothing is appended');
+});
+
+const badOutcomes = [
+  ['an unknown ref', { 'WXYC/nope#5': {} }, /WXYC\/nope#5/],
+  ['a non-object', [], /object/],
+  ['pr zero', { [REF]: { pr: 0 } }, /pr/],
+  ['pr a string', { [REF]: { pr: '11' } }, /pr/],
+  ['finalState off the enum', { [REF]: { finalState: 'done' } }, /finalState/],
+  ['bounces negative', { [REF]: { bounces: -1 } }, /bounces/],
+  ['bounces fractional', { [REF]: { bounces: 1.5 } }, /bounces/],
+  ['hitl.pointB a string', { [REF]: { hitl: { pointB: 'yes' } } }, /hitl\.pointB/],
+  ['findings not strings', { [REF]: { findings: [1] } }, /findings/],
+  ['tokens a string', { [REF]: { tokens: '9' } }, /tokens/],
+];
+for (const [name, outcomes, want] of badOutcomes) {
+  test(`ingest-wave: --outcomes with ${name} exits 2`, () => {
+    const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()] });
+    assert.throws(() => ingestWave(reportPath(dir), outcomes, { path: tmpLog(), warn: () => {} }), (err) => err.code === 2 && want.test(err.message) && (name === 'a non-object' || err.message.includes(name === 'an unknown ref' ? 'nope' : REF)));
+  });
+}
+
+test('ingest-wave: a well-formed --outcomes entry is applied', () => {
+  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()] });
+  const [rec] = ingest(dir, { [REF]: { finalState: 'blocked-hitl', bounces: 2, hitl: { pointB: true }, findings: ['f'], tokens: null } }).records;
+  assert.deepEqual([rec.finalState, rec.bounces, rec.hitl.pointB, rec.findings, rec.tokens], ['blocked-hitl', 2, true, ['f'], null]);
+});
+
+for (const [name, reports] of [
+  ['unparseable', { 'w1.json': '{not json' }],
+  ['without an issues array', { 'w1.json': { configName: 'x' } }],
+  ['with a row lacking an owner/repo#N ref', { 'w1.json': stateReport([stateRow('dj-site#1')]) }],
+]) {
+  test(`ingest-wave: a report ${name} exits 3`, () => {
+    const dir = stateDir({ reports });
+    assert.equal(exitCode(() => ingestWave(reportPath(dir), {}, { path: tmpLog(), warn: () => {} })), 3);
+  });
+}
+
+test('ingest-wave: a wave with no terminal row records nothing', () => {
+  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF, { status: 'running', prNumber: null })]) }, sidecar: [sidecarEntry()] });
+  assert.deepEqual(ingest(dir).log, []);
+});
+
+test('ingest-wave: a failed append is warned about and the rest continue', () => {
+  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) }, sidecar: [sidecarEntry([REF, REF2])] });
+  const warnings = [];
+  const path = join(dir, 'a-file');
+  writeFileSync(path, '');
+  const out = ingestWave(reportPath(dir), {}, { path: join(path, 'runs.jsonl'), warn: (m) => warnings.push(m) });
+  assert.equal(out.appended, 0);
+  assert.equal(warnings.length, 2);
+});
+
+test('ingest-wave CLI: usage, bad outcomes JSON and a malformed report map to exit codes', () => {
+  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF)]), 'bad.json': '{' }, sidecar: [sidecarEntry()] });
+  const cli = (...args) => spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'ingest-wave', ...args],
+    { env: { ...process.env, SHIP_DAG_TELEMETRY: tmpLog() }, encoding: 'utf8' });
+  assert.equal(cli().status, 2);
+  assert.equal(cli(reportPath(dir), '--outcomes', '{nope').status, 2);
+  assert.equal(cli(reportPath(dir, 'bad.json')).status, 3);
+  const ok = cli(reportPath(dir));
+  assert.equal(ok.status, 0);
+  assert.match(ok.stderr, /1 appended/);
 });
