@@ -23,6 +23,7 @@ const view = (over) => ({
 const search = (kind, ...q) => ['search', kind, '--repo', 'o/r', '--created', '2026-08-01..2026-08-31', '--limit', '1000', '--json', 'number,title,body,labels,createdAt', ...q].join(' ');
 const SEARCH = {
   revert: search('prs', '--match', 'title', 'Revert'),
+  reverts: search('prs', '--match', 'body', 'This reverts commit'),
   fix: search('prs', '--match', 'title', 'fix'),
   regression: search('prs', '--match', 'title', 'regression'),
   bug: search('issues', '--label', 'bug'),
@@ -34,7 +35,7 @@ const SEARCH = {
  * (called per request) and may return an Error, which the call throws.
  */
 function fakeGh(routes = {}) {
-  const table = { [VIEW]: view(), [SEARCH.revert]: [], [SEARCH.fix]: [], [SEARCH.regression]: [], [SEARCH.bug]: [], ...routes };
+  const table = { [VIEW]: view(), [SEARCH.revert]: [], [SEARCH.reverts]: [], [SEARCH.fix]: [], [SEARCH.regression]: [], [SEARCH.bug]: [], ...routes };
   const calls = [];
   const unexpected = [];
   const gh = async (args) => {
@@ -89,10 +90,10 @@ for (const [body, repo, n, home, want] of [
   });
 }
 
-test('the window searches: Revert, fix and regression in the title, bug-labelled issues, over the merge day + 30 days', async () => {
+test('the window searches: Revert in the title or "This reverts commit" in the body, fix and regression in the title, bug-labelled issues, over the merge day + 30 days', async () => {
   const fake = fakeGh();
   await run(fake);
-  assert.deepEqual(fake.calls, [VIEW, SEARCH.revert, SEARCH.fix, SEARCH.regression, SEARCH.bug]);
+  assert.deepEqual(fake.calls, [VIEW, SEARCH.revert, SEARCH.reverts, SEARCH.fix, SEARCH.regression, SEARCH.bug]);
 });
 
 for (const [name, title, want] of [
@@ -110,7 +111,9 @@ test('revert by body: each "This reverts commit <sha>" is resolved to its PRs th
   const sha = '793ac9b8b38b25e20079666b0bbed2737c8ae46b'; // a commit on main, not one of the PR's head commits
   const other = 'f00dfeed';
   const fake = fakeGh({
-    [SEARCH.revert]: [cand({ number: 21, title: 'Back it out', body: `This reverts commit ${sha}.` }), cand({ number: 22, title: 'Revert something else', body: `This reverts commit ${other}.` })],
+    // A retitled revert is found only by the body search.
+    [SEARCH.reverts]: [cand({ number: 21, title: 'Re-enable label colors', body: `This reverts commit ${sha}.` })],
+    [SEARCH.revert]: [cand({ number: 22, title: 'Revert something else', body: `This reverts commit ${other}.` })],
     [`api repos/o/r/commits/${sha}/pulls`]: [{ number: 5 }],
     [`api repos/o/r/commits/${other}/pulls`]: [{ number: 7 }],
   });
@@ -126,16 +129,16 @@ test('revert by body: a body that names what it reverts decides over a title equ
   assert.deepEqual(kinds(await run(fake)), []);
 });
 
-test('revert by body: a sha GitHub cannot resolve is warned about, and its merge day is left uncached so a later run retries', async () => {
+test('revert by body: a sha GitHub cannot resolve is warned about, leaves the title to decide, and leaves the merge day uncached for a later run', async () => {
   const cacheDir = tmp();
   const fake = fakeGh({
     [SEARCH.revert]: [cand({ number: 21, title: 'Revert "Add thing"', body: 'This reverts commit deadbeef.' })],
     'api repos/o/r/commits/deadbeef/pulls': new Error('HTTP 502: Bad Gateway'),
   });
   const rows = await run(fake, { cacheDir });
-  assert.deepEqual(kinds(rows), []);
+  assert.deepEqual(kinds(rows), [[21, 'revert']]);
   assert.match(rows.warnings.join('\n'), /o\/r#21.*deadbeef.*Bad Gateway/);
-  assert.ok(!existsSync(join(cacheDir, 'o__r', '2026-08-01.json')));
+  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
 });
 
 for (const [body, want] of [
@@ -197,16 +200,16 @@ test('candidates are fetched once per repo per merge day, and cached once that d
   const cacheDir = tmp();
   const searches = () => fake.calls.filter((c) => c.startsWith('search')).length;
   await run(fake, { prs: [PR, { ...PR, pr: 6 }], cacheDir });
-  assert.equal(searches(), 4);
+  assert.equal(searches(), 5);
   await run(fake, { cacheDir });
-  assert.equal(searches(), 4);
-  assert.ok(existsSync(join(cacheDir, 'o__r', '2026-08-01.json')));
+  assert.equal(searches(), 5);
+  assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
 });
 
 test('an unreadable cache file is warned about and searched again, not fatal', async () => {
   const cacheDir = tmp();
-  mkdirSync(join(cacheDir, 'o__r'));
-  writeFileSync(join(cacheDir, 'o__r', '2026-08-01.json'), '[{"number": 4');
+  mkdirSync(join(cacheDir, 'v1', 'o__r'), { recursive: true });
+  writeFileSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json'), '[{"number": 4');
   const fake = fakeGh({ [SEARCH.bug]: [cand({ number: 30, body: 'broken since #5', labels: [{ name: 'bug' }] })] });
   const rows = await run(fake, { cacheDir });
   assert.deepEqual(kinds(rows), [[30, 'follow-up-fix']]);
@@ -218,16 +221,24 @@ test('a PR whose window has closed is counted, but its merge day is not cached u
   const cacheDir = tmp();
   const now = Date.parse('2026-08-31T12:00:00Z'); // #5's window closed at 10:00; the day's closes at 2026-09-01T00:00
   assert.equal((await run(fake, { cacheDir, now })).length, 1);
-  assert.ok(!existsSync(join(cacheDir, 'o__r', '2026-08-01.json')));
+  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
   await run(fake, { cacheDir, now });
-  assert.equal(fake.calls.filter((c) => c.startsWith('search')).length, 8);
+  assert.equal(fake.calls.filter((c) => c.startsWith('search')).length, 10);
+});
+
+test('a merge day is cached only a settling day after its window closes, so late-indexed candidates are not frozen out', async () => {
+  const cacheDir = tmp();
+  await run(fakeGh(), { cacheDir, now: Date.parse('2026-09-01T12:00:00Z') });
+  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+  await run(fakeGh(), { cacheDir, now: Date.parse('2026-09-02T00:00:00Z') });
+  assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
 });
 
 test('a search that reaches GitHub\'s 1000-result cap fails naming the repo and query, and caches nothing', async () => {
   const cacheDir = tmp();
   const full = Array.from({ length: 1000 }, (_, i) => cand({ number: 1000 + i }));
   await assert.rejects(run(fakeGh({ [SEARCH.fix]: full }), { cacheDir }), /o\/r: gh search prs --match title fix --created 2026-08-01\.\.2026-08-31 .*1000/);
-  assert.ok(!existsSync(join(cacheDir, 'o__r')));
+  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r')));
 });
 
 test('a rate-limited search is retried through findEscapes, with growing waits', async () => {
@@ -302,7 +313,12 @@ test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record win
   ];
   const base = engineDir(
     [{ ref: 'O/R#1', status: 'succeeded', prNumber: 11 }, { ref: 'o/r#3', status: 'succeeded', prNumber: 13 }, { ref: 'o/r#2', status: 'failed' }],
-    [{ tuningVersion: 3, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#3' }] }, { tuningVersion: 4, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'o/r#3' }] }],
+    // As ingest-wave reads it: the newest entry with the report's exact ref set, emitted by the time it started.
+    [
+      { tuningVersion: 3, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'O/R#1' }, { ref: 'o/r#3' }, { ref: 'o/r#2' }] },
+      { tuningVersion: 5, emittedAt: '2026-07-31T12:00:00Z', issues: [{ ref: 'o/r#3' }, { ref: 'o/r#2' }] },
+      { tuningVersion: 4, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'O/R#1' }, { ref: 'o/r#3' }, { ref: 'o/r#2' }] },
+    ],
   );
   const fake = fakeGh({ [closers('o/r', 2)]: closersOf() });
   const warnings = [];
@@ -314,7 +330,7 @@ test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record win
     { repo: 'o/r', pr: 6, tuningVersion: 0 },
     { repo: 'o/r2', pr: 12, tuningVersion: 0 },
   ]);
-  assert.deepEqual(fake.calls, []);
+  assert.deepEqual(fake.calls, [closers('o/r', 2)]); // o/r#2 has no PR from either source
   assert.deepEqual(fake.unexpected, []);
 });
 
