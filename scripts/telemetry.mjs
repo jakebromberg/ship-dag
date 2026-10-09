@@ -28,15 +28,18 @@
 //   node telemetry.mjs append @rec.json      # ...from a file
 //   node telemetry.mjs append -              # ...from stdin
 //   node telemetry.mjs report [--since ISO]  # print leading indicators (JSON + table)
-//   node telemetry.mjs ingest-wave <report> [--outcomes <json|@file>]
-//                                            # append a wave's records, derived from its engine artifacts
+//   node telemetry.mjs ingest-wave <stateDir>/state/reports/<id>.json [--outcomes <json|@file|->]
+//                                            # append a wave's records, derived from its engine artifacts;
+//                                            # exit 2: bad invocation or --outcomes, or a half-supplied
+//                                            # wave; 3: malformed report; 1: anything else
 //   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
 // else ~/.local/state/ship-dag/runs.jsonl.
 
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { mintRunId, runIdFromConfigName } from './lib/run-id.mjs';
@@ -291,16 +294,24 @@ const OUTCOME_RULES = {
   tokens: [(v) => v === null || (typeof v === 'number' && Number.isFinite(v)), 'a number or null'],
 };
 
-/** Throw an exit-2 IngestError naming the ref and field of the first `--outcomes` violation. */
+/**
+ * Throw an exit-2 IngestError naming the ref and field of the first `--outcomes` violation: a bad
+ * value, or a field outside `OUTCOME_RULES` and `hitl.pointB` (a misspelled one would be dropped).
+ */
 function validateOutcomes(outcomes, refs) {
   if (!outcomes || typeof outcomes !== 'object' || Array.isArray(outcomes)) throw new IngestError(2, '--outcomes must be an object keyed by ref');
   for (const [ref, o] of Object.entries(outcomes)) {
     if (!refs.includes(ref)) throw new IngestError(2, `--outcomes names ${ref}, which is not in the report`);
     if (!o || typeof o !== 'object' || Array.isArray(o)) throw new IngestError(2, `--outcomes ${ref} must be an object`);
+    const unknown = Object.keys(o).find((k) => k !== 'hitl' && !Object.hasOwn(OUTCOME_RULES, k));
+    if (unknown) throw new IngestError(2, `--outcomes ${ref}: unknown field ${unknown} (known: ${Object.keys(OUTCOME_RULES).join(', ')}, hitl.pointB)`);
     for (const [field, [ok, want]] of Object.entries(OUTCOME_RULES)) {
       if (o[field] !== undefined && !ok(o[field])) throw new IngestError(2, `--outcomes ${ref}: ${field} must be ${want}, got ${JSON.stringify(o[field])}`);
     }
-    if (o.hitl !== undefined && typeof o.hitl?.pointB !== 'boolean') throw new IngestError(2, `--outcomes ${ref}: hitl.pointB must be a boolean, got ${JSON.stringify(o.hitl?.pointB)}`);
+    if (o.hitl === undefined) continue;
+    if (typeof o.hitl?.pointB !== 'boolean') throw new IngestError(2, `--outcomes ${ref}: hitl.pointB must be a boolean, got ${JSON.stringify(o.hitl?.pointB)}`);
+    const extra = Object.keys(o.hitl).find((k) => k !== 'pointB');
+    if (extra) throw new IngestError(2, `--outcomes ${ref}: unknown field hitl.${extra} (known: hitl.pointB)`);
   }
 }
 
@@ -325,16 +336,23 @@ function readJsonDir(dir) {
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl:{pointB}, finalState, bounces, findings, tokens}`
  * @param {{path?: string, warn?: (m: string) => void}} [opts]
  * @returns {{records: object[], appended: number}} `records` are the ones derived as new
- * @throws {IngestError} code 2 for bad `--outcomes` or a half-supplied wave, 3 for a malformed artifact
+ * @throws {IngestError} code 2 for a report outside `<stateDir>/state/reports/`, bad `--outcomes` or a
+ *   half-supplied wave, 3 for a malformed artifact; any other error (an unreadable log) is thrown as is
  */
 export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn = (m) => console.error(m) } = {}) {
   const file = resolve(reportPath);
+  // Everything else is found from the state dir, so a report out of place would record defaults.
+  if (basename(dirname(file)) !== 'reports' || basename(dirname(dirname(file))) !== 'state') {
+    throw new IngestError(2, `${file}: not at <stateDir>/state/reports/<id>.json, so its state dir is unknown`);
+  }
   const stateDir = dirname(dirname(dirname(file)));
   let report;
   try { report = JSON.parse(readFileSync(file, 'utf8')); } catch (err) { throw new IngestError(3, `${file}: cannot read the report: ${err.message}`); }
   if (!Array.isArray(report?.issues)) throw new IngestError(3, `${file}: the report has no issues array`);
   const bad = report.issues.find((r) => !/^[^/#]+\/[^#]+#\d+$/.test(r?.ref ?? ''));
   if (bad) throw new IngestError(3, `${file}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}`);
+  const startedAt = typeof report.startedAt === 'string' ? Date.parse(report.startedAt) : NaN;
+  if (Number.isNaN(startedAt)) throw new IngestError(3, `${file}: the report has no parseable startedAt: ${JSON.stringify(report.startedAt)}`);
   const refs = report.issues.map((r) => r.ref);
   validateOutcomes(outcomes, refs);
 
@@ -354,7 +372,6 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
 
   // A round belongs to this wave when it was written after this report started and before the next
   // report listing the same ref did (a retry or a later wave re-reviews the ref).
-  const startedAt = Date.parse(report.startedAt);
   const others = readJsonDir(dirname(file)).map(([, rep]) => rep).filter((rep) => Array.isArray(rep?.issues) && Date.parse(rep.startedAt) > startedAt);
   const rounds = {};
   for (const ref of refs) {
@@ -366,11 +383,18 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
       });
   }
 
+  // Read outside the try below: an unreadable log is not a malformed report.
+  const existing = readRecords(path);
   let records;
   try {
-    ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing: readRecords(path), warn }));
+    // A sidecar entry carries its wave's tuningVersion; a wave without one ran before the sidecar
+    // did, and epic #64 reads a missing version as 0, never as today's.
+    ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing, warn, tuningVersion: 0 }));
   } catch (err) {
-    if (/^half-supplied wave/.test(err.message)) throw new IngestError(2, `${err.message}. For a find-pr row, pass the PR step 5's lookup found as --outcomes '{"<ref>":{"pr":N}}'`);
+    if (/^half-supplied wave/.test(err.message)) {
+      throw new IngestError(2, `${err.message}. For a find-pr row, pass the PR step 5's lookup found as --outcomes '{"<ref>":{"pr":N}}', `
+        + `or, when point B left it without one, '{"<ref>":{"finalState":"blocked-hitl","hitl":{"pointB":true}}}'`);
+    }
     throw new IngestError(3, err.message);
   }
   let appended = 0;
@@ -414,16 +438,22 @@ function main(argv) {
     return;
   }
   if (cmd === 'ingest-wave') {
-    const i = rest.indexOf('--outcomes');
-    const file = rest.find((a, j) => !a.startsWith('--') && (i < 0 || j !== i + 1));
-    if (!file || (i >= 0 && !rest[i + 1])) { process.stderr.write('usage: ingest-wave <report> [--outcomes <json|@file>]\n'); process.exit(2); }
+    let file, outcomes;
     try {
-      const outcomes = i >= 0 ? JSON.parse(readArg(rest[i + 1])) : {};
+      const { values, positionals } = parseArgs({ args: rest, options: { outcomes: { type: 'string' } }, allowPositionals: true });
+      if (positionals.length !== 1) throw new Error(`expected one report, got ${positionals.length}`);
+      [file] = positionals;
+      outcomes = values.outcomes === undefined ? {} : JSON.parse(readArg(values.outcomes));
+    } catch (err) {
+      process.stderr.write(`ingest-wave: ${err.message}\nusage: ingest-wave <report> [--outcomes <json|@file|->]\n`);
+      process.exit(2);
+    }
+    try {
       const { records, appended } = ingestWave(file, outcomes);
       process.stderr.write(`ingest-wave: ${records.length} new record(s), ${appended} appended → ${telemetryPath()}\n`);
     } catch (err) {
       process.stderr.write(`ingest-wave: ${err.message}\n`);
-      process.exit(err instanceof IngestError ? err.code : 2);
+      process.exit(err instanceof IngestError ? err.code : 1);
     }
     return;
   }

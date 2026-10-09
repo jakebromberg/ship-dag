@@ -13,7 +13,7 @@
 // JSONL, like runs.jsonl: each wave is one `appendFileSync`, so nothing already
 // written is ever rewritten, overlapping emits can't drop an entry, and a corrupt
 // line costs only itself.
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { parseBlockOn } from '../review-gate.mjs';
 import { runIdFromConfigName } from './run-id.mjs';
@@ -99,19 +99,21 @@ export function findWaveContext(dir, refs) {
 }
 
 /**
- * The newest `config*.json` in `dir` whose issues (`${repo}#${number}`) equal `refs` as a set, or null.
- * The fallback for a wave emitted before the sidecar existed; an unreadable file or dir is skipped.
+ * The newest `config*.json` in `dir` by mtime whose issues (`${repo}#${number}`) equal `refs` as a
+ * set, or null; on an mtime tie the last name wins. The fallback for a wave emitted before the
+ * sidecar existed; an unreadable file or dir is skipped.
  */
 export function findWaveConfig(dir, refs) {
   let names;
   try { names = readdirSync(dir).filter((n) => /^config.*\.json$/.test(n)).sort(); } catch { return null; }
-  for (const name of names.reverse()) {
-    let config;
-    try { config = JSON.parse(readFileSync(join(dir, name), 'utf-8')); } catch { continue; }
+  let newest = null;
+  for (const name of names) {
+    let config, mtimeMs;
+    try { ({ mtimeMs } = statSync(join(dir, name))); config = JSON.parse(readFileSync(join(dir, name), 'utf-8')); } catch { continue; }
     const issues = Array.isArray(config?.issues) ? config.issues.map((i) => ({ ref: `${i?.repo}#${i?.number}` })) : [];
-    if (waveContextMatches({ issues }, refs)) return config;
+    if (waveContextMatches({ issues }, refs) && !(newest?.mtimeMs > mtimeMs)) newest = { config, mtimeMs };
   }
-  return null;
+  return newest?.config ?? null;
 }
 
 /**

@@ -344,28 +344,37 @@ const REF2 = 'WXYC/dj-site#2';
 const RUN = 'sd-20261008-153059';
 const T0 = '2026-10-08T19:00:00.000Z';
 const T1 = '2026-10-08T20:00:00.000Z';
+const T2 = '2026-10-08T21:00:00.000Z';
 const secs = (iso) => Date.parse(iso) / 1000;
 const stateRow = (ref, over = {}) => ({ ref, number: Number(ref.split('#')[1]), status: 'succeeded', prUrl: 'https://x/11', prNumber: 11, ...over });
 const stateReport = (rows, over = {}) => ({ configName: `ship-dag-${RUN}`, startedAt: T0, finishedAt: T1, issues: rows, ...over });
 
-/** A throwaway engine state dir; `reports` maps file name → report, `files` maps a path under the dir → contents. */
-function stateDir({ reports = {}, sidecar = [], configs = {}, files = {} } = {}) {
+/**
+ * Run `fn` on a throwaway engine state dir, removed afterwards. `reports` maps file name → report,
+ * `files` maps a path under the dir → contents (a string is written as is, anything else as JSON).
+ */
+function withStateDir({ reports = {}, sidecar = [], configs = {}, files = {} }, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'ingest-wave-'));
-  mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
-  for (const [name, rep] of Object.entries(reports)) writeFileSync(join(dir, 'state', 'reports', name), typeof rep === 'string' ? rep : JSON.stringify(rep));
-  for (const entry of sidecar) appendWave(dir, entry);
-  for (const [name, cfg] of Object.entries(configs)) writeFileSync(join(dir, name), JSON.stringify(cfg));
-  for (const [rel, body] of Object.entries(files)) {
-    mkdirSync(dirname(join(dir, rel)), { recursive: true });
-    writeFileSync(join(dir, rel), typeof body === 'string' ? body : JSON.stringify(body));
+  try {
+    mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
+    for (const [name, rep] of Object.entries(reports)) writeFileSync(join(dir, 'state', 'reports', name), typeof rep === 'string' ? rep : JSON.stringify(rep));
+    for (const entry of sidecar) appendWave(dir, entry);
+    for (const [name, cfg] of Object.entries(configs)) writeFileSync(join(dir, name), JSON.stringify(cfg));
+    for (const [rel, body] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true });
+      writeFileSync(join(dir, rel), typeof body === 'string' ? body : JSON.stringify(body));
+    }
+    return fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  return dir;
 }
 const reportPath = (dir, name = 'w1.json') => join(dir, 'state', 'reports', name);
+/** Write a review round for `ref` with mtime `at`; `findings` is the array, or a string written as is (a torn file). */
 const reviewFile = (dir, ref, tag, findings, at) => {
   const path = join(dir, 'reviews', `${artifactStem(ref)}${tag}.json`);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({ issue: 1, findings }));
+  writeFileSync(path, typeof findings === 'string' ? findings : JSON.stringify({ issue: 1, findings }));
   utimesSync(path, secs(at), secs(at));
 };
 const blocker = { category: 'correctness', verdict: 'CONFIRMED', file: 'a.js', line: 1, summary: 's' };
@@ -378,94 +387,147 @@ const config = (refs = [REF], over = {}) => ({
   issues: refs.map((ref) => ({ repo: ref.split('#')[0], number: Number(ref.split('#')[1]) })),
   ...over,
 });
-const ingest = (dir, outcomes = {}, opts = {}) => {
+/** ingestWave on `file` into a throwaway log, removed afterwards; returns its result plus what the log held. */
+const ingestFile = (file, outcomes = {}, opts = {}) => {
   const path = tmpLog();
   try {
-    return { ...ingestWave(reportPath(dir), outcomes, { path, warn: () => {}, ...opts }), log: readRecords(path), path };
+    return { ...ingestWave(file, outcomes, { path, warn: () => {}, ...opts }), log: readRecords(path) };
   } finally {
     rmSync(path, { force: true });
   }
 };
+const ingest = (dir, outcomes, opts) => ingestFile(reportPath(dir), outcomes, opts);
 const exitCode = (fn) => { try { fn(); } catch (err) { return err.code; } return 0; };
 
-test('ingest-wave records a terminal wave from its report, sidecar, digest and rounds', () => {
-  const dir = stateDir({
-    reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { status: 'failed', prUrl: null, prNumber: null })]) },
-    sidecar: [sidecarEntry([REF, REF2])],
-    files: { [`state/failure-digest/issue-${artifactStem(REF2)}.json`]: { failureReason: 'rate-limited' } },
-  });
+test('ingest-wave records a terminal wave from its report, sidecar, digest and rounds', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { status: 'failed', prUrl: null, prNumber: null })]) },
+  sidecar: [sidecarEntry([REF, REF2])],
+  files: { [`state/failure-digest/issue-${artifactStem(REF2)}.json`]: { failureReason: 'rate-limited' } },
+}, (dir) => {
   reviewFile(dir, REF, '', [blocker], '2026-10-08T19:10:00.000Z');
   reviewFile(dir, REF, '.r2', [], '2026-10-08T19:20:00.000Z');
   const { records, log } = ingest(dir);
   assert.deepEqual(log.map((r) => r.issue), [1, 2]);
   const [merged, errored] = records;
-  assert.deepEqual([merged.finalState, merged.pr, merged.reviewVerdict, merged.bounces, merged.complexity, merged.model, merged.policySource], ['merged', 11, 'blocking', 1, 'complex', 'opus', 'sidecar']);
+  assert.deepEqual([merged.finalState, merged.pr, merged.reviewVerdict, merged.bounces, merged.complexity, merged.model, merged.policySource, merged.tuningVersion], ['merged', 11, 'blocking', 1, 'complex', 'opus', 'sidecar', 7]);
   assert.deepEqual([errored.finalState, errored.implStatus, errored.failureReason], ['error', 'error', 'rate-limited']);
-});
+}));
 
-test('ingest-wave: re-ingest is a no-op, and a hand-written record for the same key is not duplicated', () => {
-  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()] });
-  const path = tmpLog();
-  try {
-    assert.equal(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).appended, 1);
-    assert.equal(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).appended, 0);
-    assert.equal(readRecords(path).length, 1);
-    const hand = tmpLog();
-    appendRecord(base({ runId: RUN, repo: 'WXYC/dj-site', issue: 1, finalState: 'merged' }), { path: hand });
-    assert.equal(ingestWave(reportPath(dir), {}, { path: hand, warn: () => {} }).appended, 0);
-    assert.equal(readRecords(hand).length, 1);
-    rmSync(hand, { force: true });
-  } finally {
-    rmSync(path, { force: true });
-  }
-});
+test('ingest-wave: re-ingest is a no-op, and a hand-written record for the same key is not duplicated', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
+  const path = join(dir, 'runs.jsonl');
+  const hand = join(dir, 'hand.jsonl');
+  assert.equal(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).appended, 1);
+  assert.equal(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).appended, 0);
+  assert.equal(readRecords(path).length, 1);
+  appendRecord(base({ runId: RUN, repo: 'WXYC/dj-site', issue: 1, finalState: 'merged' }), { path: hand });
+  assert.equal(ingestWave(reportPath(dir), {}, { path: hand, warn: () => {} }).appended, 0);
+  assert.equal(readRecords(hand).length, 1);
+}));
 
-test('ingest-wave: rounds from an earlier or later wave of the same ref are not this wave\'s', () => {
-  const T2 = '2026-10-08T21:00:00.000Z';
-  const dir = stateDir({
-    reports: {
-      'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
-      'w2.json': stateReport([stateRow(REF)], { startedAt: T1, finishedAt: T2 }),
-    },
-    sidecar: [sidecarEntry()],
-  });
+test('ingest-wave: rounds from an earlier or later wave of the same ref are not this wave\'s', () => withStateDir({
+  reports: {
+    'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
+    'w2.json': stateReport([stateRow(REF)], { startedAt: T1, finishedAt: T2 }),
+  },
+  sidecar: [sidecarEntry()],
+}, (dir) => {
   reviewFile(dir, REF, '', [blocker], '2026-10-08T18:00:00.000Z'); // before this wave
   reviewFile(dir, REF, '.r2', [], '2026-10-08T19:30:00.000Z'); // this wave
   reviewFile(dir, REF, '.r3', [blocker], '2026-10-08T20:30:00.000Z'); // the next wave's
   const [rec] = ingest(dir).records;
   assert.deepEqual([rec.reviewVerdict, rec.bounces, rec.reviewPath.endsWith('.r2.json')], ['clean', 0, true]);
-});
+}));
 
-test('ingest-wave: a pre-sidecar wave takes its routing from the matching config and is marked default policy', () => {
-  const dir = stateDir({
-    reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) },
-    sidecar: [sidecarEntry(['WXYC/other#9'])],
-    configs: {
-      'config-other.json': config(['WXYC/other#9']),
-      'config.json': config([REF, REF2], { issues: [
-        { repo: 'WXYC/dj-site', number: 1, complexity: 'complex', effort: 'high', model: 'opus' },
-        { repo: 'WXYC/dj-site', number: 2 },
-      ] }),
-    },
-  });
+test('ingest-wave: a later report listing only other refs does not end this ref\'s window', () => withStateDir({
+  reports: {
+    'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T2 }),
+    'w2.json': stateReport([stateRow(REF2)], { startedAt: T1, finishedAt: T2 }),
+  },
+  sidecar: [sidecarEntry()],
+}, (dir) => {
+  reviewFile(dir, REF, '', [blocker], '2026-10-08T19:30:00.000Z');
+  reviewFile(dir, REF, '.r2', [], '2026-10-08T20:30:00.000Z'); // after w2 started, e.g. a re-gate after rebase
+  const [rec] = ingest(dir).records;
+  assert.deepEqual([rec.reviewVerdict, rec.bounces, rec.reviewPath.endsWith('.r2.json')], ['blocking', 1, true]);
+}));
+
+test('ingest-wave: a torn round file reads as blocking, never clean', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
+  reviewFile(dir, REF, '', '{"findings": [', '2026-10-08T19:10:00.000Z');
+  assert.equal(ingest(dir).records[0].reviewVerdict, 'blocking');
+}));
+
+test('ingest-wave: a torn failure digest is warned about and leaves failureReason null', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })]) },
+  sidecar: [sidecarEntry()],
+  files: { [`state/failure-digest/issue-${artifactStem(REF)}.json`]: '{"failureReason": "rate-' },
+}, (dir) => {
+  const warnings = [];
+  const [rec] = ingest(dir, {}, { warn: (m) => warnings.push(m) }).records;
+  assert.deepEqual([rec.implStatus, rec.failureReason], ['error', null]);
+  assert.ok(warnings.some((m) => /unreadable digest/.test(m)), warnings.join('\n'));
+}));
+
+test('ingest-wave: a pre-sidecar wave takes its routing from the matching config, default policy and tuning version 0', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) },
+  sidecar: [sidecarEntry(['WXYC/other#9'])],
+  configs: {
+    'config-other.json': config(['WXYC/other#9']),
+    'config.json': config([REF, REF2], { issues: [
+      { repo: 'WXYC/dj-site', number: 1, complexity: 'complex', effort: 'high', model: 'opus' },
+      { repo: 'WXYC/dj-site', number: 2 },
+    ] }),
+  },
+}, (dir) => {
   const [a, b] = ingest(dir).records;
-  assert.deepEqual([a.runId, a.complexity, a.effort, a.model, a.policySource], [RUN, 'complex', 'high', 'opus', 'default']);
-  assert.deepEqual([b.complexity, b.effort, b.model, b.policySource], ['normal', 'medium', 'sonnet', 'default']);
-});
+  assert.deepEqual([a.runId, a.complexity, a.effort, a.model, a.policySource, a.tuningVersion], [RUN, 'complex', 'high', 'opus', 'default', 0]);
+  assert.deepEqual([b.complexity, b.effort, b.model, b.policySource, b.tuningVersion], ['normal', 'medium', 'sonnet', 'default', 0]);
+}));
 
-test('ingest-wave: a find-pr row records the PR from --outcomes', () => {
-  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF, { prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry()] });
+test('ingest-wave: a wave with no sidecar entry or config warns and records default routing at tuning version 0', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) },
+}, (dir) => {
+  const warnings = [];
+  const [rec] = ingest(dir, {}, { warn: (m) => warnings.push(m) }).records;
+  assert.deepEqual([rec.runId, rec.complexity, rec.model, rec.policySource, rec.tuningVersion], [RUN, 'normal', null, 'default', 0]);
+  assert.ok(warnings.some((m) => /no sidecar entry or config/.test(m)), warnings.join('\n'));
+}));
+
+test('ingest-wave: a find-pr row records the PR from --outcomes', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF, { prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
   assert.equal(ingest(dir, { [REF]: { pr: 42 } }).records[0].pr, 42);
-});
+}));
 
-test('ingest-wave refuses a half-supplied wave (exit 2), naming find-pr and --outcomes', () => {
-  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry([REF, REF2])] });
-  const path = tmpLog();
-  assert.throws(() => ingestWave(reportPath(dir), {}, { path, warn: () => {} }), (err) => err.code === 2 && err.message.includes(REF2) && /find-pr/.test(err.message) && /--outcomes/.test(err.message));
+test('ingest-wave refuses a half-supplied wave (exit 2), naming both find-pr remedies', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry([REF, REF2])],
+}, (dir) => {
+  const path = join(dir, 'runs.jsonl');
+  assert.throws(() => ingestWave(reportPath(dir), {}, { path, warn: () => {} }), (err) => {
+    // Only the prefix, the ref and the hint: deriveWaveRecords' wording between them is #99's to change.
+    assert.equal(err.code, 2);
+    assert.match(err.message, /^half-supplied wave/);
+    assert.ok(err.message.includes(REF2), err.message);
+    assert.ok(err.message.includes(`--outcomes '{"<ref>":{"pr":N}}'`), err.message);
+    assert.ok(err.message.includes(`'{"<ref>":{"finalState":"blocked-hitl","hitl":{"pointB":true}}}'`), err.message);
+    return true;
+  });
   assert.equal(existsSync(path), false, 'nothing is appended');
-});
+}));
+
+for (const [name, rel] of [['not in a reports dir', 'state/w1.json'], ['in a reports dir outside state', 'other/reports/w1.json']]) {
+  test(`ingest-wave: a report ${name} exits 2, since its state dir is unknown`, () => withStateDir({
+    files: { [rel]: stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+  }, (dir) => {
+    assert.equal(exitCode(() => ingestFile(join(dir, rel))), 2);
+  }));
+}
 
 const badOutcomes = [
+  // [name, outcomes, what the message must name besides the ref]
   ['an unknown ref', { 'WXYC/nope#5': {} }, /WXYC\/nope#5/],
   ['a non-object', [], /object/],
   ['pr zero', { [REF]: { pr: 0 } }, /pr/],
@@ -476,54 +538,70 @@ const badOutcomes = [
   ['hitl.pointB a string', { [REF]: { hitl: { pointB: 'yes' } } }, /hitl\.pointB/],
   ['findings not strings', { [REF]: { findings: [1] } }, /findings/],
   ['tokens a string', { [REF]: { tokens: '9' } }, /tokens/],
+  ['an unknown field', { [REF]: { finalstate: 'blocked-hitl' } }, /finalstate/],
+  ['an unknown hitl field', { [REF]: { hitl: { pointB: true, pointA: true } } }, /hitl\.pointA/],
 ];
 for (const [name, outcomes, want] of badOutcomes) {
-  test(`ingest-wave: --outcomes with ${name} exits 2`, () => {
-    const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()] });
-    assert.throws(() => ingestWave(reportPath(dir), outcomes, { path: tmpLog(), warn: () => {} }), (err) => err.code === 2 && want.test(err.message) && (name === 'a non-object' || err.message.includes(name === 'an unknown ref' ? 'nope' : REF)));
-  });
+  test(`ingest-wave: --outcomes with ${name} exits 2`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+  }, (dir) => {
+    assert.throws(() => ingest(dir, outcomes), (err) => err.code === 2 && want.test(err.message)
+      && (name === 'a non-object' || name === 'an unknown ref' || err.message.includes(REF)));
+  }));
 }
 
-test('ingest-wave: a well-formed --outcomes entry is applied', () => {
-  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()] });
+test('ingest-wave: a well-formed --outcomes entry is applied', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
   const [rec] = ingest(dir, { [REF]: { finalState: 'blocked-hitl', bounces: 2, hitl: { pointB: true }, findings: ['f'], tokens: null } }).records;
   assert.deepEqual([rec.finalState, rec.bounces, rec.hitl.pointB, rec.findings, rec.tokens], ['blocked-hitl', 2, true, ['f'], null]);
-});
+}));
 
-for (const [name, reports] of [
-  ['unparseable', { 'w1.json': '{not json' }],
-  ['without an issues array', { 'w1.json': { configName: 'x' } }],
-  ['with a row lacking an owner/repo#N ref', { 'w1.json': stateReport([stateRow('dj-site#1')]) }],
+for (const [name, report] of [
+  ['unparseable', '{not json'],
+  ['without an issues array', { configName: 'x', startedAt: T0 }],
+  ['with a row lacking an owner/repo#N ref', stateReport([stateRow('dj-site#1')])],
+  ['without a startedAt', stateReport([stateRow(REF)], { startedAt: undefined })],
+  ['with an unparseable startedAt', stateReport([stateRow(REF)], { startedAt: 'last tuesday' })],
 ]) {
-  test(`ingest-wave: a report ${name} exits 3`, () => {
-    const dir = stateDir({ reports });
-    assert.equal(exitCode(() => ingestWave(reportPath(dir), {}, { path: tmpLog(), warn: () => {} })), 3);
-  });
+  test(`ingest-wave: a report ${name} exits 3`, () => withStateDir({ reports: { 'w1.json': report }, sidecar: [sidecarEntry()] }, (dir) => {
+    assert.equal(exitCode(() => ingest(dir)), 3);
+  }));
 }
 
-test('ingest-wave: a wave with no terminal row records nothing', () => {
-  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF, { status: 'running', prNumber: null })]) }, sidecar: [sidecarEntry()] });
+test('ingest-wave: a wave with no terminal row records nothing', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF, { status: 'running', prNumber: null })]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
   assert.deepEqual(ingest(dir).log, []);
-});
+}));
 
-test('ingest-wave: a failed append is warned about and the rest continue', () => {
-  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) }, sidecar: [sidecarEntry([REF, REF2])] });
+test('ingest-wave: a failed append is warned about and the rest continue', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) }, sidecar: [sidecarEntry([REF, REF2])],
+}, (dir) => {
   const warnings = [];
   const path = join(dir, 'a-file');
   writeFileSync(path, '');
   const out = ingestWave(reportPath(dir), {}, { path: join(path, 'runs.jsonl'), warn: (m) => warnings.push(m) });
   assert.equal(out.appended, 0);
   assert.equal(warnings.length, 2);
-});
+}));
 
-test('ingest-wave CLI: usage, bad outcomes JSON and a malformed report map to exit codes', () => {
-  const dir = stateDir({ reports: { 'w1.json': stateReport([stateRow(REF)]), 'bad.json': '{' }, sidecar: [sidecarEntry()] });
-  const cli = (...args) => spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'ingest-wave', ...args],
-    { env: { ...process.env, SHIP_DAG_TELEMETRY: tmpLog() }, encoding: 'utf8' });
-  assert.equal(cli().status, 2);
-  assert.equal(cli(reportPath(dir), '--outcomes', '{nope').status, 2);
-  assert.equal(cli(reportPath(dir, 'bad.json')).status, 3);
-  const ok = cli(reportPath(dir));
-  assert.equal(ok.status, 0);
+test('ingest-wave CLI: usage, bad outcomes, an unreadable log and a malformed report map to exit codes; --outcomes=<json> is read', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]), 'bad.json': '{' }, sidecar: [sidecarEntry()],
+}, (dir) => {
+  const log = join(dir, 'runs.jsonl');
+  const cli = (args, env = {}) => spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'ingest-wave', ...args],
+    { env: { ...process.env, SHIP_DAG_TELEMETRY: log, ...env }, encoding: 'utf8' });
+  const status = (...args) => cli(args).status;
+  assert.equal(status(), 2, 'no report');
+  assert.equal(status(reportPath(dir), reportPath(dir)), 2, 'two reports');
+  assert.equal(status(reportPath(dir), '--outcomes'), 2, '--outcomes with no value');
+  assert.equal(status(reportPath(dir), '--outcome', '{}'), 2, 'an unknown flag');
+  assert.equal(status(reportPath(dir), '--outcomes', '{nope'), 2, 'unparseable --outcomes');
+  assert.equal(status(reportPath(dir, 'bad.json')), 3, 'a malformed report');
+  assert.equal(cli([reportPath(dir)], { SHIP_DAG_TELEMETRY: dir }).status, 1, 'an unreadable log is not a malformed report');
+  const ok = cli([reportPath(dir), `--outcomes={"${REF}":{"finalState":"blocked-hitl"}}`]);
+  assert.equal(ok.status, 0, ok.stderr);
   assert.match(ok.stderr, /1 appended/);
-});
+  assert.deepEqual(readRecords(log).map((r) => r.finalState), ['blocked-hitl']);
+}));
