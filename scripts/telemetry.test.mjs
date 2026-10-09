@@ -449,6 +449,17 @@ test('ingest-wave stamps the report stem as reportId, and records ciStatus none 
   assert.equal(withCheck, 'pass');
 }));
 
+// Which repos run no post-session check comes only from a config; without one, "pass" is unchecked.
+for (const [name, configs, want] of [['no config matches', {}, 1], ['a config matches', { 'config.json': config([REF, REF2]) }, 0]]) {
+  test(`ingest-wave beside a sidecar entry, ${name}: ${want ? 'warns once for the wave' : 'no ciStatus warning'}`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) }, sidecar: [sidecarEntry([REF, REF2])], configs,
+  }, (dir) => {
+    const warnings = [];
+    ingest(dir, {}, { warn: (m) => warnings.push(m) });
+    assert.equal(warnings.filter((m) => /post-session check/.test(m)).length, want, warnings.join('\n'));
+  }));
+}
+
 test('ingest-wave: re-ingest is a no-op, and a hand-written record for the same key is not duplicated', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
 }, (dir) => {
@@ -461,6 +472,27 @@ test('ingest-wave: re-ingest is a no-op, and a hand-written record for the same 
   assert.equal(ingestWave(reportPath(dir), {}, { path: hand, warn: () => {} }).appended, 0);
   assert.equal(readRecords(hand).length, 1);
 }));
+
+// sd-20261002-211445's pair: a --retry-failed report re-lists Backend-Service#3042 succeeded with PR 3044,
+// as it stood, beside the wxyc-shared#612 it re-ran; the carried-over row is one event, not two.
+test('ingest-wave: a row a retry report only carries over is recorded once; the row it re-ran is recorded again', () => {
+  const [BS, SH] = ['WXYC/Backend-Service#3042', 'WXYC/wxyc-shared#612'];
+  const carried = stateRow(BS, { prUrl: 'https://x/3044', prNumber: 3044 });
+  withStateDir({
+    reports: {
+      '2026-10-07T17-34-55.942Z.json': stateReport([carried, stateRow(SH, { status: 'failed', prUrl: null, prNumber: null })]),
+      '2026-10-07T18-14-51.517Z.json': stateReport([carried, stateRow(SH, { prUrl: 'https://x/619', prNumber: 619 })], { startedAt: T1, finishedAt: T2 }),
+    },
+    sidecar: [sidecarEntry([BS, SH])],
+  }, (dir) => {
+    const path = join(dir, 'runs.jsonl');
+    const appended = ['2026-10-07T17-34-55.942Z.json', '2026-10-07T18-14-51.517Z.json']
+      .map((name) => ingestWave(reportPath(dir, name), {}, { path, warn: () => {} }).appended);
+    assert.deepEqual(appended, [2, 1]);
+    assert.deepEqual(readRecords(path).map((r) => [r.repo, r.finalState, r.pr]),
+      [['WXYC/Backend-Service', 'merged', 3044], ['WXYC/wxyc-shared', 'error', null], ['WXYC/wxyc-shared', 'merged', 619]]);
+  });
+});
 
 // A later report that re-ran the ref (a new PR) ends this wave's window; one that only carries the
 // row over with the same PR (a --retry-failed run of other rows) does not, since its rounds review this PR.
@@ -611,6 +643,9 @@ test('ingest-wave: a find-pr row records the PR from --outcomes', () => withStat
   assert.equal(ingest(dir, { [REF]: { pr: 42 } }).records[0].pr, 42);
 }));
 
+// Each cause names its own remedy: a PR row already has its PR, so the find-pr remedy cannot clear a blocking last round.
+const FIND_PR_HINT = `--outcomes '{"<ref>":{"pr":N}}'`;
+const MERGED_HINT = `'{"<ref>":{"finalState":"merged","bounces":N}}'`;
 test('ingest-wave refuses a half-supplied wave (exit 2), naming both find-pr remedies', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry([REF, REF2])],
 }, (dir) => {
@@ -620,12 +655,32 @@ test('ingest-wave refuses a half-supplied wave (exit 2), naming both find-pr rem
     assert.equal(err.code, 2);
     assert.match(err.message, /^half-supplied wave/);
     assert.ok(err.message.includes(REF2), err.message);
-    assert.ok(err.message.includes(`--outcomes '{"<ref>":{"pr":N}}'`), err.message);
+    assert.ok(err.message.includes(FIND_PR_HINT), err.message);
     assert.ok(err.message.includes(`'{"<ref>":{"finalState":"blocked-hitl","hitl":{"pointB":true}}}'`), err.message);
+    assert.ok(!err.message.includes(MERGED_HINT), err.message);
     return true;
   });
   assert.equal(existsSync(path), false, 'nothing is appended');
 }));
+
+for (const [name, rows, want, notWant] of [
+  ['a PR row whose last round blocks', [stateRow(REF), stateRow(REF2, { prNumber: 12 })], [REF, REF2, MERGED_HINT, 'point B'], [FIND_PR_HINT]],
+  ['both causes', [stateRow(REF), stateRow(REF2, { prUrl: null, prNumber: null })], [REF, REF2, MERGED_HINT, FIND_PR_HINT], []],
+]) {
+  test(`ingest-wave refuses ${name} (exit 2) with the remedy for each cause present`, () => withStateDir({
+    reports: { 'w1.json': stateReport(rows) }, sidecar: [sidecarEntry([REF, REF2])],
+  }, (dir) => {
+    reviewFile(dir, REF, '', [blocker], '2026-10-08T19:10:00.000Z');
+    reviewFile(dir, REF2, '', [blocker], '2026-10-08T19:10:00.000Z');
+    assert.throws(() => ingest(dir), (err) => {
+      assert.equal(err.code, 2);
+      assert.match(err.message, /^half-supplied wave/);
+      for (const s of want) assert.ok(err.message.includes(s), `${s} in ${err.message}`);
+      for (const s of notWant) assert.ok(!err.message.includes(s), `${s} not in ${err.message}`);
+      return true;
+    });
+  }));
+}
 
 for (const [name, rel] of [['not in a reports dir', 'state/w1.json'], ['in a reports dir outside state', 'other/reports/w1.json']]) {
   test(`ingest-wave: a report ${name} exits 2, since its state dir is unknown`, () => withStateDir({
@@ -705,7 +760,7 @@ test('ingest-wave: a failed append is warned about and the rest continue', () =>
   writeFileSync(path, '');
   const out = ingestWave(reportPath(dir), {}, { path: join(path, 'runs.jsonl'), warn: (m) => warnings.push(m) });
   assert.equal(out.appended, 0);
-  assert.equal(warnings.length, 2);
+  assert.equal(warnings.filter((m) => /could not append/.test(m)).length, 2, warnings.join('\n'));
 }));
 
 test('ingest-wave CLI: usage, bad outcomes, an unreadable log and a malformed report map to exit codes; --outcomes=<json> is read', () => withStateDir({
