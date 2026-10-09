@@ -31,20 +31,20 @@
 //   node telemetry.mjs ingest-wave <stateDir>/state/reports/<id>.json [--outcomes <json|@file|->]
 //                                            # append a wave's records, derived from its engine artifacts;
 //                                            # exit 2: bad invocation or --outcomes, or a half-supplied
-//                                            # wave; 3: malformed report; 1: anything else
+//                                            # wave; 3: malformed report, or no run id; 1: anything else
 //   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
 // else ~/.local/state/ship-dag/runs.jsonl.
 
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { mintRunId, runIdFromConfigName } from './lib/run-id.mjs';
+import { mintRunId } from './lib/run-id.mjs';
 import { deriveWaveRecords } from './lib/wave-records.mjs';
-import { findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
+import { entryFromConfig, findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { digestPathForRef } from './diagnose-failure.mjs';
 
@@ -296,17 +296,22 @@ const OUTCOME_RULES = {
 
 /**
  * Throw an exit-2 IngestError naming the ref and field of the first `--outcomes` violation: a bad
- * value, or a field outside `OUTCOME_RULES` and `hitl.pointB` (a misspelled one would be dropped).
+ * value, a field outside `OUTCOME_RULES` and `hitl.pointB` (a misspelled one would be dropped), or
+ * `finalState: "merged"` where neither the report row nor the outcome has a PR.
  */
-function validateOutcomes(outcomes, refs) {
+function validateOutcomes(outcomes, rows) {
   if (!outcomes || typeof outcomes !== 'object' || Array.isArray(outcomes)) throw new IngestError(2, '--outcomes must be an object keyed by ref');
   for (const [ref, o] of Object.entries(outcomes)) {
-    if (!refs.includes(ref)) throw new IngestError(2, `--outcomes names ${ref}, which is not in the report`);
+    const row = rows.find((r) => r.ref === ref);
+    if (!row) throw new IngestError(2, `--outcomes names ${ref}, which is not in the report`);
     if (!o || typeof o !== 'object' || Array.isArray(o)) throw new IngestError(2, `--outcomes ${ref} must be an object`);
     const unknown = Object.keys(o).find((k) => k !== 'hitl' && !Object.hasOwn(OUTCOME_RULES, k));
     if (unknown) throw new IngestError(2, `--outcomes ${ref}: unknown field ${unknown} (known: ${Object.keys(OUTCOME_RULES).join(', ')}, hitl.pointB)`);
     for (const [field, [ok, want]] of Object.entries(OUTCOME_RULES)) {
       if (o[field] !== undefined && !ok(o[field])) throw new IngestError(2, `--outcomes ${ref}: ${field} must be ${want}, got ${JSON.stringify(o[field])}`);
+    }
+    if (o.finalState === 'merged' && !isPositiveInt(row.prNumber) && o.pr === undefined) {
+      throw new IngestError(2, `--outcomes ${ref}: finalState merged needs a PR, and neither the report row nor --outcomes has one`);
     }
     if (o.hitl === undefined) continue;
     if (typeof o.hitl?.pointB !== 'boolean') throw new IngestError(2, `--outcomes ${ref}: hitl.pointB must be a boolean, got ${JSON.stringify(o.hitl?.pointB)}`);
@@ -314,12 +319,6 @@ function validateOutcomes(outcomes, refs) {
     if (extra) throw new IngestError(2, `--outcomes ${ref}: unknown field hitl.${extra} (known: hitl.pointB)`);
   }
 }
-
-/** The sidecar-shaped entry for a wave that predates the sidecar, built from its config (no blockOn, so the default policy). */
-const entryFromConfig = (config) => ({
-  runId: runIdFromConfigName(config.name),
-  issues: config.issues.map((i) => ({ ref: `${i.repo}#${i.number}`, complexity: i.complexity, effort: i.effort ?? config.defaultEffort, model: i.model ?? config.defaultModel })),
-});
 
 /** Parse every JSON file in `dir` into `[name, value]`, skipping what doesn't parse. */
 function readJsonDir(dir) {
@@ -337,7 +336,8 @@ function readJsonDir(dir) {
  * @param {{path?: string, warn?: (m: string) => void}} [opts]
  * @returns {{records: object[], appended: number}} `records` are the ones derived as new
  * @throws {IngestError} code 2 for a report outside `<stateDir>/state/reports/`, bad `--outcomes` or a
- *   half-supplied wave, 3 for a malformed artifact; any other error (an unreadable log) is thrown as is
+ *   half-supplied wave, 3 for a malformed report or no run id; any other error (an unreadable log,
+ *   a bug) is thrown as is
  */
 export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn = (m) => console.error(m) } = {}) {
   const file = resolve(reportPath);
@@ -354,30 +354,38 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   const startedAt = typeof report.startedAt === 'string' ? Date.parse(report.startedAt) : NaN;
   if (Number.isNaN(startedAt)) throw new IngestError(3, `${file}: the report has no parseable startedAt: ${JSON.stringify(report.startedAt)}`);
   const refs = report.issues.map((r) => r.ref);
-  validateOutcomes(outcomes, refs);
+  validateOutcomes(outcomes, report.issues);
 
-  let entry = findWaveContext(stateDir, refs);
+  // Routing emitted after this report started is a later re-emit's (a retry's), not this wave's.
+  let entry = findWaveContext(stateDir, refs, startedAt);
   if (!entry) {
-    const config = findWaveConfig(stateDir, refs);
+    const config = findWaveConfig(stateDir, refs, startedAt);
     entry = config && entryFromConfig(config);
-    if (!entry) warn(`ingest-wave: no sidecar entry or config in ${stateDir} matches this wave's issues; complexity and routing are unknown`);
+    warn(entry
+      ? `ingest-wave: no sidecar entry in ${stateDir} matches this wave's issues; routing from its config, recorded under the default policy at tuningVersion 0`
+      : `ingest-wave: no sidecar entry or config in ${stateDir} matches this wave's issues; complexity and routing are unknown`);
   }
+
+  // A digest or review round belongs to this wave when it was written after this report started and
+  // before the next report listing the same ref did: a retry or a later wave rewrites the ref's
+  // digest and re-reviews it.
+  const others = readJsonDir(dirname(file)).map(([, rep]) => rep).filter((rep) => Array.isArray(rep?.issues) && Date.parse(rep.startedAt) > startedAt);
+  const ends = Object.fromEntries(refs.map((ref) => [ref, Math.min(Infinity, ...others.filter((rep) => rep.issues.some((r) => r?.ref === ref)).map((rep) => Date.parse(rep.startedAt)))]));
+  const inWave = (ref, mtimeMs) => mtimeMs >= startedAt && mtimeMs < ends[ref];
 
   const digests = {};
   for (const r of report.issues.filter((i) => i.status !== 'succeeded')) {
     const p = digestPathForRef(stateDir, r.ref);
-    if (!existsSync(p)) continue;
+    let mtimeMs;
+    try { ({ mtimeMs } = statSync(p)); } catch { continue; }
+    if (!inWave(r.ref, mtimeMs)) { warn(`${p}: written outside this wave; ignored`); continue; }
     try { digests[r.ref] = JSON.parse(readFileSync(p, 'utf8')); } catch (err) { warn(`${p}: unreadable digest (${err.message}); ignored`); }
   }
 
-  // A round belongs to this wave when it was written after this report started and before the next
-  // report listing the same ref did (a retry or a later wave re-reviews the ref).
-  const others = readJsonDir(dirname(file)).map(([, rep]) => rep).filter((rep) => Array.isArray(rep?.issues) && Date.parse(rep.startedAt) > startedAt);
   const rounds = {};
   for (const ref of refs) {
-    const end = Math.min(Infinity, ...others.filter((rep) => rep.issues.some((r) => r?.ref === ref)).map((rep) => Date.parse(rep.startedAt)));
     rounds[ref] = reviewRoundFiles([join(stateDir, 'reviews')], ref)
-      .filter((f) => !(f.mtimeMs < startedAt) && f.mtimeMs < end)
+      .filter((f) => inWave(ref, f.mtimeMs))
       .map((f) => {
         try { return { path: f.path, review: JSON.parse(readFileSync(f.path, 'utf8')) }; } catch { return { path: f.path, review: null }; }
       });
@@ -391,11 +399,13 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     // did, and epic #64 reads a missing version as 0, never as today's.
     ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing, warn, tuningVersion: 0 }));
   } catch (err) {
+    // deriveWaveRecords' two refusals; anything else is a bug, not a bad artifact, and is thrown as is.
     if (/^half-supplied wave/.test(err.message)) {
       throw new IngestError(2, `${err.message}. For a find-pr row, pass the PR step 5's lookup found as --outcomes '{"<ref>":{"pr":N}}', `
         + `or, when point B left it without one, '{"<ref>":{"finalState":"blocked-hitl","hitl":{"pointB":true}}}'`);
     }
-    throw new IngestError(3, err.message);
+    if (/^no run id/.test(err.message)) throw new IngestError(3, `${file}: ${err.message}`);
+    throw err;
   }
   let appended = 0;
   for (const rec of records) {

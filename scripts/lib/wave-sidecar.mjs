@@ -53,16 +53,31 @@ export function waveSidecar(spec, { config, now = () => new Date().toISOString()
     // them by position: a number alone is ambiguous when two repos share it.
     issues: spec.issues.map((issue, index) => {
       const built = config.issues[index];
+      const { ref, effort, model } = assigned(config, built);
       return {
-        ref: `${built.repo}#${built.number}`,
+        ref,
         complexity: issue.complexity ?? null,
-        effort: built.effort ?? config.defaultEffort,
+        effort,
         effortSource: issue.effort ? 'override' : built.effort ? 'tuning' : 'default',
-        model: built.model ?? config.defaultModel,
+        model,
         reach: issue.reach ?? null,
         decisions: issue.decisions ?? [],
       };
     }),
+  };
+}
+
+/** What `config` assigned one of its issues: its ref, and its own effort and model, else the config's defaults. */
+const assigned = (config, built) => ({ ref: `${built.repo}#${built.number}`, effort: built.effort ?? config.defaultEffort, model: built.model ?? config.defaultModel });
+
+/**
+ * The sidecar-shaped entry for a wave emitted before the sidecar, from its config: each issue's ref,
+ * complexity, effort and model as `waveSidecar` assigns them, and no `blockOn` or `tuningVersion`.
+ */
+export function entryFromConfig(config) {
+  return {
+    runId: runIdFromConfigName(config.name),
+    issues: config.issues.map((built) => ({ ...assigned(config, built), complexity: built.complexity })),
   };
 }
 
@@ -93,24 +108,30 @@ export function readSidecar(path, { warn = (m) => console.error(m) } = {}) {
   return entries;
 }
 
-/** The entry in `dir`'s sidecar whose ref set equals `refs`, or null (the latest, if re-emitted). */
-export function findWaveContext(dir, refs) {
-  return readSidecar(join(dir, SIDECAR_NAME)).findLast((e) => waveContextMatches(e, refs)) ?? null;
+/**
+ * The entry in `dir`'s sidecar whose ref set equals `refs`, or null: the latest (if re-emitted) whose
+ * `emittedAt` is not after `asOf` (epoch ms, so a re-emit after a report started is not its wave's;
+ * an entry without a parseable `emittedAt` always qualifies).
+ */
+export function findWaveContext(dir, refs, asOf = Infinity) {
+  return readSidecar(join(dir, SIDECAR_NAME)).findLast((e) => waveContextMatches(e, refs) && !(Date.parse(e.emittedAt) > asOf)) ?? null;
 }
 
 /**
- * The newest `config*.json` in `dir` by mtime whose issues (`${repo}#${number}`) equal `refs` as a
- * set, or null; on an mtime tie the last name wins. The fallback for a wave emitted before the
- * sidecar existed; an unreadable file or dir is skipped.
+ * The newest `config*.json` in `dir` by mtime, written at or before `asOf` (epoch ms), whose issues
+ * (`${repo}#${number}`) equal `refs` as a set, or null; on an mtime tie the last name wins. The
+ * fallback for a wave emitted before the sidecar existed; an unreadable file or dir, or a config
+ * without an `issues` array, is skipped.
  */
-export function findWaveConfig(dir, refs) {
+export function findWaveConfig(dir, refs, asOf = Infinity) {
   let names;
   try { names = readdirSync(dir).filter((n) => /^config.*\.json$/.test(n)).sort(); } catch { return null; }
   let newest = null;
   for (const name of names) {
     let config, mtimeMs;
     try { ({ mtimeMs } = statSync(join(dir, name))); config = JSON.parse(readFileSync(join(dir, name), 'utf-8')); } catch { continue; }
-    const issues = Array.isArray(config?.issues) ? config.issues.map((i) => ({ ref: `${i?.repo}#${i?.number}` })) : [];
+    if (!Array.isArray(config?.issues) || mtimeMs > asOf) continue;
+    const issues = config.issues.map((i) => ({ ref: `${i?.repo}#${i?.number}` }));
     if (waveContextMatches({ issues }, refs) && !(newest?.mtimeMs > mtimeMs)) newest = { config, mtimeMs };
   }
   return newest?.config ?? null;
