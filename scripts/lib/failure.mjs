@@ -164,8 +164,8 @@ export function terminalEvent(transcriptText) {
 }
 
 /**
- * Where a report row belongs in SKILL.md step 5, decided by whether a PR
- * exists rather than by `status`:
+ * Where a report row belongs in SKILL.md step 5. A PR decides first, whatever
+ * the row's `status`; only a PR-less row is routed by its status:
  *
  * - `review-gate` — a PR is open (whatever the row's status). The implement
  *   work landed; gate it exactly like a `succeeded` row. Never retry it: the
