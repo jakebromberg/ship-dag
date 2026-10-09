@@ -4,6 +4,12 @@
 // routing, so a wave re-ingested later is judged under the policy it ran with.
 // Point-A defers are not recorded here (SKILL.md step 3d writes those).
 //
+// Per-issue fields: `ref` (owner/repo#N, the repo as the config resolved it),
+// `complexity`, `reach`, `decisions` (from the spec), and what the config assigned:
+// `effort` (the issue's own, else the tuning map's for its complexity, else the
+// config's defaultEffort), `effortSource` ('override' | 'tuning' | 'default' — which
+// of those it was), and `model` (the issue's own, else the config's defaultModel).
+//
 // JSONL, like runs.jsonl: each wave is one `appendFileSync`, so nothing already
 // written is ever rewritten, overlapping emits can't drop an entry, and a corrupt
 // line costs only itself.
@@ -14,9 +20,6 @@ import { runIdFromConfigName } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
 export const SIDECAR_NAME = 'ship-dag-wave.jsonl';
-
-/** The `owner/repo#N` ref of a spec issue. */
-const refOf = (issue, spec) => `${issue.repo || spec.repo}#${issue.number}`;
 
 /**
  * A spec's `blockOn` parsed like `--block-on`: the comma string or an array of
@@ -34,23 +37,29 @@ export function specBlockOn(blockOn) {
  * Build one sidecar entry from a ready-wave spec.
  * @param {object} spec the ready-wave spec emit-config was handed; `blockOn` may be
  *   the `--block-on` comma string or an array of categories (workflow.js's form)
- * @param {{now?: () => string, tuning?: {version: unknown}}} [opts] `tuning` is the
- *   object the config was built from; defaults to reading the shipped tuning.json
+ * @param {{config: object, now?: () => string, tuning?: {version: unknown}}} opts
+ *   `config` is what buildConfig returned for `spec`; `tuning` is the object it was
+ *   built from, and defaults to reading the shipped tuning.json
  */
-export function waveSidecar(spec, { now = () => new Date().toISOString(), tuning = loadTuning() } = {}) {
+export function waveSidecar(spec, { config, now = () => new Date().toISOString(), tuning = loadTuning() } = {}) {
   return {
     runId: spec.runId || runIdFromConfigName(spec.name),
     wave: spec.wave ?? null,
     tuningVersion: tuning.version,
     blockOn: specBlockOn(spec.blockOn),
     emittedAt: now(),
-    issues: spec.issues.map((issue) => ({
-      ref: refOf(issue, spec),
-      complexity: issue.complexity ?? null,
-      model: issue.model ?? null,
-      reach: issue.reach ?? null,
-      decisions: issue.decisions ?? [],
-    })),
+    issues: spec.issues.map((issue) => {
+      const built = config.issues.find((i) => i.number === issue.number);
+      return {
+        ref: `${built.repo}#${built.number}`,
+        complexity: issue.complexity ?? null,
+        effort: built.effort ?? config.defaultEffort,
+        effortSource: issue.effort ? 'override' : built.effort ? 'tuning' : 'default',
+        model: built.model ?? config.defaultModel,
+        reach: issue.reach ?? null,
+        decisions: issue.decisions ?? [],
+      };
+    }),
   };
 }
 
