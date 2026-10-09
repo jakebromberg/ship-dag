@@ -86,6 +86,21 @@ test('waveSidecar stamps tuningVersion from the injected tuning object', () => {
   assert.equal(wave(spec(), { tuning: { version: 'v-injected' } }).tuningVersion, 'v-injected');
 });
 
+test('the same issue number in two repos keeps each issue its own ref, effort and context', () => {
+  const s = spec({
+    issues: [{ number: 5, repo: REPO, complexity: 'mechanical' }, { number: 5, repo: 'WXYC/other', complexity: 'complex' }],
+    repos: { [REPO]: { commands: ['x'] }, 'WXYC/other': { commands: ['x'] } },
+  });
+  const tuning = loadTuning();
+  const e = wave(s);
+  assert.deepEqual(e.issues.map((i) => [i.ref, i.effort]), [[`${REPO}#5`, tuning.implement.mechanical], ['WXYC/other#5', tuning.implement.complex]]);
+  assert.ok(waveContextMatches(e, [`${REPO}#5`, 'WXYC/other#5']));
+});
+
+test('waveSidecar names the missing config instead of failing with a TypeError', () => {
+  assert.throws(() => wave_(spec()), /needs the config buildConfig returned/);
+});
+
 test('waveContextMatches compares the ref set, order-insensitive', () => {
   const e = wave(spec());
   assert.ok(waveContextMatches(e, [`WXYC/other#2`, `${REPO}#1`]));
