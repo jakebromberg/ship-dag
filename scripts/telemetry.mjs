@@ -468,15 +468,16 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     throw err;
   }
   // A row with no record, or a skipped one (implStatus null: it never reached implement), leaves its
-  // sessions for the ref's next record; a session an earlier record of the run family lists is not
-  // counted again.
+  // sessions for the ref's next record; a session an earlier record of the run family lists, in the
+  // log or earlier in this wave (a point-E row derives a death and an outcome), is not counted again.
+  const taken = [];
   for (const rec of records) {
     if (rec.implStatus === null) continue;
-    const counted = existing.filter((e) => e.repo === rec.repo && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
+    const counted = [...existing, ...taken].filter((e) => e.repo === rec.repo && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
     // The engine named the log from the row's ref as written, so find that rather than rebuild it.
     const ref = refs.find((r) => r.startsWith(`${rec.repo}#`) && Number(r.slice(rec.repo.length + 1)) === rec.issue);
     const implement = implementCost(logPathForRef(stateDir, ref), counted, warn);
-    if (implement) rec.cost = { implement };
+    if (implement) { rec.cost = { implement }; taken.push(rec); }
   }
   let appended = 0;
   for (const rec of records) {
