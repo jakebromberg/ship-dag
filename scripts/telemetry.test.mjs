@@ -752,6 +752,14 @@ test('ingest-wave: what implementCost warns about reaches ingestWave\'s warn', (
   assert.ok(warned.some((m) => /no session_id/.test(m)), warned.join('\n'));
 }));
 
+test('ingest-wave: a skipped row never reached implement, so its record takes no cost and leaves the log\'s sessions for the ref\'s next one', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF, { status: 'skipped', prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry()],
+  files: logOf(REF, sess('a', 1)),
+}, (dir) => {
+  const { records } = ingest(dir);
+  assert.deepEqual(records.map((r) => [r.implStatus, r.cost]), [[null, undefined]]);
+}));
+
 test('ingest-wave: a row with no log or no session result gets no cost', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) }, sidecar: [sidecarEntry([REF, REF2])],
   files: logOf(REF2, '{"type":"assistant"}'),

@@ -20,6 +20,7 @@
 // sessions, sessionIds[]} }, summed from the ref's transcript over the sessions that wrote a result
 // record and that no earlier record of the ref's run family (sameRun) lists. A session killed before
 // writing one (a stall, a hard death) is not counted, so the figure can fall short of the real spend.
+// A skipped row's record (implStatus null) never reached implement and carries no cost.
 // implStatus / ciStatus / reviewVerdict are nullable: an issue that stops at
 // HITL point A (needs-decision) never reaches implement, so it logs those null.
 // failureReason is also nullable — set to "rate-limited" alongside
@@ -360,8 +361,8 @@ function readJsonDir(dir) {
 
 /**
  * Record a wave from its engine artifacts: derive its issue records (`deriveWaveRecords`), attach to
- * each the `cost.implement` read from its ref's transcript (`implementCost`, over the sessions no
- * earlier record of the run family lists), and append the ones the log lacks. `reportPath` is
+ * each that reached implement the `cost.implement` read from its ref's transcript (`implementCost`,
+ * over the sessions no earlier record of the run family lists), and append the ones the log lacks. `reportPath` is
  * `<stateDir>/state/reports/<id>.json`; everything else is read from beside it. Appends are
  * best-effort: a failed one is warned about and the rest continue.
  * @param {string} reportPath
@@ -444,9 +445,11 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     if (/^no run id/.test(err.message)) throw new IngestError(3, `${file}: ${err.message}`);
     throw err;
   }
-  // A row with no record leaves its sessions for the ref's next one; a session an earlier record of
-  // the run family lists is not counted again.
+  // A row with no record, or a skipped one (implStatus null: it never reached implement), leaves its
+  // sessions for the ref's next record; a session an earlier record of the run family lists is not
+  // counted again.
   for (const rec of records) {
+    if (rec.implStatus === null) continue;
     const counted = existing.filter((e) => e.repo === rec.repo && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
     // The engine named the log from the row's ref as written, so find that rather than rebuild it.
     const ref = refs.find((r) => r.startsWith(`${rec.repo}#`) && Number(r.slice(rec.repo.length + 1)) === rec.issue);
