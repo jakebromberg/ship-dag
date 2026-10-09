@@ -294,14 +294,18 @@ const contractCases = [
       assert.deepEqual(rs.map(pick), [['error', 'rate-limited', 'deferred', null], ['pushed', null, 'merged', 12]]);
       assert.deepEqual(rs.map((r) => [r.bounces, r.reviewVerdict, r.reviewPath]), [[0, null, null], [2, 'clean', `/s/reviews/${STEM}.json`]]);
     }],
-  ['2b point E: a death the continuation settles with a finalState alone is recorded beside its outcome',
+  ['2b point E: a death whose continuation reached point B is recorded beside that outcome',
     { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { finalState: 'blocked-hitl', hitl: { pointB: true } } } }, {},
     (rs) => assert.deepEqual(rs.map((r) => [...pick(r), r.hitl.pointB]), [['error', 'rate-limited', 'deferred', null, false], ['error', null, 'blocked-hitl', null, true]])],
   ['2b point E: an outcome finalState of deferred is the death itself', { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { finalState: 'deferred' } } }, {},
     (rs) => assert.deepEqual(rs.map(pick), [['error', 'rate-limited', 'deferred', null]])],
   ['2b point E: re-ingesting with the outcome after the death adds only the outcome (review: one death, not two)',
-    { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, { reportId: 'w1', existing: [{ ...HAND, implStatus: 'error', reportId: 'w1' }] },
+    { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { finalState: 'blocked-hitl', hitl: { pointB: true } } } }, { reportId: 'w1', existing: [{ ...HAND, implStatus: 'error', reportId: 'w1' }] },
     (rs) => assert.deepEqual(rs.map(pick), [['error', null, 'blocked-hitl', null]])],
+  // With no PR and no point B nothing shows a continuation ran, and a quota death must never read as a model failure.
+  ...['error', 'blocked-hitl'].map((finalState) => [`2b point E: a finalState ${finalState} with no PR and no point B is the death's own outcome`,
+    { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { finalState } } }, {},
+    (rs) => assert.deepEqual(rs.map(pick), [['error', 'rate-limited', finalState, null]])]),
   ['2b point E: a blocked row is no rate-limit death, so only the outcome is recorded', { report: report([blockedNoPr]), digests: DIGEST, outcomes: { [REF]: { pr: 12, finalState: 'merged' } } }, {},
     (rs) => assert.deepEqual(rs.map(pick), [['pushed', null, 'merged', 12]])],
   ['2b point E: re-ingesting adds none', { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { pr: 12, finalState: 'merged' } } },
