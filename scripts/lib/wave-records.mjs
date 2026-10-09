@@ -12,8 +12,9 @@
 // review-rounds.mjs), and `references/tuning.json` is loaded once, only when
 // neither the entry nor `opts.tuningVersion` gives a tuning version.
 //
-// A row is recorded once it is terminal for this wave: `pending`, `running` and
-// `interrupted` rows are left for the ingest that sees them finish.
+// A row is recorded once it is terminal for this wave (`succeeded`, `failed`,
+// `blocked`, `skipped`): `pending`, `running` and `interrupted` rows are left for
+// the ingest that sees them finish, and any other status is warned about and skipped.
 import { DEFAULT_BLOCK_ON, gateReview } from '../review-gate.mjs';
 import { routeFailure } from './failure.mjs';
 import { isUnreadableEmpty } from './review-rounds.mjs';
@@ -21,7 +22,10 @@ import { runIdFromConfigName, sameRun } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
 const SEVERITY = { clean: 0, 'nits-only': 1, blocking: 2 };
-const NOT_TERMINAL = new Set(['pending', 'running', 'interrupted']);
+const TERMINAL = new Set(['succeeded', 'failed', 'blocked', 'skipped']);
+const NOT_YET = new Set(['pending', 'running', 'interrupted']);
+// What routeFailure counts as a PR, so the half-supplied check and the record agree with it.
+const isPr = (n) => typeof n === 'number' && n > 0;
 
 /** One round's verdict: unparseable, or empty beside its `.raw` (`isUnreadableEmpty`), is `blocking`. */
 function roundVerdict({ path, review }, blockOn) {
@@ -48,13 +52,15 @@ const sameRecord = (a, b) => sameRun(a.runId, b.runId) && a.repo === b.repo && a
  *   `succeeded` row has no PR in the report or the outcomes
  */
 export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing = [], warn = (m) => console.error(m), tuningVersion } = {}) {
-  const rows = (Array.isArray(report?.issues) ? report.issues : []).filter((r) => !NOT_TERMINAL.has(r.status));
+  const all = Array.isArray(report?.issues) ? report.issues : [];
+  for (const r of all) if (!TERMINAL.has(r.status) && !NOT_YET.has(r.status)) warn(`${r.ref}: unknown status ${JSON.stringify(r.status)}, not recorded`);
+  const rows = all.filter((r) => TERMINAL.has(r.status));
   const runId = entry?.runId || runIdFromConfigName(report?.configName);
   if (!runId) throw new Error('no run id: the wave has no sidecar entry with a runId and the report has no configName');
   const blockOn = entry?.blockOn ?? DEFAULT_BLOCK_ON;
   const version = entry?.tuningVersion ?? tuningVersion ?? loadTuning().version;
 
-  const halfSupplied = rows.filter((r) => r.status === 'succeeded' && !r.prNumber && !outcomes?.[r.ref]?.pr).map((r) => r.ref);
+  const halfSupplied = rows.filter((r) => r.status === 'succeeded' && !isPr(r.prNumber) && !isPr(outcomes?.[r.ref]?.pr)).map((r) => r.ref);
   if (halfSupplied.length) throw new Error(`half-supplied wave: succeeded with no PR in the report or --outcomes: ${halfSupplied.join(', ')}`);
 
   const seen = [...existing];
@@ -64,13 +70,15 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     if (!m) throw new Error(`half-supplied wave: row without an owner/repo#N ref: ${JSON.stringify(row)}`);
     const outcome = outcomes?.[row.ref] ?? {};
     const planned = (entry?.issues ?? []).find((i) => i.ref === row.ref);
-    const pr = row.prNumber ?? outcome.pr ?? null;
+    const pr = isPr(row.prNumber) ? row.prNumber : isPr(outcome.pr) ? outcome.pr : null;
     // Digests are written for non-succeeded rows and never removed, so a succeeded
     // row's digest is a stale one from an earlier wave.
     const digest = row.status === 'succeeded' ? null : digests?.[row.ref];
-    const failureReason = (digest?.failureReason ?? row.failureReason) === 'rate-limited' ? 'rate-limited' : null;
+    const rateLimited = (digest?.failureReason ?? row.failureReason) === 'rate-limited';
     const skipped = row.status === 'skipped';
-    const reviewed = routeFailure({ ...row, prNumber: pr, failureReason }) === 'review-gate';
+    // `skipped` never reached implement. `blocked` is not an engine status, but
+    // SKILL.md step 5 and the failure-routing tests hand it in as one, so it stays.
+    const implStatus = skipped ? null : routeFailure({ ...row, prNumber: pr }) === 'review-gate' ? 'pushed' : row.status === 'blocked' ? 'blocked' : 'error';
 
     const refRounds = rounds?.[row.ref] ?? [];
     const verdicts = refRounds.map((r) => roundVerdict(r, blockOn));
@@ -93,13 +101,13 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       effortSource: planned?.effortSource ?? null,
       model: planned?.model ?? null,
       path: 'engine',
-      // `skipped` never reached implement. `blocked` is not an engine status, but
-      // SKILL.md step 5 and the failure-routing tests hand it in as one, so it stays.
-      implStatus: skipped ? null : reviewed ? 'pushed' : row.status === 'blocked' ? 'blocked' : 'error',
+      implStatus,
       ciStatus: row.status === 'succeeded' ? 'pass' : null,
       reviewVerdict: verdicts.length ? verdicts.reduce((w, v) => (SEVERITY[v] > SEVERITY[w] ? v : w)) : null,
       reviewPath: refRounds.at(-1)?.path ?? null,
-      failureReason,
+      // Telemetry reads a rate-limit as an infra death beside implStatus "error"; a
+      // rate-limited row that still opened a PR (backend#620) is gated, not dead.
+      failureReason: rateLimited && implStatus === 'error' ? 'rate-limited' : null,
       findings: outcome.findings ?? [],
       bounces: Math.max(outcome.bounces ?? 0, bounced.filter(Boolean).length),
       hitl: { pointA: false, pointB: !!outcome.hitl?.pointB },

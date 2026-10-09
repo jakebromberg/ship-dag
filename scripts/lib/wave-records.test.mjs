@@ -97,15 +97,32 @@ for (const [status, over, want] of statusCases) {
   });
 }
 
-test('a failed rate-limited row with no PR is an error record carrying the reason', () => {
-  const noPr = row({ status: 'failed', prNumber: null, prUrl: null });
-  const r = derive({ report: report([noPr]), digests: { [REF]: { failureReason: 'rate-limited' } } }).records[0];
-  assert.deepEqual([r.implStatus, r.finalState, r.failureReason, r.pr], ['error', 'error', 'rate-limited', null]);
-});
+for (const status of [undefined, 'cancelled']) {
+  test(`row status ${status}: not recorded, and warned about as unknown`, () => {
+    const warned = [];
+    assert.equal(derive({ report: report([row({ status })]) }, { warn: (m) => warned.push(m) }).records.length, 0);
+    assert.match(warned.join('\n'), /WXYC\/dj-site#1: unknown status/);
+  });
+}
 
-test('a stale rate-limited digest beside a succeeded row with a PR leaves failureReason null', () => {
-  const r = derive({ digests: { [REF]: { status: 'failed', failureReason: 'rate-limited' } } }).records[0];
-  assert.deepEqual([r.failureReason, r.finalState], [null, 'merged']);
+// failureReason rides only beside implStatus "error": a rate-limited digest on a row
+// that opened a PR (backend#620), or a stale one beside a succeeded row, records null.
+const reasonCases = [
+  ['a failed row with no PR', { status: 'failed', prNumber: null, prUrl: null }, ['error', 'error', 'rate-limited', null]],
+  ['a failed row that still opened a PR', { status: 'failed', prNumber: 625 }, ['pushed', 'merged', null, 625]],
+  ['a succeeded row beside a stale digest', {}, ['pushed', 'merged', null, 11]],
+];
+for (const [name, over, want] of reasonCases) {
+  test(`rate-limited digest, ${name}: failureReason ${want[2]}`, () => {
+    const r = derive({ report: report([row(over)]), digests: { [REF]: { status: 'failed', failureReason: 'rate-limited' } } }).records[0];
+    assert.deepEqual([r.implStatus, r.finalState, r.failureReason, r.pr], want);
+  });
+}
+
+test('a PR number that is not a positive number is no PR, as routeFailure reads it', () => {
+  const r = derive({ report: report([row({ prNumber: 0 })]), outcomes: { [REF]: { pr: 91 } } }).records[0];
+  assert.deepEqual([r.pr, r.finalState], [91, 'merged']);
+  assert.throws(() => derive({ report: report([row({ prNumber: 0 })]), outcomes: { [REF]: { pr: '91' } } }), /half-supplied/);
 });
 
 test('rate-limited then merged gives two records, and a re-ingest adds none', () => {
