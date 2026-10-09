@@ -41,13 +41,16 @@ const cases = [
   ['a torn line is ignored', [result('a', 1), '{"type":"result",'], [], costOf(['a'], 1)],
   ['missing usage counts as zero', [result('a', 2, { usage: undefined })], [],
     { costUsd: 2, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, sessions: 1, sessionIds: ['a'] }],
-  ['a non-number cost or usage value is warned about and not summed',
+  // A session with no valid total_cost_usd is unpriced, not free: it is left out whole, like a killed one.
+  ['a non-number cost or usage value is warned about and not summed, and an unpriced session is not counted',
     [result('a', '0.5'), result('b', 1, { usage: { input_tokens: '7', output_tokens: 20, cache_read_input_tokens: 300, cache_creation_input_tokens: 4 } })], [],
-    { costUsd: 1, input: 10, output: 40, cacheRead: 600, cacheCreate: 8, sessions: 2, sessionIds: ['a', 'b'] },
-    [/total_cost_usd "0\.5"/, /usage\.input_tokens "7"/]],
+    { costUsd: 1, input: 0, output: 20, cacheRead: 300, cacheCreate: 4, sessions: 1, sessionIds: ['b'] },
+    [/total_cost_usd "0\.5"/, /usage\.input_tokens "7"/, /session a .*no valid total_cost_usd; not counted/]],
   ['a bad later running total keeps the last good one', [result('a', 1, { result_index: 0 }), result('a', null, { result_index: 1 })], [],
     costOf(['a'], 1, 2), [/total_cost_usd null/]],
-  ['a result with no total_cost_usd is warned about, not taken for $0 silently', [result('a', undefined)], [], costOf(['a'], 0), [/no total_cost_usd/]],
+  ['a session with no total_cost_usd is warned about and not counted, not taken for $0', [result('a', undefined), result('b', 0.5)], [], costOf(['b'], 0.5),
+    [/session a .*no valid total_cost_usd; not counted/]],
+  ['a session priced by any of its results is counted', [result('a', undefined, { result_index: 0 }), result('a', 2, { result_index: 1 })], [], costOf(['a'], 2, 2)],
   ['a result with no session_id is warned about and not summed', [result(undefined, 1), result('b', 0.5)], [], costOf(['b'], 0.5), [/no session_id/]],
 ];
 for (const [name, lines, listed, want, warnings = []] of cases) {
