@@ -6,6 +6,7 @@
 // Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   terminalEvent,
   routeFailure,
@@ -74,7 +75,7 @@ test('terminalEvent: skips unparseable and blank lines rather than throwing', ()
   assert.equal(terminalEvent(`not json\n\n${sessionLimitResult()}`).numTurns, 67);
 });
 
-test('routeFailure: a succeeded row goes to the review gate', () => {
+test('routeFailure: a succeeded row with a PR goes to the review gate', () => {
   assert.equal(routeFailure({ status: 'succeeded', prNumber: 625 }), 'review-gate');
 });
 
@@ -108,6 +109,19 @@ test('routeFailure: prNumber 0 and an absent prNumber are both "no PR"', () => {
   // PR-less stall to the review gate, which has no PR to review.
   assert.equal(routeFailure({ status: 'failed', prNumber: 0 }), 'point-B');
   assert.equal(routeFailure({ status: 'failed' }), 'point-B');
+});
+
+// SKILL.md step 5 runs diagnose-failure.mjs only for failed/blocked rows, so
+// the routes nested under that bullet are reached only from such a row. A route
+// that only a succeeded row produces needs a step-5 bullet of its own, or no
+// instruction ever leads an agent to it.
+test('SKILL.md step 5 nests exactly the failed/blocked routes under that bullet, and gives find-pr its own', () => {
+  const skill = readFileSync(new URL('../../SKILL.md', import.meta.url), 'utf8');
+  const step5 = skill.slice(skill.indexOf('\n### 5. '), skill.indexOf('\n### 6. ')).split('\n');
+  const nested = step5.flatMap((l) => l.match(/^ {2}- `([A-Za-z-]+)`/)?.[1] ?? []);
+  const failedOrBlocked = [{ status: 'failed', prNumber: 1 }, { status: 'failed', failureReason: 'rate-limited' }, { status: 'failed' }, { status: 'blocked' }];
+  assert.deepEqual(new Set(nested), new Set(failedOrBlocked.map(routeFailure)));
+  assert.equal(step5.filter((l) => l.startsWith('- ') && l.includes('`find-pr`')).length, 1, 'step 5 has no top-level bullet for a find-pr row');
 });
 
 // --- the shared single-pass scan + canonical diagnosis -----------------------
