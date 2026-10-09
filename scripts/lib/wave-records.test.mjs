@@ -265,19 +265,32 @@ const noPr = row({ status: 'failed', prNumber: null, prUrl: null });
 const BLOCKED = [round('', [finding('correctness')])];
 const FOUR = [round('', [finding('correctness'), finding('security'), finding('convention'), finding('contract')]), round('.r2', [])];
 const HAND = { runId: 'sd-20261008-1', repo: 'WXYC/dj-site', issue: 1, finalState: 'deferred', failureReason: 'rate-limited' };
-const summary = (f) => ({ category: f.category, file: f.file, line: f.line, summary: f.summary });
+// The `--outcomes` shape, and the one hand-written records carry: `<category> <file>:<line> <summary>`.
+const line = (f) => `${f.category} ${f.file}:${f.line} ${f.summary}`;
 const pick = (r) => [r.implStatus, r.failureReason, r.finalState, r.pr];
+const blockedNoPr = row({ status: 'blocked', prNumber: null, prUrl: null });
 // [name, derive() args, derive() opts, check(records)]
 const contractCases = [
-  ['1 findings: the worst round\'s blocking summaries, at most 3', { entry: entry({ blockOn: DEFAULT_BLOCK_ON }), rounds: FOUR, outcomes: { [REF]: { finalState: 'merged' } } }, {},
-    ([r]) => assert.deepEqual(r.findings, FOUR[0].review.findings.slice(0, 3).map(summary))],
+  ['1 findings: the worst round\'s blocking summaries as strings, at most 3', { entry: entry({ blockOn: DEFAULT_BLOCK_ON }), rounds: FOUR, outcomes: { [REF]: { finalState: 'merged' } } }, {},
+    ([r]) => assert.deepEqual(r.findings, FOUR[0].review.findings.slice(0, 3).map(line))],
   ['1 findings: outcomes.findings wins', { rounds: BLOCKED, outcomes: { [REF]: { finalState: 'merged', findings: ['x'] } } }, {},
     ([r]) => assert.deepEqual(r.findings, ['x'])],
   ['1 findings: nits only is []', { rounds: [round('', [finding('efficiency')])] }, {}, ([r]) => assert.deepEqual(r.findings, [])],
+  ['1 findings: of two blocking rounds, the later one\'s are listed (review finding 5)',
+    { rounds: [round('', [finding('correctness', { summary: 'A' })]), round('.r2', [finding('correctness', { summary: 'B' })])], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {},
+    ([r]) => assert.deepEqual(r.findings, ['correctness a.js:1 B'])],
+  ['1 findings: an unreadable round before a blocking one does not hide its findings', { rounds: [round('', null), round('.r2', [finding('correctness')]), round('.r3', [])] }, {},
+    ([r]) => assert.deepEqual([r.reviewVerdict, r.findings], ['blocking', ['correctness a.js:1 s']])],
   ['2a a rate-limit death is deferred', { report: report([noPr]), digests: DIGEST }, {}, ([r]) => assert.deepEqual(pick(r), ['error', 'rate-limited', 'deferred', null])],
   ['2a a hand-written deferred/error death is not duplicated (review finding 1)', { report: report([noPr]), digests: DIGEST }, { existing: [HAND] }, (rs) => assert.equal(rs.length, 0)],
-  ['2b point E: the death and the outcome are both recorded', { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { pr: 12, finalState: 'merged', bounces: 2 } } }, {},
-    (rs) => { assert.deepEqual(rs.map(pick), [['error', 'rate-limited', 'deferred', null], ['pushed', null, 'merged', 12]]); assert.deepEqual([rs[0].bounces, rs[0].reviewVerdict, rs[0].reviewPath], [0, null, null]); }],
+  // A clean round on disk for the continuation's PR, which the death must not read.
+  ['2b point E: the death and the outcome are both recorded', { report: report([noPr]), digests: DIGEST, rounds: [round('', [])], outcomes: { [REF]: { pr: 12, finalState: 'merged', bounces: 2 } } }, {},
+    (rs) => {
+      assert.deepEqual(rs.map(pick), [['error', 'rate-limited', 'deferred', null], ['pushed', null, 'merged', 12]]);
+      assert.deepEqual(rs.map((r) => [r.bounces, r.reviewVerdict, r.reviewPath]), [[0, null, null], [2, 'clean', `/s/reviews/${STEM}.json`]]);
+    }],
+  ['2b point E: a blocked row is no rate-limit death, so only the outcome is recorded', { report: report([blockedNoPr]), digests: DIGEST, outcomes: { [REF]: { pr: 12, finalState: 'merged' } } }, {},
+    (rs) => assert.deepEqual(rs.map(pick), [['pushed', null, 'merged', 12]])],
   ['2b point E: re-ingesting adds none', { report: report([noPr]), digests: DIGEST, outcomes: { [REF]: { pr: 12, finalState: 'merged' } } },
     { reportId: 'w1', existing: [{ ...HAND, reportId: 'w1' }, { ...HAND, finalState: 'merged', failureReason: null, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 0)],
   ['3 a repo without a post-session check records ciStatus none', {}, { noCheckRepos: ['WXYC/dj-site'] }, ([r]) => assert.equal(r.ciStatus, 'none')],
@@ -289,7 +302,14 @@ const contractCases = [
   ['5 a PR row whose last round blocks, with a finalState, is recorded', { rounds: BLOCKED, outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {}, ([r]) => assert.equal(r.finalState, 'blocked-hitl')],
   ['5 a PR row whose last round is clean after a block is merged', { rounds: [...BLOCKED, round('.r2', [])] }, {}, ([r]) => assert.equal(r.finalState, 'merged')],
   ['6 reportId is stamped on each record', {}, { reportId: 'w1' }, ([r]) => assert.equal(r.reportId, 'w1')],
-  ['6 the same key under another reportId is a second event', {}, { reportId: 'w2', existing: [{ ...MERGED, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 1)],
+  // A retry re-runs only PR-less failures; every other row is re-listed as it stood, so another reportId is no new event for it.
+  ['6 a second rate-limit death under another reportId is a second event', { report: report([noPr]), digests: DIGEST },
+    { reportId: 'w2', existing: [{ ...HAND, implStatus: 'error', reportId: 'w1' }] }, (rs) => assert.deepEqual(rs.map((r) => [...pick(r), r.reportId]), [['error', 'rate-limited', 'deferred', null, 'w2']])],
+  ['6 a second PR-less error under another reportId is a second event', { report: report([noPr]) },
+    { reportId: 'w2', existing: [{ ...MERGED, finalState: 'error', implStatus: 'error', reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 1)],
+  ['6 a row with a PR carried over under another reportId is the same event', {}, { reportId: 'w2', existing: [{ ...MERGED, implStatus: 'pushed', pr: 11, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 0)],
+  ['6 a skipped row carried over under another reportId is the same event', { report: report([row({ status: 'skipped', prNumber: null, prUrl: null })]) },
+    { reportId: 'w2', existing: [{ ...MERGED, finalState: 'deferred', implStatus: null, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 0)],
   ['6 the same key under the same reportId is a re-ingest', {}, { reportId: 'w1', existing: [{ ...MERGED, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 0)],
   ['6 a hand-written record has no reportId, so the key alone applies', {}, { reportId: 'w1', existing: [MERGED] }, (rs) => assert.equal(rs.length, 0)],
   ['6 a record without a reportId against a stamped one: the key alone applies', {}, { existing: [{ ...MERGED, reportId: 'w1' }] }, (rs) => assert.equal(rs.length, 0)],
@@ -302,8 +322,19 @@ test('record contract 5: a PR row whose last round blocks, with no finalState, i
   assert.throws(() => derive({ rounds: BLOCKED }), /^Error: half-supplied wave: .*WXYC\/dj-site#1$/);
 });
 
+test('record contract 5: the half-supplied refusal names every ref under each cause, and carries them', () => {
+  const rows = [row({ ref: REF5, number: 5, prNumber: null, prUrl: null }), row({ ref: REF6, number: 6, prNumber: null, prUrl: null }), row(), row({ ref: 'WXYC/dj-site#2', number: 2, prNumber: 12 })];
+  const rounds = { [REF]: BLOCKED, 'WXYC/dj-site#2': BLOCKED };
+  assert.throws(() => deriveWaveRecords(report(rows), entry({ issues: [] }), {}, rounds, {}, { warn: () => {} }), (err) => {
+    assert.equal(err.message, 'half-supplied wave: succeeded with no PR in the report or --outcomes, and no --outcomes finalState of blocked-hitl, deferred or error: '
+      + 'WXYC/dj-site#5, WXYC/dj-site#6; a PR whose last review round blocks, with no --outcomes finalState: WXYC/dj-site#1, WXYC/dj-site#2');
+    assert.deepEqual([err.noPr, err.lastBlocks], [[REF5, REF6], [REF, 'WXYC/dj-site#2']]);
+    return true;
+  });
+});
+
 test('record contract 7: a row without an owner/repo#N ref is malformed, not half-supplied', () => {
-  for (const bad of [row({ ref: undefined }), row({ ref: 'dj-site-1' })]) {
+  for (const bad of [row({ ref: undefined }), row({ ref: 'dj-site-1' }), row({ ref: 'dj-site#1' })]) {
     assert.throws(() => derive({ report: report([bad]) }), /^Error: malformed report row: /);
   }
 });
