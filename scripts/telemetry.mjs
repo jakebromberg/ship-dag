@@ -42,6 +42,8 @@
 //                                            # append a wave's records, derived from its engine artifacts;
 //                                            # exit 2: bad invocation or --outcomes, or a half-supplied
 //                                            # wave; 3: malformed report, or no run id; 1: anything else
+//   node telemetry.mjs escapes [--now ISO]  # escape rate of merged PRs (revert / bug follow-up within 30 days),
+//                                            # by month and tuningVersion; cache in $SHIP_DAG_ESCAPES_DIR
 //   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
@@ -57,6 +59,7 @@ import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, REF_RE } from './lib/wave-records.mjs';
 import { entryFromConfig, findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
+import { escapeReport, findEscapes, mergedPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
 
 const COMPLEXITIES = new Set(['mechanical', 'normal', 'complex']);
@@ -539,12 +542,21 @@ function main(argv) {
     }
     return;
   }
+  if (cmd === 'escapes') {
+    const i = rest.indexOf('--now');
+    const now = i >= 0 ? Date.parse(rest[i + 1]) : Date.now();
+    if (Number.isNaN(now)) { process.stderr.write('--now requires an ISO timestamp\n'); process.exit(2); }
+    findEscapes(mergedPrs(readRecords(telemetryPath())), { now })
+      .then((rows) => process.stdout.write(`${JSON.stringify(escapeReport(rows), null, 2)}\n`))
+      .catch((err) => { process.stderr.write(`escapes: ${err.message}\n`); process.exit(1); });
+    return;
+  }
   if (cmd === 'run-id') {
     const i = rest.indexOf('--label');
     process.stdout.write(`${process.env.SHIP_DAG_RUN_ID || mintRunId({ label: i >= 0 ? rest[i + 1] : undefined })}\n`);
     return;
   }
-  process.stderr.write('usage: telemetry.mjs <append|report|ingest-wave|run-id> ...\n');
+  process.stderr.write('usage: telemetry.mjs <append|report|ingest-wave|escapes|run-id> ...\n');
   process.exit(2);
 }
 
