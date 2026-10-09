@@ -1,16 +1,29 @@
 // escapes.mjs — the escaped-defect proxy: for each PR ship-dag merged, did a revert or a bug-signalled
 // follow-up that cites it show up within 30 days? Candidates are fetched once per repo per merge-day
-// window (three `gh search` calls) and cached, then matched to merged PRs locally. `gh` is injected
-// (`async (args) => stdout`), so nothing here touches GitHub or the real state dir unless asked to.
+// window (four `gh search` calls), cached once that day's window has closed, and matched to merged PRs
+// locally. `gh` is injected (`async (args) => stdout`) and the engine base dir is a parameter, so
+// nothing here touches GitHub or the real state dir unless asked to.
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { groupBy } from './stats.mjs';
+import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
 
 const DAY = 86_400_000;
 const WINDOW_DAYS = 30;
 const RATE_LIMITED = /rate limit/i;
+// GitHub search returns at most 1000 results, so a search that reaches it may have dropped some.
+const SEARCH_CAP = 1000;
+const FIX = /\b(?:fix(?:es|ed|ing)?|regressions?)\b/i;
+const PR_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/i;
+const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const same = (a, b) => a?.toLowerCase() === b?.toLowerCase();
+const lsdir = (dir) => { try { return readdirSync(dir); } catch { return []; } };
+
+/** The GraphQL query for the PRs that close issue `$n` of `$owner/$name`, merged or not. */
+export const CLOSING_PRS_QUERY = 'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){issue(number:$n){closedByPullRequestsReferences(first:50,includeClosedPrs:true){nodes{number headRefName mergedAt repository{nameWithOwner}}}}}}';
 
 /** Resolve the candidate cache directory the way `telemetryPath` resolves the log. */
 export function escapesDir(env = process.env) {
@@ -21,9 +34,15 @@ export function escapesDir(env = process.env) {
 /** The default `gh`: run the CLI and return stdout. */
 export const ghCli = async (args) => (await promisify(execFile)('gh', args, { maxBuffer: 64 << 20 })).stdout;
 
-/** Whether `body` cites PR `n` of `repo`: `#n` (not a prefix of a longer number) or the PR's URL. */
-export function cites(body, repo, n) {
-  return new RegExp(`(?<![\\w/])#${n}(?!\\d)|github\\.com/${repo}/pull/${n}(?!\\d)`).test(body ?? '');
+/**
+ * Whether `body`, written in repo `home`, cites `repo`#`n`: as `#n` (only when `repo` is `home`), as
+ * `owner/repo#n`, or by its `/pull/n` or `/issues/n` URL. Repos compare case-insensitively, and a
+ * longer number never matches.
+ */
+export function cites(body, repo, n, home = repo) {
+  const r = escape(repo);
+  const bare = same(repo, home) ? `(?<![\\w/])#${n}|` : '';
+  return new RegExp(`(?:${bare}(?<![\\w./-])${r}#${n}|github\\.com/${r}/(?:pull|issues)/${n})(?!\\d)`, 'i').test(body ?? '');
 }
 
 /**
@@ -34,54 +53,96 @@ export async function withBackoff(fn, { repo, retries = 3, baseMs = 2000, sleep 
   for (let attempt = 0; ; attempt += 1) {
     try { return await fn(); } catch (err) {
       if (!RATE_LIMITED.test(err.message)) throw err;
-      if (attempt >= retries) throw new Error(`${repo}: GitHub search rate limit persisted after ${retries} retries: ${err.message}`);
+      if (attempt >= retries) throw new Error(`${repo}: GitHub rate limit persisted after ${retries} retries: ${err.message}`);
       await sleep(baseMs * 2 ** attempt);
     }
   }
 }
 
-/** The window's candidates for `repo`: cached under `cacheDir`, else three searches. */
-async function candidatesFor(repo, day, { gh, cacheDir, sleep }) {
-  const file = join(cacheDir, repo.replace('/', '__'), `${day}.json`);
-  if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
-  const created = `${day}..${new Date(Date.parse(day) + WINDOW_DAYS * DAY).toISOString().slice(0, 10)}`;
-  const fields = 'number,title,body,labels,createdAt';
-  const search = (kind, ...q) => withBackoff(async () => JSON.parse(await gh(['search', kind, '--repo', repo, '--created', created, '--limit', '100', '--json', fields, ...q])), { repo, sleep });
-  const found = [
-    ...await search('prs', '--match', 'title', 'Revert'),
-    ...await search('prs', '--', 'fix OR regression in:title'),
-    ...await search('issues', '--label', 'bug'),
-  ];
-  const candidates = [...new Map(found.map((c) => [c.number, c])).values()];
-  mkdirSync(join(cacheDir, repo.replace('/', '__')), { recursive: true });
-  writeFileSync(file, JSON.stringify(candidates));
-  return candidates;
+/** `gh args`, parsed, with backoff; null and a warning (`what: error`) when it fails other than on a rate limit. */
+async function ghJson(args, what, { gh, repo, sleep, warn }) {
+  try { return JSON.parse(await withBackoff(() => gh(args), { repo, sleep })); } catch (err) {
+    if (RATE_LIMITED.test(err.message)) throw err;
+    warn(`escapes: ${what}: ${err.message}`);
+    return null;
+  }
 }
 
-/** How `cand` escapes from the merged `pr` (`{repo, number, title, commits, closing}`), or null. */
-function classify(cand, pr) {
-  const shas = [...(cand.body ?? '').matchAll(/This reverts commit ([0-9a-f]{7,40})/gi)].map((m) => m[1].toLowerCase());
-  if (shas.some((s) => pr.commits.some((oid) => oid.startsWith(s) || s.startsWith(oid))) || (/^revert/i.test(cand.title) && cand.title.includes(pr.title))) return 'revert';
-  const signal = (cand.labels ?? []).some((l) => l.name === 'bug') || /fix|regression/i.test(cand.title);
-  const cited = [pr.number, ...pr.closing].some((n) => cites(cand.body, pr.repo, n));
-  return signal && cited ? 'follow-up-fix' : null;
+/** The PR numbers `cand` says it reverts: `Reverts [owner/repo]#N` lines, and each `This reverts commit <sha>`, resolved through GitHub. */
+async function revertedPrs(cand, repo, ctx) {
+  const body = cand.body ?? '';
+  const prs = [...body.matchAll(/^Reverts (?:([\w.-]+\/[\w.-]+))?#(\d+)\b/gim)].filter((m) => !m[1] || same(m[1], repo)).map((m) => Number(m[2]));
+  for (const [, sha] of body.matchAll(/This reverts commit ([0-9a-f]{7,40})/gi)) {
+    const pulls = await ghJson(['api', `repos/${repo}/commits/${sha}/pulls`], `${repo}#${cand.number} reverts ${sha}, which is not resolved to a PR`, { ...ctx, repo });
+    prs.push(...(pulls ?? []).map((p) => p.number));
+  }
+  return prs;
 }
 
 /**
- * For each merged PR `{repo, pr, tuningVersion}` whose 30-day window has closed by `now` (epoch ms),
- * the revert or follow-up fixes found: `[{repo, pr, tuningVersion, mergedAt, escapes: [{number, kind}]}]`.
- * @param {{gh?: (args: string[]) => Promise<string>, cacheDir?: string, now?: number, sleep?: (ms: number) => Promise<void>}} [opts]
+ * Merge day `day`'s window candidates for `repo` (Revert-, fix- or regression-titled PRs and bug-labelled
+ * issues, each with the `reverts` it names): from `cacheDir`, else searched for, and cached only once
+ * the day's window has closed. A search that reaches GitHub's result cap throws rather than truncate.
  */
-export async function findEscapes(merged, { gh = ghCli, cacheDir = escapesDir(), now = Date.now(), sleep } = {}) {
+async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
+  const dir = join(cacheDir, repo.replace('/', '__'));
+  const file = join(dir, `${day}.json`);
+  if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
+  const created = `${day}..${new Date(Date.parse(day) + WINDOW_DAYS * DAY).toISOString().slice(0, 10)}`;
+  const search = async (kind, ...q) => {
+    const found = JSON.parse(await withBackoff(() => ctx.gh(['search', kind, '--repo', repo, '--created', created, '--limit', String(SEARCH_CAP), '--json', 'number,title,body,labels,createdAt', ...q]), { repo, sleep: ctx.sleep }));
+    if (found.length >= SEARCH_CAP) throw new Error(`${repo}: gh search ${kind} ${q.join(' ')} --created ${created} returned ${found.length} results, GitHub's cap, so some may be missing; nothing cached`);
+    return found;
+  };
+  // One search per title word: GitHub applies `in:title` to neither side of an OR.
+  const found = [
+    ...await search('prs', '--match', 'title', 'Revert'),
+    ...await search('prs', '--match', 'title', 'fix'),
+    ...await search('prs', '--match', 'title', 'regression'),
+    ...await search('issues', '--label', 'bug'),
+  ];
+  const candidates = [...new Map(found.map((c) => [c.number, c])).values()];
+  for (const c of candidates) c.reverts = await revertedPrs(c, repo, ctx);
+  if (now >= Date.parse(day) + (WINDOW_DAYS + 1) * DAY) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, JSON.stringify(candidates));
+  }
+  return candidates;
+}
+
+/** How `cand` escapes from the merged `pr` (`{repo, number, title, subjects, cited: [[repo, n]]}`), or null. */
+function classify(cand, pr) {
+  const reverted = /^Revert "(.*)"$/.exec(cand.title ?? '')?.[1];
+  if (cand.reverts?.includes(pr.number) || (reverted !== undefined && [pr.title, ...pr.subjects].includes(reverted))) return 'revert';
+  const signal = (cand.labels ?? []).some((l) => same(l.name, 'bug')) || FIX.test(cand.title ?? '');
+  return signal && pr.cited.some(([repo, n]) => cites(cand.body, repo, n, pr.repo)) ? 'follow-up-fix' : null;
+}
+
+/** A commit's full subject: GitHub cuts a long headline at "…" and starts the body with the rest. */
+const subject = (c) => (c.messageHeadline.endsWith('…') && c.messageBody?.startsWith('…') ? c.messageHeadline.slice(0, -1) + c.messageBody.slice(1).split('\n')[0] : c.messageHeadline);
+
+/**
+ * For each PR `{repo, pr, tuningVersion}` that merged and whose 30-day window has closed by `now` (epoch
+ * ms), the reverts and follow-up fixes found: `[{repo, pr, tuningVersion, mergedAt, escapes: [{number, kind}]}]`.
+ * A PR GitHub cannot show is skipped with a warning; a rate limit that outlasts the backoff throws.
+ * @param {{gh?: (args: string[]) => Promise<string>, cacheDir?: string, now?: number, sleep?: (ms: number) => Promise<void>, warn?: (m: string) => void}} [opts]
+ */
+export async function findEscapes(prs, { gh = ghCli, cacheDir = escapesDir(), now = Date.now(), sleep, warn = (m) => console.error(m) } = {}) {
+  const ctx = { gh, sleep, warn };
+  const windows = new Map();
   const out = [];
-  for (const m of merged) {
-    const view = JSON.parse(await withBackoff(() => gh(['pr', 'view', String(m.pr), '--repo', m.repo, '--json', 'mergedAt,title,commits,closingIssuesReferences']), { repo: m.repo, sleep }));
+  for (const m of prs) {
+    const view = await ghJson(['pr', 'view', String(m.pr), '--repo', m.repo, '--json', 'mergedAt,title,commits,closingIssuesReferences'], `skipped ${m.repo}#${m.pr}`, { ...ctx, repo: m.repo });
+    if (!view?.mergedAt) continue;
     const mergedMs = Date.parse(view.mergedAt);
     const end = mergedMs + WINDOW_DAYS * DAY;
-    if (!(end <= now)) continue;
-    const pr = { repo: m.repo, number: m.pr, title: view.title, commits: view.commits.map((c) => c.oid), closing: view.closingIssuesReferences.map((i) => i.number) };
-    const candidates = await candidatesFor(m.repo, view.mergedAt.slice(0, 10), { gh, cacheDir, sleep });
-    const escapes = candidates
+    if (end > now) continue;
+    const day = view.mergedAt.slice(0, 10);
+    const key = `${m.repo.toLowerCase()}#${day}`;
+    if (!windows.has(key)) windows.set(key, candidatesFor(m.repo, day, { ...ctx, cacheDir, now }));
+    const closing = view.closingIssuesReferences.map((i) => [`${i.repository.owner.login}/${i.repository.name}`, i.number]);
+    const pr = { repo: m.repo, number: m.pr, title: view.title, subjects: view.commits.map(subject), cited: [[m.repo, m.pr], ...closing] };
+    const escapes = (await windows.get(key))
       .filter((c) => c.number !== m.pr && Date.parse(c.createdAt) > mergedMs && Date.parse(c.createdAt) <= end)
       .flatMap((c) => { const kind = classify(c, pr); return kind ? [{ number: c.number, kind }] : []; });
     out.push({ ...m, mergedAt: view.mergedAt, escapes });
@@ -96,11 +157,55 @@ export function escapeReport(rows) {
   return { total: tally(rows), byMonth: by((r) => r.mergedAt.slice(0, 7)), byTuningVersion: by((r) => String(r.tuningVersion ?? 0)) };
 }
 
-/** The PRs ship-dag merged, from telemetry records: `[{repo, pr, tuningVersion}]`, one per PR (the newest record wins). */
-export function mergedPrs(records) {
+/** A record's or report row's PR as `{repo, pr}`: a positive integer in `repo`, or a PR URL (its own repo). */
+function prOf(repo, pr) {
+  if (Number.isInteger(pr) && pr > 0) return { repo, pr };
+  const m = typeof pr === 'string' ? PR_URL.exec(pr) : null;
+  return m ? { repo: m[1], pr: Number(m[2]) } : null;
+}
+
+/**
+ * The PRs ship-dag opened, `[{repo, pr, tuningVersion}]`, once per `owner/repo#PR` (case-insensitive):
+ * merged telemetry records' `pr` (the newest record wins), then each report row's `prNumber` under
+ * `baseDir/<run>/state/reports/` (its `tuningVersion` from the run's sidecar), then, for a sidecar ref
+ * neither gave a PR, its one merged closing PR on an `orchestrator/` branch (none or several: skipped,
+ * with a warning). Whether each merged, and when, is `findEscapes`' to ask.
+ */
+export async function shipDagPrs(records, { baseDir = defaultBaseDir(), gh = ghCli, sleep, warn = (m) => console.error(m) } = {}) {
   const byPr = new Map();
-  for (const r of records) {
-    if (r.kind !== 'retro' && r.finalState === 'merged' && Number.isInteger(r.pr) && r.pr > 0) byPr.set(`${r.repo}#${r.pr}`, { repo: r.repo, pr: r.pr, tuningVersion: r.tuningVersion ?? 0 });
+  const covered = new Set(); // issue refs some source gave a PR for
+  const add = (p, tuningVersion) => { const k = `${p.repo}#${p.pr}`.toLowerCase(); if (!byPr.has(k)) byPr.set(k, { ...p, tuningVersion }); };
+  for (const r of records.toReversed()) {
+    const p = r.kind === 'retro' ? null : prOf(r.repo, r.pr);
+    if (p) covered.add(`${r.repo}#${r.issue}`.toLowerCase());
+    if (p && r.finalState === 'merged') add(p, r.tuningVersion ?? 0);
+  }
+  const sidecarRefs = [];
+  for (const run of lsdir(baseDir)) {
+    const entries = readSidecar(join(baseDir, run, SIDECAR_NAME), { warn });
+    const reports = join(baseDir, run, 'state', 'reports');
+    for (const name of lsdir(reports).filter((n) => n.endsWith('.json'))) {
+      let rep;
+      try { rep = JSON.parse(readFileSync(join(reports, name), 'utf8')); } catch { warn(`escapes: ${join(reports, name)}: unreadable; skipped`); continue; }
+      for (const row of Array.isArray(rep?.issues) ? rep.issues : []) {
+        const p = typeof row?.ref === 'string' ? prOf(row.ref.split('#')[0], row.prNumber) : null;
+        if (!p) continue;
+        covered.add(row.ref.toLowerCase());
+        add(p, entries.findLast((e) => e.issues?.some((i) => same(i.ref, row.ref)))?.tuningVersion ?? 0);
+      }
+    }
+    for (const e of entries) for (const i of e.issues ?? []) sidecarRefs.push([i.ref, e.tuningVersion ?? 0]);
+  }
+  for (const [ref, tuningVersion] of sidecarRefs) {
+    if (typeof ref !== 'string' || covered.has(ref.toLowerCase())) continue;
+    covered.add(ref.toLowerCase()); // ask about each ref once
+    const [repo, n] = ref.split('#');
+    const [owner, name] = repo.split('/');
+    const res = await ghJson(['api', 'graphql', '-f', `query=${CLOSING_PRS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`], `${ref}: closing PRs not found; skipped`, { gh, repo, sleep, warn });
+    if (!res) continue;
+    const hits = (res.data?.repository?.issue?.closedByPullRequestsReferences?.nodes ?? []).filter((p) => p.mergedAt && p.headRefName?.startsWith('orchestrator/'));
+    if (hits.length === 1) add({ repo: hits[0].repository.nameWithOwner, pr: hits[0].number }, tuningVersion);
+    else warn(`escapes: ${ref}: ${hits.length} merged orchestrator/ PRs close it, so it has no PR; skipped`);
   }
   return [...byPr.values()];
 }

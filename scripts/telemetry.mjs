@@ -43,7 +43,8 @@
 //                                            # exit 2: bad invocation or --outcomes, or a half-supplied
 //                                            # wave; 3: malformed report, or no run id; 1: anything else
 //   node telemetry.mjs escapes [--now ISO]  # escape rate of merged PRs (revert / bug follow-up within 30 days),
-//                                            # by month and tuningVersion; cache in $SHIP_DAG_ESCAPES_DIR
+//                                            # by month and tuningVersion; PRs from the log and the engine
+//                                            # state dir's reports and sidecars; cache in $SHIP_DAG_ESCAPES_DIR
 //   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
@@ -59,7 +60,7 @@ import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, REF_RE } from './lib/wave-records.mjs';
 import { entryFromConfig, findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
-import { escapeReport, findEscapes, mergedPrs } from './lib/escapes.mjs';
+import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
 
 const COMPLEXITIES = new Set(['mechanical', 'normal', 'complex']);
@@ -546,7 +547,8 @@ function main(argv) {
     const i = rest.indexOf('--now');
     const now = i >= 0 ? Date.parse(rest[i + 1]) : Date.now();
     if (Number.isNaN(now)) { process.stderr.write('--now requires an ISO timestamp\n'); process.exit(2); }
-    findEscapes(mergedPrs(readRecords(telemetryPath())), { now })
+    shipDagPrs(readRecords(telemetryPath()))
+      .then((prs) => findEscapes(prs, { now }))
       .then((rows) => process.stdout.write(`${JSON.stringify(escapeReport(rows), null, 2)}\n`))
       .catch((err) => { process.stderr.write(`escapes: ${err.message}\n`); process.exit(1); });
     return;
