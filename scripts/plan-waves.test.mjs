@@ -59,6 +59,7 @@ function subIssuesResponse(tree, argv) {
       state: c.state || 'OPEN',
       repository: { nameWithOwner: childRepo },
       subIssuesSummary: { total: childCount(`${childRepo}#${c.number}`) },
+      labels: { nodes: (c.labels || []).map((name) => ({ name })) },
     };
   });
   return {
@@ -866,3 +867,74 @@ test('a relative CO_HOME that cannot load names the absolute core path in the er
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, new RegExp(`from ${resolve(import.meta.dirname, '..', 'no-such-checkout', 'dist/src/index.js').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.`));
 });
+
+// A ship-dag wave sub-epic (label `ship-dag-wave`) groups one wave's issues. It
+// is never work itself, and closing it must never hide an issue still under it.
+const WAVE = ['ship-dag-wave'];
+for (const { name, tree, issues, nodes, warns } of [
+  {
+    name: 'an open wave sub-epic whose children all closed ships nothing, and warns',
+    tree: { 'o/r#1': [{ number: 20, labels: WAVE }], 'o/r#20': [{ number: 21, state: 'CLOSED' }] },
+    issues: { 20: issue(20) },
+    nodes: [],
+    warns: [/o\/r#20.*wave sub-epic/],
+  },
+  {
+    name: 'an empty open wave sub-epic ships nothing, and warns',
+    tree: { 'o/r#1': [{ number: 20, labels: WAVE }, { number: 10 }] },
+    issues: { 10: issue(10), 20: issue(20) },
+    nodes: ['o/r#10'],
+    warns: [/o\/r#20.*wave sub-epic/],
+  },
+  {
+    name: 'a closed wave sub-epic with an open child ships the child, and warns',
+    tree: { 'o/r#1': [{ number: 20, labels: WAVE, state: 'CLOSED' }], 'o/r#20': [{ number: 21 }, { number: 22, state: 'CLOSED' }] },
+    issues: { 20: issue(20), 21: issue(21) },
+    nodes: ['o/r#21'],
+    warns: [/o\/r#20.*closed.*o\/r#21/],
+  },
+  {
+    name: 'a closed wave sub-epic whose children all closed ships nothing, quietly',
+    tree: { 'o/r#1': [{ number: 20, labels: WAVE, state: 'CLOSED' }, { number: 10 }], 'o/r#20': [{ number: 21, state: 'CLOSED' }] },
+    issues: { 10: issue(10) },
+    nodes: ['o/r#10'],
+    warns: [],
+  },
+  {
+    name: 'an open wave sub-epic with an open child ships the child',
+    tree: { 'o/r#1': [{ number: 20, labels: WAVE }], 'o/r#20': [{ number: 21 }] },
+    issues: { 20: issue(20), 21: issue(21, 'Blocked by #20') },
+    nodes: ['o/r#21'],
+    warns: [],
+  },
+  {
+    name: 'an unlabelled open epic whose children all closed still ships as itself',
+    tree: { 'o/r#1': [{ number: 20 }], 'o/r#20': [{ number: 21, state: 'CLOSED' }] },
+    issues: { 20: issue(20) },
+    nodes: ['o/r#20'],
+    warns: [],
+  },
+  {
+    name: 'an unlabelled empty open sub-issue still ships as itself',
+    tree: { 'o/r#1': [{ number: 20 }] },
+    issues: { 20: issue(20) },
+    nodes: ['o/r#20'],
+    warns: [],
+  },
+  {
+    name: 'an unlabelled closed epic still takes its open children out of scope',
+    tree: { 'o/r#1': [{ number: 20, state: 'CLOSED' }, { number: 10 }], 'o/r#20': [{ number: 21 }] },
+    issues: { 10: issue(10) },
+    nodes: ['o/r#10'],
+    warns: [],
+  },
+]) {
+  test(`fetchSpec: ${name}`, () => {
+    const seen = [];
+    const spec = fetchSpec('o/r', { epic: 1, warn: (m) => seen.push(m) }, fakeGh({ tree, issues }));
+    assert.deepEqual(spec.nodes.map((n) => n.ref), nodes);
+    assert.deepEqual(spec.edges, []);
+    assert.equal(seen.length, warns.length, `warnings: ${JSON.stringify(seen)}`);
+    warns.forEach((re, i) => assert.match(seen[i], re));
+  });
+}

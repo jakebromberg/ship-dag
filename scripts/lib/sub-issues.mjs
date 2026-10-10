@@ -10,8 +10,16 @@
 export const SUB_ISSUES_QUERY =
   'query($owner:String!,$name:String!,$n:Int!,$cursor:String){repository(owner:$owner,name:$name)'
   + '{issue(number:$n){subIssues(first:100,after:$cursor){'
-  + 'nodes{number state repository{nameWithOwner} subIssuesSummary{total}}'
+  + 'nodes{number state repository{nameWithOwner} subIssuesSummary{total} labels(first:20){nodes{name}}}'
   + 'pageInfo{hasNextPage endCursor}}}}}';
+
+/** The label every wave sub-epic carries: one wave's issues, grouped under the run epic. */
+export const WAVE_LABEL = 'ship-dag-wave';
+
+/** Whether a sub-issue node (as `listSubIssues` returns it) carries `WAVE_LABEL`. */
+export function hasWaveLabel(node) {
+  return Boolean(node && node.labels && (node.labels.nodes || []).some((l) => l && l.name === WAVE_LABEL));
+}
 
 /** No sub-issues connection came back for an issue — bad number, deleted, no access, feature off. */
 export class SubIssuesUnavailable extends Error {}
