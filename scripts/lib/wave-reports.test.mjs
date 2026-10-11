@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readWaveReports, waveContextFor } from './wave-reports.mjs';
+import { readWaveReport, readWaveReports, waveContextFor } from './wave-reports.mjs';
 import { SIDECAR_NAME } from './wave-sidecar.mjs';
 
 const REF = 'WXYC/repo#1';
@@ -37,7 +37,7 @@ test('readWaveReports parses each report once and flags the ones a caller must r
 test('waveContextFor takes the sidecar entry as of startedAt, never a later re-emit', () => {
   const d = stateDir();
   sidecar(d, entry('2026-01-01T00:00:00Z', 2), entry('2026-01-03T00:00:00Z', 5));
-  const ctx = waveContextFor(d, { startedAt: STARTED, issues: [{ ref: REF }] }, { warn: () => {} });
+  const ctx = waveContextFor(d, { report: { issues: [{ ref: REF }] }, startedAt: Date.parse(STARTED) }, { warn: () => {} });
   assert.equal(ctx.source, 'sidecar');
   assert.equal(ctx.entry.tuningVersion, 2);
 });
@@ -45,7 +45,7 @@ test('waveContextFor takes the sidecar entry as of startedAt, never a later re-e
 test('waveContextFor falls back to the config in the state dir, then state/, and reports none', () => {
   const config = { name: 'ship-dag-run1', defaultEffort: 'high', defaultModel: 'sonnet', issues: [{ repo: 'WXYC/repo', number: 1, complexity: 'normal' }] };
   // A config's mtime is when the test wrote it, so the report starts just after.
-  const report = { startedAt: new Date(Date.now() + 60_000).toISOString(), issues: [{ ref: REF }] };
+  const report = { report: { issues: [{ ref: REF }] }, startedAt: Date.now() + 60_000 };
   const top = stateDir();
   writeFileSync(join(top, 'config.json'), JSON.stringify(config));
   const nested = stateDir();
@@ -57,4 +57,21 @@ test('waveContextFor falls back to the config in the state dir, then state/, and
     assert.equal(ctx.config.name, 'ship-dag-run1');
   }
   assert.deepEqual(waveContextFor(stateDir(), report, { warn: () => {} }), { entry: null, config: null, source: null });
+});
+
+test('readWaveReport reads any path, and keeps the rows of a report whose startedAt does not parse', () => {
+  const d = stateDir();
+  const path = join(d, 'state', 'reports', 'w1.txt');
+  writeFileSync(path, JSON.stringify({ startedAt: 'soon', issues: [{ ref: REF }] }));
+  const read = readWaveReport(path);
+  assert.deepEqual(read.report.issues, [{ ref: REF }]);
+  assert.match(read.error, /no parseable startedAt: "soon"/);
+  assert.equal(read.startedAt, undefined);
+  assert.match(readWaveReport(join(d, 'gone.json')).error, /cannot read the report: ENOENT/);
+});
+
+test('waveContextFor refuses a startedAt that is not epoch ms rather than take the newest entry', () => {
+  for (const startedAt of [undefined, NaN, STARTED]) {
+    assert.throws(() => waveContextFor(stateDir(), { report: { issues: [{ ref: REF }] }, startedAt }), TypeError);
+  }
 });

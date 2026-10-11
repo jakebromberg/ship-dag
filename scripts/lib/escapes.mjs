@@ -229,10 +229,10 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
   const sidecarRefs = new Map(); // lowercased ref → [ref, tuningVersion, emittedAt] of its newest entry
   for (const run of lsdir(baseDir)) {
     const entries = readSidecar(join(baseDir, run, SIDECAR_NAME), { warn });
-    for (const { path, report, startedAt, error } of readWaveReports(join(baseDir, run), { warn: (m) => warn(`escapes: ${m}; skipped`) })) {
-      if (error) continue;
-      const rows = report.issues;
-      const tuningVersion = waveContextFor(join(baseDir, run), report, { warn }).entry?.tuningVersion ?? 0;
+    for (const read of readWaveReports(join(baseDir, run), { warn: (m) => warn(`escapes: ${m}; skipped`) })) {
+      if (read.error) continue;
+      const rows = read.report.issues;
+      const tuningVersion = waveContextFor(join(baseDir, run), read, { warn }).entry?.tuningVersion ?? 0;
       for (const row of rows) {
         const p = typeof row?.ref === 'string' ? prOf(row.ref.split('#')[0], row.prNumber) : null;
         if (!p) continue;

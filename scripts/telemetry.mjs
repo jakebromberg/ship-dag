@@ -50,7 +50,7 @@
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
 // else ~/.local/state/ship-dag/runs.jsonl.
 
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { mean, rate, groupBy } from './lib/stats.mjs';
@@ -58,7 +58,7 @@ import { isMain } from './lib/is-main.mjs';
 import { mintRunId, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, WaveRefusal, REF_RE } from './lib/wave-records.mjs';
-import { waveContextFor, readWaveReports } from './lib/wave-reports.mjs';
+import { readWaveReport, readWaveReports, waveContextFor } from './lib/wave-reports.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
@@ -386,20 +386,18 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     throw new IngestError(2, `${file}: not at <stateDir>/state/reports/<id>.json, so its state dir is unknown`);
   }
   const stateDir = dirname(dirname(dirname(file)));
-  // The siblings are read quietly: only this report's own fault is an error here.
-  const reports = readWaveReports(stateDir, { warn: () => {} });
-  const own = reports.find((r) => r.path === file);
-  if (!own) throw new IngestError(3, `${file}: cannot read the report: not a .json file`);
-  if (own.error) throw new IngestError(3, own.error);
+  const own = readWaveReport(file);
+  if (!own.report) throw new IngestError(3, own.error);
   const { report, startedAt } = own;
   const bad = report.issues.find((r) => !REF_RE.test(r?.ref ?? ''));
   if (bad) throw new IngestError(3, `${file}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}`);
+  if (own.error) throw new IngestError(3, own.error);
   const refs = report.issues.map((r) => r.ref);
   validateOutcomes(outcomes, report.issues);
 
   // Routing emitted after this report started is a later re-emit's (a retry's), not this wave's.
   // An older layout kept the config under <stateDir>/state/.
-  const { entry, config, source } = waveContextFor(stateDir, report, { warn });
+  const { entry, config, source } = waveContextFor(stateDir, own, { warn });
   if (source !== 'sidecar') {
     warn(entry
       ? `ingest-wave: no sidecar entry in ${stateDir} matches this wave's issues; routing from its config, recorded under the default policy at tuningVersion 0`
@@ -414,7 +412,8 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   // before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
   // and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
   // run of other rows) re-runs nothing, so later rounds still review this row's PR.
-  const others = reports.filter((r) => !r.error && r.startedAt > startedAt);
+  // The siblings are read quietly: only this report's own fault is an error here.
+  const others = readWaveReports(stateDir, { warn: () => {} }).filter((r) => !r.error && r.startedAt > startedAt);
   const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
   const inWave = (ref, mtimeMs) => mtimeMs >= startedAt && mtimeMs < ends[ref];
