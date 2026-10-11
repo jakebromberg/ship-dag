@@ -9,7 +9,8 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { groupBy } from './stats.mjs';
-import { findWaveContext, readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
+import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
+import { readWaveReports, waveContextFor } from './wave-reports.mjs';
 
 const DAY = 86_400_000;
 const WINDOW_DAYS = 30;
@@ -211,7 +212,7 @@ function prOf(repo, pr) {
  * The PRs ship-dag opened, `[{repo, pr, tuningVersion}]`, once per `owner/repo#PR` (case-insensitive):
  * telemetry records' `pr` whatever their finalState (the newest record wins), then each report row's
  * `prNumber` under `baseDir/<run>/state/reports/` (its `tuningVersion` from the sidecar entry ingest-wave
- * reads for the report: `findWaveContext` as of its start), then, for a sidecar ref neither gave a PR,
+ * reads for the report: `waveContextFor`; a report with no parseable `startedAt` is skipped), then, for a sidecar ref neither gave a PR,
  * its one merged closing PR on an `orchestrator/` branch (cached in `cacheDir` once the issue is closed), under the ref's newest
  * entry's version (none or several: skipped, with a warning, and asked again next run). Whether each merged, and when, is `findEscapes`' to ask.
  */
@@ -228,12 +229,10 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
   const sidecarRefs = new Map(); // lowercased ref → [ref, tuningVersion, emittedAt] of its newest entry
   for (const run of lsdir(baseDir)) {
     const entries = readSidecar(join(baseDir, run, SIDECAR_NAME), { warn });
-    const reports = join(baseDir, run, 'state', 'reports');
-    for (const name of lsdir(reports).filter((n) => n.endsWith('.json'))) {
-      let rep;
-      try { rep = JSON.parse(readFileSync(join(reports, name), 'utf8')); } catch { warn(`escapes: ${join(reports, name)}: unreadable; skipped`); continue; }
-      const rows = Array.isArray(rep?.issues) ? rep.issues : [];
-      const tuningVersion = findWaveContext(join(baseDir, run), rows.map((r) => r?.ref), { asOf: Date.parse(rep?.startedAt), warn })?.tuningVersion ?? 0;
+    for (const { path, report, startedAt, error } of readWaveReports(join(baseDir, run), { warn: (m) => warn(`escapes: ${m}; skipped`) })) {
+      if (error) continue;
+      const rows = report.issues;
+      const tuningVersion = waveContextFor(join(baseDir, run), report, { warn }).entry?.tuningVersion ?? 0;
       for (const row of rows) {
         const p = typeof row?.ref === 'string' ? prOf(row.ref.split('#')[0], row.prNumber) : null;
         if (!p) continue;
