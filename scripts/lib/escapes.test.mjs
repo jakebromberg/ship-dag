@@ -206,6 +206,46 @@ test('candidates are fetched once per repo per merge day, and cached once that d
   assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
 });
 
+test('a second run over a settled population makes no gh pr view call: a merged PR\'s view is cached', async () => {
+  const cacheDir = tmp();
+  await run(fakeGh(), { cacheDir });
+  const again = fakeGh();
+  const rows = await run(again, { cacheDir });
+  assert.deepEqual(again.calls, []);
+  assert.deepEqual(kinds(rows), []);
+  assert.equal(rows[0].mergedAt, MERGED);
+});
+
+test('a PR that has not merged is not cached, so a later run asks again', async () => {
+  const cacheDir = tmp();
+  await run(fakeGh({ [VIEW]: view({ mergedAt: null }) }), { cacheDir });
+  const again = fakeGh();
+  assert.equal((await run(again, { cacheDir })).length, 1);
+  assert.ok(again.calls.includes(VIEW));
+});
+
+test('a PR whose cached view is unreadable is viewed again', async () => {
+  const cacheDir = tmp();
+  mkdirSync(join(cacheDir, 'v1', 'o__r'), { recursive: true });
+  writeFileSync(join(cacheDir, 'v1', 'o__r', 'pr-5.json'), '{"merged');
+  const fake = fakeGh();
+  assert.equal((await run(fake, { cacheDir })).length, 1);
+  assert.ok(fake.calls.includes(VIEW));
+});
+
+test('revert by body: a sha GitHub reports as unknown (422) falls back to the title and does not block caching the day', async () => {
+  const cacheDir = tmp();
+  const fake = fakeGh({
+    [SEARCH.revert]: [cand({ number: 21, title: 'Revert "Add thing"', body: 'This reverts commit deadbeef.' })],
+    'api repos/o/r/commits/deadbeef/pulls': new Error('gh: No commit found for SHA: deadbeef (HTTP 422)'),
+  });
+  assert.deepEqual(kinds(await run(fake, { cacheDir })), [[21, 'revert']]);
+  assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+  const again = fakeGh();
+  assert.deepEqual(kinds(await run(again, { cacheDir })), [[21, 'revert']]);
+  assert.deepEqual(again.calls, []);
+});
+
 test('an unreadable cache file is warned about and searched again, not fatal', async () => {
   const cacheDir = tmp();
   mkdirSync(join(cacheDir, 'v1', 'o__r'), { recursive: true });
@@ -238,7 +278,7 @@ test('a search that reaches GitHub\'s 1000-result cap fails naming the repo and 
   const cacheDir = tmp();
   const full = Array.from({ length: 1000 }, (_, i) => cand({ number: 1000 + i }));
   await assert.rejects(run(fakeGh({ [SEARCH.fix]: full }), { cacheDir }), /o\/r: gh search prs --match title fix --created 2026-08-01\.\.2026-08-31 .*1000/);
-  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r')));
+  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
 });
 
 test('a rate-limited search is retried through findEscapes, with growing waits', async () => {
@@ -322,7 +362,7 @@ test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record win
   );
   const fake = fakeGh({ [closers('o/r', 2)]: closersOf() });
   const warnings = [];
-  const prs = await shipDagPrs(records, { baseDir: base, gh: fake.gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
+  const prs = await shipDagPrs(records, { baseDir: base, cacheDir: tmp(), gh: fake.gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
   assert.deepEqual(byKey(prs), [
     { repo: 'o/r', pr: 11, tuningVersion: 1 },
     { repo: 'o/r', pr: 13, tuningVersion: 3 },
@@ -351,7 +391,7 @@ test('shipDagPrs: a sidecar ref with no PR from either source falls back to its 
   });
   const warnings = [];
   const records = [{ repo: 'o/r', issue: 6, pr: 60, finalState: 'merged' }];
-  const prs = await shipDagPrs(records, { baseDir: base, gh: fake.gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
+  const prs = await shipDagPrs(records, { baseDir: base, cacheDir: tmp(), gh: fake.gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
   assert.deepEqual(byKey(prs), [{ repo: 'o/r', pr: 21, tuningVersion: 3 }, { repo: 'o/r', pr: 60, tuningVersion: 0 }]);
   assert.deepEqual(fake.unexpected, []);
   assert.equal(fake.calls.length, 4);
@@ -360,7 +400,20 @@ test('shipDagPrs: a sidecar ref with no PR from either source falls back to its 
   assert.match(warnings.join('\n'), /o\/r#4.*Could not resolve/);
 });
 
+test('shipDagPrs: a ref\'s one merged closing PR is cached; an ambiguous or missing one is asked about again', async () => {
+  const base = engineDir([], [{ tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }] }]);
+  const cacheDir = tmp();
+  const merged = (number) => ({ number, headRefName: 'orchestrator/x', mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } });
+  const routes = { [closers('o/r', 1)]: closersOf(merged(21)), [closers('o/r', 2)]: closersOf() };
+  const go = async (fake) => shipDagPrs([], { baseDir: base, gh: fake.gh, cacheDir, sleep: async () => {}, warn: () => {} });
+  const first = fakeGh(routes);
+  assert.deepEqual(await go(first), [{ repo: 'o/r', pr: 21, tuningVersion: 2 }]);
+  const again = fakeGh(routes);
+  assert.deepEqual(await go(again), [{ repo: 'o/r', pr: 21, tuningVersion: 2 }]);
+  assert.deepEqual(again.calls, [closers('o/r', 2)]);
+});
+
 test('shipDagPrs: a missing engine dir contributes nothing', async () => {
-  const prs = await shipDagPrs([{ repo: 'o/r', issue: 9, pr: 5, finalState: 'merged' }], { baseDir: join(tmp(), 'absent'), gh: fakeGh().gh });
+  const prs = await shipDagPrs([{ repo: 'o/r', issue: 9, pr: 5, finalState: 'merged' }], { baseDir: join(tmp(), 'absent'), cacheDir: tmp(), gh: fakeGh().gh });
   assert.deepEqual(prs, [{ repo: 'o/r', pr: 5, tuningVersion: 0 }]);
 });
