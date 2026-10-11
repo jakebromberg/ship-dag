@@ -22,8 +22,14 @@ const SETTLE_DAYS = 1;
 const CACHE_VERSION = 1;
 const FIX = /\b(?:fix(?:es|ed|ing)?|regressions?)\b/i;
 const PR_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/i;
+// GitHub's answer for a sha it has no commit for: permanent, unlike a 5xx or a dropped connection.
+const NO_SUCH_SHA = /No commit found for SHA/i;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const same = (a, b) => a?.toLowerCase() === b?.toLowerCase();
+const repoDir = (cacheDir, repo) => join(cacheDir, `v${CACHE_VERSION}`, repo.replace('/', '__'));
+/** The JSON cached at `file`, or undefined when absent or unreadable. */
+const readCached = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return undefined; } };
+const writeCached = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
 const lsdir = (dir) => { try { return readdirSync(dir); } catch { return []; } };
 
 /** The GraphQL query for the PRs that close issue `$n` of `$owner/$name`, merged or not. */
@@ -64,9 +70,10 @@ export async function withBackoff(fn, { repo, retries = 5, baseMs = 2000, sleep 
 }
 
 /** `gh args`, parsed, with backoff; null and a warning (`what: error`) when it fails other than on a rate limit. */
-async function ghJson(args, what, { gh, repo, sleep, warn }) {
+async function ghJson(args, what, { gh, repo, sleep, warn, onFail }) {
   try { return JSON.parse(await withBackoff(() => gh(args), { repo, sleep })); } catch (err) {
     if (RATE_LIMITED.test(err.message)) throw err;
+    onFail?.(err);
     warn(`escapes: ${what}: ${err.message}`);
     return null;
   }
@@ -75,7 +82,7 @@ async function ghJson(args, what, { gh, repo, sleep, warn }) {
 /**
  * The PR numbers `cand`'s body says it reverts (`Reverts [owner/repo]#N` lines, and each `This reverts
  * commit <sha>` resolved through GitHub), or null when it names none. A sha GitHub could not resolve
- * marks `cand.unresolved`.
+ * marks `cand.unresolved`, and one that failed for a reason that may pass marks `cand.transient`.
  */
 async function revertedPrs(cand, repo, ctx) {
   const body = cand.body ?? '';
@@ -84,7 +91,7 @@ async function revertedPrs(cand, repo, ctx) {
   if (!lines.length && !shas.length) return null;
   const prs = lines.filter((m) => !m[1] || same(m[1], repo)).map((m) => Number(m[2]));
   for (const sha of shas) {
-    const pulls = await ghJson(['api', `repos/${repo}/commits/${sha}/pulls`], `${repo}#${cand.number} reverts ${sha}, which is not resolved to a PR`, { ...ctx, repo });
+    const pulls = await ghJson(['api', `repos/${repo}/commits/${sha}/pulls`], `${repo}#${cand.number} reverts ${sha}, which is not resolved to a PR`, { ...ctx, repo, onFail: (err) => { if (!NO_SUCH_SHA.test(err.message)) cand.transient = true; } });
     if (!pulls) cand.unresolved = true;
     prs.push(...(pulls ?? []).map((p) => p.number));
   }
@@ -95,12 +102,11 @@ async function revertedPrs(cand, repo, ctx) {
  * Merge day `day`'s window candidates for `repo` (Revert-titled PRs, PRs whose body says `This reverts
  * commit`, fix- or regression-titled PRs and bug-labelled issues, each with the `reverts` its body
  * names): from `cacheDir` (an unreadable file is a miss), else searched for, and cached once the day's
- * window has closed and settled and every reverted sha was resolved. A search that reaches GitHub's
+ * window has closed and settled and no reverted sha failed transiently (one GitHub has no commit for is permanent: the title decides). A search that reaches GitHub's
  * result cap throws rather than truncate.
  */
 async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
-  const dir = join(cacheDir, `v${CACHE_VERSION}`, repo.replace('/', '__'));
-  const file = join(dir, `${day}.json`);
+  const file = join(repoDir(cacheDir, repo), `${day}.json`);
   if (existsSync(file)) {
     try { return JSON.parse(readFileSync(file, 'utf8')); } catch (err) { ctx.warn(`escapes: ${file}: unreadable cache (${err.message}); searching again`); }
   }
@@ -120,9 +126,8 @@ async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
   ];
   const candidates = [...new Map(found.map((c) => [c.number, c])).values()];
   for (const c of candidates) c.reverts = await revertedPrs(c, repo, ctx);
-  if (!candidates.some((c) => c.unresolved) && now >= Date.parse(day) + (WINDOW_DAYS + 1 + SETTLE_DAYS) * DAY) {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(file, JSON.stringify(candidates));
+  if (!candidates.some((c) => c.transient) && now >= Date.parse(day) + (WINDOW_DAYS + 1 + SETTLE_DAYS) * DAY) {
+    writeCached(file, candidates);
   }
   return candidates;
 }
@@ -144,6 +149,21 @@ function classify(cand, pr) {
 const subject = (c) => (c.messageHeadline.endsWith('…') && c.messageBody?.startsWith('…') ? c.messageHeadline.slice(0, -1) + c.messageBody.slice(1).split('\n')[0] : c.messageHeadline);
 
 /**
+ * `m`'s `{mergedAt, title, subjects, closing: [[repo, n]]}` from `cacheDir`, else from `gh pr view`; a
+ * merged PR's is cached, as it cannot change. Null (warned) when GitHub cannot show it.
+ */
+async function viewOf(m, ctx, cacheDir) {
+  const file = join(repoDir(cacheDir, m.repo), `pr-${m.pr}.json`);
+  const cached = readCached(file);
+  if (cached) return cached;
+  const raw = await ghJson(['pr', 'view', String(m.pr), '--repo', m.repo, '--json', 'mergedAt,title,commits,closingIssuesReferences'], `skipped ${m.repo}#${m.pr}`, { ...ctx, repo: m.repo });
+  if (!raw) return null;
+  const view = { mergedAt: raw.mergedAt, title: raw.title, subjects: raw.commits.map(subject), closing: raw.closingIssuesReferences.map((i) => [`${i.repository.owner.login}/${i.repository.name}`, i.number]) };
+  if (view.mergedAt) writeCached(file, view);
+  return view;
+}
+
+/**
  * For each PR `{repo, pr, tuningVersion}` that merged and whose 30-day window has closed by `now` (epoch
  * ms; one in the future is taken as the present, since GitHub is searched as of today), the reverts and
  * follow-up fixes found: `[{repo, pr, tuningVersion, mergedAt, escapes: [{number, kind}]}]`. A PR
@@ -156,7 +176,7 @@ export async function findEscapes(prs, { gh = ghCli, cacheDir = escapesDir(), no
   const windows = new Map();
   const out = [];
   for (const m of prs) {
-    const view = await ghJson(['pr', 'view', String(m.pr), '--repo', m.repo, '--json', 'mergedAt,title,commits,closingIssuesReferences'], `skipped ${m.repo}#${m.pr}`, { ...ctx, repo: m.repo });
+    const view = await viewOf(m, ctx, cacheDir);
     if (!view?.mergedAt) continue;
     const mergedMs = Date.parse(view.mergedAt);
     const end = mergedMs + WINDOW_DAYS * DAY;
@@ -164,8 +184,7 @@ export async function findEscapes(prs, { gh = ghCli, cacheDir = escapesDir(), no
     const day = view.mergedAt.slice(0, 10);
     const key = `${m.repo.toLowerCase()}#${day}`;
     if (!windows.has(key)) windows.set(key, candidatesFor(m.repo, day, { ...ctx, cacheDir, now }));
-    const closing = view.closingIssuesReferences.map((i) => [`${i.repository.owner.login}/${i.repository.name}`, i.number]);
-    const pr = { repo: m.repo, number: m.pr, title: view.title, subjects: view.commits.map(subject), cited: [[m.repo, m.pr], ...closing] };
+    const pr = { repo: m.repo, number: m.pr, title: view.title, subjects: view.subjects, cited: [[m.repo, m.pr], ...view.closing] };
     const escapes = (await windows.get(key))
       .filter((c) => c.number !== m.pr && Date.parse(c.createdAt) > mergedMs && Date.parse(c.createdAt) <= end)
       .flatMap((c) => { const kind = classify(c, pr); return kind ? [{ number: c.number, kind }] : []; });
@@ -193,10 +212,10 @@ function prOf(repo, pr) {
  * telemetry records' `pr` whatever their finalState (the newest record wins), then each report row's
  * `prNumber` under `baseDir/<run>/state/reports/` (its `tuningVersion` from the sidecar entry ingest-wave
  * reads for the report: `findWaveContext` as of its start), then, for a sidecar ref neither gave a PR,
- * its one merged closing PR on an `orchestrator/` branch, under the ref's newest entry's version (none
- * or several: skipped, with a warning). Whether each merged, and when, is `findEscapes`' to ask.
+ * its one merged closing PR on an `orchestrator/` branch (cached in `cacheDir`), under the ref's newest
+ * entry's version (none or several: skipped, with a warning, and asked again next run). Whether each merged, and when, is `findEscapes`' to ask.
  */
-export async function shipDagPrs(records, { baseDir = defaultBaseDir(), gh = ghCli, sleep, warn = (m) => console.error(m) } = {}) {
+export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir = escapesDir(), gh = ghCli, sleep, warn = (m) => console.error(m) } = {}) {
   const byPr = new Map();
   const covered = new Set(); // issue refs some source gave a PR for
   const add = (p, tuningVersion) => { const k = `${p.repo}#${p.pr}`.toLowerCase(); if (!byPr.has(k)) byPr.set(k, { ...p, tuningVersion }); };
@@ -232,10 +251,17 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), gh = ghC
     covered.add(ref.toLowerCase()); // ask about each ref once
     const [repo, n] = ref.split('#');
     const [owner, name] = repo.split('/');
+    const file = join(repoDir(cacheDir, repo), `closing-${n}.json`);
+    const cached = readCached(file);
+    if (cached) { add(cached, tuningVersion); continue; }
     const res = await ghJson(['api', 'graphql', '-f', `query=${CLOSING_PRS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`], `${ref}: closing PRs not found; skipped`, { gh, repo, sleep, warn });
     if (!res) continue;
     const hits = (res.data?.repository?.issue?.closedByPullRequestsReferences?.nodes ?? []).filter((p) => p.mergedAt && p.headRefName?.startsWith('orchestrator/'));
-    if (hits.length === 1) add({ repo: hits[0].repository.nameWithOwner, pr: hits[0].number }, tuningVersion);
+    if (hits.length === 1) {
+      const hit = { repo: hits[0].repository.nameWithOwner, pr: hits[0].number };
+      writeCached(file, hit); // a merged closing PR does not change
+      add(hit, tuningVersion);
+    }
     else warn(`escapes: ${ref}: ${hits.length} merged orchestrator/ PRs close it, so it has no PR; skipped`);
   }
   return [...byPr.values()];
