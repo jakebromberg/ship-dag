@@ -10,11 +10,16 @@
 export const SUB_ISSUES_QUERY =
   'query($owner:String!,$name:String!,$n:Int!,$cursor:String){repository(owner:$owner,name:$name)'
   + '{issue(number:$n){subIssues(first:100,after:$cursor){'
-  + 'nodes{number state repository{nameWithOwner} subIssuesSummary{total} labels(first:20){nodes{name}}}'
+  + 'nodes{number state repository{nameWithOwner} subIssuesSummary{total} labels(first:100){nodes{name}}}'
   + 'pageInfo{hasNextPage endCursor}}}}}';
 
 /** The label every wave sub-epic carries: one wave's issues, grouped under the run epic. */
 export const WAVE_LABEL = 'ship-dag-wave';
+
+/** The repo a sub-issue lives in: its own, which may differ from its parent's, else `parentRepo`. */
+export function subIssueRepo(node, parentRepo) {
+  return (node.repository && node.repository.nameWithOwner) || parentRepo;
+}
 
 /** Whether a sub-issue node (as `listSubIssues` returns it) carries `WAVE_LABEL`. */
 export function hasWaveLabel(node) {
@@ -32,7 +37,7 @@ export class SubIssuesUnavailable extends Error {}
  *
  * @param {{number:number, repo:string}} epicNode
  * @param {(argv:string[]) => string} runGh
- * @returns {Array<{number:number,state:string,repository:{nameWithOwner:string},subIssuesSummary?:{total:number}}>}
+ * @returns {Array<{number:number,state:string,repository:{nameWithOwner:string},subIssuesSummary?:{total:number},labels?:{nodes:Array<{name:string}>}}>}
  */
 export function listSubIssues(epicNode, runGh) {
   const [owner, name] = epicNode.repo.split('/');

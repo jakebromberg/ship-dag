@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { planWaves, readySet, bodyEdges, fetchSpec } from './plan-waves.mjs';
+import { WAVE_LABEL } from './lib/sub-issues.mjs';
 
 // A minimal `issue view` fixture, for the hierarchy tests where only the body
 // (and hence the edges parsed out of it) varies between issues.
@@ -870,14 +871,30 @@ test('a relative CO_HOME that cannot load names the absolute core path in the er
 
 // A ship-dag wave sub-epic (label `ship-dag-wave`) groups one wave's issues. It
 // is never work itself, and closing it must never hide an issue still under it.
-const WAVE = ['ship-dag-wave'];
-for (const { name, tree, issues, nodes, warns } of [
+const WAVE = [WAVE_LABEL];
+for (const { name, tree, issues, nodes, warns, edges = [], done = [] } of [
   {
     name: 'an open wave sub-epic whose children all closed ships nothing, and warns',
     tree: { 'o/r#1': [{ number: 20, labels: WAVE }], 'o/r#20': [{ number: 21, state: 'CLOSED' }] },
     issues: { 20: issue(20) },
     nodes: [],
     warns: [/o\/r#20.*wave sub-epic/],
+  },
+  {
+    name: 'a wave sub-epic whose sub-issue query fails ships nothing, not even itself',
+    tree: { 'o/r#1': [{ number: 20, labels: WAVE }, { number: 10 }], 'o/r#20': null },
+    issues: { 10: issue(10) },
+    nodes: ['o/r#10'],
+    warns: [/wave sub-epic o\/r#20.*shipping nothing/],
+  },
+  {
+    name: 'an edge naming a held-back wave sub-epic is satisfied, not an external blocker',
+    tree: { 'o/r#1': [{ number: 20, labels: WAVE }, { number: 10 }], 'o/r#20': [{ number: 21, state: 'CLOSED' }] },
+    issues: { 10: issue(10, 'Blocked by #20') },
+    nodes: ['o/r#10'],
+    warns: [/o\/r#20.*wave sub-epic/],
+    edges: [{ blocked: 'o/r#10', blockedBy: 'o/r#20' }],
+    done: ['o/r#20'],
   },
   {
     name: 'an empty open wave sub-epic ships nothing, and warns',
@@ -933,7 +950,8 @@ for (const { name, tree, issues, nodes, warns } of [
     const seen = [];
     const spec = fetchSpec('o/r', { epic: 1, warn: (m) => seen.push(m) }, fakeGh({ tree, issues }));
     assert.deepEqual(spec.nodes.map((n) => n.ref), nodes);
-    assert.deepEqual(spec.edges, []);
+    assert.deepEqual(spec.edges, edges);
+    assert.deepEqual(spec.done, done);
     assert.equal(seen.length, warns.length, `warnings: ${JSON.stringify(seen)}`);
     warns.forEach((re, i) => assert.match(seen[i], re));
   });

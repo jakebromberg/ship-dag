@@ -47,7 +47,7 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { coDistPath } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { SubIssuesUnavailable, listSubIssues, hasWaveLabel } from './lib/sub-issues.mjs';
+import { SubIssuesUnavailable, listSubIssues, hasWaveLabel, subIssueRepo } from './lib/sub-issues.mjs';
 
 const LIST_LIMIT = 1000; // gh issue list cap; we warn if we hit it rather than truncate silently.
 
@@ -315,7 +315,10 @@ const defaultWarn = (m) => console.error(m);
  *    even when empty or fully merged (a session that died before closing it).
  *    And a CLOSED one is still descended into, because an issue left open under
  *    it (a hand-closed wave, or a failed return to the epic) would otherwise
- *    vanish from every later fetch. Each case warns.
+ *    vanish from every later fetch. Each case warns. A wave held back this way
+ *    has no pending work, so it lands in `heldWaves` and an edge naming it is
+ *    satisfied rather than an external blocker. A wave whose own sub-issue
+ *    query fails ships nothing this pass: neither it nor its unknown children.
  *
  * The root epic itself is a container but is *not* read for edges by the caller,
  * and is never demoted: it is the scope boundary, not a participant, exactly as
@@ -324,9 +327,10 @@ const defaultWarn = (m) => console.error(m);
  * @param {string} rootRepo  owner/repo of the root epic
  * @param {number|string} rootNumber
  * @param {(argv:string[]) => string} runGh
+ * @param {(m:string) => void} [warn]  where warnings go (default `console.error`)
  * @returns {{rootRef:string, leaves:Array<{number:number,repo:string,ref:string}>,
  *            containerNodes:Array<{number:number,repo:string,ref:string}>,
- *            containers:Map<string,string[]>, parentOf:Map<string,string>}}
+ *            containers:Map<string,string[]>, parentOf:Map<string,string>, heldWaves:Set<string>}}
  */
 function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
   const root = { number: Number(rootNumber), repo: rootRepo, ref: refOf({ number: Number(rootNumber), repo: rootRepo }) };
@@ -334,6 +338,7 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
   const parentOf = new Map(); // ref -> containing epic's ref, for the ancestor test
   const leaves = [];
   const containerNodes = []; // open containers below the root: edges, but never nodes
+  const heldWaves = new Set(); // wave sub-epics with nothing open under them: never nodes, edges satisfied
   const visited = new Set([root.ref]);
   const queue = [root];
 
@@ -347,22 +352,21 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
       if (epicNode.ref === root.ref) {
         throw new Error(`epic #${epicNode.number} in ${epicNode.repo}: ${err.message}`);
       }
+      if (epicNode.wave) {
+        warn(`warning: wave sub-epic ${epicNode.ref} reports sub-issues but none could be read `
+          + `(${err.message}); shipping nothing under it this pass`);
+        continue;
+      }
       warn(`warning: ${epicNode.ref} reports sub-issues but none could be read `
         + `(${err.message}); treating it as a single issue`);
       leaves.push(epicNode);
       continue;
     }
-    if (epicNode.closedWave) {
-      const open = kids.filter((k) => k.state !== 'CLOSED')
-        .map((k) => refOf({ number: k.number, repo: (k.repository && k.repository.nameWithOwner) || epicNode.repo }));
-      if (!open.length) continue;
-      warn(`warning: ${epicNode.ref} is a closed wave sub-epic with open sub-issues (${open.join(', ')}); `
-        + 'shipping them anyway — return them to the epic or reopen the wave');
-    }
+    if (epicNode.closedWave && kids.every((k) => k.state === 'CLOSED')) continue;
     if (epicNode.ref !== root.ref) containerNodes.push(epicNode);
     const childRefs = [];
     for (const k of kids) {
-      const kidRepo = (k.repository && k.repository.nameWithOwner) || epicNode.repo;
+      const kidRepo = subIssueRepo(k, epicNode.repo);
       const kid = { number: k.number, repo: kidRepo, ref: refOf({ number: k.number, repo: kidRepo }) };
       if (hasWaveLabel(k)) kid.wave = true;
       childRefs.push(kid.ref);
@@ -372,8 +376,12 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
         if (!(kid.wave && hasKids)) continue;
         kid.closedWave = true;
       } else if (!hasKids) {
-        if (kid.wave) warn(`warning: ${kid.ref} is a wave sub-epic left open with no sub-issues; not shipping it`);
-        else leaves.push(kid);
+        if (kid.wave) { // an empty grouping: the pass below holds it back
+          containerNodes.push(kid);
+          containers.set(kid.ref, []);
+        } else {
+          leaves.push(kid);
+        }
         continue;
       }
       if (visited.has(kid.ref)) {
@@ -400,20 +408,25 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
     if (!(containers.get(c.ref) || []).some((r) => openInTree.has(r))) {
       containers.delete(c.ref); // now a leaf: `leavesUnder` resolves it to itself
       containerNodes.splice(i, 1);
-      if (c.wave) {
-        warn(`warning: ${c.ref} is a wave sub-epic left open after all its sub-issues closed; not shipping it`);
+      if (c.wave) { // never work, and not a live descendant of its parent either
+        heldWaves.add(c.ref);
+        if (!c.closedWave) warn(`warning: ${c.ref} is a wave sub-epic left open with nothing open under it; not shipping it`);
         continue;
       }
       leaves.push(c);
     }
     openInTree.add(c.ref); // either way it is open, so its parent has a live descendant
   }
-  return { rootRef: root.ref, leaves, containerNodes, containers, parentOf };
+  for (const c of containerNodes.filter((n) => n.closedWave)) {
+    warn(`warning: ${c.ref} is a closed wave sub-epic with open sub-issues `
+      + `(${leavesUnder(c.ref, containers).join(', ')}); shipping them anyway — return them to the epic or reopen the wave`);
+  }
+  return { rootRef: root.ref, leaves, containerNodes, containers, parentOf, heldWaves };
 }
 
 /** A hierarchy with no containment — the `--label` path, where the rewrites below are no-ops. */
 function flatHierarchy() {
-  return { rootRef: null, leaves: [], containerNodes: [], containers: new Map(), parentOf: new Map() };
+  return { rootRef: null, leaves: [], containerNodes: [], containers: new Map(), parentOf: new Map(), heldWaves: new Set() };
 }
 
 // ---- container-edge rewriting -------------------------------------------
@@ -515,7 +528,7 @@ function rewriteContainerEdges(edges, { containers, parentOf }) {
  * The `--epic` path descends the sub-issue tree to any depth: a sub-issue that
  * is itself an epic is replaced by the issues underneath it, and its own
  * dependencies are pushed down onto them. `--label` selects a flat set and is
- * unaffected.
+ * unaffected. `warn` (default `console.error`) receives the walk's warnings.
  */
 export function fetchSpec(repo, { epic, label, warn = defaultWarn }, runGh = realRunGh) {
   const [owner, name] = repo.split('/');
@@ -588,6 +601,7 @@ export function fetchSpec(repo, { epic, label, warn = defaultWarn }, runGh = rea
   const done = [];
   const depCandidates = new Set(uniqueEdges.map((e) => e.blockedBy).filter((d) => !openRefs.has(d)));
   for (const depRef of depCandidates) {
+    if (hierarchy.heldWaves.has(depRef)) { done.push(depRef); continue; } // a wave sub-epic with nothing open under it
     const depRepo = repoOfRef(depRef) || repo;
     const depNum = depRef.slice(depRef.indexOf('#') + 1);
     let state;
