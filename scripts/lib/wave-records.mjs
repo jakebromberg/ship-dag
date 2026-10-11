@@ -18,6 +18,8 @@
 import { DEFAULT_BLOCK_ON, gateReview } from '../review-gate.mjs';
 import { routeFailure } from './failure.mjs';
 import { isUnreadableEmpty } from './review-rounds.mjs';
+import { runIdFromConfigName, sameRun } from './run-id.mjs';
+import { load as loadTuning } from './tuning.mjs';
 
 /**
  * A refusal to derive records from the artifacts handed in, as distinct from a bug. `kind` is the
@@ -27,8 +29,6 @@ import { isUnreadableEmpty } from './review-rounds.mjs';
 export class WaveRefusal extends Error {
   constructor(kind, message, extra) { super(message); this.kind = kind; Object.assign(this, extra); }
 }
-import { runIdFromConfigName, sameRun } from './run-id.mjs';
-import { load as loadTuning } from './tuning.mjs';
 
 const SEVERITY = { clean: 0, 'nits-only': 1, blocking: 2 };
 const TERMINAL = new Set(['succeeded', 'failed', 'blocked', 'skipped']);
