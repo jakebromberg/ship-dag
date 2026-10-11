@@ -1,10 +1,11 @@
 // Tests for the escaped-defect proxy. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, existsSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { escapesDir, cites, findEscapes, withBackoff, escapeReport, shipDagPrs, CLOSING_PRS_QUERY } from './escapes.mjs';
+import { ingestWave } from '../telemetry.mjs';
 
 const NOW = Date.parse('2026-09-30T00:00:00Z');
 const tmp = () => mkdtempSync(join(tmpdir(), 'ship-dag-escapes-'));
@@ -407,13 +408,21 @@ test('shipDagPrs: a report with no parseable startedAt is skipped with a warning
   assert.ok(warnings.some((m) => /no parseable startedAt.*skipped/.test(m)), warnings.join('\n'));
 });
 
-test('shipDagPrs: a pre-sidecar report routes from its config at tuningVersion 0, as ingest-wave does', async () => {
-  const base = engineDir([{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }], []);
-  const config = join(base, 'sd-1', 'config.json');
-  writeFileSync(config, JSON.stringify({ name: 'ship-dag-sd-1', issues: [{ repo: 'o/r', number: 1, complexity: 'normal' }] }));
-  utimesSync(config, new Date('2026-07-31T00:00:00Z'), new Date('2026-07-31T00:00:00Z'));
-  const prs = await shipDagPrs([], { baseDir: base, gh: fakeGh({}).gh, sleep: async () => {}, warn: () => {} });
-  assert.deepEqual(prs, [{ repo: 'o/r', pr: 11, tuningVersion: 0 }]);
+test('shipDagPrs and ingest-wave read one state dir alike: a PR and its tuningVersion from each report ingest-wave records, none from one it refuses', async () => {
+  const row = (n) => ({ ref: `o/r#${n}`, number: n, status: 'succeeded', prNumber: 10 + n });
+  const entry = (n, tuningVersion, emittedAt) => ({ runId: 'sd-1', wave: 1, tuningVersion, emittedAt, issues: [{ ref: `o/r#${n}`, complexity: 'normal' }] });
+  // #1's wave ran under v2 (v4 is a later re-emit); #2's report has no startedAt, so the newest entry (v4) is not its routing either.
+  const base = engineDir([row(1)], [entry(1, 2, '2026-07-31T00:00:00Z'), entry(1, 4, '2026-08-02T00:00:00Z'), entry(2, 4, '2026-08-02T00:00:00Z')]);
+  const reports = join(base, 'sd-1', 'state', 'reports');
+  writeFileSync(join(reports, 'r.json'), JSON.stringify({ configName: 'ship-dag-sd-1', startedAt: '2026-08-01T00:00:00Z', issues: [row(1)] }));
+  writeFileSync(join(reports, 'r2.json'), JSON.stringify({ configName: 'ship-dag-sd-1', issues: [row(2)] }));
+  const ingested = [];
+  for (const name of ['r.json', 'r2.json']) {
+    try { ingested.push(...ingestWave(join(reports, name), {}, { path: join(base, 'log.jsonl'), warn: () => {} }).records); } catch (err) { assert.equal(err.code, 3, err.message); }
+  }
+  const prs = await shipDagPrs([], { baseDir: base, gh: fakeGh({ [closers('o/r', 2)]: closersOf() }).gh, sleep: async () => {}, warn: () => {} });
+  assert.deepEqual(byKey(prs), byKey(ingested.map(({ repo, pr, tuningVersion }) => ({ repo, pr, tuningVersion }))));
+  assert.deepEqual(prs, [{ repo: 'o/r', pr: 11, tuningVersion: 2 }]);
 });
 
 test('shipDagPrs: a sidecar ref with no PR from either source falls back to its one merged orchestrator/ closing PR, under its newest entry\'s version', async () => {

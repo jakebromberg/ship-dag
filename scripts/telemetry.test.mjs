@@ -761,6 +761,22 @@ for (const [name, report] of [
   }));
 }
 
+// The messages ingest-wave gave before it read reports through readWaveReports.
+for (const [name, reports, want] of [
+  ['that does not exist', {}, /cannot read the report: ENOENT/],
+  ['with a bad ref and a bad startedAt', { 'w1.json': stateReport([stateRow('dj-site#1')], { startedAt: 'x' }) }, /a row has no owner\/repo#N ref/],
+]) {
+  test(`ingest-wave: a report ${name} exits 3 with the message it always gave`, () => withStateDir({ reports, sidecar: [sidecarEntry()] }, (dir) => {
+    assert.throws(() => ingest(dir), (err) => err.code === 3 && want.test(err.message));
+  }));
+}
+
+test('ingest-wave: a report under state/reports/ without a .json name is still read', () => withStateDir({
+  reports: { 'w1.txt': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
+  assert.equal(ingestFile(reportPath(dir, 'w1.txt')).records.length, 1);
+}));
+
 test('ingest-wave: a wave with no terminal row records nothing, and reads no digest for it', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF, { status: 'running', prNumber: null })]) }, sidecar: [sidecarEntry()],
 }, (dir) => {
