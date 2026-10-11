@@ -897,7 +897,7 @@ for (const [kind, rows, report, code] of [
       set(v) { Object.defineProperty(this, 'kind', { value: v, writable: true, enumerable: true, configurable: true }); this.message = 'reworded, matching no prefix'; },
     });
     try {
-      assert.equal(exitCode(() => ingest(dir)), code);
+      assert.throws(() => ingest(dir), (err) => err.code === code && /reworded/.test(err.message));
     } finally {
       delete WaveRefusal.prototype.kind;
     }
