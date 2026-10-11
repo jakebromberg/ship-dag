@@ -1,7 +1,7 @@
 // Tests for the escaped-defect proxy. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { escapesDir, cites, findEscapes, withBackoff, escapeReport, shipDagPrs, CLOSING_PRS_QUERY } from './escapes.mjs';
@@ -394,6 +394,26 @@ test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record win
   ]);
   assert.deepEqual(fake.calls, [closers('o/r', 2)]); // o/r#2 has no PR from either source
   assert.deepEqual(fake.unexpected, []);
+});
+
+test('shipDagPrs: a report with no parseable startedAt is skipped with a warning, not given the newest sidecar entry', async () => {
+  const base = engineDir([{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }], [
+    { tuningVersion: 4, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'o/r#1' }] },
+  ]);
+  writeFileSync(join(base, 'sd-1', 'state', 'reports', 'r.json'), JSON.stringify({ issues: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }] }));
+  const warnings = [];
+  const prs = await shipDagPrs([], { baseDir: base, gh: fakeGh({ [closers('o/r', 1)]: closersOf() }).gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
+  assert.deepEqual(prs, []);
+  assert.ok(warnings.some((m) => /no parseable startedAt.*skipped/.test(m)), warnings.join('\n'));
+});
+
+test('shipDagPrs: a pre-sidecar report routes from its config at tuningVersion 0, as ingest-wave does', async () => {
+  const base = engineDir([{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }], []);
+  const config = join(base, 'sd-1', 'config.json');
+  writeFileSync(config, JSON.stringify({ name: 'ship-dag-sd-1', issues: [{ repo: 'o/r', number: 1, complexity: 'normal' }] }));
+  utimesSync(config, new Date('2026-07-31T00:00:00Z'), new Date('2026-07-31T00:00:00Z'));
+  const prs = await shipDagPrs([], { baseDir: base, gh: fakeGh({}).gh, sleep: async () => {}, warn: () => {} });
+  assert.deepEqual(prs, [{ repo: 'o/r', pr: 11, tuningVersion: 0 }]);
 });
 
 test('shipDagPrs: a sidecar ref with no PR from either source falls back to its one merged orchestrator/ closing PR, under its newest entry\'s version', async () => {
