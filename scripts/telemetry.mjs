@@ -57,7 +57,7 @@ import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { mintRunId, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
-import { deriveWaveRecords, REF_RE } from './lib/wave-records.mjs';
+import { deriveWaveRecords, WaveRefusal, REF_RE } from './lib/wave-records.mjs';
 import { entryFromConfig, findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
@@ -459,7 +459,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     }));
   } catch (err) {
     // deriveWaveRecords' refusals, each cause with its own remedy; anything else is a bug, not a bad artifact, and is thrown as is.
-    if (/^half-supplied wave/.test(err.message)) {
+    if (err instanceof WaveRefusal && err.kind === 'half-supplied') {
       const remedies = [
         err.noPr?.length && `For a find-pr row, pass the PR step 5's lookup found as --outcomes '{"<ref>":{"pr":N}}', `
           + `or, when point B left it without one, '{"<ref>":{"finalState":"blocked-hitl","hitl":{"pointB":true}}}'`,
@@ -468,7 +468,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
       ].filter(Boolean);
       throw new IngestError(2, [err.message, ...remedies].join('. '));
     }
-    if (/^(no run id|malformed report row)/.test(err.message)) throw new IngestError(3, `${file}: ${err.message}`);
+    if (err instanceof WaveRefusal) throw new IngestError(3, `${file}: ${err.message}`);
     throw err;
   }
   // A row with no record, or a skipped one (implStatus null: it never reached implement), leaves its

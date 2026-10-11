@@ -18,6 +18,15 @@
 import { DEFAULT_BLOCK_ON, gateReview } from '../review-gate.mjs';
 import { routeFailure } from './failure.mjs';
 import { isUnreadableEmpty } from './review-rounds.mjs';
+
+/**
+ * A refusal to derive records from the artifacts handed in, as distinct from a bug. `kind` is the
+ * contract callers dispatch on (`half-supplied`, `no-run-id`, `malformed-row`); the message is for
+ * people and may be reworded. A `half-supplied` refusal also carries `noPr` and `lastBlocks`.
+ */
+export class WaveRefusal extends Error {
+  constructor(kind, message, extra) { super(message); this.kind = kind; Object.assign(this, extra); }
+}
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
@@ -83,10 +92,10 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
   const rows = all.filter((r) => TERMINAL.has(r?.status));
   if (!rows.length) return { records: [] };
   const badRow = rows.find((r) => !REF_RE.test(r.ref ?? ''));
-  if (badRow) throw new Error(`malformed report row: no owner/repo#N ref: ${JSON.stringify(badRow)}`);
+  if (badRow) throw new WaveRefusal('malformed-row', `malformed report row: no owner/repo#N ref: ${JSON.stringify(badRow)}`);
   const noCheck = new Set(noCheckRepos);
   const runId = entry?.runId || runIdFromConfigName(report?.configName);
-  if (!runId) throw new Error('no run id: the wave has no sidecar entry with a runId and the report has no configName');
+  if (!runId) throw new WaveRefusal('no-run-id', 'no run id: the wave has no sidecar entry with a runId and the report has no configName');
   const blockOn = entry?.blockOn ?? DEFAULT_BLOCK_ON;
   const version = entry?.tuningVersion ?? tuningVersion ?? loadTuning().version;
 
@@ -185,7 +194,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     [lastBlocks, 'a PR whose last review round blocks, with no --outcomes finalState'],
   ].filter(([refs]) => refs.length);
   if (causes.length) {
-    throw Object.assign(new Error(`half-supplied wave: ${causes.map(([refs, why]) => `${why}: ${refs.join(', ')}`).join('; ')}`), { noPr, lastBlocks });
+    throw new WaveRefusal('half-supplied', `half-supplied wave: ${causes.map(([refs, why]) => `${why}: ${refs.join(', ')}`).join('; ')}`, { noPr, lastBlocks });
   }
   return { records };
 }

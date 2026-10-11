@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { rmSync, readFileSync, existsSync, appendFileSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { WaveRefusal } from './lib/wave-records.mjs';
 import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave } from './telemetry.mjs';
 import { appendWave } from './lib/wave-sidecar.mjs';
 import { artifactStem } from './lib/failure.mjs';
@@ -879,3 +880,26 @@ test('normalizeRecord: validates cost.implement; a record without cost, or with 
     assert.throws(() => normalizeRecord(base({ cost }), FIXED), /bad cost/, JSON.stringify(cost));
   }
 });
+
+// (malformed-row is not here: ingestWave checks refs itself and exits 3 before deriveWaveRecords can refuse.)
+// The exit code is the kind's, never the message's: SKILL.md (T6) documents 2 as "supply --outcomes" and 3 as "malformed".
+for (const [kind, rows, report, code] of [
+  ['half-supplied', [stateRow(REF, { prUrl: null, prNumber: null })], {}, 2],
+  ['no-run-id', [stateRow(REF)], { configName: undefined }, 3],
+]) {
+  test(`ingest-wave: a ${kind} refusal exits ${code}, however its message is worded`, () => withStateDir({
+    reports: { 'w1.json': stateReport(rows, report) },
+  }, (dir) => {
+    assert.equal(exitCode(() => ingest(dir)), code);
+    // Reword every refusal as it is built; the exit code must not follow.
+    Object.defineProperty(WaveRefusal.prototype, 'kind', {
+      configurable: true,
+      set(v) { Object.defineProperty(this, 'kind', { value: v, writable: true, enumerable: true, configurable: true }); this.message = 'reworded, matching no prefix'; },
+    });
+    try {
+      assert.equal(exitCode(() => ingest(dir)), code);
+    } finally {
+      delete WaveRefusal.prototype.kind;
+    }
+  }));
+}
