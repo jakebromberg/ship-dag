@@ -386,7 +386,10 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     throw new IngestError(2, `${file}: not at <stateDir>/state/reports/<id>.json, so its state dir is unknown`);
   }
   const stateDir = dirname(dirname(dirname(file)));
-  const own = readWaveReport(file);
+  // Its siblings are read quietly: only this report's own fault is an error here. A path the listing
+  // lacks (a missing file, or one not named *.json) is read alone, so it fails or reads as it always did.
+  const reports = readWaveReports(stateDir, { warn: () => {} });
+  const own = reports.find((r) => r.path === file) ?? readWaveReport(file);
   if (!own.report) throw new IngestError(3, own.error);
   const { report, startedAt } = own;
   const bad = report.issues.find((r) => !REF_RE.test(r?.ref ?? ''));
@@ -412,8 +415,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   // before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
   // and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
   // run of other rows) re-runs nothing, so later rounds still review this row's PR.
-  // The siblings are read quietly: only this report's own fault is an error here.
-  const others = readWaveReports(stateDir, { warn: () => {} }).filter((r) => !r.error && r.startedAt > startedAt);
+  const others = reports.filter((r) => !r.error && r.startedAt > startedAt);
   const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
   const inWave = (ref, mtimeMs) => mtimeMs >= startedAt && mtimeMs < ends[ref];
