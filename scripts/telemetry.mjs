@@ -58,7 +58,7 @@ import { isMain } from './lib/is-main.mjs';
 import { mintRunId, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, WaveRefusal, REF_RE } from './lib/wave-records.mjs';
-import { entryFromConfig, findWaveConfig, findWaveContext } from './lib/wave-sidecar.mjs';
+import { waveContextFor, readWaveReports } from './lib/wave-reports.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
@@ -365,13 +365,6 @@ function validateOutcomes(outcomes, rows) {
   }
 }
 
-/** Parse every JSON file in `dir` into `[name, value]`, skipping what doesn't parse. */
-function readJsonDir(dir) {
-  let names;
-  try { names = readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return []; }
-  return names.flatMap((n) => { try { return [[n, JSON.parse(readFileSync(join(dir, n), 'utf8'))]]; } catch { return []; } });
-}
-
 /**
  * Record a wave from its engine artifacts: derive its issue records (`deriveWaveRecords`), attach to
  * each that reached implement the `cost.implement` read from its ref's transcript (`implementCost`,
@@ -393,22 +386,21 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     throw new IngestError(2, `${file}: not at <stateDir>/state/reports/<id>.json, so its state dir is unknown`);
   }
   const stateDir = dirname(dirname(dirname(file)));
-  let report;
-  try { report = JSON.parse(readFileSync(file, 'utf8')); } catch (err) { throw new IngestError(3, `${file}: cannot read the report: ${err.message}`); }
-  if (!Array.isArray(report?.issues)) throw new IngestError(3, `${file}: the report has no issues array`);
+  // The siblings are read quietly: only this report's own fault is an error here.
+  const reports = readWaveReports(stateDir, { warn: () => {} });
+  const own = reports.find((r) => r.path === file);
+  if (!own) throw new IngestError(3, `${file}: cannot read the report: not a .json file`);
+  if (own.error) throw new IngestError(3, own.error);
+  const { report, startedAt } = own;
   const bad = report.issues.find((r) => !REF_RE.test(r?.ref ?? ''));
   if (bad) throw new IngestError(3, `${file}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}`);
-  const startedAt = typeof report.startedAt === 'string' ? Date.parse(report.startedAt) : NaN;
-  if (Number.isNaN(startedAt)) throw new IngestError(3, `${file}: the report has no parseable startedAt: ${JSON.stringify(report.startedAt)}`);
   const refs = report.issues.map((r) => r.ref);
   validateOutcomes(outcomes, report.issues);
 
   // Routing emitted after this report started is a later re-emit's (a retry's), not this wave's.
   // An older layout kept the config under <stateDir>/state/.
-  let entry = findWaveContext(stateDir, refs, { asOf: startedAt, warn });
-  const config = findWaveConfig(stateDir, refs, { asOf: startedAt }) ?? findWaveConfig(join(stateDir, 'state'), refs, { asOf: startedAt });
-  if (!entry) {
-    entry = config && entryFromConfig(config);
+  const { entry, config, source } = waveContextFor(stateDir, report, { warn });
+  if (source !== 'sidecar') {
     warn(entry
       ? `ingest-wave: no sidecar entry in ${stateDir} matches this wave's issues; routing from its config, recorded under the default policy at tuningVersion 0`
       : `ingest-wave: no sidecar entry or config in ${stateDir} matches this wave's issues; complexity and routing are unknown`);
@@ -422,9 +414,9 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   // before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
   // and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
   // run of other rows) re-runs nothing, so later rounds still review this row's PR.
-  const others = readJsonDir(dirname(file)).map(([, rep]) => rep).filter((rep) => Array.isArray(rep?.issues) && Date.parse(rep.startedAt) > startedAt);
-  const reran = (rep, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
-  const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => Date.parse(rep.startedAt)))]));
+  const others = reports.filter((r) => !r.error && r.startedAt > startedAt);
+  const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
+  const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
   const inWave = (ref, mtimeMs) => mtimeMs >= startedAt && mtimeMs < ends[ref];
 
   // deriveWaveRecords records only terminal rows and ignores a succeeded row's (stale) digest.
