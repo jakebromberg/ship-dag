@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deriveWaveRecords } from './wave-records.mjs';
+import { deriveWaveRecords, WaveRefusal } from './wave-records.mjs';
 import { reviewRoundFiles } from './review-rounds.mjs';
 import { appendWave, findWaveContext } from './wave-sidecar.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
@@ -376,3 +376,14 @@ test('a #1 round set listed by reviewRoundFiles ignores a #12 neighbour on disk'
 test('opts.tuningVersion stands in when there is no entry, even at 0', () => {
   assert.equal(derive({ entry: null }, { tuningVersion: 0 }).records[0].tuningVersion, 0);
 });
+
+for (const [name, kind, go] of [
+  ['a row without an owner/repo#N ref', 'malformed-row', () => derive({ report: report([row({ ref: 'dj-site-1' })]) })],
+  ['a wave with no run id', 'no-run-id', () => derive({ entry: null, report: report([row()], { configName: undefined }) })],
+  ['a succeeded row with no PR', 'half-supplied', () => derive({ report: report([row({ prNumber: null, prUrl: null })]) })],
+  ['a PR row whose last round blocks', 'half-supplied', () => derive({ rounds: BLOCKED })],
+]) {
+  test(`refusal kind: ${name} is a WaveRefusal of kind ${kind}`, () => {
+    assert.throws(go, (err) => err instanceof WaveRefusal && err.kind === kind);
+  });
+}
