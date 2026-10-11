@@ -338,7 +338,8 @@ function engineDir(rows, entries) {
   return base;
 }
 const closers = (repo, n) => `api graphql -f query=${CLOSING_PRS_QUERY} -f owner=${repo.split('/')[0]} -f name=${repo.split('/')[1]} -F n=${n}`;
-const closersOf = (...nodes) => ({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
+const closersOf = (...nodes) => ({ data: { repository: { issue: { state: 'CLOSED', closedByPullRequestsReferences: { nodes } } } } });
+const openWith = (res) => ({ data: { repository: { issue: { ...res.data.repository.issue, state: 'OPEN' } } } });
 const byKey = (prs) => prs.toSorted((a, b) => `${a.repo}#${a.pr}`.localeCompare(`${b.repo}#${b.pr}`));
 
 test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record wins; any finalState), then engine report rows', async () => {
@@ -400,17 +401,19 @@ test('shipDagPrs: a sidecar ref with no PR from either source falls back to its 
   assert.match(warnings.join('\n'), /o\/r#4.*Could not resolve/);
 });
 
-test('shipDagPrs: a ref\'s one merged closing PR is cached; an ambiguous or missing one is asked about again', async () => {
-  const base = engineDir([], [{ tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }] }]);
+test('shipDagPrs: a closed ref\'s one merged closing PR is cached; an open, ambiguous or missing one is asked about again', async () => {
+  const base = engineDir([], [{ tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }, { ref: 'o/r#3' }] }]);
   const cacheDir = tmp();
   const merged = (number) => ({ number, headRefName: 'orchestrator/x', mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } });
-  const routes = { [closers('o/r', 1)]: closersOf(merged(21)), [closers('o/r', 2)]: closersOf() };
-  const go = async (fake) => shipDagPrs([], { baseDir: base, gh: fake.gh, cacheDir, sleep: async () => {}, warn: () => {} });
+  // o/r#3 is open, so a later closing PR could still make its answer "several".
+  const routes = { [closers('o/r', 1)]: closersOf(merged(21)), [closers('o/r', 2)]: closersOf(), [closers('o/r', 3)]: openWith(closersOf(merged(31))) };
+  const go = async (fake) => byKey(await shipDagPrs([], { baseDir: base, gh: fake.gh, cacheDir, sleep: async () => {}, warn: () => {} }));
+  const want = [{ repo: 'o/r', pr: 21, tuningVersion: 2 }, { repo: 'o/r', pr: 31, tuningVersion: 2 }];
   const first = fakeGh(routes);
-  assert.deepEqual(await go(first), [{ repo: 'o/r', pr: 21, tuningVersion: 2 }]);
+  assert.deepEqual(await go(first), want);
   const again = fakeGh(routes);
-  assert.deepEqual(await go(again), [{ repo: 'o/r', pr: 21, tuningVersion: 2 }]);
-  assert.deepEqual(again.calls, [closers('o/r', 2)]);
+  assert.deepEqual(await go(again), want);
+  assert.deepEqual(again.calls, [closers('o/r', 2), closers('o/r', 3)]);
 });
 
 test('shipDagPrs: a missing engine dir contributes nothing', async () => {

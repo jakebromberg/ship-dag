@@ -32,8 +32,8 @@ const readCached = (file) => { try { return JSON.parse(readFileSync(file, 'utf8'
 const writeCached = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
 const lsdir = (dir) => { try { return readdirSync(dir); } catch { return []; } };
 
-/** The GraphQL query for the PRs that close issue `$n` of `$owner/$name`, merged or not. */
-export const CLOSING_PRS_QUERY = 'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){issue(number:$n){closedByPullRequestsReferences(first:50,includeClosedPrs:true){nodes{number headRefName mergedAt repository{nameWithOwner}}}}}}';
+/** The GraphQL query for issue `$n` of `$owner/$name`'s state and the PRs that close it, merged or not. */
+export const CLOSING_PRS_QUERY = 'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){issue(number:$n){state closedByPullRequestsReferences(first:50,includeClosedPrs:true){nodes{number headRefName mergedAt repository{nameWithOwner}}}}}}';
 
 /** Resolve the candidate cache directory: `$SHIP_DAG_ESCAPES_DIR`, else `escapes` beside the engine base dir. */
 export function escapesDir(env = process.env) {
@@ -256,10 +256,11 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
     if (cached) { add(cached, tuningVersion); continue; }
     const res = await ghJson(['api', 'graphql', '-f', `query=${CLOSING_PRS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`], `${ref}: closing PRs not found; skipped`, { gh, repo, sleep, warn });
     if (!res) continue;
-    const hits = (res.data?.repository?.issue?.closedByPullRequestsReferences?.nodes ?? []).filter((p) => p.mergedAt && p.headRefName?.startsWith('orchestrator/'));
+    const issue = res.data?.repository?.issue;
+    const hits = (issue?.closedByPullRequestsReferences?.nodes ?? []).filter((p) => p.mergedAt && p.headRefName?.startsWith('orchestrator/'));
     if (hits.length === 1) {
       const hit = { repo: hits[0].repository.nameWithOwner, pr: hits[0].number };
-      writeCached(file, hit); // a merged closing PR does not change
+      if (issue.state === 'CLOSED') writeCached(file, hit); // while it is open, another closing PR could still merge
       add(hit, tuningVersion);
     }
     else warn(`escapes: ${ref}: ${hits.length} merged orchestrator/ PRs close it, so it has no PR; skipped`);
