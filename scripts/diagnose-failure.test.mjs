@@ -4,27 +4,27 @@
 // Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
+import { engineFixture } from './lib/engine-fixture.mjs';
 import { logPathForRef, newestReportFile, digestPathForRef, diagnose, MAX_REASON_CHARS } from './diagnose-failure.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 
 const REF = 'daisysguide/backend#620';
 
+const fixtures = [];
+test.after(() => fixtures.forEach((fx) => fx.cleanup()));
+
 /** A state dir laid out the way the engine writes one. */
-function fixture({ rows, transcript, ref = REF, reportName = '2026-08-31T23-43-43.528Z.json' } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'ship-dag-diag-'));
-  mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
-  mkdirSync(join(dir, 'state', 'logs'), { recursive: true });
-  if (rows) {
-    writeFileSync(join(dir, 'state', 'reports', reportName), JSON.stringify({ configName: 'ship-dag-test', issues: rows }));
-  }
-  if (transcript !== undefined) {
-    writeFileSync(join(dir, 'state', 'logs', `issue-${encodeURIComponent(ref)}.log`), transcript);
-  }
-  return dir;
+function fixture({ rows, transcript, digest, ref = REF, reportName = '2026-08-31T23-43-43.528Z.json' } = {}) {
+  const fx = engineFixture({ diag: {
+    digests: digest === undefined ? [] : [{ ref, body: digest }],
+    reports: rows ? { [reportName]: { configName: 'ship-dag-test', issues: rows } } : {},
+    files: { 'state/logs/.keep': '', ...(transcript !== undefined && { [`state/logs/issue-${encodeURIComponent(ref)}.log`]: transcript }) },
+  } });
+  fixtures.push(fx);
+  return fx.dirs.diag;
 }
 
 const quotaDeath = () =>
@@ -106,12 +106,10 @@ test('diagnose: a long terminal reason is truncated — this output goes straigh
 // --- the two producers agree, and the cheap one wins ------------------------
 
 test('diagnose: prefers the engine-written digest over re-reading the transcript', () => {
-  const dir = fixture({ rows: [{ ref: REF, number: 620, status: 'failed' }], transcript: quotaDeath() });
-  mkdirSync(join(dir, 'state', 'failure-digest'), { recursive: true });
-  writeFileSync(
-    join(dir, 'state', 'failure-digest', `issue-${encodeURIComponent(REF)}.json`),
-    JSON.stringify({ ref: REF, status: 'failed', prNumber: 625, failureReason: 'rate-limited', route: 'review-gate', exitCode: 1, terminal: null }),
-  );
+  const dir = fixture({
+    rows: [{ ref: REF, number: 620, status: 'failed' }], transcript: quotaDeath(),
+    digest: { ref: REF, status: 'failed', prNumber: 625, failureReason: 'rate-limited', route: 'review-gate', exitCode: 1, terminal: null },
+  });
   const out = diagnose(dir, REF);
   assert.equal(out.source, 'digest');
   assert.equal(out.route, 'review-gate');
@@ -119,9 +117,7 @@ test('diagnose: prefers the engine-written digest over re-reading the transcript
 });
 
 test('diagnose: a torn digest falls back to computing, rather than failing', () => {
-  const dir = fixture({ rows: [{ ref: REF, number: 620, status: 'failed', prNumber: 625 }], transcript: quotaDeath() });
-  mkdirSync(join(dir, 'state', 'failure-digest'), { recursive: true });
-  writeFileSync(join(dir, 'state', 'failure-digest', `issue-${encodeURIComponent(REF)}.json`), '{"ref": "trunc');
+  const dir = fixture({ rows: [{ ref: REF, number: 620, status: 'failed', prNumber: 625 }], transcript: quotaDeath(), digest: '{"ref": "trunc' });
   const out = diagnose(dir, REF);
   assert.equal(out.source, 'computed');
   assert.equal(out.route, 'review-gate');

@@ -1,12 +1,13 @@
 // Tests for the escaped-defect proxy. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withBackoff } from './gh.mjs';
 import { escapesDir, cites, findEscapes, escapeReport, shipDagPrs, CLOSING_PRS_QUERY } from './escapes.mjs';
 import { ingestWave } from '../telemetry.mjs';
+import { engineFixture, stamped } from './engine-fixture.mjs';
 
 const NOW = Date.parse('2026-09-30T00:00:00Z');
 const tmp = () => mkdtempSync(join(tmpdir(), 'ship-dag-escapes-'));
@@ -362,13 +363,13 @@ test('escapeReport: rate by merge month and by tuningVersion', () => {
   assert.deepEqual(rep.byTuningVersion['1'], { prs: 2, escaped: 1, rate: 0.5 });
 });
 
-/** An engine base dir holding one run: its report rows and its sidecar entries. */
-function engineDir(rows, entries) {
-  const base = tmp();
-  mkdirSync(join(base, 'sd-1', 'state', 'reports'), { recursive: true });
-  writeFileSync(join(base, 'sd-1', 'state', 'reports', 'r.json'), JSON.stringify({ startedAt: '2026-08-01T00:00:00Z', issues: rows }));
-  writeFileSync(join(base, 'sd-1', 'ship-dag-wave.jsonl'), entries.map((e) => JSON.stringify(e)).join('\n'));
-  return base;
+const fixtures = [];
+test.after(() => fixtures.forEach((fx) => fx.cleanup()));
+/** An engine base dir holding one run, `sd-1`: its report rows (as `r.json`) and its sidecar entries; `more` adds to or overrides the dir's spec (`reports`, `configs`), and `others` names more dirs. */
+function engineDir(rows, entries, { reports = {}, others = {}, ...more } = {}) {
+  const fx = engineFixture({ ...others, 'sd-1': { reports: { 'r.json': { startedAt: '2026-08-01T00:00:00Z', issues: rows }, ...reports }, sidecar: entries, ...more } });
+  fixtures.push(fx);
+  return fx.base;
 }
 const closers = (repo, n) => `api graphql -f query=${CLOSING_PRS_QUERY} -f owner=${repo.split('/')[0]} -f name=${repo.split('/')[1]} -F n=${n}`;
 test('CLOSING_PRS_QUERY asks for the issue\'s state, which decides whether its answer is cached', () => {
@@ -413,10 +414,9 @@ test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record win
 });
 
 test('shipDagPrs: a report with no parseable startedAt is skipped with a warning, not given the newest sidecar entry', async () => {
-  const base = engineDir([{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }], [
+  const base = engineDir([], [
     { tuningVersion: 4, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }] },
-  ]);
-  writeFileSync(join(base, 'sd-1', 'state', 'reports', 'r.json'), JSON.stringify({ issues: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }, { ref: 'o/r#2', status: 'failed' }] }));
+  ], { reports: { 'r.json': { issues: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }, { ref: 'o/r#2', status: 'failed' }] } } });
   const warnings = [];
   const closer = (number) => closersOf({ number, headRefName: 'orchestrator/x', mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } });
   // GitHub would offer the report's own PR as #1's closer; the skipped report's PR must not come back through it.
@@ -432,17 +432,19 @@ test('shipDagPrs and ingest-wave read one state dir alike: a PR and its tuningVe
   const row = (n) => ({ ref: `o/r#${n}`, number: n, status: 'succeeded', prNumber: 10 + n });
   const entry = (n, tuningVersion, emittedAt) => ({ runId: 'sd-1', wave: 1, tuningVersion, emittedAt, issues: [{ ref: `o/r#${n}`, complexity: 'normal' }] });
   // #1's wave ran under v2 (v4 is a later re-emit); #2's report has no startedAt, so the newest entry (v4) is not its routing either.
-  const base = engineDir([row(1)], [entry(1, 2, '2026-07-31T00:00:00Z'), entry(1, 4, '2026-08-02T00:00:00Z'), entry(2, 4, '2026-08-02T00:00:00Z'), entry(4, 4, '2026-08-02T00:00:00Z')]);
+  const wave = (...rows) => ({ configName: 'ship-dag-sd-1', startedAt: '2026-08-01T00:00:00Z', issues: rows });
+  const base = engineDir([row(1)], [entry(1, 2, '2026-07-31T00:00:00Z'), entry(1, 4, '2026-08-02T00:00:00Z'), entry(2, 4, '2026-08-02T00:00:00Z'), entry(4, 4, '2026-08-02T00:00:00Z')], {
+    reports: {
+      'r.json': wave(row(1)),
+      'r2.json': { configName: 'ship-dag-sd-1', issues: [row(2)] },
+      // #3's wave predates the sidecar: only a config emitted before it started routes it.
+      'r3.json': wave(row(3)),
+      // #4's report has a row with no owner/repo#N ref: ingest-wave refuses it, so none of its rows gives a PR (nor falls back to a closer).
+      'r4.json': wave(row(4), { ref: 'o-r-5', status: 'failed' }),
+    },
+    configs: { 'config.json': stamped('2026-07-31T00:00:00Z', { name: 'ship-dag-sd-1', issues: [{ repo: 'o/r', number: 3, complexity: 'normal' }] }) },
+  });
   const reports = join(base, 'sd-1', 'state', 'reports');
-  writeFileSync(join(reports, 'r.json'), JSON.stringify({ configName: 'ship-dag-sd-1', startedAt: '2026-08-01T00:00:00Z', issues: [row(1)] }));
-  writeFileSync(join(reports, 'r2.json'), JSON.stringify({ configName: 'ship-dag-sd-1', issues: [row(2)] }));
-  // #3's wave predates the sidecar: only a config emitted before it started routes it.
-  writeFileSync(join(reports, 'r3.json'), JSON.stringify({ configName: 'ship-dag-sd-1', startedAt: '2026-08-01T00:00:00Z', issues: [row(3)] }));
-  // #4's report has a row with no owner/repo#N ref: ingest-wave refuses it, so none of its rows gives a PR (nor falls back to a closer).
-  writeFileSync(join(reports, 'r4.json'), JSON.stringify({ configName: 'ship-dag-sd-1', startedAt: '2026-08-01T00:00:00Z', issues: [row(4), { ref: 'o-r-5', status: 'failed' }] }));
-  const config = join(base, 'sd-1', 'config.json');
-  writeFileSync(config, JSON.stringify({ name: 'ship-dag-sd-1', issues: [{ repo: 'o/r', number: 3, complexity: 'normal' }] }));
-  utimesSync(config, new Date('2026-07-31T00:00:00Z'), new Date('2026-07-31T00:00:00Z'));
   const ingested = [];
   for (const name of ['r.json', 'r2.json', 'r3.json', 'r4.json']) {
     try { ingested.push(...ingestWave(join(reports, name), {}, { path: join(base, 'log.jsonl'), warn: () => {} }).records); } catch (err) { assert.equal(err.code, 3, err.message); }
@@ -458,10 +460,10 @@ test('shipDagPrs: a sidecar ref with no PR from either source falls back to its 
   const base = engineDir([{ ref: 'o/r#1', status: 'failed' }], [
     { tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }, { ref: 'o/r#3' }, { ref: 'o/r#4' }, { ref: 'o-r-5' }, { ref: 7 }, { ref: 'o/r#6' }] },
     { tuningVersion: 3, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'o/r#1' }] },
-  ]);
-  // An older run dir, listed after sd-1 by name, holds the oldest emit of o/r#1.
-  mkdirSync(join(base, 'zz-old'));
-  writeFileSync(join(base, 'zz-old', 'ship-dag-wave.jsonl'), JSON.stringify({ tuningVersion: 1, emittedAt: '2026-07-01T00:00:00Z', issues: [{ ref: 'o/r#1' }] }));
+  ], {
+    // An older run dir, listed after sd-1 by name, holds the oldest emit of o/r#1.
+    others: { 'zz-old': { sidecar: [{ tuningVersion: 1, emittedAt: '2026-07-01T00:00:00Z', issues: [{ ref: 'o/r#1' }] }] } },
+  });
   const merged = (number, headRefName) => ({ number, headRefName, mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } });
   const fake = fakeGh({
     [closers('o/r', 1)]: closersOf(merged(21, 'orchestrator/one'), { ...merged(22, 'orchestrator/one-retry'), mergedAt: null }),
