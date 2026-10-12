@@ -469,7 +469,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     if (rec.implStatus === null) continue;
     const counted = [...existing, ...taken].filter((e) => sameRepo(e.repo, rec.repo) && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
     // The engine named the log from the row's ref as written, so find that row, as written, rather than rebuild it.
-    const ref = refs.find((r) => { const p = parseRef(r); return p.repo === rec.repo && p.number === rec.issue; });
+    const ref = refs.find((r) => { const p = parseRef(r); return p?.repo === rec.repo && p.number === rec.issue; });
     const implement = implementCost(logPathForRef(stateDir, ref), counted, warn);
     if (implement) { rec.cost = { implement }; taken.push(rec); }
   }

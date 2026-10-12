@@ -453,9 +453,9 @@ test('shipDagPrs and ingest-wave read one state dir alike: a PR and its tuningVe
   assert.deepEqual(byKey(prs), [{ repo: 'o/r', pr: 11, tuningVersion: 2 }, { repo: 'o/r', pr: 13, tuningVersion: 0 }]);
 });
 
-test('shipDagPrs: a sidecar ref with no PR from either source falls back to its one merged orchestrator/ closing PR, under its newest entry\'s version; one that is not owner/repo#N is skipped with a warning', async () => {
+test('shipDagPrs: a sidecar ref with no PR from either source falls back to its one merged orchestrator/ closing PR, under its newest entry\'s version; one that is not an owner/repo#N string is skipped with a warning', async () => {
   const base = engineDir([{ ref: 'o/r#1', status: 'failed' }], [
-    { tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }, { ref: 'o/r#3' }, { ref: 'o/r#4' }, { ref: 'o-r-5' }, { ref: 'o/r#6' }] },
+    { tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }, { ref: 'o/r#3' }, { ref: 'o/r#4' }, { ref: 'o-r-5' }, { ref: 7 }, { ref: 'o/r#6' }] },
     { tuningVersion: 3, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'o/r#1' }] },
   ]);
   // An older run dir, listed after sd-1 by name, holds the oldest emit of o/r#1.
@@ -478,6 +478,7 @@ test('shipDagPrs: a sidecar ref with no PR from either source falls back to its 
   assert.match(warnings.join('\n'), /o\/r#3: 0 merged orchestrator\/ PRs/);
   assert.match(warnings.join('\n'), /o\/r#4.*Could not resolve/);
   assert.match(warnings.join('\n'), /escapes: o-r-5: not an owner\/repo#N ref; skipped/);
+  assert.match(warnings.join('\n'), /escapes: 7: not an owner\/repo#N ref; skipped/);
 });
 
 test('shipDagPrs: a closed ref\'s one merged closing PR is cached; an open, ambiguous or missing one is asked about again', async () => {
