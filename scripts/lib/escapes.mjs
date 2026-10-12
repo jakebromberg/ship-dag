@@ -18,9 +18,12 @@ const WINDOW_DAYS = 30;
 const SEARCH_CAP = 1000;
 // A day is cached only this long after its window closes, so a candidate GitHub indexes late still counts.
 const SETTLE_DAYS = 1;
-// Bump CACHE_VERSION when the shape of `pr-<n>.json` (a PR view) or `closing-<n>.json` (a closing answer)
-// changes. Bump DAY_CACHE_VERSION when the searches or the shape of a day file (`days-v<N>/<day>.json`) change.
-// Each bump discards only the files it covers: an old-format day file is a miss and is searched again.
+// Bump DAY_CACHE_VERSION when the searches, the shape of a day file (`v<CACHE_VERSION>/<repo>/days-v<N>/<day>.json`)
+// or what a day file keeps change, including `hasSignal` and `FIX`, which decide whether a candidate's body is kept:
+// a settled day cached under the old rule would otherwise answer without bodies the new rule reads. That bump
+// discards day files only. Bump CACHE_VERSION when the shape of `pr-<n>.json` (a PR view) or `closing-<n>.json`
+// (a closing answer) changes; day files live under it too, so that bump discards every cached file. Either way an
+// old file is a miss and is asked for again.
 const CACHE_VERSION = 1;
 const DAY_CACHE_VERSION = 2;
 const FIX = /\b(?:fix(?:es|ed|ing)?|regressions?)\b/i;
@@ -75,7 +78,8 @@ async function revertedPrs(cand, repo, ctx) {
 /**
  * Merge day `day`'s window candidates for `repo` (Revert-titled PRs, PRs whose body says `This reverts
  * commit`, fix- or regression-titled PRs and bug-labelled issues, each with the `reverts` its body
- * names): from `cacheDir` (an unreadable file is a miss), else searched for, and cached once the day's
+ * names), each as `{number, title, createdAt, labels: [names], reverts, unresolved}` plus `body` only when
+ * `hasSignal` holds: from `cacheDir` (an unreadable file is a miss), else searched for, and cached once the day's
  * window has closed and settled and no reverted sha failed transiently (one GitHub has no commit for is permanent: the title decides). A search that reaches GitHub's
  * result cap throws rather than truncate.
  */
@@ -101,7 +105,7 @@ async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
   const candidates = [];
   for (const c of new Map(found.map((c) => [c.number, c])).values()) {
     const reverts = await revertedPrs(c, repo, ctx);
-    const labels = c.labels.map((l) => l.name);
+    const labels = (c.labels ?? []).map((l) => l.name);
     // classify reads the body only of a candidate with a fix or bug signal, to find its citation.
     candidates.push({ number: c.number, title: c.title, createdAt: c.createdAt, labels, reverts, unresolved: c.unresolved, ...(hasSignal(c.title, labels) && { body: c.body }) });
   }
