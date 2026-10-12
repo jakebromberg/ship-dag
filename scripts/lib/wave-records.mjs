@@ -56,20 +56,25 @@ function roundVerdict({ path, review }, blockOn, warn) {
 /** The `finalState` that identifies an event: a rate-limited `error` is the legacy hand-written spelling of the `deferred` death ingest derives (PR #105). */
 const eventState = (r) => (r.failureReason === 'rate-limited' && r.finalState === 'error' ? 'deferred' : r.finalState);
 
+/** A PR-less failure: a record that reached implement and opened no PR the gate reviewed. */
+const prLessFailure = (r) => r.implStatus === 'error' || r.implStatus === 'blocked';
+
 /**
- * Whether `a` and `b` are the same event, the one identity `rowCovered` shares: `sameRun`, ref, `eventState`,
- * and failureReason (absent reads as null). A record that never reached implement (`implStatus` null) is never
- * the same event as one that did, and records holding different PRs are two events unless both are merges
- * (until #107's "ran" facts tell those apart). Differing `reportId`s make them two only when both are PR-less
- * failures (`implStatus: "error"`), the rows a retry re-runs: every report re-lists the other rows as they
- * stood, so a record with a PR, or a skipped one, recurs unchanged. A hand-written record has no `reportId`,
- * so the rest decides.
+ * Whether records `a` and `b` are the same event: the one identity ingest-wave's dedupe and `rowCovered` both use.
+ * They share `sameRun`, ref, `eventState` and failureReason (absent reads as null). Both reached implement or
+ * neither did (`implStatus` null); which non-null status a record gives is not compared, so a merge hand-written
+ * as `error` or `blocked` is the merge ingest derives as `pushed`. They hold the same PR, or both are merges
+ * (until #107's "ran" facts tell those apart). Differing `reportId`s make two PR-less failures (`error` or
+ * `blocked`) two events, since a retry re-runs a failed row, unless both are `blocked`, which no retry re-runs:
+ * every report re-lists the other rows as they stood, so a record with a PR, a skipped one or a blocked one
+ * recurs unchanged. A hand-written record has no `reportId`, so the rest decides.
  */
-const sameRecord = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.repo) && a.issue === b.issue
+export const sameEvent = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.repo) && a.issue === b.issue
   && eventState(a) === eventState(b) && (a.failureReason ?? null) === (b.failureReason ?? null)
   && (a.implStatus == null) === (b.implStatus == null)
   && ((a.pr ?? null) === (b.pr ?? null) || (a.finalState === 'merged' && b.finalState === 'merged'))
-  && (!a.reportId || !b.reportId || a.reportId === b.reportId || a.implStatus !== 'error' || b.implStatus !== 'error');
+  && (!a.reportId || !b.reportId || a.reportId === b.reportId || !prLessFailure(a) || !prLessFailure(b)
+    || (a.implStatus === 'blocked' && b.implStatus === 'blocked'));
 
 /**
  * The `implStatus` a record of `row` takes when its PR is `pr` (the row's, or one `--outcomes` supplied):
@@ -80,32 +85,35 @@ const implStatusOf = (row, pr) => (row.status === 'skipped' ? null
   : routeFailure({ ...row, prNumber: pr }) === 'review-gate' ? 'pushed' : row.status === 'blocked' ? 'blocked' : 'error');
 
 /**
- * Whether `records` (the telemetry log) cover terminal `row` of the report `{id, startedAt (epoch ms)}`,
- * as run `runId`'s family sees it: whether one is the event this report's ingest would derive for the
- * row, by `sameRecord`'s identity, with the row's `--outcomes` and digest unknown. A PR-less failure
- * (`routeFailure` would not send it to the gate, and it is not skipped) is covered by any record that
- * carries `id`, or by a hand-written error record (no `reportId`) at or after `startedAt`: `sameRecord`
- * keeps two such events apart by report, and a row with a PR derives no error. Any other record covers
- * the row from any report, since `sameRecord` folds a carried-over row into it, but only with the
- * `implStatus` ingest derives for the row (`pushed` for a find-pr row, succeeded with no PR in the report,
- * whose PR `--outcomes` supplied; so a triage defer, `implStatus` null, is not a later run of the ref, and
- * a failed row, which a retry re-runs, needs its own report's record) and a finalState the row allows:
- * any for a skipped row, since `--outcomes` may set one; `merged` for a row with a PR, or any when the
- * record holds that same PR (`--outcomes`, as at point B); not `merged` for a blocked row; any for a find-pr row. The `startedAt` test is the
- * issue's rule, and stricter than `sameRecord`, which folds a hand-written record into any report's event:
- * audit can name a wave that ingesting would add nothing to, which is what a hand-written record that old
- * merits a look at.
+ * Whether `records` (the telemetry log) cover terminal `row` of the report `{id, startedAt (epoch ms)}`, as run
+ * `runId`'s family sees it: whether one is, by `sameEvent`, the event this report's ingest would derive for the row.
+ * Audit reads neither `--outcomes` nor the digest, so each record is tested against the event ingest would derive
+ * with the --outcomes it implies: its finalState (but not `merged` for a row with no PR, bar a find-pr row, whose
+ * merge has one, and nothing else ingest refuses), and its PR for a find-pr row. A record that carries `id` was
+ * derived from this row, so its PR is read as given too. Its rate-limit is read as the digest's (no report row
+ * carries one) on an `error` record of a row that did not succeed, the only record ingest gives one to. A
+ * hand-written record (no `reportId`) covers a PR-less failure only at or after `startedAt`: stricter than ingest,
+ * which folds a hand-written record into any report's event, since a record that old merits a look. The disagreements this accepts, each a row in the test's one-identity table:
+ * - `startedAt`: a row whose only record is a hand-written PR-less failure from before it is named.
+ * - `--outcomes`: a row covered by a record of another finalState (a point-B hold of its PR, an operator's
+ *   `deferred`) appends under other --outcomes, as the merge that followed the hold does; and a PR-less row whose
+ *   PR came from --outcomes is named unless a record carrying `id` holds that PR.
+ * - digest: a PR-less failure is covered by an `error` record whether or not it says rate-limited, as audit reads
+ *   no digest, so a rate-limit death and a plain failure each cover the other's row.
  */
 export function rowCovered(row, { id, startedAt }, records, runId) {
   const { repo, number } = parseRef(row.ref);
-  const impl = implStatusOf(row, row.prNumber);
-  const prLess = impl === 'error' || impl === 'blocked';
-  const findPr = prLess && row.status === 'succeeded';
-  const fits = ({ finalState, pr }) => (impl === 'pushed' ? finalState === 'merged' || pr === row.prNumber
-    : impl === null || findPr || finalState !== 'merged');
-  return records.some((r) => sameRun(r.runId, runId) && sameRepo(r.repo, repo) && r.issue === number && (prLess && r.reportId === id || (r.implStatus === 'error'
-    ? prLess && !r.reportId && Date.parse(r.ts) >= startedAt
-    : (r.implStatus ?? null) === (findPr ? 'pushed' : impl) && fits(r))));
+  const findPr = row.status === 'succeeded' && !isPr(row.prNumber);
+  return records.some((r) => {
+    const pr = isPr(row.prNumber) ? row.prNumber : findPr || r.reportId === id ? r.pr ?? null : null;
+    const { finalState } = r;
+    // A find-pr row's merge has a PR --outcomes supplied, whether or not the record names it.
+    const implStatus = findPr && finalState === 'merged' ? 'pushed' : implStatusOf(row, pr);
+    const failureReason = implStatus === 'error' && row.status !== 'succeeded' && r.failureReason === 'rate-limited' ? 'rate-limited' : null;
+    const derivable = pr !== null || row.status === 'skipped' || (findPr ? finalState === 'merged' || NOT_MERGED.has(finalState) : finalState !== 'merged');
+    const event = { runId, repo, issue: number, reportId: id, implStatus, finalState, failureReason, pr };
+    return derivable && sameEvent(r, event) && (Boolean(r.reportId) || !prLessFailure(event) || Date.parse(r.ts) >= startedAt);
+  });
 }
 
 /**
@@ -118,7 +126,7 @@ export function rowCovered(row, { id, startedAt }, records, runId) {
  *   as `reviewRoundFiles` returns them; `review` is the parsed file, null when unparseable
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl, finalState, bounces, findings, tokens}`
  * @param {{existing?: object[], warn?: (m: string) => void, tuningVersion?: unknown, reportId?: string, noCheckRepos?: Iterable<string>}} [opts]
- *   a record that is the same event as an `existing` one (or an earlier row's), by `sameRecord`, is dropped; `reportId` (the report's file stem) is stamped on each record;
+ *   a record that is the same event as an `existing` one (or an earlier row's), by `sameEvent`, is dropped; `reportId` (the report's file stem) is stamped on each record;
  *   a succeeded row in a `noCheckRepos` repo (no `postSessionCheck`, so the engine ran none) records `ciStatus: "none"`
  * @returns {{records: object[]}}
  * @throws when a terminal row has no `owner/repo#N` ref (`malformed report row`), or exists but no run
@@ -224,7 +232,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     const death = resumed ? build({}, null, true) : null;
     const recs = death?.failureReason ? [death, build(outcome, pr, false)] : [build(outcome, pr, rateLimited)];
     for (const rec of recs) {
-      if (seen.some((s) => sameRecord(s, rec))) continue;
+      if (seen.some((s) => sameEvent(s, rec))) continue;
       seen.push(rec);
       records.push(rec);
     }
