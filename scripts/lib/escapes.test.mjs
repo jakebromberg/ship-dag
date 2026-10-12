@@ -385,6 +385,7 @@ test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record win
     { repo: 'o/r', issue: 8, pr: 'https://github.com/o/r2/pull/12', finalState: 'merged' },
     { repo: 'o/r', issue: 1, pr: 11, finalState: 'merged', tuningVersion: 1 },
     { repo: 'o/r', issue: 7, pr: null, finalState: 'merged' },
+    { repo: 'o/r', issue: 4, pr: 4.5, finalState: 'merged' }, // not a positive integer, so no PR
     { repo: 'o/r', issue: 6, pr: 6, finalState: 'error' },
     { kind: 'retro', wave: 1, mergedPrs: [] },
   ];

@@ -144,11 +144,13 @@ for (const [name, over, want] of reasonCases) {
   });
 }
 
-test('a PR number that is not a positive number is no PR, as routeFailure reads it', () => {
-  const r = derive({ report: report([row({ prNumber: 0 })]), outcomes: { [REF]: { pr: 91 } } }).records[0];
-  assert.deepEqual([r.pr, r.finalState], [91, 'merged']);
-  assert.throws(() => derive({ report: report([row({ prNumber: 0 })]), outcomes: { [REF]: { pr: '91' } } }), /half-supplied/);
-});
+for (const prNumber of [0, 1.5]) {
+  test(`a PR number that is not a positive integer (${prNumber}) is no PR, as routeFailure reads it`, () => {
+    const r = derive({ report: report([row({ prNumber })]), outcomes: { [REF]: { pr: 91 } } }).records[0];
+    assert.deepEqual([r.pr, r.finalState], [91, 'merged']);
+    assert.throws(() => derive({ report: report([row({ prNumber })]), outcomes: { [REF]: { pr: '91' } } }), /half-supplied/);
+  });
+}
 
 test('rate-limited then merged gives two records, and a re-ingest adds none', () => {
   const digests = { [REF]: { status: 'failed', failureReason: 'rate-limited' } };
