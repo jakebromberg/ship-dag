@@ -435,9 +435,12 @@ for (const [name, kind, go] of [
     ['a carried-over merged row recorded under the first report', merged, [pushed({ reportId: 'w1' })], true],
     ['a carried-over merged row covered by a hand-written record from before the retry', merged, [pushed({ ts: '2026-10-01T00:00:00Z' })], true],
     ['a row with a PR held at point B, recorded blocked-hitl under the first report', merged, [held()], true],
+    ['a row with a PR ingested with an --outcomes finalState of error, recorded under the first report', merged, [held({ finalState: 'error' })], true],
     ['a merge whose only record is a point-B hold of another PR', merged, [held({ pr: 10 })], false],
+    ['a merge whose only record is an --outcomes error of another PR', merged, [held({ finalState: 'error', pr: 10 })], false],
     ['a merge whose only record is a PR-less blocked hold', merged, [rec({ implStatus: 'blocked', finalState: 'blocked-hitl', reportId: 'w1' })], false],
     ['a carried-over skipped row', skipped, [skippedRec({ reportId: 'w1' })], true],
+    ['a skipped row ingested with an --outcomes finalState of blocked-hitl', skipped, [skippedRec({ finalState: 'blocked-hitl', reportId: 'w1' })], true],
     ['a skipped row whose only record is a later merge', skipped, [pushed()], false],
     ['a merged row with no record', merged, [], false],
   ]) {

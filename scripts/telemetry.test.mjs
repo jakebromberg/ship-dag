@@ -5,7 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { basename, join, dirname } from 'node:path';
-import { rmSync, readFileSync, existsSync, appendFileSync, mkdirSync, mkdtempSync, renameSync, utimesSync, writeFileSync } from 'node:fs';
+import { rmSync, readFileSync, readdirSync, existsSync, appendFileSync, chmodSync, mkdirSync, mkdtempSync, renameSync, utimesSync, writeFileSync } from 'node:fs';
 import { WaveRefusal } from './lib/wave-records.mjs';
 import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit } from './telemetry.mjs';
 import { appendWave } from './lib/wave-sidecar.mjs';
@@ -566,6 +566,27 @@ test('ingest-wave reads rounds from the reviews/ of every run-family dir, window
     const round = (tag) => join(run, 'reviews', `${artifactStem(REF)}${tag}.json`);
     assert.deepEqual([retry, run].map((dir) => ingestFile(reportPath(dir)).records[0].reviewPath), [round('.r2'), round('')]);
   } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('ingest-wave warns and reads its own dir\'s rounds when the dir holding the run family cannot be listed', (t) => {
+  const base = mkdtempSync(join(tmpdir(), 'ingest-unlisted-'));
+  try {
+    const run = join(base, RUN);
+    mkdirSync(join(run, 'state', 'reports'), { recursive: true });
+    writeFileSync(reportPath(run), JSON.stringify(stateReport([stateRow(REF)])));
+    appendWave(run, sidecarEntry());
+    reviewFile(run, REF, '', [blocker], '2026-10-08T19:10:00.000Z');
+    reviewFile(run, REF, '.r2', [], '2026-10-08T19:20:00.000Z');
+    chmodSync(base, 0o311); // searchable, so the run dir opens, but not listable
+    try { readdirSync(base); return t.skip('running as a user the mode does not bind'); } catch {}
+    const warnings = [];
+    const [rec] = ingestFile(reportPath(run), {}, { warn: (m) => warnings.push(m) }).records;
+    assert.deepEqual([rec.reviewVerdict, rec.bounces], ['blocking', 1]);
+    assert.ok(warnings.some((m) => m.includes(base) && /cannot list/.test(m)), warnings.join('\n'));
+  } finally {
+    chmodSync(base, 0o755);
     rmSync(base, { recursive: true, force: true });
   }
 });
