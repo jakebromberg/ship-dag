@@ -70,15 +70,17 @@ const sameRecord = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.rep
  * own event, but only against a record that is itself a PR-less failure (`implStatus: "error"`, as in
  * `sameRecord`): that one covers it only if it carries `id`, or, with no `reportId`, is at or after
  * `startedAt`. Any other record of the row's ref, from any report, covers it, because `sameRecord`
- * folds the two into one event. The `startedAt` test for a record with no `reportId` is the issue's
+ * folds the two into one event; a row with a PR (or skipped) is never covered by a PR-less failure's
+ * record, since the event its report would derive for it is another one (merged, not an error). The `startedAt` test for a record with no `reportId` is the issue's
  * rule, and stricter than `sameRecord`, which folds a hand-written record into any report's event: audit
  * can name a wave that ingesting would add nothing to, which is what a hand-written record that old merits a look at.
  */
 export function rowCovered(row, { id, startedAt }, records, runId) {
   const { repo, number } = parseRef(row.ref);
-  const ownEvent = row.status !== 'skipped' && routeFailure(row) !== 'review-gate';
-  return records.some((r) => sameRun(r.runId, runId) && sameRepo(r.repo, repo) && r.issue === number
-    && !(ownEvent && r.implStatus === 'error' && (r.reportId ? r.reportId !== id : !(Date.parse(r.ts) >= startedAt))));
+  const prLess = row.status !== 'skipped' && routeFailure(row) !== 'review-gate';
+  return records.some((r) => sameRun(r.runId, runId) && sameRepo(r.repo, repo) && r.issue === number && (r.implStatus === 'error'
+    ? prLess && (r.reportId ? r.reportId === id : Date.parse(r.ts) >= startedAt)
+    : true));
 }
 
 /**

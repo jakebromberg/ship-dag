@@ -411,8 +411,9 @@ for (const [name, kind, go] of [
     ['a succeeded row with no PR (find-pr) whose only record is an error under the first report', { ...merged, prNumber: null }, [rec({ reportId: 'w1' })], false],
     ['a find-pr row carried over, whose record the first ingest made pushed from --outcomes', { ...merged, prNumber: null }, [pushed({ reportId: 'w1' })], true],
     ['a PR-less blocked row carried over, recorded blocked under the first report', { ...failed, status: 'blocked' }, [rec({ implStatus: 'blocked', reportId: 'w1' })], true],
+    ['a merged row whose only record is its PR-less failure in the first report (a retry that merged)', merged, [rec({ reportId: 'w1' })], false],
     ['a carried-over merged row recorded under the first report', merged, [pushed({ reportId: 'w1' })], true],
-    ['a carried-over merged row covered by a hand-written record from before the retry', merged, [rec({ ts: '2026-10-01T00:00:00Z' })], true],
+    ['a carried-over merged row covered by a hand-written record from before the retry', merged, [pushed({ ts: '2026-10-01T00:00:00Z' })], true],
     ['a carried-over skipped row', skipped, [rec({ implStatus: null, reportId: 'w1' })], true],
     ['a merged row with no record', merged, [], false],
   ]) {
