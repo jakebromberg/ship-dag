@@ -47,3 +47,8 @@ test('stateRow and engineConfig read their refs through parseRef: a malformed ro
   assert.deepEqual([stateRow('dj-site#1').ref, stateRow('dj-site#1').number], ['dj-site#1', null]);
   assert.throws(() => engineConfig(['WXYC/dj-site']), /not an owner\/repo#N ref/);
 });
+
+test('engineFixture throws when a sidecar entry could not be written, rather than building a dir without it', () => {
+  // A report key that climbs out of state/reports makes the sidecar path a directory before the sidecar is appended.
+  assert.throws(() => engineFixture({ [RUN]: { reports: { '../../ship-dag-wave.jsonl/x.json': {} }, sidecar: [sidecarEntry()] } }), /appendWave did not write/);
+});
