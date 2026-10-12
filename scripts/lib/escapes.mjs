@@ -18,8 +18,11 @@ const WINDOW_DAYS = 30;
 const SEARCH_CAP = 1000;
 // A day is cached only this long after its window closes, so a candidate GitHub indexes late still counts.
 const SETTLE_DAYS = 1;
-// Bump when the searches or the cached shape change, so stale caches are not read.
+// Bump CACHE_VERSION when the shape of `pr-<n>.json` (a PR view) or `closing-<n>.json` (a closing answer)
+// changes. Bump DAY_CACHE_VERSION when the searches or the shape of a day file (`days-v<N>/<day>.json`) change.
+// Each bump discards only the files it covers: an old-format day file is a miss and is searched again.
 const CACHE_VERSION = 1;
+const DAY_CACHE_VERSION = 2;
 const FIX = /\b(?:fix(?:es|ed|ing)?|regressions?)\b/i;
 const PR_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/i;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -77,7 +80,7 @@ async function revertedPrs(cand, repo, ctx) {
  * result cap throws rather than truncate.
  */
 async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
-  const file = join(repoDir(cacheDir, repo), `${day}.json`);
+  const file = join(repoDir(cacheDir, repo), `days-v${DAY_CACHE_VERSION}`, `${day}.json`);
   if (existsSync(file)) {
     try { return JSON.parse(readFileSync(file, 'utf8')); } catch (err) { ctx.warn(`escapes: ${file}: unreadable cache (${err.message}); searching again`); }
   }
@@ -95,13 +98,21 @@ async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
     ...await search('prs', '--match', 'title', 'regression'),
     ...await search('issues', '--label', 'bug'),
   ];
-  const candidates = [...new Map(found.map((c) => [c.number, c])).values()];
-  for (const c of candidates) c.reverts = await revertedPrs(c, repo, ctx);
+  const candidates = [];
+  for (const c of new Map(found.map((c) => [c.number, c])).values()) {
+    const reverts = await revertedPrs(c, repo, ctx);
+    const labels = c.labels.map((l) => l.name);
+    // classify reads the body only of a candidate with a fix or bug signal, to find its citation.
+    candidates.push({ number: c.number, title: c.title, createdAt: c.createdAt, labels, reverts, unresolved: c.unresolved, ...(hasSignal(c.title, labels) && { body: c.body }) });
+  }
   if (!candidates.some((c) => c.unresolved === 'transient') && now >= Date.parse(day) + (WINDOW_DAYS + 1 + SETTLE_DAYS) * DAY) {
     writeCached(file, candidates);
   }
   return candidates;
 }
+
+/** Whether a candidate titled `title` with label names `labels` is a fix or a bug report. */
+const hasSignal = (title, labels = []) => labels.some((l) => same(l, 'bug')) || FIX.test(title ?? '');
 
 /**
  * How `cand` escapes from the merged `pr` (`{repo, number, title, subjects, cited: [[repo, n]]}`), or null.
@@ -112,8 +123,7 @@ function classify(cand, pr) {
   const reverted = /^Revert "(.*)"$/.exec(cand.title ?? '')?.[1];
   const byTitle = reverted !== undefined && [pr.title, ...pr.subjects].includes(reverted);
   if (cand.reverts?.includes(pr.number) || ((!cand.reverts || cand.unresolved) && byTitle)) return 'revert';
-  const signal = (cand.labels ?? []).some((l) => same(l.name, 'bug')) || FIX.test(cand.title ?? '');
-  return signal && pr.cited.some(([repo, n]) => cites(cand.body, repo, n, pr.repo)) ? 'follow-up-fix' : null;
+  return hasSignal(cand.title, cand.labels) && pr.cited.some(([repo, n]) => cites(cand.body, repo, n, pr.repo)) ? 'follow-up-fix' : null;
 }
 
 /** A commit's full subject: GitHub cuts a long headline at "…" and starts the body with the rest. */
