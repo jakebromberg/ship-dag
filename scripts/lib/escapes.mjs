@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { ghCli, ghJson, withBackoff } from './gh.mjs';
-import { formatRef, isPr, parseRef, sameRepo } from './ref.mjs';
+import { formatRef, isPr, parseRef, refKey, sameRepo } from './ref.mjs';
 import { groupBy } from './stats.mjs';
 import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { readWaveReports, waveContextFor } from './wave-reports.mjs';
@@ -24,7 +24,7 @@ const FIX = /\b(?:fix(?:es|ed|ing)?|regressions?)\b/i;
 const PR_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/i;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const same = (a, b) => a?.toLowerCase() === b?.toLowerCase();
-const repoDir = (cacheDir, repo) => join(cacheDir, `v${CACHE_VERSION}`, repo.toLowerCase().replace('/', '__'));
+const repoDir = (cacheDir, repo) => join(cacheDir, `v${CACHE_VERSION}`, refKey(repo).replace('/', '__'));
 /** The JSON cached at `file`, or undefined when absent or unreadable. */
 const readCached = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return undefined; } };
 const writeCached = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
@@ -153,7 +153,7 @@ export async function findEscapes(prs, { gh = ghCli, cacheDir = escapesDir(), no
     const end = mergedMs + WINDOW_DAYS * DAY;
     if (end > now) continue;
     const day = view.mergedAt.slice(0, 10);
-    const key = `${m.repo.toLowerCase()}#${day}`;
+    const key = `${refKey(m.repo)}#${day}`;
     if (!windows.has(key)) windows.set(key, candidatesFor(m.repo, day, { ...ctx, cacheDir, now }));
     const pr = { repo: m.repo, number: m.pr, title: view.title, subjects: view.subjects, cited: [[m.repo, m.pr], ...view.closing] };
     const escapes = (await windows.get(key))
@@ -186,26 +186,26 @@ function prOf(repo, pr) {
  * `prNumber` under `baseDir/<run>/state/reports/` (its `tuningVersion` from the sidecar entry ingest-wave
  * reads for the report: `waveContextFor`; a report with a row that has no `owner/repo#N` ref, or with no
  * parseable `startedAt`, is skipped), then, for a sidecar ref neither gave a PR (nor a skipped report withheld
- * one from; a ref that is not `owner/repo#N` is skipped, with a warning), its one merged closing PR on an
+ * one from; a ref that is not an `owner/repo#N` string is skipped, with a warning), its one merged closing PR on an
  * `orchestrator/` branch (cached in `cacheDir` once the issue is closed), under the ref's newest
  * entry's version (none or several: skipped, with a warning, and asked again next run). Whether each merged, and when, is `findEscapes`' to ask.
  */
 export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir = escapesDir(), gh = ghCli, sleep, warn = (m) => console.error(m) } = {}) {
   const byPr = new Map();
   const covered = new Set(); // issue refs some source gave a PR for, or a skipped report withheld one from
-  const add = (p, tuningVersion) => { const k = formatRef(p.repo, p.pr).toLowerCase(); if (!byPr.has(k)) byPr.set(k, { ...p, tuningVersion }); };
+  const add = (p, tuningVersion) => { const k = refKey(formatRef(p.repo, p.pr)); if (!byPr.has(k)) byPr.set(k, { ...p, tuningVersion }); };
   for (const r of records.toReversed()) {
     const p = r.kind === 'retro' ? null : prOf(r.repo, r.pr);
     if (!p) continue;
-    covered.add(formatRef(r.repo, r.issue).toLowerCase());
+    covered.add(refKey(formatRef(r.repo, r.issue)));
     add(p, r.tuningVersion ?? 0);
   }
-  const sidecarRefs = new Map(); // lowercased ref → [ref, tuningVersion, emittedAt] of its newest entry
+  const sidecarRefs = new Map(); // refKey → [ref, tuningVersion, emittedAt] of its newest entry
   for (const run of lsdir(baseDir)) {
     const entries = readSidecar(join(baseDir, run, SIDECAR_NAME), { warn });
     for (const read of readWaveReports(join(baseDir, run), { warn: (m) => warn(`escapes: ${m}; skipped`) })) {
       if (read.error) { // skipped, as ingest-wave refuses it; a parsed report's PRs must not come back through the closing-PR fallback
-        for (const row of read.report?.issues ?? []) if (rowPr(row)) covered.add(row.ref.toLowerCase());
+        for (const row of read.report?.issues ?? []) if (rowPr(row)) covered.add(refKey(row.ref));
         continue;
       }
       const rows = read.report.issues;
@@ -213,18 +213,18 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
       for (const row of rows) {
         const p = rowPr(row);
         if (!p) continue;
-        covered.add(row.ref.toLowerCase());
+        covered.add(refKey(row.ref));
         add(p, tuningVersion);
       }
     }
     for (const e of entries) {
       const at = Date.parse(e.emittedAt) || 0;
-      for (const i of e.issues ?? []) if (!(sidecarRefs.get(String(i.ref).toLowerCase())?.[2] > at)) sidecarRefs.set(String(i.ref).toLowerCase(), [i.ref, e.tuningVersion ?? 0, at]);
+      for (const i of e.issues ?? []) if (!(sidecarRefs.get(refKey(i.ref))?.[2] > at)) sidecarRefs.set(refKey(i.ref), [i.ref, e.tuningVersion ?? 0, at]);
     }
   }
-  for (const [ref, tuningVersion] of sidecarRefs.values()) {
-    if (typeof ref !== 'string' || covered.has(ref.toLowerCase())) continue;
-    covered.add(ref.toLowerCase()); // ask about each ref once
+  for (const [key, [ref, tuningVersion]] of sidecarRefs) {
+    if (covered.has(key)) continue;
+    covered.add(key); // ask about each ref once
     const parsed = parseRef(ref);
     if (!parsed) { warn(`escapes: ${ref}: not an owner/repo#N ref; skipped`); continue; }
     const { repo, number: n } = parsed;
