@@ -399,15 +399,17 @@ test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record win
 
 test('shipDagPrs: a report with no parseable startedAt is skipped with a warning, not given the newest sidecar entry', async () => {
   const base = engineDir([{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }], [
-    { tuningVersion: 4, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'o/r#1' }] },
+    { tuningVersion: 4, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }] },
   ]);
-  writeFileSync(join(base, 'sd-1', 'state', 'reports', 'r.json'), JSON.stringify({ issues: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }] }));
+  writeFileSync(join(base, 'sd-1', 'state', 'reports', 'r.json'), JSON.stringify({ issues: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }, { ref: 'o/r#2', status: 'failed' }] }));
   const warnings = [];
-  // GitHub would offer the report's own PR as #1's closer; the skipped report's refs must not fall back to it.
-  const fake = fakeGh({ [closers('o/r', 1)]: closersOf({ number: 11, headRefName: 'orchestrator/one', mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } }) });
+  const closer = (number) => closersOf({ number, headRefName: 'orchestrator/x', mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } });
+  // GitHub would offer the report's own PR as #1's closer; the skipped report's PR must not come back through it.
+  // #2 had no PR in that report, so it falls back as any PR-less row does (a later wave may have opened one).
+  const fake = fakeGh({ [closers('o/r', 1)]: closer(11), [closers('o/r', 2)]: closer(22) });
   const prs = await shipDagPrs([], { baseDir: base, cacheDir: tmp(), gh: fake.gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
-  assert.deepEqual(prs, []);
-  assert.deepEqual(fake.calls, []);
+  assert.deepEqual(prs, [{ repo: 'o/r', pr: 22, tuningVersion: 4 }]);
+  assert.deepEqual(fake.calls, [closers('o/r', 2)]);
   assert.ok(warnings.some((m) => /no parseable startedAt.*skipped/.test(m)), warnings.join('\n'));
 });
 
