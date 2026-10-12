@@ -85,32 +85,44 @@ const implStatusOf = (row, pr) => (row.status === 'skipped' ? null
   : routeFailure({ ...row, prNumber: pr }) === 'review-gate' ? 'pushed' : row.status === 'blocked' ? 'blocked' : 'error');
 
 /**
+ * Whether `row` died on quota, as ingest reads it: its failure digest's `failureReason`, else the row's own.
+ * Digests are written for non-succeeded rows and never removed, so a succeeded row's digest is a stale one from an
+ * earlier wave; and a session that succeeded did not die on quota, whatever the row says.
+ */
+const rateLimitedRow = (row, digest) => row.status !== 'succeeded' && (digest?.failureReason ?? row.failureReason) === 'rate-limited';
+
+/**
  * Whether `records` (the telemetry log) cover terminal `row` of the report `{id, startedAt (epoch ms)}`, as run
  * `runId`'s family sees it: whether one is, by `sameEvent`, the event this report's ingest would derive for the row.
- * Audit reads neither `--outcomes` nor the digest, so each record is tested against the event ingest would derive
- * with the --outcomes it implies: its finalState (but not `merged` for a row with no PR, bar a find-pr row, whose
- * merge has one, and nothing else ingest refuses), and its PR for a find-pr row. A record that carries `id` was
- * derived from this row, so its PR is read as given too. Its rate-limit is read as the digest's (no report row
- * carries one) on an `error` record of a row that did not succeed, the only record ingest gives one to. A
- * hand-written record (no `reportId`) covers a PR-less failure only at or after `startedAt`: stricter than ingest,
- * which folds a hand-written record into any report's event, since a record that old merits a look. The disagreements this accepts, each a row in the test's one-identity table:
+ * `digest` is the row's failure digest as `telemetry.mjs`'s `waveWindow` reads it for ingest, so the row's rate-limit
+ * is the one ingest reads (`rateLimitedRow`), never a record's. Audit reads no `--outcomes`, so each record is tested
+ * against the event ingest would derive with the --outcomes it implies: its finalState (but not `merged` for a row
+ * with no PR, bar a find-pr row, whose merge has one, and nothing else ingest refuses), and its PR for a find-pr
+ * row. A record that carries `id` was derived from this row, so its PR is read as given too, except on a PR-less
+ * rate-limit death: ingest resumes one that --outcomes gives a PR or point B as two records, the death and its
+ * continuation, and with neither derives the death alone; so only a record of the death covers it, and a
+ * continuation without its death does not. A hand-written record (no `reportId`) covers a PR-less failure only at
+ * or after `startedAt`: stricter than ingest, which folds a hand-written record into any report's event, since a
+ * record that old merits a look. The disagreements this accepts, each a row in the test's one-identity table:
  * - `startedAt`: a row whose only record is a hand-written PR-less failure from before it is named.
  * - `--outcomes`: a row covered by a record of another finalState (a point-B hold of its PR, an operator's
  *   `deferred`) appends under other --outcomes, as the merge that followed the hold does; and a PR-less row whose
- *   PR came from --outcomes is named unless a record carrying `id` holds that PR.
- * - digest: a PR-less failure is covered by an `error` record whether or not it says rate-limited, as audit reads
- *   no digest, so a rate-limit death and a plain failure each cover the other's row.
+ *   PR came from --outcomes is named unless a record carrying `id` holds that PR (or, on a death, the death's record).
  */
-export function rowCovered(row, { id, startedAt }, records, runId) {
+export function rowCovered(row, { id, startedAt }, records, runId, digest) {
   const { repo, number } = parseRef(row.ref);
   const findPr = row.status === 'succeeded' && !isPr(row.prNumber);
+  const rateLimited = rateLimitedRow(row, digest);
+  // Whether a PR-less run of the row is a rate-limit death (a row with a PR is gated, and reads its own PR).
+  const dies = rateLimited && implStatusOf(row, null) === 'error';
   return records.some((r) => {
-    const pr = isPr(row.prNumber) ? row.prNumber : findPr || r.reportId === id ? r.pr ?? null : null;
+    const pr = isPr(row.prNumber) ? row.prNumber : findPr || (r.reportId === id && !dies) ? r.pr ?? null : null;
     const { finalState } = r;
     // A find-pr row's merge has a PR --outcomes supplied, whether or not the record names it.
     const implStatus = findPr && finalState === 'merged' ? 'pushed' : implStatusOf(row, pr);
-    const failureReason = implStatus === 'error' && row.status !== 'succeeded' && r.failureReason === 'rate-limited' ? 'rate-limited' : null;
-    const derivable = pr !== null || row.status === 'skipped' || (findPr ? finalState === 'merged' || NOT_MERGED.has(finalState) : finalState !== 'merged');
+    const failureReason = rateLimited && implStatus === 'error' ? 'rate-limited' : null;
+    // Every finalState a record can hold is one --outcomes may give a find-pr row.
+    const derivable = pr !== null || row.status === 'skipped' || findPr || finalState !== 'merged';
     const event = { runId, repo, issue: number, reportId: id, implStatus, finalState, failureReason, pr };
     return derivable && sameEvent(r, event) && (Boolean(r.reportId) || !prLessFailure(event) || Date.parse(r.ts) >= startedAt);
   });
@@ -159,11 +171,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     const outcome = outcomes?.[row.ref] ?? {};
     const planned = (entry?.issues ?? []).find((i) => i.ref === row.ref);
     const pr = isPr(row.prNumber) ? row.prNumber : isPr(outcome.pr) ? outcome.pr : null;
-    // Digests are written for non-succeeded rows and never removed, so a succeeded
-    // row's digest is a stale one from an earlier wave; and a session that succeeded
-    // did not die on quota, whatever the row says.
-    const digest = row.status === 'succeeded' ? null : digests?.[row.ref];
-    const rateLimited = row.status !== 'succeeded' && (digest?.failureReason ?? row.failureReason) === 'rate-limited';
+    const rateLimited = rateLimitedRow(row, digests?.[row.ref]);
     const skipped = row.status === 'skipped';
     // One record of this row: `outcome` and `pr` are what the record reads, since a death resumed in place is the
     // row without them, and `dead` whether this record is the rate-limit death.
