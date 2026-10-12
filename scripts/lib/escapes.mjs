@@ -224,7 +224,6 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
   }
   for (const [key, [ref, tuningVersion]] of sidecarRefs) {
     if (covered.has(key)) continue;
-    covered.add(key); // ask about each ref once
     const parsed = parseRef(ref);
     if (!parsed) { warn(`escapes: ${ref}: not an owner/repo#N ref; skipped`); continue; }
     const { repo, number: n } = parsed;
