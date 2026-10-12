@@ -194,15 +194,28 @@ export function closeWaveEpic({ repo, epic, waveEpic, outcomes = {} }, runGh) {
     throw new WaveEpicRefusal(`#${waveEpic} in ${repo} is not a sub-issue of #${epic}; refusing to move its issues there`);
   }
 
-  const kids = listSubIssues({ number: waveEpic, repo }, runGh);
+  return settleWave({ repo, epic, waveEpic, state: view.state, kids: listSubIssues({ number: waveEpic, repo }, runGh), known }, runGh);
+}
+
+/**
+ * The part of closing a wave that writes, given its state and listed children:
+ * return every open child to the epic, comment, and close if every return
+ * succeeded. `closeWaveEpic` and `sweepWaveEpics` both end here, so a sweep and
+ * a close can't disagree about what settling a wave means. With `dryRun` it
+ * writes nothing and reports what it would do, assuming every return succeeds.
+ */
+function settleWave({ repo, epic, waveEpic, state, kids, known = new Map(), note = 'Wave closed by ship-dag.', dryRun = false }, runGh) {
   const open = kids.filter((k) => k.state === 'OPEN');
-  if (view.state === 'CLOSED' && !open.length) return { closed: false, returned: [], stuck: [], noop: true };
+  if (state === 'CLOSED' && !open.length) return { closed: false, returned: [], stuck: [], noop: true };
 
   const fate = new Map(); // ref → 'returned' | 'stuck'
-  for (const k of open) fate.set(refOfNode(k, repo), attach(repo, epic, k.databaseId, runGh) ? 'stuck' : 'returned');
+  for (const k of open) {
+    fate.set(refOfNode(k, repo), !dryRun && attach(repo, epic, k.databaseId, runGh) ? 'stuck' : 'returned');
+  }
   const returned = [...fate].filter(([, f]) => f === 'returned').map(([r]) => r);
   const stuck = [...fate].filter(([, f]) => f === 'stuck').map(([r]) => r);
-  const closing = view.state === 'OPEN' && !stuck.length;
+  const closing = state === 'OPEN' && !stuck.length;
+  if (dryRun) return { closed: closing, returned, stuck, noop: false };
 
   if (returned.length || closing) {
     const label = { returned: `returned to #${epic}`, stuck: 'stuck (return failed)' };
@@ -211,10 +224,48 @@ export function closeWaveEpic({ repo, epic, waveEpic, outcomes = {} }, runGh) {
       const o = known.get(refKey(ref)) || {};
       return `| ${shortRef(ref, repo)} | ${label[fate.get(ref)] || 'closed'} | ${o.pr ? `#${o.pr}` : '—'} | ${o.failureReason || o.finalState || ''} |`;
     });
-    const text = ['Wave closed by ship-dag.', '', '| Issue | State | PR | Note |', '|---|---|---|---|', ...rows,
+    const text = [note, '', '| Issue | State | PR | Note |', '|---|---|---|---|', ...rows,
       ...(stuck.length ? ['', `Left open: ${stuck.length} issue(s) could not be returned to #${epic}.`] : [])].join('\n');
     runGh(['issue', 'comment', String(waveEpic), '-R', repo, '--body', text]);
   }
   if (closing) runGh(['issue', 'close', String(waveEpic), '-R', repo, '--reason', 'completed']);
   return { closed: closing, returned, stuck, noop: false };
+}
+
+const SWEEP_NOTE = {
+  OPEN: 'Wave sub-epic left open (lost session or failed return); swept by ship-dag.',
+  CLOSED: 'Wave sub-epic was closed with open issues under it; swept by ship-dag, which returned them to the epic.',
+};
+
+/**
+ * Settle every wave sub-epic of `epic` that a lost session or a failed return
+ * left behind — one still open, or one closed over an open issue — except
+ * `except`, the wave this pass just opened. A closed wave with nothing open
+ * under it costs its one listing and no write, so running this every wave stays
+ * cheap and quiet. Each wave is settled on its own: one that fails is reported
+ * in `errors` and the rest still run. With `dryRun` nothing is written and the
+ * report assumes every return succeeds.
+ *
+ * @param {{repo:string, epic:number, except?:number, dryRun?:boolean}} input
+ * @param {(argv:string[]) => string} runGh
+ * @returns {{closed:string[], returned:string[], stuck:string[], errors:Array<{wave:string, message:string}>}}
+ *   `closed` holds wave refs; `returned` and `stuck` hold the issues under them.
+ */
+export function sweepWaveEpics({ repo, epic, except, dryRun = false }, runGh) {
+  const report = { closed: [], returned: [], stuck: [], errors: [] };
+  const waves = listSubIssues({ number: epic, repo }, runGh)
+    .filter((w) => hasWaveLabel(w) && sameRepo(subIssueRepo(w, repo), repo) && w.number !== except);
+  for (const w of waves) {
+    const ref = refOfNode(w, repo);
+    try {
+      const out = settleWave({ repo, epic, waveEpic: w.number, state: w.state, note: SWEEP_NOTE[w.state],
+        kids: listSubIssues({ number: w.number, repo }, runGh), dryRun }, runGh);
+      if (out.closed) report.closed.push(ref);
+      report.returned.push(...out.returned);
+      report.stuck.push(...out.stuck);
+    } catch (err) {
+      report.errors.push({ wave: ref, message: err.message });
+    }
+  }
+  return report;
 }
