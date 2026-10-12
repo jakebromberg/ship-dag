@@ -1086,8 +1086,8 @@ describe('audit', () => {
   }));
 });
 
-// The wiring SKILL.md documents for the mechanics above: the exit codes it names must be the ones the CLI uses, and the
-// round-file naming it states must be the one reviewRoundFiles reads.
+// The wiring SKILL.md documents for the mechanics above: the headings, audit classes and subcommands it names, and
+// (below) every --outcomes cell of step 6.3's table, run through ingestWave on a report of the situation its row names.
 describe('SKILL.md telemetry wiring', () => {
   const skill = readFileSync(fileURLToPath(new URL('../SKILL.md', import.meta.url)), 'utf8');
 
@@ -1100,4 +1100,46 @@ describe('SKILL.md telemetry wiring', () => {
   test('documents every telemetry.mjs subcommand the CLI dispatches', () => {
     for (const cmd of ['ingest-wave', 'escapes', 'audit', 'run-id']) assert.ok(skill.includes(`telemetry.mjs" ${cmd}`), cmd);
   });
+});
+
+// Step 6.3's --outcomes table, cell by cell: each JSON cell (with <ref> and N filled in) must pass validateOutcomes and
+// derive the events the row's situation calls for, so a renamed field or a changed rule fails here, not in a live wave.
+describe("SKILL.md step 6.3's --outcomes table", () => {
+  const skill = readFileSync(fileURLToPath(new URL('../SKILL.md', import.meta.url)), 'utf8');
+  const section = skill.slice(skill.indexOf('### 6.3 Ingest the wave'), skill.indexOf('### 6.5 '));
+  const rows = section.split('\n').filter((l) => l.startsWith('| ') && l.includes('{"<ref>"'))
+    .map((l) => ({ situation: l.split('|')[1].trim(), cells: [...l.matchAll(/`(\{"<ref>":[^`]*\})`/g)].map((m) => JSON.parse(m[1].replaceAll('<ref>', REF).replace(/\bN\b/g, '2'))) }));
+  const findPr = stateRow(REF, { prUrl: null, prNumber: null });
+  const blocks = (dir) => putReview(dir, REF, '', [blocker], '2026-10-08T19:10:00.000Z');
+  const dies = (dir) => putDigest(dir, REF, { failureReason: 'rate-limited' });
+  // situation prefix → the report row, what else the wave left on disk, and per cell the [finalState, pr] of each derived record.
+  const situations = [
+    ['A find-pr row whose PR step 5 found', findPr, () => {}, [[['merged', 2]]]],
+    ['A find-pr row point B left without a PR', findPr, () => {}, [[['blocked-hitl', null]]]],
+    ['A PR whose last round blocks and that went to point B', stateRow(REF), blocks, [[['blocked-hitl', 11]]]],
+    ['A PR whose last round blocks and that merged', stateRow(REF), blocks, [[['merged', 11]]]],
+    ["A find-pr row whose found PR's last round blocks", findPr, blocks, [[['blocked-hitl', 2]], [['merged', 2]]]],
+    ['A rate-limit death that point E resumed', stateRow(REF, { status: 'failed', prUrl: null, prNumber: null }), dies,
+      [[['deferred', null], ['merged', 2]], [['deferred', null], ['blocked-hitl', null]]]],
+  ];
+
+  test('every row of the table is a situation this test knows, and every situation is in the table', () => {
+    assert.deepEqual(rows.map((r) => situations.findIndex(([prefix]) => r.situation.startsWith(prefix))), situations.map((_, i) => i));
+  });
+
+  for (const [prefix, row, setUp, want] of situations) {
+    test(`${prefix}: each cell ingests to its events`, () => {
+      const { cells } = rows.find((r) => r.situation.startsWith(prefix));
+      assert.equal(cells.length, want.length);
+      cells.forEach((outcome, i) => withStateDir({ reports: { 'w1.json': stateReport([row]) }, sidecar: [sidecarEntry()] }, (dir) => {
+        setUp(dir);
+        const { records } = ingest(dir, outcome);
+        assert.deepEqual(records.map((r) => [r.finalState, r.pr]), want[i], JSON.stringify(outcome));
+        if (outcome[REF].bounces !== undefined) assert.equal(records.at(-1).bounces, 2);
+        // A resumed death is the rate-limited record, then a continuation with no rate-limit of its own.
+        if (records.length === 2) assert.deepEqual(records.map((r) => [r.implStatus, r.failureReason]).slice(0, 1), [['error', 'rate-limited']]);
+        assert.ok(records.slice(1).every((r) => r.failureReason === null));
+      }));
+    });
+  }
 });
