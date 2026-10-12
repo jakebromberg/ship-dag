@@ -19,13 +19,15 @@ const SEARCH_CAP = 1000;
 // A day is cached only this long after its window closes, so a candidate GitHub indexes late still counts.
 const SETTLE_DAYS = 1;
 // Bump DAY_CACHE_VERSION when the searches, the shape of a day file (`v<CACHE_VERSION>/<repo>/days-v<N>/<day>.json`)
-// or what a day file keeps change, including `hasSignal` and `FIX`, which decide whether a candidate's body is kept:
-// a settled day cached under the old rule would otherwise answer without bodies the new rule reads. That bump
+// or what a day file keeps change. Frozen into a settled day file are `hasSignal` and `FIX` (they decide whether a
+// candidate's body is kept), `revertedPrs`' patterns (its `reverts` and `unresolved`), and a PR candidate's `state`
+// (a PR still open when its day settles stays stored as open): a settled day cached under an old rule would
+// otherwise answer without what the new rule reads. That bump
 // discards day files only. Bump CACHE_VERSION when the shape of `pr-<n>.json` (a PR view) or `closing-<n>.json`
 // (a closing answer) changes; day files live under it too, so that bump discards every cached file. Either way an
 // old file is a miss and is asked for again.
 const CACHE_VERSION = 1;
-const DAY_CACHE_VERSION = 2;
+const DAY_CACHE_VERSION = 3;
 const FIX = /\b(?:fix(?:es|ed|ing)?|regressions?)\b/i;
 const PR_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/i;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -49,11 +51,15 @@ export function escapesDir(env = process.env) {
  * `owner/repo#n`, or by its `/pull/n` or `/issues/n` URL. Repos compare case-insensitively, and a
  * longer number never matches.
  */
-export function cites(body, repo, n, home = repo) {
+export function cites(body, repo, n, home = repo, lead = '') {
   const r = escape(repo);
   const bare = sameRepo(repo, home) ? `(?<![\\w/])#${n}|` : '';
-  return new RegExp(`(?:${bare}(?<![\\w./-])${r}#${n}|github\\.com/${r}/(?:pull|issues)/${n})(?!\\d)`, 'i').test(body ?? '');
+  return new RegExp(`${lead}(?:${bare}(?<![\\w./-])${r}#${n}|github\\.com/${r}/(?:pull|issues)/${n})(?!\\d)`, 'i').test(body ?? '');
 }
+
+const STRONG = '\\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|regression from|caused by|introduced in):?\\s+(?:https?://)?';
+/** Whether `body` cites `repo`#`n` as `cites` does, right after a closing keyword or a causal phrase. */
+export const citesStrongly = (body, repo, n, home = repo) => cites(body, repo, n, home, STRONG);
 
 /**
  * The PR numbers `cand`'s body says it reverts (`Reverts [owner/repo]#N` lines, and each `This reverts
@@ -90,7 +96,7 @@ async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
   }
   const created = `${day}..${new Date(Date.parse(day) + WINDOW_DAYS * DAY).toISOString().slice(0, 10)}`;
   const search = async (kind, ...q) => {
-    const found = JSON.parse(await withBackoff(() => ctx.gh(['search', kind, '--repo', repo, '--created', created, '--limit', String(SEARCH_CAP), '--json', 'number,title,body,labels,createdAt', ...q]), { repo, sleep: ctx.sleep }));
+    const found = JSON.parse(await withBackoff(() => ctx.gh(['search', kind, '--repo', repo, '--created', created, '--limit', String(SEARCH_CAP), '--json', `number,title,body,labels,createdAt${kind === 'prs' ? ',state' : ''}`, ...q]), { repo, sleep: ctx.sleep }));
     if (found.length >= SEARCH_CAP) throw new Error(`${repo}: gh search ${kind} ${q.join(' ')} --created ${created} returned ${found.length} results, GitHub's cap, so some may be missing; nothing cached`);
     return found;
   };
@@ -107,7 +113,7 @@ async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
     const reverts = await revertedPrs(c, repo, ctx);
     const labels = (c.labels ?? []).map((l) => l.name);
     // classify reads the body only of a candidate with a fix or bug signal, to find its citation.
-    candidates.push({ number: c.number, title: c.title, createdAt: c.createdAt, labels, reverts, unresolved: c.unresolved, ...(hasSignal(c.title, labels) && { body: c.body }) });
+    candidates.push({ number: c.number, title: c.title, createdAt: c.createdAt, labels, ...(c.state && { state: c.state }), reverts, unresolved: c.unresolved, ...(hasSignal(c.title, labels) && { body: c.body }) });
   }
   if (!candidates.some((c) => c.unresolved === 'transient') && now >= Date.parse(day) + (WINDOW_DAYS + 1 + SETTLE_DAYS) * DAY) {
     writeCached(file, candidates);
@@ -121,13 +127,17 @@ const hasSignal = (title, labels = []) => labels.some((l) => same(l, 'bug')) || 
 /**
  * How `cand` escapes from the merged `pr` (`{repo, number, title, subjects, cited: [[repo, n]]}`), or null.
  * A revert whose body names what it reverts is judged by that alone; one naming nothing, or a sha GitHub
- * could not resolve, also by its `Revert "<X>"` title, X being the PR title or a commit subject.
+ * could not resolve, also by its `Revert "<X>"` title, X being the PR title or a commit subject. A PR
+ * candidate closed unmerged is no escape. A revert is `strong`, as is a follow-up whose citation follows a
+ * closing keyword or causal phrase (`citesStrongly`); any other citation is weak.
  */
 function classify(cand, pr) {
+  if (cand.state === 'closed') return null;
   const reverted = /^Revert "(.*)"$/.exec(cand.title ?? '')?.[1];
   const byTitle = reverted !== undefined && [pr.title, ...pr.subjects].includes(reverted);
-  if (cand.reverts?.includes(pr.number) || ((!cand.reverts || cand.unresolved) && byTitle)) return 'revert';
-  return hasSignal(cand.title, cand.labels) && pr.cited.some(([repo, n]) => cites(cand.body, repo, n, pr.repo)) ? 'follow-up-fix' : null;
+  if (cand.reverts?.includes(pr.number) || ((!cand.reverts || cand.unresolved) && byTitle)) return { kind: 'revert', strong: true };
+  if (!hasSignal(cand.title, cand.labels) || !pr.cited.some(([repo, n]) => cites(cand.body, repo, n, pr.repo))) return null;
+  return { kind: 'follow-up-fix', strong: pr.cited.some(([repo, n]) => citesStrongly(cand.body, repo, n, pr.repo)) };
 }
 
 /** A commit's full subject: GitHub cuts a long headline at "…" and starts the body with the rest. */
@@ -172,7 +182,7 @@ export async function findEscapes(prs, { gh = ghCli, cacheDir = escapesDir(), no
     const pr = { repo: m.repo, number: m.pr, title: view.title, subjects: view.subjects, cited: [[m.repo, m.pr], ...view.closing] };
     const escapes = (await windows.get(key))
       .filter((c) => c.number !== m.pr && Date.parse(c.createdAt) > mergedMs && Date.parse(c.createdAt) <= end)
-      .flatMap((c) => { const kind = classify(c, pr); return kind ? [{ number: c.number, kind }] : []; });
+      .flatMap((c) => { const hit = classify(c, pr); return hit ? [{ number: c.number, ...hit }] : []; });
     out.push({ ...m, mergedAt: view.mergedAt, escapes });
   }
   return out;
@@ -180,7 +190,11 @@ export async function findEscapes(prs, { gh = ghCli, cacheDir = escapesDir(), no
 
 /** Escape rate overall, by merge month and by `tuningVersion`, over `findEscapes` rows. */
 export function escapeReport(rows) {
-  const tally = (rs) => { const escaped = rs.filter((r) => r.escapes.length).length; return { prs: rs.length, escaped, rate: rs.length ? escaped / rs.length : 0 }; };
+  const tally = (rs) => {
+    const escaped = rs.filter((r) => r.escapes.length).length;
+    const strong = rs.filter((r) => r.escapes.some((e) => e.strong)).length;
+    return { prs: rs.length, escaped, rate: rs.length ? escaped / rs.length : 0, strong, strongRate: rs.length ? strong / rs.length : 0 };
+  };
   const by = (key) => Object.fromEntries([...groupBy(key, rows)].map(([k, rs]) => [k, tally(rs)]));
   return { total: tally(rows), byMonth: by((r) => r.mergedAt.slice(0, 7)), byTuningVersion: by((r) => String(r.tuningVersion ?? 0)) };
 }

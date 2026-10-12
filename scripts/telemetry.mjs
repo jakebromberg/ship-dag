@@ -43,7 +43,8 @@
 //                                            # exit 2: bad invocation or --outcomes, or a half-supplied
 //                                            # wave; 3: malformed report, or no run id; 1: anything else
 //   node telemetry.mjs escapes [--now ISO]  # escape rate of merged PRs (revert / bug follow-up within 30 days),
-//                                            # by month and tuningVersion; PRs from the log and the engine
+//                                            # by month and tuningVersion, with the strong-citation sub-rate
+//                                            # (strong, strongRate) beside the headline; PRs from the log and the engine
 //                                            # state dir's reports and sidecars; cache in $SHIP_DAG_ESCAPES_DIR
 //   node telemetry.mjs audit <runId>         # name the waves of a run family (every dir under the engine base dir
 //                                            # that sameRun the id) whose terminal rows have no record in the log,
