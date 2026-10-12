@@ -416,7 +416,7 @@ const closersOf = (...nodes) => ({ data: { repository: { issue: { state: 'CLOSED
 const openWith = (res) => ({ data: { repository: { issue: { ...res.data.repository.issue, state: 'OPEN' } } } });
 const byKey = (prs) => prs.toSorted((a, b) => `${a.repo}#${a.pr}`.localeCompare(`${b.repo}#${b.pr}`));
 
-test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record wins; any finalState), then engine report rows', async () => {
+test('shipDagPrs: telemetry pr fields (any PR value parsePr reads; newest record wins; any finalState), then engine report rows', async () => {
   const records = [
     { repo: 'o/r', issue: 9, pr: 5, finalState: 'merged', tuningVersion: 0 },
     { repo: 'o/r', issue: 9, pr: 5, finalState: 'merged', tuningVersion: 2 },

@@ -1,5 +1,5 @@
 // ref.mjs — the one place the telemetry modules parse and build `owner/repo#N` refs, say what a PR
-// number is, and fold repos for comparison.
+// number is, read a recorded PR value (`parsePr`), and fold repos for comparison.
 
 /** A composite issue ref: group 1 is `owner/repo` (one slash, no whitespace), group 2 the number. */
 export const REF_RE = /^([^/#\s]+\/[^/#\s]+)#(\d+)$/;
