@@ -27,3 +27,20 @@ export const refKey = (s) => String(s).toLowerCase();
  * are the report's as written.
  */
 export const sameRepo = (a, b) => refKey(a) === refKey(b);
+
+const PR_URL_RE = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)\/?$/i;
+
+/**
+ * `{repo, pr}` for a telemetry record's or report row's PR value, or null when it is not one: a positive
+ * integer or its digits as a string (in `homeRepo`), an `owner/repo#N` ref, or a `https://github.com/owner/repo/pull/N[/]`
+ * URL (each in its own repo). Anything else (`'draft-11'`, `'#11'`, `0`, `-1`, null) is null. A PR is never parsed elsewhere.
+ */
+export function parsePr(value, homeRepo) {
+  if (isPr(value)) return { repo: homeRepo, pr: value };
+  if (typeof value !== 'string') return null;
+  if (/^[1-9]\d*$/.test(value)) return { repo: homeRepo, pr: Number(value) };
+  const ref = parseRef(value);
+  if (ref && isPr(ref.number)) return { repo: ref.repo, pr: ref.number };
+  const m = PR_URL_RE.exec(value);
+  return m && isPr(Number(m[2])) ? { repo: m[1], pr: Number(m[2]) } : null;
+}

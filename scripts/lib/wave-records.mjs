@@ -17,7 +17,7 @@
 // the ingest that sees them finish, and any other status is warned about and skipped.
 import { DEFAULT_BLOCK_ON, gateReview } from '../review-gate.mjs';
 import { routeFailure } from './failure.mjs';
-import { isPr, parseRef, sameRepo } from './ref.mjs';
+import { isPr, parsePr, parseRef, sameRepo } from './ref.mjs';
 import { isUnreadableEmpty } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
@@ -56,8 +56,8 @@ function roundVerdict({ path, review }, blockOn, warn) {
 /** The `finalState` that identifies an event: a rate-limited `error` is the legacy hand-written spelling of the `deferred` death ingest derives (PR #105). */
 const eventState = (r) => (r.failureReason === 'rate-limited' && r.finalState === 'error' ? 'deferred' : r.finalState);
 
-/** A record's PR as a number: a hand-written one may hold it as `N`, `owner/repo#N` or a PR URL; anything else stays as is. */
-const prOf = (pr) => (typeof pr === 'string' && /(?:^|#|\/pull\/)[1-9]\d*$/.test(pr) ? Number(pr.match(/\d+$/)[0]) : pr ?? null);
+/** Whether two parsed PRs (`parsePr`) are one: both absent, or the same number in the same repo. */
+const samePr = (a, b) => (a && b ? a.pr === b.pr && sameRepo(a.repo, b.repo) : a === b);
 
 /** A PR-less failure: a record that reached implement and opened no PR the gate reviewed. */
 const prLessFailure = (r) => r.implStatus === 'error' || r.implStatus === 'blocked';
@@ -66,7 +66,7 @@ const prLessFailure = (r) => r.implStatus === 'error' || r.implStatus === 'block
  * Whether records `a` and `b` are the same event: the one identity ingest-wave's dedupe and `rowCovered` both use.
  * They share `sameRun`, ref, `eventState` and failureReason (absent reads as null). Both reached implement or
  * neither did (`implStatus` null); which non-null status a record gives is not compared, so a merge hand-written
- * as `error` or `blocked` is the merge ingest derives as `pushed`. They hold the same PR (`prOf`), or both are merges
+ * as `error` or `blocked` is the merge ingest derives as `pushed`. They hold the same PR (`parsePr`: the same number in the same repo, or none), or both are merges
  * (until #107's "ran" facts tell those apart). Differing `reportId`s make two PR-less failures (`error` or
  * `blocked`) two events, since a retry re-runs a failed row, unless both are `blocked`, which no retry re-runs:
  * every report re-lists the other rows as they stood, so a record with a PR, a skipped one or a blocked one
@@ -76,7 +76,7 @@ const prLessFailure = (r) => r.implStatus === 'error' || r.implStatus === 'block
 export const sameEvent = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.repo) && a.issue === b.issue
   && eventState(a) === eventState(b) && (a.failureReason ?? null) === (b.failureReason ?? null)
   && (a.implStatus == null) === (b.implStatus == null)
-  && (prOf(a.pr) === prOf(b.pr) || (a.finalState === 'merged' && b.finalState === 'merged'))
+  && (samePr(parsePr(a.pr, a.repo), parsePr(b.pr, b.repo)) || (a.finalState === 'merged' && b.finalState === 'merged'))
   && (!a.reportId || !b.reportId || a.reportId === b.reportId || !prLessFailure(a) || !prLessFailure(b)
     || (a.implStatus === 'blocked' && b.implStatus === 'blocked'));
 
@@ -120,7 +120,10 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest) {
   // Whether a PR-less run of the row is a rate-limit death (a row with a PR is gated, and reads its own PR).
   const dies = rateLimited && implStatusOf(row, null) === 'error';
   return records.some((r) => {
-    const pr = isPr(row.prNumber) ? row.prNumber : findPr || (r.reportId === id && !dies) ? prOf(r.pr) : null;
+    const rp = isPr(row.prNumber) || !(findPr || (r.reportId === id && !dies)) ? null : parsePr(r.pr, repo);
+    // A find-pr row's PR comes from --outcomes, in the row's repo: another repo's PR is not it, and neither is a value that is no PR.
+    if (findPr && r.pr != null && (!rp || !sameRepo(rp.repo, repo))) return false;
+    const pr = isPr(row.prNumber) ? row.prNumber : rp ? rp.pr : null;
     const { finalState } = r;
     // A find-pr row's merge has a PR --outcomes supplied, whether or not the record names it.
     const implStatus = findPr && finalState === 'merged' ? 'pushed' : implStatusOf(row, pr);
