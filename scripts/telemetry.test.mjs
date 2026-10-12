@@ -592,6 +592,24 @@ for (const [when, at, want] of [
   }));
 }
 
+// A copied state dir loses mtimes, so a digest stamped with its report's id is assigned by the id alone.
+for (const [what, body, at, want] of [
+  ['stamped with this report, mtime outside the wave', { reportId: 'w1', failureReason: 'rate-limited' }, '2026-10-08T18:00:00.000Z', 'rate-limited'],
+  ['stamped with another report, mtime inside the wave', { reportId: 'w2', failureReason: 'rate-limited' }, '2026-10-08T19:30:00.000Z', null],
+  ['unstamped, mtime outside the wave', { failureReason: 'rate-limited' }, '2026-10-08T18:00:00.000Z', null],
+]) {
+  test(`ingest-wave: a failure digest ${what} is ${want ? '' : 'not '}this wave's`, () => withStateDir({
+    reports: {
+      'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })], { startedAt: T0, finishedAt: T1 }),
+      'w2.json': stateReport([stateRow(REF)], { startedAt: T1, finishedAt: T2 }),
+    },
+    sidecar: [sidecarEntry()],
+  }, (dir) => {
+    putDigest(dir, REF, body, at);
+    assert.equal(ingest(dir).records[0].failureReason, want);
+  }));
+}
+
 test('ingest-wave: a pre-sidecar wave takes its routing from the matching config, default policy and tuning version 0', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) },
   sidecar: [sidecarEntry(['WXYC/other#9'])],
