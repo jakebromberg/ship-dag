@@ -65,22 +65,29 @@ const sameRecord = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.rep
 
 /**
  * Whether `records` (the telemetry log) cover terminal `row` of the report `{id, startedAt (epoch ms)}`,
- * as run `runId`'s family sees it: the audit counterpart of `sameRecord`, which it must agree with. A
- * PR-less failure (`routeFailure` would not send it to the gate, and it is not skipped) is its report's
- * own event, but only against a record that is itself a PR-less failure (`implStatus: "error"`, as in
- * `sameRecord`): that one covers it only if it carries `id`, or, with no `reportId`, is at or after
- * `startedAt`. Any other record of the row's ref, from any report, covers it, because `sameRecord`
- * folds the two into one event; a row with a PR (or skipped) is never covered by a PR-less failure's
- * record, since the event its report would derive for it is another one (merged, not an error). The `startedAt` test for a record with no `reportId` is the issue's
- * rule, and stricter than `sameRecord`, which folds a hand-written record into any report's event: audit
- * can name a wave that ingesting would add nothing to, which is what a hand-written record that old merits a look at.
+ * as run `runId`'s family sees it: whether one is the event this report's ingest would derive for the
+ * row, by `sameRecord`'s identity, with the row's `--outcomes` and digest unknown. A PR-less failure's
+ * record (`implStatus: "error"`) covers only a PR-less failure (`routeFailure` would not send it to the
+ * gate, and it is not skipped), and only if it carries `id` or, with no `reportId`, is at or after
+ * `startedAt`: `sameRecord` keeps two such events apart by report, and a row with a PR derives no error.
+ * Any other record covers the row from any report, since `sameRecord` folds a carried-over row into it,
+ * but only when it reached implement exactly when the row did (a triage defer, `implStatus` null, is not
+ * a later run of the ref) and ends in a finalState the row allows: `deferred` for a skipped row; not
+ * `error` for a row with a PR (merged, or held at point B); not `merged` for a failed or blocked row with
+ * none; any for a find-pr row (succeeded with no PR in the report), whose outcome supplies it. The
+ * `startedAt` test is the issue's rule, and stricter than `sameRecord`, which folds a hand-written record
+ * into any report's event: audit can name a wave that ingesting would add nothing to, which is what a
+ * hand-written record that old merits a look at.
  */
 export function rowCovered(row, { id, startedAt }, records, runId) {
   const { repo, number } = parseRef(row.ref);
-  const prLess = row.status !== 'skipped' && routeFailure(row) !== 'review-gate';
+  const skipped = row.status === 'skipped';
+  const gated = !skipped && routeFailure(row) === 'review-gate';
+  const prLess = !skipped && !gated;
+  const fits = (finalState) => (skipped ? finalState === 'deferred' : gated ? finalState !== 'error' : row.status === 'succeeded' || finalState !== 'merged');
   return records.some((r) => sameRun(r.runId, runId) && sameRepo(r.repo, repo) && r.issue === number && (r.implStatus === 'error'
     ? prLess && (r.reportId ? r.reportId === id : Date.parse(r.ts) >= startedAt)
-    : true));
+    : (r.implStatus == null) === skipped && fits(r.finalState)));
 }
 
 /**

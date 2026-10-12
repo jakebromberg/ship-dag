@@ -549,6 +549,27 @@ test('ingest-wave: a later report listing only other refs does not end this ref\
   assert.deepEqual([rec.reviewVerdict, rec.bounces, rec.reviewPath.endsWith('.r2.json')], ['blocking', 1, true]);
 }));
 
+// Review rounds are the run's, not the engine dir's: a retry dir (sd-…-w3c) keeps its rounds under the base
+// run's reviews/, and a later report in any family dir that re-ran the ref ends an earlier report's window.
+test('ingest-wave reads rounds from the reviews/ of every run-family dir, windowed by every family dir\'s reports', () => {
+  const base = mkdtempSync(join(tmpdir(), 'ingest-family-'));
+  try {
+    const run = join(base, RUN);
+    const retry = join(base, `${RUN}-w3c`);
+    for (const [dir, rep] of [[run, stateReport([stateRow(REF)])], [retry, stateReport([reran], { startedAt: T1, finishedAt: T2 })]]) {
+      mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
+      writeFileSync(reportPath(dir), JSON.stringify(rep));
+      appendWave(dir, sidecarEntry());
+    }
+    reviewFile(run, REF, '', [], '2026-10-08T19:30:00.000Z'); // the base run's wave
+    reviewFile(run, REF, '.r2', [], '2026-10-08T20:30:00.000Z'); // the retry's, kept under the base run
+    const round = (tag) => join(run, 'reviews', `${artifactStem(REF)}${tag}.json`);
+    assert.deepEqual([retry, run].map((dir) => ingestFile(reportPath(dir)).records[0].reviewPath), [round('.r2'), round('')]);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('ingest-wave: a torn round file reads as blocking, never clean', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
 }, (dir) => {
@@ -984,6 +1005,29 @@ describe('audit', () => {
     assert.deepEqual(audit_(base, [...records, logged({ reportId: 'w2', finalState: 'error', implStatus: 'error' })]).notIngested, []);
   }));
 
+  // The wave-5 spec case. A death hand-written once wave 3 was under way is at or after wave 3's start, so only
+  // the row's PR keeps that PR-less failure's record from covering the merge.
+  for (const [when, ts] of [['during wave 2', '2026-10-08T19:30:00.000Z'], ['once wave 3 was under way', '2026-10-08T20:30:00.000Z']]) {
+    test(`names a wave-3 merge never ingested, whose wave-2 rate-limit death was hand-written ${when}`, () => family({
+      [RUN_A]: {
+        reports: {
+          'w2.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })]),
+          'w3.json': stateReport([stateRow(REF)], { startedAt: T1, finishedAt: '2026-10-08T21:00:00.000Z' }),
+        },
+      },
+    }, (base) => {
+      const death = logged({ implStatus: 'error', finalState: 'deferred', failureReason: 'rate-limited', ts });
+      assert.deepEqual(audit_(base, [death]).notIngested.map((w) => [w.id, w.refs]), [['w3', [REF]]]);
+    }));
+  }
+
+  test('names a merge whose only record is the triage defer written before the ref ran', () => family({
+    [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF)]) } },
+  }, (base) => {
+    const defer = logged({ implStatus: null, finalState: 'blocked-hitl', ts: '2026-10-08T18:00:00.000Z' });
+    assert.deepEqual(audit_(base, [defer]).notIngested.map((w) => w.refs), [[REF]]);
+  }));
+
   test('names a torn report and one with no issues[] as unreadable, and never hands them to waveContextFor', () => family({
     [RUN_A]: { reports: { 'torn.json': '{"issues": [', 'bare.json': { startedAt: T0 }, 'nostart.json': { issues: [stateRow(REF)] } } },
   }, (base) => {
@@ -1007,7 +1051,24 @@ describe('audit', () => {
     assert.deepEqual(out.notIngested.map((w) => [w.id, w.source]), [['w2', 'config']]);
   }));
 
-  test('CLI: prints the audit as JSON from the XDG engine dir and the log, and refuses a missing or extra run id', () => family({
+  test('scans the older state/ layout for configs too: one a report matched there is not never-reported, one none matched is', () => family({
+    [RUN_A]: {
+      reports: { 'w1.json': stateReport([stateRow(REF)]) },
+      files: { 'state/config.json': config([REF]), 'state/config-2.json': config([REF2]) },
+    },
+  }, (base, dirs) => {
+    for (const f of ['config.json', 'config-2.json']) utimesSync(join(dirs[RUN_A], 'state', f), secs(EMITTED), secs(EMITTED));
+    const out = audit_(base, [logged()]);
+    assert.deepEqual([out.neverReported.configs, out.notIngested], [[join(dirs[RUN_A], 'state', 'config-2.json')], []]);
+  }));
+
+  test('refuses a run id no dir under the base dir belongs to, rather than reading as all clear', () => family({
+    [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF)]) } },
+  }, (base) => {
+    assert.throws(() => audit('sd-2026100-153059', { baseDir: base, records: [], ...quiet }), /no dir under .* belongs to run sd-2026100-153059/);
+  }));
+
+  test('CLI: prints the audit as JSON from the XDG engine dir and the log, refuses a missing or extra run id, and exits 1 for a run with no dir', () => family({
     [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF)]) } },
   }, (base) => {
     const xdg = join(base, 'xdg');
@@ -1018,5 +1079,8 @@ describe('audit', () => {
     assert.deepEqual(JSON.parse(cli(RUN_A).stdout).notIngested.map((w) => w.refs), [[REF]]);
     assert.equal(cli().status, 2);
     assert.equal(cli(RUN_A, RUN_A).status, 2);
+    const typo = cli('sd-2026100-153059');
+    assert.deepEqual([typo.status, typo.stdout], [1, '']);
+    assert.match(typo.stderr, /^audit: no dir under .* belongs to run sd-2026100-153059/);
   }));
 });
