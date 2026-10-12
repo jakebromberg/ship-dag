@@ -889,6 +889,31 @@ test('ingest-wave: a point-E row derives two records, and its sessions are count
   assert.deepEqual(records.flatMap((r) => r.cost?.implement?.sessionIds ?? []), ['a', 'b']);
 }));
 
+// escalation-policy.md point E, item 5: a continuation that finishes after its report's 6.3 already ran (point E's grill
+// chose defer or stop, or the session resumed) is recorded by adding its outcome to that report's outcomes file and
+// re-running 6.3. The first ingest recorded the death alone; the re-run must dedupe that death and append the continuation.
+for (const [label, continuation, want] of [
+  ['merged PR 12', { pr: 12 }, ['merged', 12, 'pushed']],
+  ['stalled at point B without a PR', { finalState: 'blocked-hitl', hitl: { pointB: true } }, ['blocked-hitl', null, 'error']],
+]) {
+  test(`ingest-wave: re-ingesting a deferred point-E death with its continuation (${label}) appends only the continuation`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry()],
+    files: logOf(REF, sess('a', 1)),
+  }, (dir) => {
+    putDigest(dir, REF, { failureReason: 'rate-limited' });
+    const path = join(dir, 'runs.jsonl');
+    assert.equal(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).appended, 1);
+    assert.equal(ingestWave(reportPath(dir), { [REF]: continuation }, { path, warn: () => {} }).appended, 1);
+    const log = readRecords(path);
+    assert.deepEqual(log.map((r) => [r.finalState, r.pr, r.implStatus, r.failureReason]),
+      [['deferred', null, 'error', 'rate-limited'], [...want, null]]);
+    assert.equal(log[1].hitl.pointB, continuation.hitl?.pointB === true);
+    // The death already carries the row's sessions, so the continuation does not count them again.
+    assert.deepEqual(log.map((r) => r.cost?.implement?.sessionIds), [['a'], undefined]);
+    assert.equal(ingestWave(reportPath(dir), { [REF]: continuation }, { path, warn: () => {} }).appended, 0);
+  }));
+}
+
 test('ingest-wave: a row with no log or no session result gets no cost', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) }, sidecar: [sidecarEntry([REF, REF2])],
   files: logOf(REF2, '{"type":"assistant"}'),
