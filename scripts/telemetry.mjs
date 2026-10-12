@@ -373,7 +373,8 @@ function validateOutcomes(outcomes, rows) {
  * each that reached implement the `cost.implement` read from its ref's transcript (`implementCost`,
  * over the sessions no earlier record of the run family lists), and append the ones the log lacks. `reportPath` is
  * `<stateDir>/state/reports/<id>.json`; everything else is read from beside it, except that review rounds,
- * and the later reports that end their window, come from every run-family dir (`runFamilyDirs`). Appends are
+ * and the later reports that end their window, come from every run-family dir (`runFamilyDirs`), or from the
+ * state dir alone, with a warning, when the dir holding the family cannot be listed. Appends are
  * best-effort: a failed one is warned about and the rest continue.
  * @param {string} reportPath
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl:{pointB}, finalState, bounces, findings, tokens}`
@@ -417,8 +418,15 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   // base run's reviews/. So rounds are read from every run-family dir (the run id as deriveWaveRecords
   // takes it), and a later report in any of them ends this wave's window. A dir is told apart by inode, since
   // a path typed in another case names the same dir as the listing's on a case-insensitive file system.
+  // A base dir that cannot be listed leaves this dir's rounds, as before rounds were the run's, rather than no record.
+  let siblings = [];
+  try {
+    siblings = runFamilyDirs(entry?.runId || runIdFromConfigName(report.configName), dirname(stateDir));
+  } catch (err) {
+    warn(`ingest-wave: cannot list ${dirname(stateDir)} (${err.code ?? err.message}), so review rounds and later reports are read from ${stateDir} alone`);
+  }
   const inodes = new Set();
-  const family = [stateDir, ...runFamilyDirs(entry?.runId || runIdFromConfigName(report.configName), dirname(stateDir))]
+  const family = [stateDir, ...siblings]
     .filter((d) => { const { dev, ino } = statSync(d); const key = `${dev}:${ino}`; return !inodes.has(key) && Boolean(inodes.add(key)); });
   // A digest or review round belongs to this wave when it was written after this report started and
   // before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
