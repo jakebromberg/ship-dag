@@ -70,7 +70,8 @@ const prLessFailure = (r) => r.implStatus === 'error' || r.implStatus === 'block
  * (until #107's "ran" facts tell those apart). Differing `reportId`s make two PR-less failures (`error` or
  * `blocked`) two events, since a retry re-runs a failed row, unless both are `blocked`, which no retry re-runs:
  * every report re-lists the other rows as they stood, so a record with a PR, a skipped one or a blocked one
- * recurs unchanged. A hand-written record has no `reportId`, so the rest decides.
+ * recurs unchanged. A hand-written record has no `reportId`, so the rest decides. The engine has no `blocked`
+ * status today; if a later run that is not a retry blocked the row again, this fold would read that second block as the first.
  */
 export const sameEvent = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.repo) && a.issue === b.issue
   && eventState(a) === eventState(b) && (a.failureReason ?? null) === (b.failureReason ?? null)
