@@ -989,10 +989,35 @@ describe('audit', () => {
           'w2.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })]),
           'w3.json': stateReport([stateRow(REF)], { startedAt: T1, finishedAt: '2026-10-08T21:00:00.000Z' }),
         },
+        digests: [{ ref: REF, body: { status: 'failed', failureReason: 'rate-limited' } }],
       },
     }, (base) => {
       const death = logged({ implStatus: 'error', finalState: 'deferred', failureReason: 'rate-limited', ts });
       assert.deepEqual(audit_(base, [death]).notIngested.map((w) => [w.id, w.refs]), [['w3', [REF]]]);
+    }));
+  }
+
+  // Audit reads a row's rate-limit from the digest ingest would read: the one written inside the report's window.
+  for (const [when, at, rateLimited] of [
+    ['during the wave', '2026-10-08T19:30:00.000Z', true],
+    ['before the wave', '2026-10-08T18:00:00.000Z', false],
+    ['after a later report re-ran the ref', '2026-10-08T20:30:00.000Z', false],
+  ]) {
+    test(`a PR-less failure's rate-limited digest written ${when} is ${rateLimited ? '' : 'not '}its death`, () => family({
+      [RUN_A]: {
+        reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })]) },
+        digests: [{ ref: REF, body: { status: 'failed', failureReason: 'rate-limited' }, at }],
+      },
+      // A retry dir's report ends the window too.
+      [`${RUN_A}-b`]: {
+        reports: { 'w2.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })], { startedAt: T1, finishedAt: '2026-10-08T21:00:00.000Z' }) },
+      },
+    }, (base) => {
+      const w2 = logged({ implStatus: 'error', finalState: 'error', reportId: 'w2', ts: '2026-10-08T21:00:00.000Z' });
+      const plain = logged({ implStatus: 'error', finalState: 'error', reportId: 'w1' });
+      const death = logged({ ...plain, finalState: 'deferred', failureReason: 'rate-limited' });
+      const named = (records) => audit_(base, [w2, ...records]).notIngested.filter((w) => w.id === 'w1').map((w) => w.refs);
+      assert.deepEqual([named([plain]), named([death])], rateLimited ? [[[REF]], []] : [[], [[REF]]]);
     }));
   }
 
