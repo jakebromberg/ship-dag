@@ -1085,3 +1085,19 @@ describe('audit', () => {
     assert.match(typo.stderr, /^audit: no dir under .* belongs to run sd-2026100-153059/);
   }));
 });
+
+// The wiring SKILL.md documents for the mechanics above: the exit codes it names must be the ones the CLI uses, and the
+// round-file naming it states must be the one reviewRoundFiles reads.
+describe('SKILL.md telemetry wiring', () => {
+  const skill = readFileSync(fileURLToPath(new URL('../SKILL.md', import.meta.url)), 'utf8');
+
+  test('names step 6.3 and the audit classes, and no longer the url-encoded round file', () => {
+    assert.match(skill, /^### 6\.3 Ingest the wave$/m);
+    for (const cls of ['notIngested', 'unreadable', 'neverReported']) assert.ok(skill.includes(`\`${cls}\``), cls);
+    assert.ok(!skill.includes('<url-encoded-ref>'));
+  });
+
+  test('documents every telemetry.mjs subcommand the CLI dispatches', () => {
+    for (const cmd of ['ingest-wave', 'escapes', 'audit', 'run-id']) assert.ok(skill.includes(`telemetry.mjs" ${cmd}`), cmd);
+  });
+});
