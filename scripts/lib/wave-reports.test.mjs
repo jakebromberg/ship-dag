@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readWaveReport, readWaveReports, waveContextFor } from './wave-reports.mjs';
+import { readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
 import { SIDECAR_NAME } from './wave-sidecar.mjs';
 
 const REF = 'WXYC/repo#1';
@@ -55,8 +55,9 @@ test('waveContextFor falls back to the config in the state dir, then state/, and
     assert.equal(ctx.source, 'config');
     assert.equal(ctx.entry.tuningVersion, undefined);
     assert.equal(ctx.config.name, 'ship-dag-run1');
+    assert.equal(ctx.configFile, join(d, ...(d === nested ? ['state'] : []), 'config.json'));
   }
-  assert.deepEqual(waveContextFor(stateDir(), report, { warn: () => {} }), { entry: null, config: null, source: null });
+  assert.deepEqual(waveContextFor(stateDir(), report, { warn: () => {} }), { entry: null, config: null, configFile: null, source: null });
 });
 
 test('readWaveReport reads any path, and keeps the rows of a report whose startedAt does not parse', () => {
@@ -91,4 +92,12 @@ test('readWaveReport refuses a row with no owner/repo#N ref before it looks at s
     assert.equal(read.report.issues.length, 2);
     assert.equal(read.startedAt, want);
   }
+});
+
+test('runFamilyDirs lists the dirs under baseDir that sameRun the run id: a -b retry folds in, a -board dir and a plain file do not', () => {
+  const base = stateDir();
+  for (const name of ['sd-1', 'sd-1-b', 'sd-1-w2', 'SD-1-r2', 'sd-1-board', 'sd-2']) mkdirSync(join(base, name));
+  writeFileSync(join(base, 'sd-1-c'), '');
+  assert.deepEqual(runFamilyDirs('sd-1', base), ['SD-1-r2', 'sd-1', 'sd-1-b', 'sd-1-w2'].map((n) => join(base, n)));
+  assert.deepEqual(runFamilyDirs('sd-1', join(base, 'missing')), []);
 });
