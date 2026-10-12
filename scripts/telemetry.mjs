@@ -58,11 +58,11 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { mintRunId, sameRun } from './lib/run-id.mjs';
+import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
 import { isPr, parseRef, sameRepo } from './lib/ref.mjs';
-import { readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './lib/wave-reports.mjs';
+import { configDirs, readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
@@ -372,7 +372,8 @@ function validateOutcomes(outcomes, rows) {
  * Record a wave from its engine artifacts: derive its issue records (`deriveWaveRecords`), attach to
  * each that reached implement the `cost.implement` read from its ref's transcript (`implementCost`,
  * over the sessions no earlier record of the run family lists), and append the ones the log lacks. `reportPath` is
- * `<stateDir>/state/reports/<id>.json`; everything else is read from beside it. Appends are
+ * `<stateDir>/state/reports/<id>.json`; everything else is read from beside it, except that review rounds,
+ * and the later reports that end their window, come from every run-family dir (`runFamilyDirs`). Appends are
  * best-effort: a failed one is warned about and the rest continue.
  * @param {string} reportPath
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl:{pointB}, finalState, bounces, findings, tokens}`
@@ -412,12 +413,17 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     warn(`ingest-wave: no config in ${stateDir} matches this wave's issues, so which repos run no post-session check is unknown; succeeded rows record ciStatus "pass"`);
   }
 
+  // Review rounds are the run's, not the engine dir's: a retry dir (sd-…-w3c) keeps its rounds under the
+  // base run's reviews/. So rounds are read from every run-family dir (the run id as deriveWaveRecords
+  // takes it), and a later report in any of them ends this wave's window.
+  const family = [...new Set([stateDir, ...runFamilyDirs(entry?.runId || runIdFromConfigName(report.configName), dirname(stateDir))])];
   // A digest or review round belongs to this wave when it was written after this report started and
   // before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
   // and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
   // run of other rows) re-runs nothing, so later rounds still review this row's PR. A later report
   // refused for a malformed row still started when it says, so it still ends the window.
-  const others = reports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
+  const others = family.flatMap((d) => (d === stateDir ? reports : readWaveReports(d, { warn: () => {} })))
+    .filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
   const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
   const inWave = (ref, mtimeMs) => mtimeMs >= startedAt && mtimeMs < ends[ref];
@@ -434,7 +440,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
 
   const rounds = {};
   for (const ref of refs) {
-    rounds[ref] = reviewRoundFiles([join(stateDir, 'reviews')], ref)
+    rounds[ref] = reviewRoundFiles(family.map((d) => join(d, 'reviews')), ref)
       .filter((f) => inWave(ref, f.mtimeMs))
       .map((f) => {
         try { return { path: f.path, review: JSON.parse(readFileSync(f.path, 'utf8')) }; } catch { return { path: f.path, review: null }; }
@@ -490,29 +496,32 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
  * reports; a readable one with a terminal row `rowCovered` finds no record for is `notIngested`
  * (`{dir, id, source (where its routing label came from), refs (the uncovered rows')}`; one with no
  * terminal row is not named), and one with an `error` is `unreadable` (`{path, error}`). A sidecar
- * entry or config file that no readable report matched is `neverReported`: the engine died before it
- * wrote a report, so there is nothing to ingest.
+ * entry or config file (in either of `configDirs`) that no readable report matched is `neverReported`:
+ * there is no report to ingest. That is a wave the engine died in before it wrote one, but also a wave
+ * still running, an earlier emit of a ref set whose re-emit a report matched, and an `unreadable` report's.
  * @param {string} runId
  * @param {{baseDir?: string, records?: object[], warn?: (m: string) => void}} [opts] `records` is the telemetry log
+ * @throws when no dir under `baseDir` belongs to the run family, so a mistyped id does not read as all clear
  */
 export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords(telemetryPath()), warn = (m) => console.error(m) } = {}) {
   const out = { runId, dirs: runFamilyDirs(runId, baseDir), notIngested: [], unreadable: [], neverReported: { sidecar: [], configs: [] } };
+  if (!out.dirs.length) throw new Error(`no dir under ${baseDir} belongs to run ${runId}`);
+  const logged = records.filter((r) => sameRun(r.runId, runId));
   for (const dir of out.dirs) {
     const matched = new Set();
     for (const read of readWaveReports(dir, { warn })) {
       if (read.error) { out.unreadable.push({ path: read.path, error: read.error }); continue; }
-      const { entry, configFile, source } = waveContextFor(dir, read, { warn });
+      // Quiet: the sidecar is read once more below, so a torn line is warned about once per dir, not per report.
+      const { entry, configFile, source } = waveContextFor(dir, read, { warn: () => {} });
       if (source === 'sidecar') matched.add(JSON.stringify(entry));
       if (configFile) matched.add(configFile);
-      const refs = read.report.issues.filter((r) => TERMINAL.has(r?.status) && !rowCovered(r, read, records, runId)).map((r) => r.ref);
+      const refs = read.report.issues.filter((r) => TERMINAL.has(r?.status) && !rowCovered(r, read, logged, runId)).map((r) => r.ref);
       if (refs.length) out.notIngested.push({ dir, id: read.id, source, refs });
     }
     for (const e of readSidecar(join(dir, SIDECAR_NAME), { warn })) {
       if (!matched.has(JSON.stringify(e))) out.neverReported.sidecar.push({ dir, refs: (e.issues ?? []).map((i) => i?.ref) });
     }
-    for (const d of [dir, join(dir, 'state')]) {
-      for (const { configFile } of waveConfigs(d)) if (!matched.has(join(d, configFile))) out.neverReported.configs.push(join(d, configFile));
-    }
+    for (const { configFile } of configDirs(dir).flatMap((d) => waveConfigs(d))) if (!matched.has(configFile)) out.neverReported.configs.push(configFile);
   }
   return out;
 }

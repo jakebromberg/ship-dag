@@ -1,6 +1,7 @@
-// wave-reports.mjs — the one reader of a state dir's wave reports (`<stateDir>/state/reports/*.json`)
-// and of the routing each report ran under. ingest-wave and the escapes proxy share it, so a rule
-// about which routing a report gets (or whether it gets any) lands in one place.
+// wave-reports.mjs — the one reader of a state dir's wave reports (`<stateDir>/state/reports/*.json`),
+// of the routing each report ran under, and of which dirs hold a run family's waves. ingest-wave, the
+// escapes proxy and audit share it, so a rule about which routing a report gets (or whether it gets
+// any) lands in one place.
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parseRef } from './ref.mjs';
@@ -50,21 +51,24 @@ export function readWaveReports(stateDir, { warn = (m) => console.error(m) } = {
 /**
  * The routing a report ran under, given as the `{report, startedAt}` `readWaveReport` returns for it:
  * the sidecar entry as of its start, else the entry `entryFromConfig` builds from the config that
- * matches its refs (in `stateDir`, then the older `stateDir/state`). `config` is that matching config
+ * matches its refs (in the first of `configDirs(stateDir)` that has one). `config` is that matching config
  * whichever `source` won, since only a config says which repos run no post-session check; `configFile`
- * is its path (null with no config), which tells a caller which config files some report matched.
+ * is its path (`config.configFile`, null with no config), which tells a caller which config files some report matched.
  * @returns {{entry: object|null, config: object|null, configFile: string|null, source: 'sidecar'|'config'|null}}
  */
 export function waveContextFor(stateDir, { report, startedAt: asOf }, { warn } = {}) {
   if (!Number.isFinite(asOf)) throw new TypeError(`waveContextFor: startedAt must be epoch ms, not ${JSON.stringify(asOf)}`);
   const refs = report.issues.map((r) => r?.ref);
   const sidecar = findWaveContext(stateDir, refs, { asOf, warn });
-  const top = findWaveConfig(stateDir, refs, { asOf });
-  const config = top ?? findWaveConfig(join(stateDir, 'state'), refs, { asOf });
-  const configFile = config && join(top ? stateDir : join(stateDir, 'state'), config.configFile);
+  let config = null;
+  for (const dir of configDirs(stateDir)) if ((config = findWaveConfig(dir, refs, { asOf }))) break;
+  const configFile = config?.configFile ?? null;
   if (sidecar) return { entry: sidecar, config, configFile, source: 'sidecar' };
   return config ? { entry: entryFromConfig(config), config, configFile, source: 'config' } : { entry: null, config, configFile, source: null };
 }
+
+/** Where a state dir keeps its wave configs, in the order they are searched: the dir, then the older layout's `state/`. */
+export const configDirs = (stateDir) => [stateDir, join(stateDir, 'state')];
 
 /**
  * The dirs under `baseDir` that hold waves of `runId`'s run family: every one whose name is `sameRun`

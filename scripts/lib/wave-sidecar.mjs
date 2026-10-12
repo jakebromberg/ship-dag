@@ -119,16 +119,17 @@ export function findWaveContext(dir, refs, { asOf = Infinity, warn } = {}) {
 }
 
 /**
- * Every readable `config*.json` in `dir` with an `issues` array, by name, as `{configFile (the name),
+ * Every readable `config*.json` in `dir` with an `issues` array, by name, as `{configFile (its path),
  * config, mtimeMs}`; an unreadable file or dir is skipped.
  */
 export function waveConfigs(dir) {
   let names;
   try { names = readdirSync(dir).filter((n) => /^config.*\.json$/.test(n)).sort(); } catch { return []; }
-  return names.flatMap((configFile) => {
+  return names.flatMap((name) => {
+    const configFile = join(dir, name);
     try {
-      const { mtimeMs } = statSync(join(dir, configFile));
-      const config = JSON.parse(readFileSync(join(dir, configFile), 'utf-8'));
+      const { mtimeMs } = statSync(configFile);
+      const config = JSON.parse(readFileSync(configFile, 'utf-8'));
       return Array.isArray(config?.issues) ? [{ configFile, config, mtimeMs }] : [];
     } catch { return []; }
   });
@@ -137,7 +138,7 @@ export function waveConfigs(dir) {
 /**
  * The newest `config*.json` in `dir` by mtime, written at or before `asOf` (epoch ms), whose issues
  * (`${repo}#${number}`) equal `refs` as a set, or null; on an mtime tie the last name wins. It comes
- * back with the name of its file as `configFile`. The fallback for a wave emitted before the sidecar
+ * back with the path of its file as `configFile`. The fallback for a wave emitted before the sidecar
  * existed (a run that wrote every wave's config to one `config.json` keeps only its last wave's); an
  * unreadable file or dir, or a config without an `issues` array, is skipped.
  */
