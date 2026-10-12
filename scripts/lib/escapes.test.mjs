@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, existsSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { escapesDir, cites, findEscapes, withBackoff, escapeReport, shipDagPrs, CLOSING_PRS_QUERY } from './escapes.mjs';
+import { withBackoff } from './gh.mjs';
+import { escapesDir, cites, findEscapes, escapeReport, shipDagPrs, CLOSING_PRS_QUERY } from './escapes.mjs';
 import { ingestWave } from '../telemetry.mjs';
 
 const NOW = Date.parse('2026-09-30T00:00:00Z');

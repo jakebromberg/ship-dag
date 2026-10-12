@@ -3,18 +3,16 @@
 // window (five `gh search` calls), cached once that day's window has closed and settled, and matched to
 // merged PRs locally. `gh` is injected (`async (args) => stdout`) and the engine base dir is a parameter, so
 // nothing here touches GitHub or the real state dir unless asked to.
-import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { promisify } from 'node:util';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
+import { ghCli, ghJson, withBackoff } from './gh.mjs';
 import { groupBy } from './stats.mjs';
 import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { readWaveReports, waveContextFor } from './wave-reports.mjs';
 
 const DAY = 86_400_000;
 const WINDOW_DAYS = 30;
-const RATE_LIMITED = /rate limit/i;
 // GitHub search returns at most 1000 results, so a search that reaches it may have dropped some.
 const SEARCH_CAP = 1000;
 // A day is cached only this long after its window closes, so a candidate GitHub indexes late still counts.
@@ -23,8 +21,6 @@ const SETTLE_DAYS = 1;
 const CACHE_VERSION = 1;
 const FIX = /\b(?:fix(?:es|ed|ing)?|regressions?)\b/i;
 const PR_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/i;
-// GitHub's answer for a sha it has no commit for: permanent, unlike a 5xx or a dropped connection.
-const NO_SUCH_SHA = /No commit found for SHA/i;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const same = (a, b) => a?.toLowerCase() === b?.toLowerCase();
 const repoDir = (cacheDir, repo) => join(cacheDir, `v${CACHE_VERSION}`, repo.replace('/', '__'));
@@ -41,9 +37,6 @@ export function escapesDir(env = process.env) {
   return env.SHIP_DAG_ESCAPES_DIR || join(dirname(defaultBaseDir(env)), 'escapes');
 }
 
-/** The default `gh`: run the CLI and return stdout. */
-export const ghCli = async (args) => (await promisify(execFile)('gh', args, { maxBuffer: 64 << 20 })).stdout;
-
 /**
  * Whether `body`, written in repo `home`, cites `repo`#`n`: as `#n` (only when `repo` is `home`), as
  * `owner/repo#n`, or by its `/pull/n` or `/issues/n` URL. Repos compare case-insensitively, and a
@@ -56,34 +49,9 @@ export function cites(body, repo, n, home = repo) {
 }
 
 /**
- * Run `fn`, retrying a GitHub rate-limit error with doubling waits (2s, 4s, ... 32s: about the minute
- * GitHub's search limit spans). After `retries` retries it throws, naming `repo`; any other error is
- * thrown as is.
- */
-export async function withBackoff(fn, { repo, retries = 5, baseMs = 2000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
-  for (let attempt = 0; ; attempt += 1) {
-    try { return await fn(); } catch (err) {
-      if (!RATE_LIMITED.test(err.message)) throw err;
-      if (attempt >= retries) throw new Error(`${repo}: GitHub rate limit persisted after ${retries} retries: ${err.message}`);
-      await sleep(baseMs * 2 ** attempt);
-    }
-  }
-}
-
-/** `gh args`, parsed, with backoff; null and a warning (`what: error`) when it fails other than on a rate limit. */
-async function ghJson(args, what, { gh, repo, sleep, warn, onFail }) {
-  try { return JSON.parse(await withBackoff(() => gh(args), { repo, sleep })); } catch (err) {
-    if (RATE_LIMITED.test(err.message)) throw err;
-    onFail?.(err);
-    warn(`escapes: ${what}: ${err.message}`);
-    return null;
-  }
-}
-
-/**
  * The PR numbers `cand`'s body says it reverts (`Reverts [owner/repo]#N` lines, and each `This reverts
  * commit <sha>` resolved through GitHub), or null when it names none. A sha GitHub could not resolve
- * marks `cand.unresolved`, and one that failed for a reason that may pass marks `cand.transient`.
+ * sets `cand.unresolved`: 'permanent' for GitHub's 422 (it has no such commit), else 'transient' (a 5xx, a dropped connection).
  */
 async function revertedPrs(cand, repo, ctx) {
   const body = cand.body ?? '';
@@ -92,9 +60,9 @@ async function revertedPrs(cand, repo, ctx) {
   if (!lines.length && !shas.length) return null;
   const prs = lines.filter((m) => !m[1] || same(m[1], repo)).map((m) => Number(m[2]));
   for (const sha of shas) {
-    const pulls = await ghJson(['api', `repos/${repo}/commits/${sha}/pulls`], `${repo}#${cand.number} reverts ${sha}, which is not resolved to a PR`, { ...ctx, repo, onFail: (err) => { if (!NO_SUCH_SHA.test(err.message)) cand.transient = true; } });
-    if (!pulls) cand.unresolved = true;
-    prs.push(...(pulls ?? []).map((p) => p.number));
+    const { value, failure } = await ghJson(['api', `repos/${repo}/commits/${sha}/pulls`], `${repo}#${cand.number} reverts ${sha}, which is not resolved to a PR`, { ...ctx, repo });
+    if (failure) cand.unresolved = failure.status === 422 ? 'permanent' : 'transient';
+    prs.push(...(value ?? []).map((p) => p.number));
   }
   return prs;
 }
@@ -127,7 +95,7 @@ async function candidatesFor(repo, day, { cacheDir, now, ...ctx }) {
   ];
   const candidates = [...new Map(found.map((c) => [c.number, c])).values()];
   for (const c of candidates) c.reverts = await revertedPrs(c, repo, ctx);
-  if (!candidates.some((c) => c.transient) && now >= Date.parse(day) + (WINDOW_DAYS + 1 + SETTLE_DAYS) * DAY) {
+  if (!candidates.some((c) => c.unresolved === 'transient') && now >= Date.parse(day) + (WINDOW_DAYS + 1 + SETTLE_DAYS) * DAY) {
     writeCached(file, candidates);
   }
   return candidates;
@@ -157,7 +125,7 @@ async function viewOf(m, ctx, cacheDir) {
   const file = join(repoDir(cacheDir, m.repo), `pr-${m.pr}.json`);
   const cached = readCached(file);
   if (cached) return cached;
-  const raw = await ghJson(['pr', 'view', String(m.pr), '--repo', m.repo, '--json', 'mergedAt,title,commits,closingIssuesReferences'], `skipped ${m.repo}#${m.pr}`, { ...ctx, repo: m.repo });
+  const { value: raw } = await ghJson(['pr', 'view', String(m.pr), '--repo', m.repo, '--json', 'mergedAt,title,commits,closingIssuesReferences'], `skipped ${m.repo}#${m.pr}`, { ...ctx, repo: m.repo });
   if (!raw) return null;
   const view = { mergedAt: raw.mergedAt, title: raw.title, subjects: raw.commits.map(subject), closing: raw.closingIssuesReferences.map((i) => [`${i.repository.owner.login}/${i.repository.name}`, i.number]) };
   if (view.mergedAt) writeCached(file, view);
@@ -172,7 +140,7 @@ async function viewOf(m, ctx, cacheDir) {
  * @param {{gh?: (args: string[]) => Promise<string>, cacheDir?: string, now?: number, sleep?: (ms: number) => Promise<void>, warn?: (m: string) => void}} [opts]
  */
 export async function findEscapes(prs, { gh = ghCli, cacheDir = escapesDir(), now = Date.now(), sleep, warn = (m) => console.error(m) } = {}) {
-  const ctx = { gh, sleep, warn };
+  const ctx = { gh, sleep, warn, prefix: 'escapes' };
   now = Math.min(now, Date.now());
   const windows = new Map();
   const out = [];
@@ -256,7 +224,7 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
     const file = join(repoDir(cacheDir, repo), `closing-${n}.json`);
     const cached = readCached(file);
     if (cached) { add(cached, tuningVersion); continue; }
-    const res = await ghJson(['api', 'graphql', '-f', `query=${CLOSING_PRS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`], `${ref}: closing PRs not found; skipped`, { gh, repo, sleep, warn });
+    const { value: res } = await ghJson(['api', 'graphql', '-f', `query=${CLOSING_PRS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`], `${ref}: closing PRs not found; skipped`, { gh, repo, sleep, warn, prefix: 'escapes' });
     if (!res) continue;
     const issue = res.data?.repository?.issue;
     const hits = (issue?.closedByPullRequestsReferences?.nodes ?? []).filter((p) => p.mergedAt && p.headRefName?.startsWith('orchestrator/'));
