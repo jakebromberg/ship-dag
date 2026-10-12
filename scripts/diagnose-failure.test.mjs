@@ -4,9 +4,8 @@
 // Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
-import { engineFixture } from './lib/engine-fixture.mjs';
+import { engineFixture, stamped } from './lib/engine-fixture.mjs';
 import { logPathForRef, newestReportFile, digestPathForRef, diagnose, MAX_REASON_CHARS } from './diagnose-failure.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
@@ -36,13 +35,15 @@ test('logPathForRef: percent-encodes the composite ref the way the engine names 
 });
 
 test('newestReportFile: picks the newest report by mtime, ignoring the .md companion', () => {
-  const dir = fixture({ rows: [] });
-  const reports = join(dir, 'state', 'reports');
-  writeFileSync(join(reports, 'older.json'), '{}');
-  writeFileSync(join(reports, '2026-08-31T23-43-43.528Z.md'), '# not json');
-  const old = new Date(Date.now() - 60_000);
-  utimesSync(join(reports, 'older.json'), old, old);
-  assert.match(newestReportFile(dir), /2026-08-31T23-43-43\.528Z\.json$/);
+  const fx = engineFixture({ diag: {
+    reports: { '2026-08-31T23-43-43.528Z.json': { configName: 'ship-dag-test', issues: [] } },
+    files: {
+      'state/reports/older.json': stamped(new Date(Date.now() - 60_000).toISOString(), {}),
+      'state/reports/2026-08-31T23-43-43.528Z.md': '# not json',
+    },
+  } });
+  fixtures.push(fx);
+  assert.match(newestReportFile(fx.dirs.diag), /2026-08-31T23-43-43\.528Z\.json$/);
 });
 
 test('diagnose: the sd-20260831-162148 case — failed, but a PR is open, so it routes to the review gate', () => {

@@ -16,6 +16,8 @@ export const EMITTED = '2026-10-08T18:55:00.000Z';
 const secs = (iso) => Date.parse(iso) / 1000;
 const text = (body) => (typeof body === 'string' ? body : JSON.stringify(body));
 const STAMP = Symbol('stamped');
+/** `ref`'s `{repo, number}`, or a throw: a fixture built on a malformed ref would test nothing. */
+const refParts = (ref) => parseRef(ref) ?? (() => { throw new Error(`not an owner/repo#N ref: ${JSON.stringify(ref)}`); })();
 
 /** `body` to write with file mtime `at` (an ISO string), for a `configs` or `files` value that needs its mtime pinned. */
 export const stamped = (at, body) => ({ [STAMP]: true, at, body });
@@ -57,7 +59,7 @@ export function engineFixture(specs) {
     const dir = (dirs[name] = join(base, name));
     mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
     for (const [n, rep] of Object.entries(reports)) putReport(dir, n, rep);
-    for (const entry of sidecar) appendWave(dir, entry);
+    for (const entry of sidecar) if (!appendWave(dir, entry)) throw new Error(`${dir}: appendWave did not write ${JSON.stringify(entry)}`);
     for (const [rel, cfg] of Object.entries(configs)) put(join(dir, rel), cfg, EMITTED);
     for (const r of reviews) putReview(dir, r.ref, r.tag ?? '', r.findings, r.at);
     for (const d of digests) putDigest(dir, d.ref, d.body, d.at);
@@ -66,8 +68,8 @@ export function engineFixture(specs) {
   return { base, dirs, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
-/** A report row for `ref` (a `owner/repo#N` string) that succeeded with PR 11; `over` overrides any field. */
-export const stateRow = (ref, over = {}) => ({ ref, number: parseRef(ref)?.number ?? NaN, status: 'succeeded', prUrl: 'https://x/11', prNumber: 11, ...over });
+/** A report row for `ref` (an `owner/repo#N` string; any other is kept as is, with `number` null, for the malformed-row refusal tests) that succeeded with PR 11; `over` overrides any field. */
+export const stateRow = (ref, over = {}) => ({ ref, number: parseRef(ref)?.number ?? null, status: 'succeeded', prUrl: 'https://x/11', prNumber: 11, ...over });
 /** A wave report over `rows`, run RUN's wave from T0 to T1. */
 export const stateReport = (rows, over = {}) => ({ configName: `ship-dag-${RUN}`, startedAt: T0, finishedAt: T1, issues: rows, ...over });
 /** A sidecar entry routing `refs` as complex/high/opus for RUN's wave 1. */
@@ -78,6 +80,6 @@ export const sidecarEntry = (refs = ['WXYC/dj-site#1']) => ({
 /** An engine config for RUN over `refs`; `over` overrides any field. */
 export const engineConfig = (refs = ['WXYC/dj-site#1'], over = {}) => ({
   name: `ship-dag-${RUN}`, defaultModel: 'sonnet', defaultEffort: 'medium',
-  issues: refs.map((ref) => { const { repo, number } = parseRef(ref); return { repo, number }; }),
+  issues: refs.map((ref) => { const { repo, number } = refParts(ref); return { repo, number }; }),
   ...over,
 });

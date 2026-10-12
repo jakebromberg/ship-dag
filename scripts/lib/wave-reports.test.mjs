@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
 import { appendWave } from './wave-sidecar.mjs';

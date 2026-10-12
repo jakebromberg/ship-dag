@@ -31,7 +31,7 @@ test('engineFixture writes each dir\'s reports, sidecar, configs, reviews, diges
     assert.equal(mtime(join(dir, 'reviews', 'WXYC%2Fdj-site%231.r2.json')), Date.parse('2026-10-08T19:10:00.000Z') / 1000);
     assert.ok(existsSync(join(dir, 'state', 'failure-digest')));
     assert.ok(existsSync(join(fx.dirs[`${RUN}-b`], 'state', 'reports')));
-    const [good, torn] = readWaveReports(dir, { warn: () => {} }).sort((a) => (a.error ? 1 : -1));
+    const [good, torn] = readWaveReports(dir, { warn: () => {} }).sort((a, b) => Boolean(a.error) - Boolean(b.error));
     assert.equal(good.startedAt, Date.parse(T0));
     assert.match(torn.error, /cannot read/);
     assert.equal(waveContextFor(dir, good, { warn: () => {} }).source, 'sidecar');
@@ -41,7 +41,9 @@ test('engineFixture writes each dir\'s reports, sidecar, configs, reviews, diges
   assert.ok(!existsSync(fx.base));
 });
 
-test('stateRow, sidecarEntry and engineConfig build their refs through parseRef', () => {
+test('stateRow and engineConfig read their refs through parseRef: a malformed row keeps its ref, a config refuses one', () => {
   assert.deepEqual([stateRow(REF).number, sidecarEntry([REF]).issues[0].ref], [1, REF]);
   assert.deepEqual(engineConfig([REF]).issues, [{ repo: parseRef(REF).repo, number: 1 }]);
+  assert.deepEqual([stateRow('dj-site#1').ref, stateRow('dj-site#1').number], ['dj-site#1', null]);
+  assert.throws(() => engineConfig(['WXYC/dj-site']), /not an owner\/repo#N ref/);
 });
