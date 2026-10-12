@@ -415,8 +415,11 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
 
   // Review rounds are the run's, not the engine dir's: a retry dir (sd-…-w3c) keeps its rounds under the
   // base run's reviews/. So rounds are read from every run-family dir (the run id as deriveWaveRecords
-  // takes it), and a later report in any of them ends this wave's window.
-  const family = [...new Set([stateDir, ...runFamilyDirs(entry?.runId || runIdFromConfigName(report.configName), dirname(stateDir))])];
+  // takes it), and a later report in any of them ends this wave's window. A dir is told apart by inode, since
+  // a path typed in another case names the same dir as the listing's on a case-insensitive file system.
+  const inodes = new Set();
+  const family = [stateDir, ...runFamilyDirs(entry?.runId || runIdFromConfigName(report.configName), dirname(stateDir))]
+    .filter((d) => { const { dev, ino } = statSync(d); const key = `${dev}:${ino}`; return !inodes.has(key) && Boolean(inodes.add(key)); });
   // A digest or review round belongs to this wave when it was written after this report started and
   // before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
   // and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
@@ -509,7 +512,8 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
   const logged = records.filter((r) => sameRun(r.runId, runId));
   for (const dir of out.dirs) {
     const matched = new Set();
-    for (const read of readWaveReports(dir, { warn })) {
+    // Quiet: an unreadable report is named in `unreadable`, so it is not warned about as well.
+    for (const read of readWaveReports(dir, { warn: () => {} })) {
       if (read.error) { out.unreadable.push({ path: read.path, error: read.error }); continue; }
       // Quiet: the sidecar is read once more below, so a torn line is warned about once per dir, not per report.
       const { entry, configFile, source } = waveContextFor(dir, read, { warn: () => {} });
