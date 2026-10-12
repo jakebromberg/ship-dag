@@ -1112,15 +1112,17 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
   const findPr = stateRow(REF, { prUrl: null, prNumber: null });
   const blocks = (dir) => putReview(dir, REF, '', [blocker], '2026-10-08T19:10:00.000Z');
   const dies = (dir) => putDigest(dir, REF, { failureReason: 'rate-limited' });
-  // situation prefix → the report row, what else the wave left on disk, and per cell the [finalState, pr] of each derived record.
+  // situation prefix → the report row, what else the wave left on disk, and per cell the [finalState, pr, hitl.pointB,
+  // bounces] of each derived record. pointB and bounces come from the situation, not the cell, so a cell that drops
+  // its hitl or its bounces fails here. A merge "after a /review-loop fix" bounced: N is 2 in these cells.
   const situations = [
-    ['A find-pr row whose PR step 5 found', findPr, () => {}, [[['merged', 2]]]],
-    ['A find-pr row point B left without a PR', findPr, () => {}, [[['blocked-hitl', null]]]],
-    ['A PR whose last round blocks and that went to point B', stateRow(REF), blocks, [[['blocked-hitl', 11]]]],
-    ['A PR whose last round blocks and that merged', stateRow(REF), blocks, [[['merged', 11]]]],
-    ["A find-pr row whose found PR's last round blocks", findPr, blocks, [[['blocked-hitl', 2]], [['merged', 2]]]],
+    ['A find-pr row whose PR step 5 found', findPr, () => {}, [[['merged', 2, false, 0]]]],
+    ['A find-pr row point B left without a PR', findPr, () => {}, [[['blocked-hitl', null, true, 0]]]],
+    ['A PR whose last round blocks and that went to point B', stateRow(REF), blocks, [[['blocked-hitl', 11, true, 0]]]],
+    ['A PR whose last round blocks and that merged', stateRow(REF), blocks, [[['merged', 11, false, 2]]]],
+    ["A find-pr row whose found PR's last round blocks", findPr, blocks, [[['blocked-hitl', 2, true, 0]], [['merged', 2, false, 2]]]],
     ['A rate-limit death that point E resumed', stateRow(REF, { status: 'failed', prUrl: null, prNumber: null }), dies,
-      [[['deferred', null], ['merged', 2]], [['deferred', null], ['blocked-hitl', null]]]],
+      [[['deferred', null, false, 0], ['merged', 2, false, 0]], [['deferred', null, false, 0], ['blocked-hitl', null, true, 0]]]],
   ];
 
   test('every row of the table is a situation this test knows, and every situation is in the table', () => {
@@ -1134,8 +1136,7 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
       cells.forEach((outcome, i) => withStateDir({ reports: { 'w1.json': stateReport([row]) }, sidecar: [sidecarEntry()] }, (dir) => {
         setUp(dir);
         const { records } = ingest(dir, outcome);
-        assert.deepEqual(records.map((r) => [r.finalState, r.pr]), want[i], JSON.stringify(outcome));
-        if (outcome[REF].bounces !== undefined) assert.equal(records.at(-1).bounces, 2);
+        assert.deepEqual(records.map((r) => [r.finalState, r.pr, r.hitl.pointB, r.bounces]), want[i], JSON.stringify(outcome));
         // A resumed death is the rate-limited record, then a continuation with no rate-limit of its own.
         if (records.length === 2) assert.deepEqual(records.map((r) => [r.implStatus, r.failureReason]).slice(0, 1), [['error', 'rate-limited']]);
         assert.ok(records.slice(1).every((r) => r.failureReason === null));
