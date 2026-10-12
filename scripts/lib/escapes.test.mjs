@@ -423,6 +423,7 @@ test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record win
     { repo: 'o/r', issue: 8, pr: 'https://github.com/o/r2/pull/12', finalState: 'merged' },
     { repo: 'o/r', issue: 1, pr: 11, finalState: 'merged', tuningVersion: 1 },
     { repo: 'o/r', issue: 7, pr: null, finalState: 'merged' },
+    { repo: 'o/r', issue: 10, pr: 'o/r3#14', finalState: 'deferred' }, // owner/repo#N, in its own repo
     { repo: 'o/r', issue: 4, pr: 4.5, finalState: 'merged' }, // not a positive integer, so no PR
     { repo: 'o/r', issue: 6, pr: 6, finalState: 'error' },
     { kind: 'retro', wave: 1, mergedPrs: [] },
@@ -445,6 +446,7 @@ test('shipDagPrs: telemetry pr fields (an integer or a PR URL; newest record win
     { repo: 'o/r', pr: 5, tuningVersion: 2 },
     { repo: 'o/r', pr: 6, tuningVersion: 0 },
     { repo: 'o/r2', pr: 12, tuningVersion: 0 },
+    { repo: 'o/r3', pr: 14, tuningVersion: 0 },
   ]);
   assert.deepEqual(fake.calls, [closers('o/r', 2)]); // o/r#2 has no PR from either source
   assert.deepEqual(fake.unexpected, []);

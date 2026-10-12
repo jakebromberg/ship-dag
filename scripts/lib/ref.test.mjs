@@ -1,7 +1,7 @@
 // Tests for ref.mjs. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REF_RE, parseRef, formatRef, isPr, refKey, sameRepo } from './ref.mjs';
+import { REF_RE, parseRef, formatRef, isPr, refKey, sameRepo, parsePr } from './ref.mjs';
 
 test('parseRef reads owner/repo#N and nothing else', () => {
   for (const [input, want] of [
@@ -40,4 +40,23 @@ test('sameRepo folds case, and refKey keys repos and refs by the same fold', () 
     assert.equal(refKey(a) === refKey(b), want, `${a} ${b}`);
   }
   assert.equal(refKey(7), '7');
+});
+
+test('parsePr reads a PR value as {repo, pr} and nothing else as null', () => {
+  for (const [input, want] of [
+    [11, { repo: 'o/r', pr: 11 }],
+    ['11', { repo: 'o/r', pr: 11 }],
+    ['o/r#11', { repo: 'o/r', pr: 11 }],
+    ['O/R#11', { repo: 'O/R', pr: 11 }],
+    ['x/y#11', { repo: 'x/y', pr: 11 }], // another repo
+    ['https://github.com/o/r/pull/11', { repo: 'o/r', pr: 11 }],
+    ['https://github.com/o/r/pull/11/', { repo: 'o/r', pr: 11 }],
+    ['https://github.com/x/y/pull/11', { repo: 'x/y', pr: 11 }],
+    ['draft-11', null],
+    ['#11', null],
+    ['o/r#0', null],
+    [0, null],
+    [-1, null],
+    [null, null],
+  ]) assert.deepEqual(parsePr(input, 'o/r'), want, String(input));
 });
