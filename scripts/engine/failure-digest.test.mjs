@@ -65,6 +65,15 @@ test('writeFailureDigests: one file per non-succeeded row, succeeded rows skippe
   assert.equal(existsSync(join(dir, 'failure-digest', 'issue-o%2Fr%231.json')), false);
 });
 
+test('writeFailureDigests: the digest carries the report id it was given, and none when not given', async () => {
+  const dir = configDir({ log: result() });
+  const rows = [{ ref: REF, status: 'failed' }];
+  const [stamped] = await writeFailureDigests({ configDir: dir, report: { issues: rows }, reportId: 'w1' });
+  assert.equal(JSON.parse(readFileSync(stamped, 'utf-8')).reportId, 'w1');
+  const [bare] = await writeFailureDigests({ configDir: dir, report: { issues: rows } });
+  assert.equal('reportId' in JSON.parse(readFileSync(bare, 'utf-8')), false);
+});
+
 test('writeFailureDigests: the digest carries the route, not just the reason', async () => {
   // The whole point. A failed row with a PR belongs at the review gate; an exit
   // code and a terminal reason do not say that on their own, and the run this
