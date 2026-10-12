@@ -391,8 +391,8 @@ for (const [name, kind, go] of [
   });
 }
 
-// rowCovered follows sameRecord's event identity: a PR-less failure is its report's own event; any other row recurs
-// unchanged, but only as a record with the implStatus ingest derives for the row and a finalState the row allows.
+// rowCovered asks sameEvent whether a record is the event ingest would derive for the row: a PR-less failure is its
+// report's own event, unless both are blocked; any other row recurs unchanged.
 {
   const RUN = 'sd-1';
   const report = { id: 'w2', startedAt: Date.parse('2026-10-08T19:00:00Z') };
@@ -453,12 +453,18 @@ for (const [name, kind, go] of [
     });
   }
 
-  // One identity: audit names a row exactly when ingest would append a record for it, bar the `startedAt` rule
-  // (rowCovered alone refuses a hand-written PR-less failure from before the report).
+  // One identity: audit names a row exactly when ingest, with these --outcomes and digests, would append a record
+  // for it. A row whose last column names a cause is a disagreement rowCovered accepts, as its JSDoc lists:
+  // `startedAt` (a hand-written PR-less failure from before the report), `--outcomes` (rowCovered reads a record's
+  // finalState, and a find-pr row's PR, as ones --outcomes could have set; so a row it covers may still append
+  // under other --outcomes, and a PR-less row whose PR came from --outcomes is named), and `digest` (audit reads no
+  // digest, so an error record covers a PR-less failure whatever its rate-limit).
+  const blockedRow = { ...failed, status: 'blocked' };
   const rateLimited = { [failed.ref]: { status: 'failed', failureReason: 'rate-limited' } };
   const dead = (over = {}) => rec({ finalState: 'error', failureReason: 'rate-limited', ...over });
   const atB = { [merged.ref]: { finalState: 'blocked-hitl', hitl: { pointB: true } } };
-  for (const [name, row, outcomes, digests, records, covered, startedAtOnly = false] of [
+  const asked = (finalState, pr) => ({ [failed.ref]: { finalState, ...(pr ? { pr } : {}) } });
+  for (const [name, row, outcomes, digests, records, covered, accepted = null] of [
     ['a triage defer is not the point-B hold of a PR', merged, atB, {}, [defer('blocked-hitl')], false],
     ['a second hold of a new PR is not the first hold', merged, atB, {}, [held({ pr: 10 })], false],
     ['a hold of the same PR is the same event', merged, atB, {}, [held()], true],
@@ -469,13 +475,34 @@ for (const [name, kind, go] of [
     ['a PR-less failure under the first report is not this report\'s', failed, {}, {}, [rec({ reportId: 'w1' })], false],
     ['a PR-less failure under this report', failed, {}, {}, [rec({ reportId: 'w2' })], true],
     ['a skipped row\'s carried-over record', skipped, {}, {}, [skippedRec({ reportId: 'w1' })], true],
-    ['a hand-written PR-less failure from before startedAt', failed, {}, {}, [rec({ ts: '2026-10-08T18:59:59Z' })], false, true],
+    // implStatus: a hand-written merge of the row's PR is the merge, whatever non-null implStatus it was given.
+    ['a merge hand-written with implStatus error (wxyc-shared#454)', merged, asked('merged'), {}, [rec({ finalState: 'merged', pr: 11 })], true],
+    ['a find-pr row\'s merge hand-written with implStatus blocked (dj-site#1764)', findPr, asked('merged', 11), {}, [rec({ implStatus: 'blocked', finalState: 'merged', pr: 11 })], true],
+    ['a find-pr row\'s merge recorded with no PR under the first report', findPr, asked('merged', 11), {}, [rec({ finalState: 'merged', reportId: 'w1' })], true],
+    ['a merge record that says rate-limited is not the merge ingest derives', merged, {}, {}, [pushed({ failureReason: 'rate-limited', reportId: 'w2' })], false],
+    // failureReason is part of the identity in both.
+    ['a deferred record of the PR that says rate-limited is not a plain deferral', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', failureReason: 'rate-limited' })], false],
+    // A PR-less blocked record and a PR-less error are two events across reports, either way round.
+    ['a PR-less failure is not the first report\'s PR-less blocked record', failed, {}, {}, [rec({ implStatus: 'blocked', reportId: 'w1' })], false],
+    ['a PR-less blocked row is not the first report\'s PR-less failure', blockedRow, {}, {}, [rec({ reportId: 'w1' })], false],
+    ['a PR-less blocked row carried over from the first report', blockedRow, {}, {}, [rec({ implStatus: 'blocked', reportId: 'w1' })], true],
+    // Only the implStatus-null rule keeps a find-pr row left at point B apart from a triage defer.
+    ['a find-pr row left at point B with no PR is not a triage defer', findPr, asked('blocked-hitl'), {}, [defer('blocked-hitl')], false],
+    // Accepted disagreements.
+    ['a hand-written PR-less failure from before startedAt', failed, {}, {}, [rec({ ts: '2026-10-08T18:59:59Z' })], false, 'startedAt'],
+    ['a merge that followed a point-B hold of the same PR', merged, {}, {}, [held()], true, '--outcomes'],
+    // Only eventState's failureReason guard keeps an operator-set deferred apart from the error ingest derives.
+    ['a PR-less failure against an operator-set deferred', failed, {}, {}, [rec({ finalState: 'deferred' })], true, '--outcomes'],
+    ['a PR-less failure whose PR --outcomes supplied, against a hand-written merge', failed, asked(undefined, 11), {}, [pushed()], false, '--outcomes'],
+    ['a rate-limit death against a hand-written plain error', failed, {}, rateLimited, [rec()], true, 'digest'],
+    ['a plain PR-less failure against a legacy rate-limited error', failed, {}, {}, [dead()], true, 'digest'],
   ]) {
-    test(`one identity: ${name}: audit ${covered ? 'covers' : 'names'} the row${startedAtOnly ? ', ingest adds nothing' : ''}`, () => {
+    const ingest = accepted ? `, though ingest ${covered ? 'appends' : 'adds nothing'} (${accepted})` : '';
+    test(`one identity: ${name}: audit ${covered ? 'covers' : 'names'} the row${ingest}`, () => {
       const wave = { configName: 'ship-dag-sd-1', finishedAt: '2026-10-08T19:30:00Z', issues: [row] };
       const derived = deriveWaveRecords(wave, { runId: RUN, issues: [] }, digests, {}, outcomes, { existing: records, reportId: 'w2', warn: () => {} }).records;
       assert.equal(rowCovered(row, report, records, RUN), covered);
-      assert.equal(derived.length === 0, startedAtOnly ? true : covered);
+      assert.equal(derived.length === 0, accepted ? !covered : covered);
     });
   }
 }

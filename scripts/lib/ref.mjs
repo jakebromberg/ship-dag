@@ -21,7 +21,7 @@ export const refKey = (s) => String(s).toLowerCase();
 
 /**
  * Whether two repos (`owner/repo`) are the same one: GitHub names compare case-insensitively. Records
- * from different writers (sameRecord, ingest-wave's cost dedupe) compare through it, and escapes keys
+ * from different writers (sameEvent, ingest-wave's cost dedupe) compare through it, and escapes keys
  * by `refKey`. A report's lookups into its own rows and routing stay exact: a record finds its row by
  * the ref as written, and waveContextMatches pairs a report only with an entry or config whose refs
  * are the report's as written.
