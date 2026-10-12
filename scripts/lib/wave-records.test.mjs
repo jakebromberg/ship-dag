@@ -392,12 +392,14 @@ for (const [name, kind, go] of [
 }
 
 // rowCovered follows sameRecord's event identity: a PR-less failure is its report's own event; any other row recurs
-// unchanged, but only as a record that reached implement when the row did and ended in a finalState the row allows.
+// unchanged, but only as a record with the implStatus ingest derives for the row and a finalState the row allows.
 {
   const RUN = 'sd-1';
   const report = { id: 'w2', startedAt: Date.parse('2026-10-08T19:00:00Z') };
-  const rec = (over = {}) => ({ runId: RUN, repo: 'a/b', issue: 1, ts: '2026-10-08T19:30:00Z', implStatus: 'error', finalState: 'error', ...over });
-  const pushed = (over = {}) => rec({ implStatus: 'pushed', finalState: 'merged', ...over });
+  const rec = (over = {}) => ({ runId: RUN, repo: 'a/b', issue: 1, ts: '2026-10-08T19:30:00Z', implStatus: 'error', finalState: 'error', pr: null, ...over });
+  const pushed = (over = {}) => rec({ implStatus: 'pushed', finalState: 'merged', pr: 11, ...over });
+  // Point B: a PR held for a human, recorded under the first report.
+  const held = (over = {}) => pushed({ finalState: 'blocked-hitl', reportId: 'w1', ...over });
   const skippedRec = (over = {}) => rec({ implStatus: null, finalState: 'deferred', ...over });
   // Point A: a triage defer, hand-written before the ref ever ran.
   const defer = (finalState) => skippedRec({ finalState, ts: '2026-10-01T00:00:00Z' });
@@ -417,9 +419,12 @@ for (const [name, kind, go] of [
     ['a PR-less failure, repo and run folded by case and suffix', failed, [rec({ runId: 'SD-1-b', repo: 'A/B', reportId: 'w2' })], true],
     ['a PR-less failure whose only records are an earlier pushed and an earlier skipped one', failed, [pushed({ reportId: 'w1' }), skippedRec({ reportId: 'w1' })], false],
     ['a PR-less failure whose only record is the merge that followed it, hand-written', failed, [pushed()], false],
+    ['a PR-less failure whose only record is an earlier point-B hold', failed, [held()], false],
+    ['a PR-less failure whose PR came from --outcomes, recorded pushed under this report', failed, [pushed({ reportId: 'w2' })], true],
     ['a succeeded row with no PR (find-pr) whose only record is an error under the first report', findPr, [rec({ reportId: 'w1' })], false],
     ['a find-pr row carried over, whose record the first ingest made pushed from --outcomes', findPr, [pushed({ reportId: 'w1' })], true],
     ['a find-pr row whose only record is a triage defer', findPr, [defer('blocked-hitl')], false],
+    ['a find-pr row whose only record is an earlier PR-less blocked one', findPr, [rec({ implStatus: 'blocked', reportId: 'w1' })], false],
     ['a PR-less blocked row carried over, recorded blocked under the first report', { ...failed, status: 'blocked' }, [rec({ implStatus: 'blocked', reportId: 'w1' })], true],
     ['a merged row whose only record is its PR-less failure in the first report (a retry that merged)', merged, [rec({ reportId: 'w1' })], false],
     ['a row with a PR whose only record is an error carrying this reportId', merged, [rec({ reportId: 'w2' })], false],
@@ -429,7 +434,9 @@ for (const [name, kind, go] of [
     ['a failed row with a PR whose only records are an earlier skipped one and a triage defer', { ...merged, status: 'failed' }, [skippedRec({ reportId: 'w1' }), defer('deferred')], false],
     ['a carried-over merged row recorded under the first report', merged, [pushed({ reportId: 'w1' })], true],
     ['a carried-over merged row covered by a hand-written record from before the retry', merged, [pushed({ ts: '2026-10-01T00:00:00Z' })], true],
-    ['a row with a PR held at point B, recorded blocked-hitl under the first report', merged, [pushed({ reportId: 'w1', finalState: 'blocked-hitl' })], true],
+    ['a row with a PR held at point B, recorded blocked-hitl under the first report', merged, [held()], true],
+    ['a merge whose only record is a point-B hold of another PR', merged, [held({ pr: 10 })], false],
+    ['a merge whose only record is a PR-less blocked hold', merged, [rec({ implStatus: 'blocked', finalState: 'blocked-hitl', reportId: 'w1' })], false],
     ['a carried-over skipped row', skipped, [skippedRec({ reportId: 'w1' })], true],
     ['a skipped row whose only record is a later merge', skipped, [pushed()], false],
     ['a merged row with no record', merged, [], false],

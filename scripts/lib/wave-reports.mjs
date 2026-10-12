@@ -74,9 +74,10 @@ export const configDirs = (stateDir) => [stateDir, join(stateDir, 'state')];
  * The dirs under `baseDir` that hold waves of `runId`'s run family: every one whose name is `sameRun`
  * as `runId` (a `-b` retry dir folds in; `-board` does not), sorted, as paths. A missing `baseDir` reads as none.
  * @returns {string[]}
+ * @throws the readdir error when `baseDir` exists but cannot be listed, rather than read as a run with no dirs
  */
 export function runFamilyDirs(runId, baseDir) {
   let entries;
-  try { entries = readdirSync(baseDir, { withFileTypes: true }); } catch { return []; }
+  try { entries = readdirSync(baseDir, { withFileTypes: true }); } catch (err) { if (err.code === 'ENOENT') return []; throw err; }
   return entries.filter((e) => e.isDirectory() && sameRun(e.name, runId)).map((e) => join(baseDir, e.name)).sort();
 }
