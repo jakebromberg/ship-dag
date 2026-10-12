@@ -45,6 +45,9 @@
 //   node telemetry.mjs escapes [--now ISO]  # escape rate of merged PRs (revert / bug follow-up within 30 days),
 //                                            # by month and tuningVersion; PRs from the log and the engine
 //                                            # state dir's reports and sidecars; cache in $SHIP_DAG_ESCAPES_DIR
+//   node telemetry.mjs audit <runId>         # name the waves of a run family (every dir under the engine base dir
+//                                            # that sameRun the id) whose terminal rows have no record in the log,
+//                                            # unreadable reports, and sidecar entries and configs no report matches
 //   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
@@ -57,9 +60,11 @@ import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { mintRunId, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
-import { deriveWaveRecords, WaveRefusal } from './lib/wave-records.mjs';
+import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
 import { isPr, parseRef, sameRepo } from './lib/ref.mjs';
-import { readWaveReport, readWaveReports, waveContextFor } from './lib/wave-reports.mjs';
+import { readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './lib/wave-reports.mjs';
+import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
+import { defaultBaseDir } from './rate-limit-preflight.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
@@ -480,6 +485,38 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   return { records, appended };
 }
 
+/**
+ * Audit a run family against the log. Every dir of `runFamilyDirs(runId, baseDir)` is read for its
+ * reports; a readable one with a terminal row `rowCovered` finds no record for is `notIngested`
+ * (`{dir, id, source (where its routing label came from), refs (the uncovered rows')}`; one with no
+ * terminal row is not named), and one with an `error` is `unreadable` (`{path, error}`). A sidecar
+ * entry or config file that no readable report matched is `neverReported`: the engine died before it
+ * wrote a report, so there is nothing to ingest.
+ * @param {string} runId
+ * @param {{baseDir?: string, records?: object[], warn?: (m: string) => void}} [opts] `records` is the telemetry log
+ */
+export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords(telemetryPath()), warn = (m) => console.error(m) } = {}) {
+  const out = { runId, dirs: runFamilyDirs(runId, baseDir), notIngested: [], unreadable: [], neverReported: { sidecar: [], configs: [] } };
+  for (const dir of out.dirs) {
+    const matched = new Set();
+    for (const read of readWaveReports(dir, { warn })) {
+      if (read.error) { out.unreadable.push({ path: read.path, error: read.error }); continue; }
+      const { entry, configFile, source } = waveContextFor(dir, read, { warn });
+      if (source === 'sidecar') matched.add(JSON.stringify(entry));
+      if (configFile) matched.add(configFile);
+      const refs = read.report.issues.filter((r) => TERMINAL.has(r?.status) && !rowCovered(r, read, records, runId)).map((r) => r.ref);
+      if (refs.length) out.notIngested.push({ dir, id: read.id, source, refs });
+    }
+    for (const e of readSidecar(join(dir, SIDECAR_NAME), { warn })) {
+      if (!matched.has(JSON.stringify(e))) out.neverReported.sidecar.push({ dir, refs: (e.issues ?? []).map((i) => i?.ref) });
+    }
+    for (const d of [dir, join(dir, 'state')]) {
+      for (const { configFile } of waveConfigs(d)) if (!matched.has(join(d, configFile))) out.neverReported.configs.push(join(d, configFile));
+    }
+  }
+  return out;
+}
+
 function readArg(src) {
   if (src === '-') return readFileSync(0, 'utf8');
   if (src.startsWith('@')) return readFileSync(src.slice(1), 'utf8');
@@ -543,12 +580,22 @@ function main(argv) {
       .catch((err) => { process.stderr.write(`escapes: ${err.message}\n`); process.exit(1); });
     return;
   }
+  if (cmd === 'audit') {
+    if (rest.length !== 1) { process.stderr.write('usage: audit <runId>\n'); process.exit(2); }
+    try {
+      process.stdout.write(`${JSON.stringify(audit(rest[0]), null, 2)}\n`);
+    } catch (err) {
+      process.stderr.write(`audit: ${err.message}\n`);
+      process.exit(1);
+    }
+    return;
+  }
   if (cmd === 'run-id') {
     const i = rest.indexOf('--label');
     process.stdout.write(`${process.env.SHIP_DAG_RUN_ID || mintRunId({ label: i >= 0 ? rest[i + 1] : undefined })}\n`);
     return;
   }
-  process.stderr.write('usage: telemetry.mjs <append|report|ingest-wave|escapes|run-id> ...\n');
+  process.stderr.write('usage: telemetry.mjs <append|report|ingest-wave|escapes|audit|run-id> ...\n');
   process.exit(2);
 }
 

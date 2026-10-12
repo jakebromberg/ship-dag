@@ -32,7 +32,7 @@ export class WaveRefusal extends Error {
 }
 
 const SEVERITY = { clean: 0, 'nits-only': 1, blocking: 2 };
-const TERMINAL = new Set(['succeeded', 'failed', 'blocked', 'skipped']);
+export const TERMINAL = new Set(['succeeded', 'failed', 'blocked', 'skipped']);
 const NOT_YET = new Set(['pending', 'running', 'interrupted']);
 // A succeeded row is supplied by a PR, in the report or --outcomes, or by an outcome
 // saying it never merged: point B left a find-pr row without one.
@@ -62,6 +62,21 @@ function roundVerdict({ path, review }, blockOn, warn) {
 const sameRecord = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.repo) && a.issue === b.issue
   && a.finalState === b.finalState && (a.failureReason ?? null) === (b.failureReason ?? null)
   && (!a.reportId || !b.reportId || a.reportId === b.reportId || a.implStatus !== 'error' || b.implStatus !== 'error');
+
+/**
+ * Whether `records` (the telemetry log) cover terminal `row` of the report `{id, startedAt (epoch ms)}`,
+ * as run `runId`'s family sees it: the audit counterpart of `sameRecord`, which it must agree with. A
+ * PR-less failure (`routeFailure` would not send it to the gate, and it is not skipped) is its report's
+ * own event: only a record of its ref carrying `id` covers it, or, with no `reportId`, one at or after
+ * `startedAt`. Any other row recurs unchanged in a later report, which `sameRecord` folds into the
+ * first one's event, so a record of its ref from any report covers it.
+ */
+export function rowCovered(row, { id, startedAt }, records, runId) {
+  const { repo, number } = parseRef(row.ref);
+  const own = records.filter((r) => sameRun(r.runId, runId) && sameRepo(r.repo, repo) && r.issue === number);
+  if (row.status === 'skipped' || routeFailure(row) === 'review-gate') return own.length > 0;
+  return own.some((r) => (r.reportId ? r.reportId === id : Date.parse(r.ts) >= startedAt));
+}
 
 /**
  * Derive one telemetry issue record per row of the wave `report` that is terminal for this wave.
