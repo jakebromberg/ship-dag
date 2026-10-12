@@ -52,7 +52,11 @@ test('parsePr reads a PR value as {repo, pr} and nothing else as null', () => {
     ['https://github.com/o/r/pull/11', { repo: 'o/r', pr: 11 }],
     ['https://github.com/o/r/pull/11/', { repo: 'o/r', pr: 11 }],
     ['https://github.com/x/y/pull/11', { repo: 'x/y', pr: 11 }],
+    ['HTTPS://GitHub.com/o/r/pull/11', { repo: 'o/r', pr: 11 }], // a URL is read whatever its case
     ['draft-11', null],
+    ['https://github.com/o/r/pull/0', null],
+    ['https://github.com/o/r/issues/11', null], // an issue is no PR
+    ['011', null],
     ['#11', null],
     ['o/r#0', null],
     [0, null],

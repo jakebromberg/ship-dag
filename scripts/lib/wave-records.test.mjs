@@ -498,6 +498,9 @@ for (const [name, kind, go] of [
     ['a hand-written deferral holding another PR as owner/repo#N', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'a/b#111' })], false],
     ['a hand-written deferral whose PR string is no PR form, though it ends in the number', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'draft-11' })], false],
     ['a find-pr row against a hand-written deferral whose PR is no PR form', findPr, asked('deferred', 11), {}, [pushed({ finalState: 'deferred', pr: 'draft-11' })], false],
+    // A merge folds with any merge (sameEvent), so the record's PR, however written, does not keep it apart.
+    ['a find-pr row against a merge recorded with another repo\'s PR', findPr, asked('merged', 11), {}, [pushed({ pr: 'x/y#11' })], true],
+    ['a find-pr row against a merge recorded with a PR value that is no PR', findPr, asked('merged', 11), {}, [pushed({ pr: 'draft-11' })], true],
     ['a find-pr row against a deferral of the same number in another repo', findPr, asked('deferred', 11), {}, [pushed({ finalState: 'deferred', pr: 'x/y#11' })], false],
     ['a hand-written deferral holding the same number in another repo', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'x/y#11' })], false],
     // Only the implStatus-null rule keeps a find-pr row left at point B apart from a triage defer.

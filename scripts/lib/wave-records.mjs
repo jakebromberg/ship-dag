@@ -121,8 +121,9 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest) {
   const dies = rateLimited && implStatusOf(row, null) === 'error';
   return records.some((r) => {
     const rp = isPr(row.prNumber) || !(findPr || (r.reportId === id && !dies)) ? null : parsePr(r.pr, repo);
-    // A find-pr row's PR comes from --outcomes, in the row's repo: another repo's PR is not it, and neither is a value that is no PR.
-    if (findPr && r.pr != null && (!rp || !sameRepo(rp.repo, repo))) return false;
+    // A find-pr row's PR comes from --outcomes: a record whose PR value is no PR holds none of it, unless it is a merge, which
+    // folds with any merge (sameEvent). Another repo's PR is told apart by sameEvent, which compares repos.
+    if (findPr && r.finalState !== 'merged' && r.pr != null && !rp) return false;
     const pr = isPr(row.prNumber) ? row.prNumber : rp ? rp.pr : null;
     const { finalState } = r;
     // A find-pr row's merge has a PR --outcomes supplied, whether or not the record names it.
