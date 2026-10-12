@@ -212,13 +212,13 @@ function prOf(repo, pr) {
  * The PRs ship-dag opened, `[{repo, pr, tuningVersion}]`, once per `owner/repo#PR` (case-insensitive):
  * telemetry records' `pr` whatever their finalState (the newest record wins), then each report row's
  * `prNumber` under `baseDir/<run>/state/reports/` (its `tuningVersion` from the sidecar entry ingest-wave
- * reads for the report: `waveContextFor`; a report with no parseable `startedAt` is skipped), then, for a sidecar ref neither gave a PR,
+ * reads for the report: `waveContextFor`; a report with no parseable `startedAt` is skipped), then, for a sidecar ref neither gave a PR (nor a skipped report withheld one from),
  * its one merged closing PR on an `orchestrator/` branch (cached in `cacheDir` once the issue is closed), under the ref's newest
  * entry's version (none or several: skipped, with a warning, and asked again next run). Whether each merged, and when, is `findEscapes`' to ask.
  */
 export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir = escapesDir(), gh = ghCli, sleep, warn = (m) => console.error(m) } = {}) {
   const byPr = new Map();
-  const covered = new Set(); // issue refs some source gave a PR for
+  const covered = new Set(); // issue refs some source gave a PR for, or a skipped report withheld one from
   const add = (p, tuningVersion) => { const k = `${p.repo}#${p.pr}`.toLowerCase(); if (!byPr.has(k)) byPr.set(k, { ...p, tuningVersion }); };
   for (const r of records.toReversed()) {
     const p = r.kind === 'retro' ? null : prOf(r.repo, r.pr);
@@ -230,8 +230,8 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
   for (const run of lsdir(baseDir)) {
     const entries = readSidecar(join(baseDir, run, SIDECAR_NAME), { warn });
     for (const read of readWaveReports(join(baseDir, run), { warn: (m) => warn(`escapes: ${m}; skipped`) })) {
-      if (read.error) { // skipped, as ingest-wave refuses it: its refs do not fall back to a closing PR either
-        for (const row of read.report?.issues ?? []) if (typeof row?.ref === 'string') covered.add(row.ref.toLowerCase());
+      if (read.error) { // skipped, as ingest-wave refuses it; a parsed report's PRs must not come back through the closing-PR fallback
+        for (const row of read.report?.issues ?? []) if (typeof row?.ref === 'string' && prOf(row.ref.split('#')[0], row.prNumber)) covered.add(row.ref.toLowerCase());
         continue;
       }
       const rows = read.report.issues;
