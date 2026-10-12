@@ -489,6 +489,13 @@ for (const [name, kind, go] of [
     ['a PR-less blocked row is not the first report\'s PR-less failure', blockedRow, {}, {}, [rec({ reportId: 'w1' })], false],
     // A record carrying a reportId is derived, so its ts is no reason to doubt it: w1's blocked record predates w2.
     ['a PR-less blocked row carried over from the first report', blockedRow, {}, {}, [rec({ implStatus: 'blocked', reportId: 'w1', ts: '2026-10-08T18:00:00Z' })], true],
+    // A hand-written record may hold its PR as `owner/repo#N` or a PR URL: the PR is its number.
+    ['a hand-written deferral holding its PR as owner/repo#N', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'a/b#11' })], true],
+    ['a hand-written deferral holding its PR as a numeric string', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: '11' })], true],
+    ['a hand-written deferral holding its PR as a URL', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'https://github.com/a/b/pull/11' })], true],
+    ['a find-pr row against a hand-written deferral holding its PR as a URL', findPr, asked('deferred', 11), {}, [pushed({ finalState: 'deferred', pr: 'https://github.com/a/b/pull/11' })], true],
+    ['a hand-written deferral holding another PR as owner/repo#N', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'a/b#111' })], false],
+    ['a hand-written deferral whose PR string is no PR form, though it ends in the number', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'draft-11' })], false],
     // Only the implStatus-null rule keeps a find-pr row left at point B apart from a triage defer.
     ['a find-pr row left at point B with no PR is not a triage defer', findPr, asked('blocked-hitl'), {}, [defer('blocked-hitl')], false],
     // Accepted disagreements.
