@@ -34,11 +34,9 @@ export class WaveRefusal extends Error {
 const SEVERITY = { clean: 0, 'nits-only': 1, blocking: 2 };
 const TERMINAL = new Set(['succeeded', 'failed', 'blocked', 'skipped']);
 const NOT_YET = new Set(['pending', 'running', 'interrupted']);
-// What routeFailure counts as a PR, so the half-supplied check and the record agree with it.
 // A succeeded row is supplied by a PR, in the report or --outcomes, or by an outcome
 // saying it never merged: point B left a find-pr row without one.
 const NOT_MERGED = new Set(['blocked-hitl', 'deferred', 'error']);
-/** An `owner/repo#N` ref, capturing `owner/repo` and `N`: the one pattern ingest-wave checks a report against too. */
 const supplied = (row, outcome) => isPr(row.prNumber) || isPr(outcome?.pr) || NOT_MERGED.has(outcome?.finalState);
 /** A gate `blocking` entry as one string, the shape `--outcomes` takes and hand-written records carry; a field the gate left null is left out. */
 const findingLine = ({ category, file, line, summary }) => [category ?? '(blank)', file && (line == null ? file : `${file}:${line}`), summary].filter(Boolean).join(' ');
@@ -92,6 +90,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
   if (!rows.length) return { records: [] };
   const badRow = rows.find((r) => !parseRef(r.ref));
   if (badRow) throw new WaveRefusal('malformed-row', `malformed report row: no owner/repo#N ref: ${JSON.stringify(badRow)}`);
+  // The entry and noCheckRepos are the routing matched to these refs as written (waveContextMatches), so they are looked up exactly.
   const noCheck = new Set(noCheckRepos);
   const runId = entry?.runId || runIdFromConfigName(report?.configName);
   if (!runId) throw new WaveRefusal('no-run-id', 'no run id: the wave has no sidecar entry with a runId and the report has no configName');

@@ -189,7 +189,7 @@ export function terminalEvent(transcriptText) {
  */
 export function routeFailure(row) {
   const { status, prNumber, failureReason } = row ?? {};
-  // A PR number is the disambiguator. `> 0` rather than a truthiness check so a
+  // A PR number is the disambiguator. `isPr` rather than a truthiness check so a
   // 0 can't read as "a PR exists" — routing a PR-less stall to a gate with
   // nothing to review is the expensive direction to be wrong in.
   if (isPr(prNumber)) return 'review-gate';

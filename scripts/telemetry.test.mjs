@@ -512,16 +512,19 @@ test('ingest-wave: a row a retry report only carries over is recorded once; the 
   });
 });
 
-// A later report that re-ran the ref (a new PR) ends this wave's window; one that only carries the
-// row over with the same PR (a --retry-failed run of other rows) does not, since its rounds review this PR.
+// A later report that re-ran the ref (a new PR) ends this wave's window, even one ingest-wave refuses for
+// a malformed row, since it still started when it says; one that only carries the row over with the same
+// PR (a --retry-failed run of other rows) does not, since its rounds review this PR.
+const reran = stateRow(REF, { prUrl: 'https://x/12', prNumber: 12 });
 for (const [name, later, want] of [
-  ['re-ran it with a new PR', stateRow(REF, { prUrl: 'https://x/12', prNumber: 12 }), ['clean', 0, '.r2.json']],
-  ['carried it over with the same PR', stateRow(REF), ['blocking', 0, '.r3.json']],
+  ['re-ran it with a new PR', [reran], ['clean', 0, '.r2.json']],
+  ['re-ran it with a new PR beside a row with no owner/repo#N ref', [reran, { ref: 'dj-site#9', status: 'failed' }], ['clean', 0, '.r2.json']],
+  ['carried it over with the same PR', [stateRow(REF)], ['blocking', 0, '.r3.json']],
 ]) {
   test(`ingest-wave: rounds before this wave are not its, nor after a later report that ${name}`, () => withStateDir({
     reports: {
       'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
-      'w2.json': stateReport([later, stateRow(REF2, { status: 'failed', prUrl: null, prNumber: null })], { startedAt: T1, finishedAt: T2 }),
+      'w2.json': stateReport([...later, stateRow(REF2, { status: 'failed', prUrl: null, prNumber: null })], { startedAt: T1, finishedAt: T2 }),
     },
     sidecar: [sidecarEntry()],
   }, (dir) => {
@@ -831,14 +834,15 @@ test('ingest-wave: attaches cost.implement summed over a ref\'s sessions, only t
   assert.deepEqual(records.map((r) => r.cost), [{ implement: costOf(['a', 'b'], 1.5) }]);
 }));
 
-test('ingest-wave: a session an earlier record of the run family lists is not counted again; another ref\'s or run family\'s record does not exclude it', () => withStateDir({
+test('ingest-wave: a session an earlier record of the run family lists, its repo in any case, is not counted again; another ref\'s or run family\'s record does not exclude it', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
-  files: logOf(REF, sess('a', 1), sess('b', 0.5)),
+  files: logOf(REF, sess('a', 1), sess('b', 0.5), sess('c', 2)),
 }, (dir) => {
   const path = tmpLog();
   try {
     const prior = (over, ids) => appendRecord({ runId: `${RUN}-b`, repo: 'WXYC/dj-site', issue: 1, complexity: 'normal', triageStatus: 'clear', path: 'engine', finalState: 'error', implStatus: 'error', cost: { implement: costOf(ids, 1) }, ...over }, { path });
     prior({}, ['a']);
+    prior({ repo: 'wxyc/DJ-Site' }, ['c']); // a hand-written record of the same ref, cased differently
     prior({ issue: 2 }, ['b']); // same run family and repo, another issue
     prior({ repo: 'WXYC/Backend-Service' }, ['b']); // same run family and issue number, another repo
     prior({ runId: 'sd-20261001-090000' }, ['b']); // same ref, another run family
@@ -897,7 +901,7 @@ test('normalizeRecord: validates cost.implement; a record without cost, or with 
   }
 });
 
-// (malformed-row is not here: ingestWave checks refs itself and exits 3 before deriveWaveRecords can refuse.)
+// (malformed-row is not here: readWaveReport refuses a row with no owner/repo#N ref, so ingestWave exits 3 before deriveWaveRecords can refuse.)
 // The exit code is the kind's, never the message's: SKILL.md (T6) documents 2 as "supply --outcomes" and 3 as "malformed".
 for (const [kind, rows, report, code] of [
   ['half-supplied', [stateRow(REF, { prUrl: null, prNumber: null })], {}, 2],
