@@ -497,6 +497,9 @@ for (const [name, kind, go] of [
     ['a find-pr row against an older hand-written deferral of its PR as owner/repo#N', findPr, asked('deferred', 11), {}, [pushed({ finalState: 'deferred', pr: 'a/b#11', ts: '2026-10-01T00:00:00Z' })], true],
     ['a hand-written deferral holding another PR as owner/repo#N', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'a/b#111' })], false],
     ['a hand-written deferral whose PR string is no PR form, though it ends in the number', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'draft-11' })], false],
+    ['a find-pr row against a hand-written deferral whose PR is no PR form', findPr, asked('deferred', 11), {}, [pushed({ finalState: 'deferred', pr: 'draft-11' })], false],
+    ['a find-pr row against a deferral of the same number in another repo', findPr, asked('deferred', 11), {}, [pushed({ finalState: 'deferred', pr: 'x/y#11' })], false],
+    ['a hand-written deferral holding the same number in another repo', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'x/y#11' })], false],
     // Only the implStatus-null rule keeps a find-pr row left at point B apart from a triage defer.
     ['a find-pr row left at point B with no PR is not a triage defer', findPr, asked('blocked-hitl'), {}, [defer('blocked-hitl')], false],
     // Accepted disagreements.
