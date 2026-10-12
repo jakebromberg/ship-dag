@@ -55,15 +55,20 @@ export const putDigest = (dir, ref, body, at = '2026-10-08T19:30:00.000Z') =>
 export function engineFixture(specs) {
   const base = mkdtempSync(join(tmpdir(), 'engine-fixture-'));
   const dirs = {};
-  for (const [name, { reports = {}, sidecar = [], configs = {}, reviews = [], digests = [], files = {} }] of Object.entries(specs)) {
-    const dir = (dirs[name] = join(base, name));
-    mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
-    for (const [n, rep] of Object.entries(reports)) putReport(dir, n, rep);
-    for (const entry of sidecar) if (!appendWave(dir, entry)) throw new Error(`${dir}: appendWave did not write ${JSON.stringify(entry)}`);
-    for (const [rel, cfg] of Object.entries(configs)) put(join(dir, rel), cfg, EMITTED);
-    for (const r of reviews) putReview(dir, r.ref, r.tag ?? '', r.findings, r.at);
-    for (const d of digests) putDigest(dir, d.ref, d.body, d.at);
-    for (const [rel, body] of Object.entries(files)) put(join(dir, rel), body);
+  try {
+    for (const [name, { reports = {}, sidecar = [], configs = {}, reviews = [], digests = [], files = {} }] of Object.entries(specs)) {
+      const dir = (dirs[name] = join(base, name));
+      mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
+      for (const [n, rep] of Object.entries(reports)) putReport(dir, n, rep);
+      for (const entry of sidecar) if (!appendWave(dir, entry)) throw new Error(`${dir}: appendWave did not write ${JSON.stringify(entry)}`);
+      for (const [rel, cfg] of Object.entries(configs)) put(join(dir, rel), cfg, EMITTED);
+      for (const r of reviews) putReview(dir, r.ref, r.tag ?? '', r.findings, r.at);
+      for (const d of digests) putDigest(dir, d.ref, d.body, d.at);
+      for (const [rel, body] of Object.entries(files)) put(join(dir, rel), body);
+    }
+  } catch (err) {
+    rmSync(base, { recursive: true, force: true }); // a half-built fixture is never returned, so nothing else would remove it
+    throw err;
   }
   return { base, dirs, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
