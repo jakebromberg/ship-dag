@@ -93,6 +93,9 @@ test('routeFailure: a succeeded row with no PR goes to find-pr, not the review g
   assert.equal(routeFailure({ status: 'succeeded' }), 'find-pr');
   assert.equal(routeFailure({ status: 'succeeded', prNumber: null }), 'find-pr');
   assert.equal(routeFailure({ status: 'succeeded', prNumber: 0 }), 'find-pr');
+  // Point A (#115): a PR is a positive integer, so a fractional number is no PR either.
+  assert.equal(routeFailure({ status: 'succeeded', prNumber: 1.5 }), 'find-pr');
+  assert.equal(routeFailure({ status: 'failed', prNumber: 1.5 }), 'point-B');
 });
 
 test('routeFailure: a rate-limited row with no PR resumes in place at point E', () => {
