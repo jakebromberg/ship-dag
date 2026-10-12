@@ -212,7 +212,7 @@ function prOf(repo, pr) {
  * telemetry records' `pr` whatever their finalState (the newest record wins), then each report row's
  * `prNumber` under `baseDir/<run>/state/reports/` (its `tuningVersion` from the sidecar entry ingest-wave
  * reads for the report: `findWaveContext` as of its start), then, for a sidecar ref neither gave a PR,
- * its one merged closing PR on an `orchestrator/` branch (cached in `cacheDir`), under the ref's newest
+ * its one merged closing PR on an `orchestrator/` branch (cached in `cacheDir` once the issue is closed), under the ref's newest
  * entry's version (none or several: skipped, with a warning, and asked again next run). Whether each merged, and when, is `findEscapes`' to ask.
  */
 export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir = escapesDir(), gh = ghCli, sleep, warn = (m) => console.error(m) } = {}) {
