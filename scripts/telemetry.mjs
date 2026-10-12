@@ -68,6 +68,7 @@
 import { appendFileSync, mkdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { readArg } from './lib/read-arg.mjs';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { INFRA_REASONS, RESOURCE_STOPS, ranOf } from './lib/failure.mjs';
@@ -594,12 +595,6 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
     for (const { configFile } of configDirs(dir).flatMap((d) => waveConfigs(d))) if (!matched.has(configFile)) out.neverReported.configs.push(configFile);
   }
   return out;
-}
-
-function readArg(src) {
-  if (src === '-') return readFileSync(0, 'utf8');
-  if (src.startsWith('@')) return readFileSync(src.slice(1), 'utf8');
-  return src;
 }
 
 function main(argv) {
