@@ -42,12 +42,11 @@
 // `plan` prints { waves, blocked, cyclic } as JSON (refs) plus a human-readable table.
 
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { coDistPath } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { SubIssuesUnavailable, listSubIssues, hasWaveLabel, subIssueRepo } from './lib/sub-issues.mjs';
+import { SubIssuesUnavailable, listSubIssues, hasWaveLabel, subIssueRepo, realRunGh } from './lib/sub-issues.mjs';
 
 const LIST_LIMIT = 1000; // gh issue list cap; we warn if we hit it rather than truncate silently.
 
@@ -214,12 +213,6 @@ export function bodyEdges(citing, body) {
     }
   }
   return dedupeEdges(edges);
-}
-
-// ---- gh wrapper (injectable for tests) ----------------------------------
-
-function realRunGh(args) {
-  return execFileSync('gh', args, { encoding: 'utf8' });
 }
 
 /**

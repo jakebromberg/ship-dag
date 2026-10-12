@@ -2,15 +2,24 @@
 //
 // Shared by plan-waves.mjs (the recursive DAG fetch) and anything else that
 // needs an epic's direct children. `runGh` is injected, so tests drive it with a
-// fake and no network.
+// fake and no network; `realRunGh` is the one that shells out.
+
+import { execFileSync } from 'node:child_process';
+
+/** Run `gh` for real and return its stdout. */
+export function realRunGh(args) {
+  return execFileSync('gh', args, { encoding: 'utf8' });
+}
 
 // One page of an epic's sub-issues. `subIssuesSummary.total` rides along on each
 // child so the walk can tell a container from a leaf without a round trip of its
-// own — on a wide epic that is one query instead of one-per-child.
+// own — on a wide epic that is one query instead of one-per-child. `databaseId`
+// (the REST id the sub-issues endpoints take) and `title` ride along for the
+// wave sub-epic script, so it never looks either up per issue.
 export const SUB_ISSUES_QUERY =
   'query($owner:String!,$name:String!,$n:Int!,$cursor:String){repository(owner:$owner,name:$name)'
   + '{issue(number:$n){subIssues(first:100,after:$cursor){'
-  + 'nodes{number state repository{nameWithOwner} subIssuesSummary{total} labels(first:100){nodes{name}}}'
+  + 'nodes{number databaseId title state repository{nameWithOwner} subIssuesSummary{total} labels(first:100){nodes{name}}}'
   + 'pageInfo{hasNextPage endCursor}}}}}';
 
 /** The label every wave sub-epic carries: one wave's issues, grouped under the run epic. */
@@ -21,9 +30,15 @@ export function subIssueRepo(node, parentRepo) {
   return (node.repository && node.repository.nameWithOwner) || parentRepo;
 }
 
-/** Whether a sub-issue node (as `listSubIssues` returns it) carries `WAVE_LABEL`. */
+/**
+ * Whether an issue carries `WAVE_LABEL`. Takes either label shape: GraphQL's
+ * `labels: { nodes: [{name}] }` (as `listSubIssues` returns it) or REST's and
+ * `gh --json`'s `labels: [{name}]`.
+ */
 export function hasWaveLabel(node) {
-  return Boolean(node && node.labels && (node.labels.nodes || []).some((l) => l && l.name === WAVE_LABEL));
+  const labels = node && node.labels;
+  const list = Array.isArray(labels) ? labels : (labels && labels.nodes) || [];
+  return list.some((l) => l && l.name === WAVE_LABEL);
 }
 
 /** No sub-issues connection came back for an issue — bad number, deleted, no access, feature off. */
@@ -37,7 +52,7 @@ export class SubIssuesUnavailable extends Error {}
  *
  * @param {{number:number, repo:string}} epicNode
  * @param {(argv:string[]) => string} runGh
- * @returns {Array<{number:number,state:string,repository:{nameWithOwner:string},subIssuesSummary?:{total:number},labels?:{nodes:Array<{name:string}>}}>}
+ * @returns {Array<{number:number,databaseId?:number,title?:string,state:string,repository:{nameWithOwner:string},subIssuesSummary?:{total:number},labels?:{nodes:Array<{name:string}>}}>}
  */
 export function listSubIssues(epicNode, runGh) {
   const [owner, name] = epicNode.repo.split('/');
