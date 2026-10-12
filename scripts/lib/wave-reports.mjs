@@ -9,8 +9,9 @@ import { entryFromConfig, findWaveConfig, findWaveContext } from './wave-sidecar
 /**
  * The report at `path`, parsed, as `{path, id (file stem), report, startedAt (epoch ms)}`. One that
  * does not parse or has no `issues[]` comes back with an `error` (the reason, with `path`) and no
- * `report`; one with a row that has no `owner/repo#N` ref (checked first), or no parseable `startedAt`,
- * comes back with its `report` and an `error` in place of `startedAt`, so a caller can check its rows first.
+ * `report`. One with a row that has no `owner/repo#N` ref (checked first), or no parseable `startedAt`,
+ * comes back with its `report` and an `error`, so a caller can check its rows first; its `startedAt`
+ * is there only when it parses, so a refused report's start still bounds an earlier wave's window.
  * @param {string} path
  * @returns {{path: string, id: string, report?: object, startedAt?: number, error?: string}}
  */
@@ -19,11 +20,12 @@ export function readWaveReport(path) {
   let report;
   try { report = JSON.parse(readFileSync(path, 'utf8')); } catch (err) { return { ...out, error: `${path}: cannot read the report: ${err.message}` }; }
   if (!Array.isArray(report?.issues)) return { ...out, error: `${path}: the report has no issues array` };
-  const bad = report.issues.find((r) => !parseRef(r?.ref));
-  if (bad) return { ...out, report, error: `${path}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}` };
   const startedAt = typeof report.startedAt === 'string' ? Date.parse(report.startedAt) : NaN;
-  if (Number.isNaN(startedAt)) return { ...out, report, error: `${path}: the report has no parseable startedAt: ${JSON.stringify(report.startedAt)}` };
-  return { ...out, report, startedAt };
+  const read = Number.isNaN(startedAt) ? { ...out, report } : { ...out, report, startedAt };
+  const bad = report.issues.find((r) => !parseRef(r?.ref));
+  if (bad) return { ...read, error: `${path}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}` };
+  if (Number.isNaN(startedAt)) return { ...read, error: `${path}: the report has no parseable startedAt: ${JSON.stringify(report.startedAt)}` };
+  return read;
 }
 
 /**

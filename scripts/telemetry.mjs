@@ -325,7 +325,6 @@ class IngestError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
-// What routeFailure (and so deriveWaveRecords) counts as a report row's PR.
 const OUTCOME_RULES = {
   pr: [isPr, 'a positive integer'],
   finalState: [(v) => FINAL_STATES.has(v), `one of ${[...FINAL_STATES].join('|')}`],
@@ -411,8 +410,9 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   // A digest or review round belongs to this wave when it was written after this report started and
   // before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
   // and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
-  // run of other rows) re-runs nothing, so later rounds still review this row's PR.
-  const others = reports.filter((r) => !r.error && r.startedAt > startedAt);
+  // run of other rows) re-runs nothing, so later rounds still review this row's PR. A later report
+  // refused for a malformed row still started when it says, so it still ends the window.
+  const others = reports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
   const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
   const inWave = (ref, mtimeMs) => mtimeMs >= startedAt && mtimeMs < ends[ref];
@@ -468,8 +468,8 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   for (const rec of records) {
     if (rec.implStatus === null) continue;
     const counted = [...existing, ...taken].filter((e) => sameRepo(e.repo, rec.repo) && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
-    // The engine named the log from the row's ref as written, so find that rather than rebuild it.
-    const ref = refs.find((r) => { const p = parseRef(r); return sameRepo(p.repo, rec.repo) && p.number === rec.issue; });
+    // The engine named the log from the row's ref as written, so find that row, as written, rather than rebuild it.
+    const ref = refs.find((r) => { const p = parseRef(r); return p.repo === rec.repo && p.number === rec.issue; });
     const implement = implementCost(logPathForRef(stateDir, ref), counted, warn);
     if (implement) { rec.cost = { implement }; taken.push(rec); }
   }

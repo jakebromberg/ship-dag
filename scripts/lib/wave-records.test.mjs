@@ -164,6 +164,7 @@ const MERGED = { runId: 'sd-20261008-1', repo: 'WXYC/dj-site', issue: 1, finalSt
 const dedupeCases = [
   ['a -w2 config name against a record under the bare run id', { entry: null, report: report([row()], { configName: 'ship-dag-sd-20261008-1-w2' }) }, MERGED],
   ['an existing record with no failureReason key', {}, (({ failureReason, ...rest }) => rest)(MERGED)],
+  ['a hand-written record whose repo is cased differently', {}, { ...MERGED, repo: 'wxyc/DJ-Site' }],
 ];
 for (const [name, over, existing] of dedupeCases) {
   test(`dedupe: ${name} adds nothing`, () => {

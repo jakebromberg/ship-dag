@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { waveSidecar as wave_, waveContextMatches, readSidecar, appendWave, findWaveContext, findWaveConfig, entryFromConfig, specBlockOn, SIDECAR_NAME } from './wave-sidecar.mjs';
+import { parseRef } from './ref.mjs';
 import { load as loadTuning } from './tuning.mjs';
 import { buildConfig } from '../emit-config.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
@@ -225,7 +226,7 @@ test('the CLI writes the sidecar at dirname(configDir) and prints the same confi
   assert.equal(blocked.stdout.replaceAll(bad, dir), ok.stdout);
 });
 
-const cfg = (refs, over = {}) => JSON.stringify({ name: 'ship-dag-run1', issues: refs.map((r) => ({ repo: r.split('#')[0], number: Number(r.split('#')[1]) })), ...over });
+const cfg = (refs, over = {}) => JSON.stringify({ name: 'ship-dag-run1', issues: refs.map((r) => parseRef(r)), ...over });
 
 test('findWaveConfig picks the config whose issue refs equal the set, skipping unreadable files', () => {
   const dir = tmp();
