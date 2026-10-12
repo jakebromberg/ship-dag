@@ -986,7 +986,7 @@ describe('audit', () => {
 
   test('names a torn report and one with no issues[] as unreadable, and never hands them to waveContextFor', () => family({
     [RUN_A]: { reports: { 'torn.json': '{"issues": [', 'bare.json': { startedAt: T0 }, 'nostart.json': { issues: [stateRow(REF)] } } },
-  }, (base, dirs) => {
+  }, (base) => {
     const out = audit_(base, []);
     assert.deepEqual(out.unreadable.map((u) => basename(u.path)), ['bare.json', 'nostart.json', 'torn.json']);
     assert.match(out.unreadable.find((u) => u.path.endsWith('nostart.json')).error, /startedAt/);
