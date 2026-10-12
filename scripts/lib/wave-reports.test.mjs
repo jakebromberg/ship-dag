@@ -95,10 +95,11 @@ test('readWaveReport refuses a row with no owner/repo#N ref before it looks at s
   }
 });
 
-test('runFamilyDirs lists the dirs under baseDir that sameRun the run id: a -b retry folds in, a -board dir and a plain file do not', () => {
+test('runFamilyDirs lists the dirs under baseDir that sameRun the run id: a -b retry folds in, a -board dir and a plain file do not; a base dir it cannot list throws', () => {
   const base = stateDir();
   for (const name of ['sd-1', 'sd-1-b', 'sd-1-w2', 'SD-1-r2', 'sd-1-board', 'sd-2']) mkdirSync(join(base, name));
   writeFileSync(join(base, 'sd-1-c'), '');
   assert.deepEqual(runFamilyDirs('sd-1', base), ['SD-1-r2', 'sd-1', 'sd-1-b', 'sd-1-w2'].map((n) => join(base, n)));
   assert.deepEqual(runFamilyDirs('sd-1', join(base, 'missing')), []);
+  assert.throws(() => runFamilyDirs('sd-1', join(base, 'sd-1-c')), { code: 'ENOTDIR' }, 'only a missing base dir reads as none');
 });
