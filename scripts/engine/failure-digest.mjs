@@ -72,12 +72,16 @@ export function readExitCode(metaPath) {
  * stem the sibling logs/metadata dirs use, so a ref maps to one stem everywhere
  * under configDir.
  *
+ * `reportId` (the stem of the report the rows came from) is stamped into each digest, so a reader
+ * can assign the digest to its wave without trusting the file's mtime, which a copied state dir loses.
+ * A later wave overwrites a ref's digest, so the stamp names the latest wave only.
+ *
  * Best-effort per row: one row's unreadable transcript or metadata leaves that
  * field null rather than aborting the pass over the others.
- * @param {{configDir: string, report: {issues?: Array<object>}}} opts
+ * @param {{configDir: string, report: {issues?: Array<object>}, reportId?: string}} opts
  * @returns {Promise<string[]>} paths written
  */
-export async function writeFailureDigests({ configDir, report }) {
+export async function writeFailureDigests({ configDir, report, reportId }) {
   const rows = (report?.issues ?? []).filter((r) => r.status !== 'succeeded');
   if (rows.length === 0) return [];
 
@@ -89,7 +93,7 @@ export async function writeFailureDigests({ configDir, report }) {
     const stem = artifactStem(row.ref);
     const { terminal, rateLimited } = await scanTranscript(path.join(configDir, 'logs', `issue-${stem}.log`));
     const exitCode = readExitCode(path.join(configDir, 'metadata', `issue-${stem}.json`));
-    const diagnosis = buildDiagnosis({ row, terminal, rateLimited, exitCode });
+    const diagnosis = { ...buildDiagnosis({ row, terminal, rateLimited, exitCode }), ...(reportId && { reportId }) };
     const digestPath = path.join(digestDir, `issue-${stem}.json`);
     fs.writeFileSync(digestPath, `${JSON.stringify(diagnosis, null, 2)}\n`);
     written.push(digestPath);

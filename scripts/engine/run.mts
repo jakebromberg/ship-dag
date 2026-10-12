@@ -73,7 +73,7 @@ try {
       .map((f) => ({ f, mtimeMs: fs.statSync(path.join(reportsDir, f)).mtimeMs }))
       .sort((a, b) => b.mtimeMs - a.mtimeMs)[0].f;
     const report = JSON.parse(fs.readFileSync(path.join(reportsDir, newest), "utf-8"));
-    await writeFailureDigests({ configDir, report });
+    await writeFailureDigests({ configDir, report, reportId: path.basename(newest, ".json") });
   }
 } catch (err) {
   console.error(`run.mts: failed to write failure digests (non-fatal): ${err instanceof Error ? err.message : err}`);
