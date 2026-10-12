@@ -216,6 +216,24 @@ test('a second run over a settled population makes no gh pr view call: a merged 
   assert.equal(rows[0].mergedAt, MERGED);
 });
 
+test('the view cache is keyed by repo and PR: each PR gets its own view back on a cached run', async () => {
+  const cacheDir = tmp();
+  const at6 = '2026-08-01T20:00:00Z';
+  const atS = '2026-08-01T21:00:00Z';
+  const routes = {
+    'pr view 6 --repo o/r --json mergedAt,title,commits,closingIssuesReferences': view({ mergedAt: at6 }),
+    [VIEW.replace('o/r', 'o/s')]: view({ mergedAt: atS }),
+    ...Object.fromEntries(Object.values(SEARCH).map((q) => [q.replace('--repo o/r', '--repo o/s'), []])),
+  };
+  const prs = [PR, { ...PR, pr: 6 }, { ...PR, repo: 'o/s' }];
+  const merges = (rows) => rows.map((r) => `${r.repo}#${r.pr} ${r.mergedAt}`).sort();
+  const want = [`o/r#5 ${MERGED}`, `o/r#6 ${at6}`, `o/s#5 ${atS}`];
+  assert.deepEqual(merges(await run(fakeGh(routes), { prs, cacheDir })), want);
+  const again = fakeGh(routes);
+  assert.deepEqual(merges(await run(again, { prs, cacheDir })), want);
+  assert.deepEqual(again.calls.filter((c) => c.startsWith('pr view')), []);
+});
+
 test('a PR that has not merged is not cached, so a later run asks again', async () => {
   const cacheDir = tmp();
   await run(fakeGh({ [VIEW]: view({ mergedAt: null }) }), { cacheDir });
@@ -338,6 +356,9 @@ function engineDir(rows, entries) {
   return base;
 }
 const closers = (repo, n) => `api graphql -f query=${CLOSING_PRS_QUERY} -f owner=${repo.split('/')[0]} -f name=${repo.split('/')[1]} -F n=${n}`;
+test('CLOSING_PRS_QUERY asks for the issue\'s state, which decides whether its answer is cached', () => {
+  assert.match(CLOSING_PRS_QUERY, /issue\(number:\$n\)\{state /);
+});
 const closersOf = (...nodes) => ({ data: { repository: { issue: { state: 'CLOSED', closedByPullRequestsReferences: { nodes } } } } });
 const openWith = (res) => ({ data: { repository: { issue: { ...res.data.repository.issue, state: 'OPEN' } } } });
 const byKey = (prs) => prs.toSorted((a, b) => `${a.repo}#${a.pr}`.localeCompare(`${b.repo}#${b.pr}`));
