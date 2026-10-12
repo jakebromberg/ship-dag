@@ -570,6 +570,24 @@ test('ingest-wave reads rounds from the reviews/ of every run-family dir, window
   }
 });
 
+test('ingest-wave reads a state dir once when its path differs in case from the name its family listing gives', (t) => {
+  const base = mkdtempSync(join(tmpdir(), 'ingest-case-'));
+  try {
+    const run = join(base, RUN);
+    const shouted = join(base, RUN.toUpperCase());
+    mkdirSync(join(run, 'state', 'reports'), { recursive: true });
+    if (!existsSync(shouted)) return t.skip('case-sensitive file system');
+    writeFileSync(reportPath(run), JSON.stringify(stateReport([stateRow(REF)])));
+    appendWave(run, sidecarEntry());
+    reviewFile(run, REF, '', [blocker], '2026-10-08T19:10:00.000Z');
+    reviewFile(run, REF, '.r2', [], '2026-10-08T19:20:00.000Z');
+    const [rec] = ingestFile(reportPath(shouted)).records;
+    assert.deepEqual([rec.reviewVerdict, rec.bounces], ['blocking', 1]);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('ingest-wave: a torn round file reads as blocking, never clean', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
 }, (dir) => {
@@ -1031,7 +1049,9 @@ describe('audit', () => {
   test('names a torn report and one with no issues[] as unreadable, and never hands them to waveContextFor', () => family({
     [RUN_A]: { reports: { 'torn.json': '{"issues": [', 'bare.json': { startedAt: T0 }, 'nostart.json': { issues: [stateRow(REF)] } } },
   }, (base) => {
-    const out = audit_(base, []);
+    const warnings = [];
+    const out = audit(RUN_A, { baseDir: base, records: [], warn: (m) => warnings.push(m) });
+    assert.deepEqual(warnings, [], 'an unreadable report is named in the result, not warned about too');
     assert.deepEqual(out.unreadable.map((u) => basename(u.path)), ['bare.json', 'nostart.json', 'torn.json']);
     assert.match(out.unreadable.find((u) => u.path.endsWith('nostart.json')).error, /startedAt/);
     assert.deepEqual(out.notIngested, []);
