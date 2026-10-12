@@ -8,54 +8,55 @@
 //   node wave-epic.mjs open  --repo owner/repo --epic N --refs ref,ref,...
 //   node wave-epic.mjs close --repo owner/repo --epic N --wave-epic M [--outcomes <json|@file|->]
 // `open` prints { number, wave, moved[], listed[], reused }. `close` prints
-// { closed, returned[], stuck[], noop } and exits 1 when a return got stuck
-// (the wave is left open). Exit 2 on a malformed invocation or a refusal.
+// { closed, returned[], stuck[], noop }.
+// Exit 0: done. Exit 1: a return got stuck (the wave is left open on purpose),
+// or a GitHub call failed partway — both commands are idempotent, so run it
+// again. Exit 2: a malformed invocation or a refusal, before any write.
 
-import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { parseArgs } from 'node:util';
 import { isMain } from './lib/is-main.mjs';
-import { openWaveEpic, closeWaveEpic } from './lib/wave-epic.mjs';
+import { readArg } from './lib/read-arg.mjs';
+import { realRunGh } from './lib/sub-issues.mjs';
+import { openWaveEpic, closeWaveEpic, WaveEpicRefusal } from './lib/wave-epic.mjs';
 
 const USAGE = 'usage: wave-epic.mjs open --repo owner/repo --epic N --refs ref,ref,...\n'
   + '       wave-epic.mjs close --repo owner/repo --epic N --wave-epic M [--outcomes <json|@file|->]\n';
 
-const runGh = (args) => execFileSync('gh', args, { encoding: 'utf8' });
-
-function readArg(src) {
-  if (src === '-') return readFileSync(0, 'utf8');
-  if (src.startsWith('@')) return readFileSync(src.slice(1), 'utf8');
-  return src;
-}
-
-function parse(rest) {
-  const opts = {};
-  for (let i = 0; i < rest.length; i += 2) {
-    if (!rest[i].startsWith('--') || rest[i + 1] === undefined) return null;
-    opts[rest[i].slice(2)] = rest[i + 1];
-  }
-  return opts;
-}
+const OPTIONS = {
+  open: { repo: { type: 'string' }, epic: { type: 'string' }, refs: { type: 'string' } },
+  close: { repo: { type: 'string' }, epic: { type: 'string' }, 'wave-epic': { type: 'string' }, outcomes: { type: 'string' } },
+};
 
 function main(argv) {
   const [cmd, ...rest] = argv;
-  const o = parse(rest);
-  const fail = (msg) => { process.stderr.write(msg ? `wave-epic: ${msg}\n` : USAGE); process.exit(2); };
-  if (!o || !/^[\w.-]+\/[\w.-]+$/.test(o.repo || '') || !/^\d+$/.test(o.epic || '')) fail();
+  const exit = (code, msg) => { process.stderr.write(msg ? `wave-epic: ${msg}\n` : USAGE); process.exit(code); };
+  if (!OPTIONS[cmd]) exit(2);
+  let o;
+  try {
+    o = parseArgs({ args: rest, options: OPTIONS[cmd], strict: true }).values;
+  } catch (err) {
+    exit(2, err.message);
+  }
+  if (!/^[\w.-]+\/[\w.-]+$/.test(o.repo || '') || !/^\d+$/.test(o.epic || '')) exit(2);
   const epic = Number(o.epic);
   let out;
   try {
     if (cmd === 'open') {
-      if (!o.refs) fail();
-      out = openWaveEpic({ repo: o.repo, epic, refs: o.refs.split(',').filter(Boolean) }, runGh);
-    } else if (cmd === 'close') {
-      if (!/^\d+$/.test(o['wave-epic'] || '')) fail();
-      const outcomes = o.outcomes ? JSON.parse(readArg(o.outcomes)) : {};
-      out = closeWaveEpic({ repo: o.repo, epic, waveEpic: Number(o['wave-epic']), outcomes }, runGh);
+      if (!o.refs) exit(2);
+      out = openWaveEpic({ repo: o.repo, epic, refs: o.refs.split(',').filter(Boolean) }, realRunGh);
     } else {
-      fail();
+      if (!/^\d+$/.test(o['wave-epic'] || '')) exit(2);
+      let outcomes = {};
+      try {
+        if (o.outcomes) outcomes = JSON.parse(readArg(o.outcomes));
+      } catch (err) {
+        exit(2, `--outcomes: ${err.message}`);
+      }
+      out = closeWaveEpic({ repo: o.repo, epic, waveEpic: Number(o['wave-epic']), outcomes }, realRunGh);
     }
   } catch (err) {
-    fail(err.message);
+    if (err instanceof WaveEpicRefusal) exit(2, err.message);
+    exit(1, `${err.message} — failed partway; the command is idempotent, so run it again`);
   }
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   if (out.stuck && out.stuck.length) process.exit(1);
