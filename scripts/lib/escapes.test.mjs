@@ -511,7 +511,12 @@ test('shipDagPrs: a missing engine dir contributes nothing', async () => {
   assert.deepEqual(prs, [{ repo: 'o/r', pr: 5, tuningVersion: 0 }]);
 });
 
-test('a day file holds only what classify reads: no body without a fix or bug signal, label names, no search-only fields', async () => {
+test('a search result with no labels field is read as unlabelled, not a crash', async () => {
+  const fake = fakeGh({ [SEARCH.fix]: [{ ...cand({ number: 31, title: 'fix the thing', body: 'Follows up #5.' }), labels: undefined }] });
+  assert.deepEqual(kinds(await run(fake)), [[31, 'follow-up-fix']]);
+});
+
+test('a day file holds only what classify and findEscapes read: no body without a fix or bug signal, label names, no search-only fields', async () => {
   const cacheDir = tmp();
   const fake = fakeGh({
     [SEARCH.fix]: [cand({ number: 40, title: 'Fix the thing', body: 'fixes #5', labels: [{ name: 'x', color: 'fff' }] })],
