@@ -395,7 +395,8 @@ for (const [name, kind, go] of [
 {
   const RUN = 'sd-1';
   const report = { id: 'w2', startedAt: Date.parse('2026-10-08T19:00:00Z') };
-  const rec = (over = {}) => ({ runId: RUN, repo: 'a/b', issue: 1, ts: '2026-10-08T19:30:00Z', ...over });
+  const rec = (over = {}) => ({ runId: RUN, repo: 'a/b', issue: 1, ts: '2026-10-08T19:30:00Z', implStatus: 'error', ...over });
+  const pushed = (over = {}) => rec({ implStatus: 'pushed', ...over });
   const failed = { ref: 'a/b#1', status: 'failed', prNumber: null };
   const merged = { ref: 'a/b#1', status: 'succeeded', prNumber: 11 };
   const skipped = { ref: 'a/b#1', status: 'skipped', prNumber: null };
@@ -407,10 +408,12 @@ for (const [name, kind, go] of [
     ['a PR-less failure with no record at all', failed, [], false],
     ['a PR-less failure whose record is another run, repo or issue', failed, [rec({ runId: 'sd-2', reportId: 'w2' }), rec({ repo: 'a/c', reportId: 'w2' }), rec({ issue: 2, reportId: 'w2' })], false],
     ['a PR-less failure, repo and run folded by case and suffix', failed, [rec({ runId: 'SD-1-b', repo: 'A/B', reportId: 'w2' })], true],
-    ['a succeeded row with no PR (find-pr), which no later report carries over', { ...merged, prNumber: null }, [rec({ reportId: 'w1' })], false],
-    ['a carried-over merged row recorded under the first report', merged, [rec({ reportId: 'w1' })], true],
+    ['a succeeded row with no PR (find-pr) whose only record is an error under the first report', { ...merged, prNumber: null }, [rec({ reportId: 'w1' })], false],
+    ['a find-pr row carried over, whose record the first ingest made pushed from --outcomes', { ...merged, prNumber: null }, [pushed({ reportId: 'w1' })], true],
+    ['a PR-less blocked row carried over, recorded blocked under the first report', { ...failed, status: 'blocked' }, [rec({ implStatus: 'blocked', reportId: 'w1' })], true],
+    ['a carried-over merged row recorded under the first report', merged, [pushed({ reportId: 'w1' })], true],
     ['a carried-over merged row covered by a hand-written record from before the retry', merged, [rec({ ts: '2026-10-01T00:00:00Z' })], true],
-    ['a carried-over skipped row', skipped, [rec({ reportId: 'w1' })], true],
+    ['a carried-over skipped row', skipped, [rec({ implStatus: null, reportId: 'w1' })], true],
     ['a merged row with no record', merged, [], false],
   ]) {
     test(`rowCovered: ${name} is ${want ? '' : 'not '}covered`, () => {
