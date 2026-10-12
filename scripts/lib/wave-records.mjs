@@ -67,15 +67,18 @@ const sameRecord = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.rep
  * Whether `records` (the telemetry log) cover terminal `row` of the report `{id, startedAt (epoch ms)}`,
  * as run `runId`'s family sees it: the audit counterpart of `sameRecord`, which it must agree with. A
  * PR-less failure (`routeFailure` would not send it to the gate, and it is not skipped) is its report's
- * own event: only a record of its ref carrying `id` covers it, or, with no `reportId`, one at or after
- * `startedAt`. Any other row recurs unchanged in a later report, which `sameRecord` folds into the
- * first one's event, so a record of its ref from any report covers it.
+ * own event, but only against a record that is itself a PR-less failure (`implStatus: "error"`, as in
+ * `sameRecord`): that one covers it only if it carries `id`, or, with no `reportId`, is at or after
+ * `startedAt`. Any other record of the row's ref, from any report, covers it, because `sameRecord`
+ * folds the two into one event. The `startedAt` test for a record with no `reportId` is the issue's
+ * rule, and stricter than `sameRecord`, which folds a hand-written record into any report's event: audit
+ * can name a wave that ingesting would add nothing to, which is what a hand-written record that old merits a look at.
  */
 export function rowCovered(row, { id, startedAt }, records, runId) {
   const { repo, number } = parseRef(row.ref);
-  const own = records.filter((r) => sameRun(r.runId, runId) && sameRepo(r.repo, repo) && r.issue === number);
-  if (row.status === 'skipped' || routeFailure(row) === 'review-gate') return own.length > 0;
-  return own.some((r) => (r.reportId ? r.reportId === id : Date.parse(r.ts) >= startedAt));
+  const ownEvent = row.status !== 'skipped' && routeFailure(row) !== 'review-gate';
+  return records.some((r) => sameRun(r.runId, runId) && sameRepo(r.repo, repo) && r.issue === number
+    && !(ownEvent && r.implStatus === 'error' && (r.reportId ? r.reportId !== id : !(Date.parse(r.ts) >= startedAt))));
 }
 
 /**
