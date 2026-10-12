@@ -1,7 +1,7 @@
 // Tests for the escaped-defect proxy. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, existsSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withBackoff } from './gh.mjs';
@@ -140,7 +140,7 @@ test('revert by body: a sha GitHub cannot resolve is warned about, leaves the ti
   const rows = await run(fake, { cacheDir });
   assert.deepEqual(kinds(rows), [[21, 'revert']]);
   assert.match(rows.warnings.join('\n'), /o\/r#21.*deadbeef.*Bad Gateway/);
-  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json')));
 });
 
 for (const [body, want] of [
@@ -205,7 +205,7 @@ test('candidates are fetched once per repo per merge day, and cached once that d
   assert.equal(searches(), 5);
   await run(fake, { cacheDir });
   assert.equal(searches(), 5);
-  assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+  assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json')));
 });
 
 test('a second run over a settled population makes no gh pr view call: a merged PR\'s view is cached', async () => {
@@ -260,7 +260,7 @@ test('revert by body: a sha GitHub reports as unknown (422) falls back to the ti
     'api repos/o/r/commits/deadbeef/pulls': new Error('gh: No commit found for SHA: deadbeef (HTTP 422)'),
   });
   assert.deepEqual(kinds(await run(fake, { cacheDir })), [[21, 'revert']]);
-  assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+  assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json')));
   const again = fakeGh();
   assert.deepEqual(kinds(await run(again, { cacheDir })), [[21, 'revert']]);
   assert.deepEqual(again.calls, []);
@@ -275,14 +275,14 @@ for (const order of [['deadbeef', 'cafef00d'], ['cafef00d', 'deadbeef']]) {
       'api repos/o/r/commits/cafef00d/pulls': new Error('gh: No commit found for SHA: cafef00d (HTTP 422)'),
     });
     assert.deepEqual(kinds(await run(fake, { cacheDir })), [[21, 'revert']]);
-    assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+    assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json')));
   });
 }
 
 test('an unreadable cache file is warned about and searched again, not fatal', async () => {
   const cacheDir = tmp();
-  mkdirSync(join(cacheDir, 'v1', 'o__r'), { recursive: true });
-  writeFileSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json'), '[{"number": 4');
+  mkdirSync(join(cacheDir, 'v1', 'o__r', 'days-v2'), { recursive: true });
+  writeFileSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json'), '[{"number": 4');
   const fake = fakeGh({ [SEARCH.bug]: [cand({ number: 30, body: 'broken since #5', labels: [{ name: 'bug' }] })] });
   const rows = await run(fake, { cacheDir });
   assert.deepEqual(kinds(rows), [[30, 'follow-up-fix']]);
@@ -294,7 +294,7 @@ test('a PR whose window has closed is counted, but its merge day is not cached u
   const cacheDir = tmp();
   const now = Date.parse('2026-08-31T12:00:00Z'); // #5's window closed at 10:00; the day's closes at 2026-09-01T00:00
   assert.equal((await run(fake, { cacheDir, now })).length, 1);
-  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json')));
   await run(fake, { cacheDir, now });
   assert.equal(fake.calls.filter((c) => c.startsWith('search')).length, 10);
 });
@@ -302,16 +302,16 @@ test('a PR whose window has closed is counted, but its merge day is not cached u
 test('a merge day is cached only a settling day after its window closes, so late-indexed candidates are not frozen out', async () => {
   const cacheDir = tmp();
   await run(fakeGh(), { cacheDir, now: Date.parse('2026-09-01T12:00:00Z') });
-  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json')));
   await run(fakeGh(), { cacheDir, now: Date.parse('2026-09-02T00:00:00Z') });
-  assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+  assert.ok(existsSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json')));
 });
 
 test('a search that reaches GitHub\'s 1000-result cap fails naming the repo and query, and caches nothing', async () => {
   const cacheDir = tmp();
   const full = Array.from({ length: 1000 }, (_, i) => cand({ number: 1000 + i }));
   await assert.rejects(run(fakeGh({ [SEARCH.fix]: full }), { cacheDir }), /o\/r: gh search prs --match title fix --created 2026-08-01\.\.2026-08-31 .*1000/);
-  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
+  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json')));
 });
 
 test('a rate-limited search is retried through findEscapes, with growing waits', async () => {
@@ -509,4 +509,40 @@ test('shipDagPrs caches a repo under its lowercased name, so the casings of one 
 test('shipDagPrs: a missing engine dir contributes nothing', async () => {
   const prs = await shipDagPrs([{ repo: 'o/r', issue: 9, pr: 5, finalState: 'merged' }], { baseDir: join(tmp(), 'absent'), cacheDir: tmp(), gh: fakeGh().gh });
   assert.deepEqual(prs, [{ repo: 'o/r', pr: 5, tuningVersion: 0 }]);
+});
+
+test('a day file holds only what classify reads: no body without a fix or bug signal, label names, no search-only fields', async () => {
+  const cacheDir = tmp();
+  const fake = fakeGh({
+    [SEARCH.fix]: [cand({ number: 40, title: 'Fix the thing', body: 'fixes #5', labels: [{ name: 'x', color: 'fff' }] })],
+    [SEARCH.bug]: [cand({ number: 41, title: 'crash', body: 'broke #5', labels: [{ name: 'bug' }] }), cand({ number: 42, title: 'idea', body: 'long text', labels: [{ name: 'enhancement' }] })],
+  });
+  await run(fake, { cacheDir });
+  const day = JSON.parse(readFileSync(join(cacheDir, 'v1', 'o__r', 'days-v2', '2026-08-01.json'), 'utf8'));
+  const at = '2026-08-10T00:00:00Z';
+  assert.deepEqual(day, [
+    { number: 40, title: 'Fix the thing', createdAt: at, labels: ['x'], reverts: null, body: 'fixes #5' },
+    { number: 41, title: 'crash', createdAt: at, labels: ['bug'], reverts: null, body: 'broke #5' },
+    { number: 42, title: 'idea', createdAt: at, labels: ['enhancement'], reverts: null },
+  ]);
+  const again = fakeGh();
+  assert.deepEqual(kinds(await run(again, { cacheDir })), [[40, 'follow-up-fix'], [41, 'follow-up-fix']]);
+  assert.deepEqual(again.calls, []);
+});
+
+test('an old-format day file is searched again, while the old PR view and closing answer still come from the cache', async () => {
+  const cacheDir = tmp();
+  const repo = join(cacheDir, 'v1', 'o__r');
+  mkdirSync(repo, { recursive: true });
+  writeFileSync(join(repo, '2026-08-01.json'), JSON.stringify([cand({ number: 99, title: 'Fix it', body: 'fixes #5' })]));
+  writeFileSync(join(repo, 'pr-5.json'), JSON.stringify({ mergedAt: MERGED, title: 'Add thing', subjects: [], closing: [] }));
+  writeFileSync(join(repo, 'closing-7.json'), JSON.stringify({ repo: 'o/r', pr: 8 }));
+  const fake = fakeGh({ [SEARCH.fix]: [cand({ number: 40, title: 'Fix the thing', body: 'fixes #5' })] });
+  assert.deepEqual(kinds(await run(fake, { cacheDir })), [[40, 'follow-up-fix']]);
+  assert.equal(fake.calls.filter((c) => c.startsWith('search')).length, 5);
+  assert.ok(!fake.calls.some((c) => c.startsWith('pr view') || c.startsWith('api graphql')));
+  const base = engineDir([{ ref: 'o/r#7', status: 'succeeded' }], [{ tuningVersion: 4, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'o/r#7' }] }]);
+  const closer = fakeGh();
+  assert.deepEqual(await shipDagPrs([], { baseDir: base, cacheDir, gh: closer.gh, sleep: async () => {} }), [{ repo: 'o/r', pr: 8, tuningVersion: 4 }]);
+  assert.deepEqual(closer.calls, []);
 });
