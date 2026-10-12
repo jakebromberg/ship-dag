@@ -120,7 +120,7 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest) {
   // Whether a PR-less run of the row is a rate-limit death (a row with a PR is gated, and reads its own PR).
   const dies = rateLimited && implStatusOf(row, null) === 'error';
   return records.some((r) => {
-    const pr = isPr(row.prNumber) ? row.prNumber : findPr || (r.reportId === id && !dies) ? r.pr ?? null : null;
+    const pr = isPr(row.prNumber) ? row.prNumber : findPr || (r.reportId === id && !dies) ? prOf(r.pr) : null;
     const { finalState } = r;
     // A find-pr row's merge has a PR --outcomes supplied, whether or not the record names it.
     const implStatus = findPr && finalState === 'merged' ? 'pushed' : implStatusOf(row, pr);
