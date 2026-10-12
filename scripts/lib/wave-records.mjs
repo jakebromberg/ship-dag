@@ -53,14 +53,22 @@ function roundVerdict({ path, review }, blockOn, warn) {
   }
 }
 
+/** The `finalState` that identifies an event: a rate-limited `error` is the legacy hand-written spelling of the `deferred` death ingest derives (PR #105). */
+const eventState = (r) => (r.failureReason === 'rate-limited' && r.finalState === 'error' ? 'deferred' : r.finalState);
+
 /**
- * Whether `a` and `b` are the same event: `sameRun`, ref, finalState, and failureReason (absent reads as
- * null). Differing `reportId`s make them two only when both are PR-less failures (`implStatus: "error"`),
- * the rows a retry re-runs: every report re-lists the other rows as they stood, so a record with a PR,
- * or a skipped one, recurs unchanged. A hand-written record has no `reportId`, so the rest decides.
+ * Whether `a` and `b` are the same event, the one identity `rowCovered` shares: `sameRun`, ref, `eventState`,
+ * and failureReason (absent reads as null). A record that never reached implement (`implStatus` null) is never
+ * the same event as one that did, and records holding different PRs are two events unless both are merges
+ * (until #107's "ran" facts tell those apart). Differing `reportId`s make them two only when both are PR-less
+ * failures (`implStatus: "error"`), the rows a retry re-runs: every report re-lists the other rows as they
+ * stood, so a record with a PR, or a skipped one, recurs unchanged. A hand-written record has no `reportId`,
+ * so the rest decides.
  */
 const sameRecord = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.repo) && a.issue === b.issue
-  && a.finalState === b.finalState && (a.failureReason ?? null) === (b.failureReason ?? null)
+  && eventState(a) === eventState(b) && (a.failureReason ?? null) === (b.failureReason ?? null)
+  && (a.implStatus == null) === (b.implStatus == null)
+  && ((a.pr ?? null) === (b.pr ?? null) || (a.finalState === 'merged' && b.finalState === 'merged'))
   && (!a.reportId || !b.reportId || a.reportId === b.reportId || a.implStatus !== 'error' || b.implStatus !== 'error');
 
 /**
@@ -110,8 +118,7 @@ export function rowCovered(row, { id, startedAt }, records, runId) {
  *   as `reviewRoundFiles` returns them; `review` is the parsed file, null when unparseable
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl, finalState, bounces, findings, tokens}`
  * @param {{existing?: object[], warn?: (m: string) => void, tuningVersion?: unknown, reportId?: string, noCheckRepos?: Iterable<string>}} [opts]
- *   a record matching an `existing` one (or an earlier row's) on `sameRun`, ref, finalState and failureReason is dropped,
- *   unless both are PR-less failures carrying different `reportId`s; `reportId` (the report's file stem) is stamped on each record;
+ *   a record that is the same event as an `existing` one (or an earlier row's), by `sameRecord`, is dropped; `reportId` (the report's file stem) is stamped on each record;
  *   a succeeded row in a `noCheckRepos` repo (no `postSessionCheck`, so the engine ran none) records `ciStatus: "none"`
  * @returns {{records: object[]}}
  * @throws when a terminal row has no `owner/repo#N` ref (`malformed report row`), or exists but no run

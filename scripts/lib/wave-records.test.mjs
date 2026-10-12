@@ -162,7 +162,7 @@ test('rate-limited then merged gives two records, and a re-ingest adds none', ()
   assert.equal(derive({ report: report([noPr]), digests }, { existing: [...first, ...second] }).records.length, 0);
 });
 
-const MERGED = { runId: 'sd-20261008-1', repo: 'WXYC/dj-site', issue: 1, finalState: 'merged', failureReason: null };
+const MERGED = { runId: 'sd-20261008-1', repo: 'WXYC/dj-site', issue: 1, implStatus: 'pushed', finalState: 'merged', failureReason: null };
 const dedupeCases = [
   ['a -w2 config name against a record under the bare run id', { entry: null, report: report([row()], { configName: 'ship-dag-sd-20261008-1-w2' }) }, MERGED],
   ['an existing record with no failureReason key', {}, (({ failureReason, ...rest }) => rest)(MERGED)],
@@ -450,6 +450,32 @@ for (const [name, kind, go] of [
   ]) {
     test(`rowCovered: ${name} is ${want ? '' : 'not '}covered`, () => {
       assert.equal(rowCovered(row, report, records, RUN), want);
+    });
+  }
+
+  // One identity: audit names a row exactly when ingest would append a record for it, bar the `startedAt` rule
+  // (rowCovered alone refuses a hand-written PR-less failure from before the report).
+  const rateLimited = { [failed.ref]: { status: 'failed', failureReason: 'rate-limited' } };
+  const dead = (over = {}) => rec({ finalState: 'error', failureReason: 'rate-limited', ...over });
+  const atB = { [merged.ref]: { finalState: 'blocked-hitl', hitl: { pointB: true } } };
+  for (const [name, row, outcomes, digests, records, covered, startedAtOnly = false] of [
+    ['a triage defer is not the point-B hold of a PR', merged, atB, {}, [defer('blocked-hitl')], false],
+    ['a second hold of a new PR is not the first hold', merged, atB, {}, [held({ pr: 10 })], false],
+    ['a hold of the same PR is the same event', merged, atB, {}, [held()], true],
+    ['a legacy rate-limited error is the death ingest derives as deferred', failed, {}, rateLimited, [dead()], true],
+    ['a legacy rate-limited error under the first report is not this report\'s death', failed, {}, rateLimited, [dead({ reportId: 'w1' })], false],
+    ['a carried-over merge of the same PR', merged, {}, {}, [pushed({ reportId: 'w1' })], true],
+    ['a carried-over merge of another PR', merged, {}, {}, [pushed({ pr: 10, reportId: 'w1' })], true],
+    ['a PR-less failure under the first report is not this report\'s', failed, {}, {}, [rec({ reportId: 'w1' })], false],
+    ['a PR-less failure under this report', failed, {}, {}, [rec({ reportId: 'w2' })], true],
+    ['a skipped row\'s carried-over record', skipped, {}, {}, [skippedRec({ reportId: 'w1' })], true],
+    ['a hand-written PR-less failure from before startedAt', failed, {}, {}, [rec({ ts: '2026-10-08T18:59:59Z' })], false, true],
+  ]) {
+    test(`one identity: ${name}: audit ${covered ? 'covers' : 'names'} the row${startedAtOnly ? ', ingest adds nothing' : ''}`, () => {
+      const wave = { configName: 'ship-dag-sd-1', finishedAt: '2026-10-08T19:30:00Z', issues: [row] };
+      const derived = deriveWaveRecords(wave, { runId: RUN, issues: [] }, digests, {}, outcomes, { existing: records, reportId: 'w2', warn: () => {} }).records;
+      assert.equal(rowCovered(row, report, records, RUN), covered);
+      assert.equal(derived.length === 0, startedAtOnly ? true : covered);
     });
   }
 }
