@@ -502,6 +502,7 @@ for (const [name, kind, go] of [
     ['a find-pr row against a merge recorded with another repo\'s PR', findPr, asked('merged', 11), {}, [pushed({ pr: 'x/y#11' })], true],
     ['a find-pr row against a merge recorded with a PR value that is no PR', findPr, asked('merged', 11), {}, [pushed({ pr: 'draft-11' })], true],
     ['a find-pr row against a deferral of the same number in another repo', findPr, asked('deferred', 11), {}, [pushed({ finalState: 'deferred', pr: 'x/y#11' })], false],
+    ['a hand-written deferral holding its PR as owner/repo#N in another case', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'A/B#11' })], true],
     ['a hand-written deferral holding the same number in another repo', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'x/y#11' })], false],
     // Only the implStatus-null rule keeps a find-pr row left at point B apart from a triage defer.
     ['a find-pr row left at point B with no PR is not a triage defer', findPr, asked('blocked-hitl'), {}, [defer('blocked-hitl')], false],
