@@ -82,8 +82,8 @@ const implStatusOf = (row, pr) => (row.status === 'skipped' ? null
  * `implStatus` ingest derives for the row (`pushed` for a find-pr row, succeeded with no PR in the report,
  * whose PR `--outcomes` supplied; so a triage defer, `implStatus` null, is not a later run of the ref, and
  * a failed row, which a retry re-runs, needs its own report's record) and a finalState the row allows:
- * `deferred` for a skipped row; `merged` for a row with a PR, or any but `error` when the record holds that
- * same PR (point B); not `merged` for a blocked row; any for a find-pr row. The `startedAt` test is the
+ * any for a skipped row, since `--outcomes` may set one; `merged` for a row with a PR, or any when the
+ * record holds that same PR (`--outcomes`, as at point B); not `merged` for a blocked row; any for a find-pr row. The `startedAt` test is the
  * issue's rule, and stricter than `sameRecord`, which folds a hand-written record into any report's event:
  * audit can name a wave that ingesting would add nothing to, which is what a hand-written record that old
  * merits a look at.
@@ -93,9 +93,8 @@ export function rowCovered(row, { id, startedAt }, records, runId) {
   const impl = implStatusOf(row, row.prNumber);
   const prLess = impl === 'error' || impl === 'blocked';
   const findPr = prLess && row.status === 'succeeded';
-  const fits = ({ finalState, pr }) => (impl === null ? finalState === 'deferred'
-    : impl === 'pushed' ? finalState === 'merged' || (finalState !== 'error' && pr === row.prNumber)
-    : findPr || finalState !== 'merged');
+  const fits = ({ finalState, pr }) => (impl === 'pushed' ? finalState === 'merged' || pr === row.prNumber
+    : impl === null || findPr || finalState !== 'merged');
   return records.some((r) => sameRun(r.runId, runId) && sameRepo(r.repo, repo) && r.issue === number && (prLess && r.reportId === id || (r.implStatus === 'error'
     ? prLess && !r.reportId && Date.parse(r.ts) >= startedAt
     : (r.implStatus ?? null) === (findPr ? 'pushed' : impl) && fits(r))));
