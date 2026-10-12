@@ -22,8 +22,8 @@ export function readWaveReport(path) {
   if (!Array.isArray(report?.issues)) return { ...out, error: `${path}: the report has no issues array` };
   const startedAt = typeof report.startedAt === 'string' ? Date.parse(report.startedAt) : NaN;
   const read = Number.isNaN(startedAt) ? { ...out, report } : { ...out, report, startedAt };
-  const bad = report.issues.find((r) => !parseRef(r?.ref));
-  if (bad) return { ...read, error: `${path}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}` };
+  const bad = report.issues.findIndex((r) => !parseRef(r?.ref)); // findIndex: a null row is falsy, so find would miss it
+  if (bad !== -1) return { ...read, error: `${path}: a row has no owner/repo#N ref: ${JSON.stringify(report.issues[bad])}` };
   if (Number.isNaN(startedAt)) return { ...read, error: `${path}: the report has no parseable startedAt: ${JSON.stringify(report.startedAt)}` };
   return read;
 }
