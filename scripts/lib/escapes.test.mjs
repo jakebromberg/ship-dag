@@ -266,16 +266,18 @@ test('revert by body: a sha GitHub reports as unknown (422) falls back to the ti
   assert.deepEqual(again.calls, []);
 });
 
-test('revert by body: a transient sha failure keeps the day uncached even when a later sha is unknown (422)', async () => {
-  const cacheDir = tmp();
-  const fake = fakeGh({
-    [SEARCH.revert]: [cand({ number: 21, title: 'Revert "Add thing"', body: 'This reverts commit deadbeef.\nThis reverts commit cafef00d.' })],
-    'api repos/o/r/commits/deadbeef/pulls': new Error('HTTP 502: Bad Gateway'),
-    'api repos/o/r/commits/cafef00d/pulls': new Error('gh: No commit found for SHA: cafef00d (HTTP 422)'),
+for (const order of [['deadbeef', 'cafef00d'], ['cafef00d', 'deadbeef']]) {
+  test(`revert by body: a transient sha failure keeps the day uncached whichever side of an unknown (422) sha it is on (${order.join(' then ')})`, async () => {
+    const cacheDir = tmp();
+    const fake = fakeGh({
+      [SEARCH.revert]: [cand({ number: 21, title: 'Revert "Add thing"', body: order.map((sha) => `This reverts commit ${sha}.`).join('\n') })],
+      'api repos/o/r/commits/deadbeef/pulls': new Error('HTTP 502: Bad Gateway'),
+      'api repos/o/r/commits/cafef00d/pulls': new Error('gh: No commit found for SHA: cafef00d (HTTP 422)'),
+    });
+    assert.deepEqual(kinds(await run(fake, { cacheDir })), [[21, 'revert']]);
+    assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
   });
-  assert.deepEqual(kinds(await run(fake, { cacheDir })), [[21, 'revert']]);
-  assert.ok(!existsSync(join(cacheDir, 'v1', 'o__r', '2026-08-01.json')));
-});
+}
 
 test('an unreadable cache file is warned about and searched again, not fatal', async () => {
   const cacheDir = tmp();
