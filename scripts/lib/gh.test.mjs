@@ -1,7 +1,7 @@
 // gh.test.mjs — ghFailure classifies a failed gh call from its structured output, not by reading its wording.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ghFailure, ghJson } from './gh.mjs';
+import { ghFailure, ghJson, withBackoff } from './gh.mjs';
 
 const failed = (message, extra = {}) => Object.assign(new Error(message), extra);
 const apiBody = (status, message) => JSON.stringify({ message, status: String(status) });
@@ -16,6 +16,9 @@ test('ghFailure: the HTTP status and whether it is a rate limit', () => {
     ['a 502', failed('Command failed: gh api', { stdout: apiBody(502, 'Bad Gateway'), stderr: 'gh: Bad Gateway (HTTP 502)' }), { status: 502, rateLimited: false }],
     ['a 502 with only the message', failed('HTTP 502: Bad Gateway'), { status: 502, rateLimited: false }],
     ['a network error, no stdout or stderr', failed('connect ECONNREFUSED', { stdout: '', stderr: '' }), { status: null, rateLimited: false }],
+    // stderr names no status: only the JSON body gh api prints on stdout says what the failure was.
+    ['a status only in the stdout body', failed('Command failed: gh api', { stdout: apiBody(422, 'No commit found for SHA: deadbeef'), stderr: 'gh: request failed' }), { status: 422, rateLimited: false }],
+    ['a rate limit only in the stdout body', failed('Command failed: gh api', { stdout: apiBody(403, 'API rate limit exceeded for user'), stderr: 'gh: request failed' }), { status: 403, rateLimited: true }],
     ['stdout that is not JSON', failed('Command failed: gh api', { stdout: '<html>Bad Gateway</html>', stderr: 'gh: Bad Gateway (HTTP 502)' }), { status: 502, rateLimited: false }],
   ];
   for (const [name, err, want] of table) assert.deepEqual(ghFailure(err), want, name);
@@ -28,4 +31,16 @@ test('ghJson: the value, or the classified failure after a warning with the call
   const bad = failed('gh: nope (HTTP 422)');
   assert.deepEqual(await ghJson(['x'], 'what', { ...ctx, gh: async () => { throw bad; } }), { failure: { status: 422, rateLimited: false } });
   assert.deepEqual(warns, ['pfx: what: gh: nope (HTTP 422)']);
+});
+
+test('withBackoff and ghJson retry and rethrow on ghFailure\'s classification, not on the message', async () => {
+  // A 429 whose message never says "rate limit": only the classification marks it as one.
+  const limited = () => failed('Command failed: gh api', { stdout: apiBody(429, 'Too many requests'), stderr: 'gh: Too many requests (HTTP 429)' });
+  let calls = 0;
+  const flaky = async () => { calls += 1; if (calls < 3) throw limited(); return 'ok'; };
+  assert.equal(await withBackoff(flaky, { repo: 'o/r', sleep: async () => {} }), 'ok');
+  const warns = [];
+  const ctx = { repo: 'o/r', sleep: async () => {}, warn: (m) => warns.push(m), prefix: 'pfx' };
+  await assert.rejects(ghJson(['x'], 'what', { ...ctx, gh: async () => { throw limited(); } }));
+  assert.deepEqual(warns, []);
 });

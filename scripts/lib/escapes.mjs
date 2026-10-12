@@ -61,7 +61,8 @@ async function revertedPrs(cand, repo, ctx) {
   const prs = lines.filter((m) => !m[1] || same(m[1], repo)).map((m) => Number(m[2]));
   for (const sha of shas) {
     const { value, failure } = await ghJson(['api', `repos/${repo}/commits/${sha}/pulls`], `${repo}#${cand.number} reverts ${sha}, which is not resolved to a PR`, { ...ctx, repo });
-    if (failure) cand.unresolved = failure.status === 422 ? 'permanent' : 'transient';
+    // A transient failure on any sha outranks a 422 on another: the day stays uncached until it resolves.
+    if (failure && cand.unresolved !== 'transient') cand.unresolved = failure.status === 422 ? 'permanent' : 'transient';
     prs.push(...(value ?? []).map((p) => p.number));
   }
   return prs;
