@@ -4,24 +4,25 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
-import { SIDECAR_NAME } from './wave-sidecar.mjs';
+import { appendWave } from './wave-sidecar.mjs';
+import { engineFixture, putReport } from './engine-fixture.mjs';
 
 const REF = 'WXYC/repo#1';
-const dirs = [];
-const stateDir = () => { const d = mkdtempSync(join(tmpdir(), 'wave-reports-')); dirs.push(d); mkdirSync(join(d, 'state', 'reports'), { recursive: true }); return d; };
-test.after(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
-const putReport = (d, id, body) => writeFileSync(join(d, 'state', 'reports', `${id}.json`), typeof body === 'string' ? body : JSON.stringify(body));
-const sidecar = (d, ...entries) => writeFileSync(join(d, SIDECAR_NAME), entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+const fixtures = [];
+const stateDir = (spec = {}) => { const fx = engineFixture({ 'wave-reports': spec }); fixtures.push(fx); return fx.dirs['wave-reports']; };
+test.after(() => fixtures.forEach((fx) => fx.cleanup()));
+const put = (d, id, body) => putReport(d, `${id}.json`, body);
+const sidecar = (d, ...entries) => entries.forEach((e) => appendWave(d, e));
 const entry = (emittedAt, tuningVersion) => ({ emittedAt, tuningVersion, issues: [{ ref: REF, complexity: 'normal' }] });
 const STARTED = '2026-01-02T00:00:00Z';
 
 test('readWaveReports parses each report once and flags the ones a caller must refuse', () => {
   const d = stateDir();
-  putReport(d, 'ok', { startedAt: STARTED, issues: [{ ref: REF }] });
-  putReport(d, 'torn', '{nope');
-  putReport(d, 'no-issues', { startedAt: STARTED });
-  putReport(d, 'no-start', { issues: [] });
-  putReport(d, 'bad-start', { startedAt: 'soon', issues: [] });
+  put(d, 'ok', { startedAt: STARTED, issues: [{ ref: REF }] });
+  put(d, 'torn', '{nope');
+  put(d, 'no-issues', { startedAt: STARTED });
+  put(d, 'no-start', { issues: [] });
+  put(d, 'bad-start', { startedAt: 'soon', issues: [] });
   const warns = [];
   const byId = Object.fromEntries(readWaveReports(d, { warn: (m) => warns.push(m) }).map((r) => [r.id, r]));
   assert.equal(byId.ok.startedAt, Date.parse(STARTED));
@@ -44,12 +45,10 @@ test('waveContextFor takes the sidecar entry as of startedAt, never a later re-e
 
 test('waveContextFor falls back to the config in the state dir, then state/, and reports none', () => {
   const config = { name: 'ship-dag-run1', defaultEffort: 'high', defaultModel: 'sonnet', issues: [{ repo: 'WXYC/repo', number: 1, complexity: 'normal' }] };
-  // A config's mtime is when the test wrote it, so the report starts just after.
+  // The fixture emits each config at EMITTED, so a report starting now is after it.
   const report = { report: { issues: [{ ref: REF }] }, startedAt: Date.now() + 60_000 };
-  const top = stateDir();
-  writeFileSync(join(top, 'config.json'), JSON.stringify(config));
-  const nested = stateDir();
-  writeFileSync(join(nested, 'state', 'config.json'), JSON.stringify(config));
+  const top = stateDir({ configs: { 'config.json': config } });
+  const nested = stateDir({ configs: { 'state/config.json': config } });
   for (const d of [top, nested]) {
     const ctx = waveContextFor(d, report, { warn: () => {} });
     assert.equal(ctx.source, 'config');
@@ -62,9 +61,8 @@ test('waveContextFor falls back to the config in the state dir, then state/, and
 });
 
 test('readWaveReport reads any path, and keeps the rows of a report whose startedAt does not parse', () => {
-  const d = stateDir();
+  const d = stateDir({ files: { 'state/reports/w1.txt': { startedAt: 'soon', issues: [{ ref: REF }] } } });
   const path = join(d, 'state', 'reports', 'w1.txt');
-  writeFileSync(path, JSON.stringify({ startedAt: 'soon', issues: [{ ref: REF }] }));
   const read = readWaveReport(path);
   assert.deepEqual(read.report.issues, [{ ref: REF }]);
   assert.match(read.error, /no parseable startedAt: "soon"/);
@@ -87,7 +85,7 @@ test('readWaveReport refuses a row with no owner/repo#N ref before it looks at s
     ['bad-ref-no-start', undefined, undefined, { ref: 'o-r-2', status: 'failed' }],
     ['null-row', STARTED, Date.parse(STARTED), null],
   ]) {
-    putReport(d, id, { startedAt, issues: [{ ref: REF }, bad] });
+    put(d, id, { startedAt, issues: [{ ref: REF }, bad] });
     const read = readWaveReport(join(d, 'state', 'reports', `${id}.json`));
     assert.equal(read.error, `${read.path}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}`);
     assert.equal(read.report.issues.length, 2);
