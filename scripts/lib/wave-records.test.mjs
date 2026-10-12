@@ -404,7 +404,7 @@ for (const [name, kind, go] of [
   // Point A: a triage defer, hand-written before the ref ever ran.
   const defer = (finalState) => skippedRec({ finalState, ts: '2026-10-01T00:00:00Z' });
   // Point E: a rate-limit death, hand-written once this report was under way.
-  const death = () => rec({ finalState: 'deferred', failureReason: 'rate-limited' });
+  const death = (over = {}) => rec({ finalState: 'deferred', failureReason: 'rate-limited', ...over });
   const failed = { ref: 'a/b#1', status: 'failed', prNumber: null };
   const merged = { ref: 'a/b#1', status: 'succeeded', prNumber: 11 };
   const findPr = { ...merged, prNumber: null };
@@ -454,13 +454,15 @@ for (const [name, kind, go] of [
   }
 
   // One identity: audit names a row exactly when ingest, with these --outcomes and digests, would append a record
-  // for it. A row whose last column names a cause is a disagreement rowCovered accepts, as its JSDoc lists:
-  // `startedAt` (a hand-written PR-less failure from before the report), `--outcomes` (rowCovered reads a record's
-  // finalState, and a find-pr row's PR, as ones --outcomes could have set; so a row it covers may still append
-  // under other --outcomes, and a PR-less row whose PR came from --outcomes is named), and `digest` (audit reads no
-  // digest, so an error record covers a PR-less failure whatever its rate-limit).
+  // for it. rowCovered is handed the row's digest as ingest reads it. A row whose last column names a cause is a
+  // disagreement rowCovered accepts, as its JSDoc lists: `startedAt` (a hand-written PR-less failure from before the
+  // report) and `--outcomes` (rowCovered reads a record's finalState, and a find-pr row's PR, as ones --outcomes
+  // could have set; so a row it covers may still append under other --outcomes, and a PR-less row whose PR came from
+  // --outcomes is named).
   const blockedRow = { ...failed, status: 'blocked' };
   const rateLimited = { [failed.ref]: { status: 'failed', failureReason: 'rate-limited' } };
+  const timedOut = { [failed.ref]: { status: 'failed', failureReason: 'timeout' } };
+  const deathE = { ...failed, failureReason: 'rate-limited' };
   const dead = (over = {}) => rec({ finalState: 'error', failureReason: 'rate-limited', ...over });
   const atB = { [merged.ref]: { finalState: 'blocked-hitl', hitl: { pointB: true } } };
   const asked = (finalState, pr) => ({ [failed.ref]: { finalState, ...(pr ? { pr } : {}) } });
@@ -485,7 +487,8 @@ for (const [name, kind, go] of [
     // A PR-less blocked record and a PR-less error are two events across reports, either way round.
     ['a PR-less failure is not the first report\'s PR-less blocked record', failed, {}, {}, [rec({ implStatus: 'blocked', reportId: 'w1' })], false],
     ['a PR-less blocked row is not the first report\'s PR-less failure', blockedRow, {}, {}, [rec({ reportId: 'w1' })], false],
-    ['a PR-less blocked row carried over from the first report', blockedRow, {}, {}, [rec({ implStatus: 'blocked', reportId: 'w1' })], true],
+    // A record carrying a reportId is derived, so its ts is no reason to doubt it: w1's blocked record predates w2.
+    ['a PR-less blocked row carried over from the first report', blockedRow, {}, {}, [rec({ implStatus: 'blocked', reportId: 'w1', ts: '2026-10-08T18:00:00Z' })], true],
     // Only the implStatus-null rule keeps a find-pr row left at point B apart from a triage defer.
     ['a find-pr row left at point B with no PR is not a triage defer', findPr, asked('blocked-hitl'), {}, [defer('blocked-hitl')], false],
     // Accepted disagreements.
@@ -494,14 +497,36 @@ for (const [name, kind, go] of [
     // Only eventState's failureReason guard keeps an operator-set deferred apart from the error ingest derives.
     ['a PR-less failure against an operator-set deferred', failed, {}, {}, [rec({ finalState: 'deferred' })], true, '--outcomes'],
     ['a PR-less failure whose PR --outcomes supplied, against a hand-written merge', failed, asked(undefined, 11), {}, [pushed()], false, '--outcomes'],
-    ['a rate-limit death against a hand-written plain error', failed, {}, rateLimited, [rec()], true, 'digest'],
-    ['a plain PR-less failure against a legacy rate-limited error', failed, {}, {}, [dead()], true, 'digest'],
+    // The S6 guard: a rate-limit death left at point B is not the deferred death, though no --outcomes keeps it apart.
+    ['a rate-limit death against a hand-written deferred death', failed, asked('blocked-hitl'), rateLimited, [death()], true, '--outcomes'],
+    // The rate-limit is the digest's, else the row's own, as ingest reads it; never the record's.
+    ['a rate-limit death against a hand-written plain error', failed, {}, rateLimited, [rec()], false],
+    ['a plain PR-less failure against a legacy rate-limited error', failed, {}, {}, [dead()], false],
+    ['a row that says rate-limited, with no digest, against a hand-written plain error', deathE, {}, {}, [rec()], false],
+    ['a row that says rate-limited, with no digest, against a legacy rate-limited error', deathE, {}, {}, [dead()], true],
+    ['a row that says rate-limited, with no digest, against the deferred death', deathE, {}, {}, [death()], true],
+    ['a row that says rate-limited, whose digest says otherwise, against a plain error', deathE, {}, timedOut, [rec()], true],
+    ['a row that says rate-limited, whose digest says otherwise, against a legacy rate-limited error', deathE, {}, timedOut, [dead()], false],
+    ['a find-pr row that says rate-limited is no death: its own record left at point B', { ...findPr, failureReason: 'rate-limited' }, atB, {}, [rec({ finalState: 'blocked-hitl', reportId: 'w2' })], true],
+    ['a find-pr row is no death: its own record left at point B that says rate-limited', findPr, atB, {}, [rec({ finalState: 'blocked-hitl', failureReason: 'rate-limited', reportId: 'w2' })], false],
+    ['a rate-limited row with a PR is gated, not dead, against a hand-written rate-limited deferral', { ...merged, status: 'failed' }, asked('deferred'), rateLimited, [pushed({ finalState: 'deferred', failureReason: 'rate-limited' })], false],
+    // A resumed death derives the death and its continuation, so the continuation alone covers nothing.
+    ['a resumed death whose continuation merged a PR, with only the continuation', failed, asked(undefined, 11), rateLimited, [pushed({ reportId: 'w2' })], false],
+    ['a resumed death whose continuation merged a PR, with the death and the continuation', failed, asked(undefined, 11), rateLimited, [death({ reportId: 'w2' }), pushed({ reportId: 'w2' })], true],
+    ['a resumed death left at point B, with only the continuation', failed, atB, rateLimited, [rec({ finalState: 'blocked-hitl', reportId: 'w2' })], false],
+    // A blocked row is no death, rate-limited or not: ingest derives its one record, with the PR --outcomes gave.
+    ['a rate-limited blocked row whose PR came from --outcomes, recorded pushed under this report', blockedRow, asked(undefined, 11), rateLimited, [pushed({ reportId: 'w2' })], true],
+    ['a resumed death left at point B, with the death and the continuation', failed, atB, rateLimited, [death({ reportId: 'w2' }), rec({ finalState: 'blocked-hitl', reportId: 'w2' })], true],
+    // A find-pr row's PR is the record's, whichever report it carries.
+    ['a find-pr row carried over at its first report\'s point-B hold', findPr, { [findPr.ref]: { pr: 5, finalState: 'blocked-hitl', hitl: { pointB: true } } }, {}, [held({ pr: 5, ts: '2026-10-08T18:00:00Z' })], true],
+    ['a find-pr row left at point B with no PR, against its own record', findPr, asked('blocked-hitl'), {}, [rec({ finalState: 'blocked-hitl', reportId: 'w2' })], true],
+    ['a find-pr row deferred with no PR, against its own record', findPr, asked('deferred'), {}, [rec({ finalState: 'deferred', reportId: 'w2' })], true],
   ]) {
     const ingest = accepted ? `, though ingest ${covered ? 'appends' : 'adds nothing'} (${accepted})` : '';
     test(`one identity: ${name}: audit ${covered ? 'covers' : 'names'} the row${ingest}`, () => {
       const wave = { configName: 'ship-dag-sd-1', finishedAt: '2026-10-08T19:30:00Z', issues: [row] };
       const derived = deriveWaveRecords(wave, { runId: RUN, issues: [] }, digests, {}, outcomes, { existing: records, reportId: 'w2', warn: () => {} }).records;
-      assert.equal(rowCovered(row, report, records, RUN), covered);
+      assert.equal(rowCovered(row, report, records, RUN, digests[row.ref]), covered);
       assert.equal(derived.length === 0, accepted ? !covered : covered);
     });
   }
