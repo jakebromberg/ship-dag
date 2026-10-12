@@ -18,7 +18,7 @@ const WINDOW_DAYS = 30;
 const SEARCH_CAP = 1000;
 // A day is cached only this long after its window closes, so a candidate GitHub indexes late still counts.
 const SETTLE_DAYS = 1;
-// Bump DAY_CACHE_VERSION when the searches, the shape of a day file (`v<CACHE_VERSION>/<repo>/days-v<N>/<day>.json`)
+// Bump DAY_CACHE_VERSION when the searches, the shape of a day file (`v<CACHE_VERSION>/<owner>__<repo>/days-v<N>/<day>.json`, the repo dir lowercased)
 // or what a day file keeps change. Frozen into a settled day file are `hasSignal` and `FIX` (they decide whether a
 // candidate's body is kept), `revertedPrs`' patterns (its `reverts` and `unresolved`), and a PR candidate's `state`
 // (a PR still open when its day settles stays stored as open): a settled day cached under an old rule would
@@ -49,7 +49,7 @@ export function escapesDir(env = process.env) {
 /**
  * Whether `body`, written in repo `home`, cites `repo`#`n`: as `#n` (only when `repo` is `home`), as
  * `owner/repo#n`, or by its `/pull/n` or `/issues/n` URL. Repos compare case-insensitively, and a
- * longer number never matches.
+ * longer number never matches. `lead`, a regex source, must match right before the citation (`citesStrongly`'s keywords).
  */
 export function cites(body, repo, n, home = repo, lead = '') {
   const r = escape(repo);
@@ -57,7 +57,7 @@ export function cites(body, repo, n, home = repo, lead = '') {
   return new RegExp(`${lead}(?:${bare}(?<![\\w./-])${r}#${n}|github\\.com/${r}/(?:pull|issues)/${n})(?!\\d)`, 'i').test(body ?? '');
 }
 
-const STRONG = '\\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|regression from|caused by|introduced in):?\\s+(?:https?://)?';
+const STRONG = '\\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|regression from|caused by|introduced in):?[ \\t]+(?:https?://)?'; // spaces or tabs only: a keyword ending one line does not reach a ref on the next
 /** Whether `body` cites `repo`#`n` as `cites` does, right after a closing keyword or a causal phrase. */
 export const citesStrongly = (body, repo, n, home = repo) => cites(body, repo, n, home, STRONG);
 
