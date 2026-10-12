@@ -33,7 +33,7 @@ test('ghJson: the value, or the classified failure after a warning with the call
   assert.deepEqual(warns, ['pfx: what: gh: nope (HTTP 422)']);
 });
 
-test('withBackoff and ghJson retry and rethrow on ghFailure\'s classification, not on the message', async () => {
+test('withBackoff retries on ghFailure\'s classification, not on the message, and ghJson rethrows the exhausted rate limit unwarned', async () => {
   // A 429 whose message never says "rate limit": only the classification marks it as one.
   const limited = () => failed('Command failed: gh api', { stdout: apiBody(429, 'Too many requests'), stderr: 'gh: Too many requests (HTTP 429)' });
   let calls = 0;
