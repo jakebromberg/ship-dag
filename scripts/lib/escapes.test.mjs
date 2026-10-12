@@ -403,8 +403,11 @@ test('shipDagPrs: a report with no parseable startedAt is skipped with a warning
   ]);
   writeFileSync(join(base, 'sd-1', 'state', 'reports', 'r.json'), JSON.stringify({ issues: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }] }));
   const warnings = [];
-  const prs = await shipDagPrs([], { baseDir: base, gh: fakeGh({ [closers('o/r', 1)]: closersOf() }).gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
+  // GitHub would offer the report's own PR as #1's closer; the skipped report's refs must not fall back to it.
+  const fake = fakeGh({ [closers('o/r', 1)]: closersOf({ number: 11, headRefName: 'orchestrator/one', mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } }) });
+  const prs = await shipDagPrs([], { baseDir: base, cacheDir: tmp(), gh: fake.gh, sleep: async () => {}, warn: (m) => warnings.push(m) });
   assert.deepEqual(prs, []);
+  assert.deepEqual(fake.calls, []);
   assert.ok(warnings.some((m) => /no parseable startedAt.*skipped/.test(m)), warnings.join('\n'));
 });
 
@@ -425,7 +428,8 @@ test('shipDagPrs and ingest-wave read one state dir alike: a PR and its tuningVe
   for (const name of ['r.json', 'r2.json', 'r3.json']) {
     try { ingested.push(...ingestWave(join(reports, name), {}, { path: join(base, 'log.jsonl'), warn: () => {} }).records); } catch (err) { assert.equal(err.code, 3, err.message); }
   }
-  const prs = await shipDagPrs([], { baseDir: base, gh: fakeGh({ [closers('o/r', 2)]: closersOf() }).gh, sleep: async () => {}, warn: () => {} });
+  const closer = { number: 12, headRefName: 'orchestrator/two', mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } };
+  const prs = await shipDagPrs([], { baseDir: base, cacheDir: tmp(), gh: fakeGh({ [closers('o/r', 2)]: closersOf(closer) }).gh, sleep: async () => {}, warn: () => {} });
   assert.deepEqual(byKey(prs), byKey(ingested.map(({ repo, pr, tuningVersion }) => ({ repo, pr, tuningVersion }))));
   assert.deepEqual(byKey(prs), [{ repo: 'o/r', pr: 11, tuningVersion: 2 }, { repo: 'o/r', pr: 13, tuningVersion: 0 }]);
 });

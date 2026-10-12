@@ -230,7 +230,10 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
   for (const run of lsdir(baseDir)) {
     const entries = readSidecar(join(baseDir, run, SIDECAR_NAME), { warn });
     for (const read of readWaveReports(join(baseDir, run), { warn: (m) => warn(`escapes: ${m}; skipped`) })) {
-      if (read.error) continue;
+      if (read.error) { // skipped, as ingest-wave refuses it: its refs do not fall back to a closing PR either
+        for (const row of read.report?.issues ?? []) if (typeof row?.ref === 'string') covered.add(row.ref.toLowerCase());
+        continue;
+      }
       const rows = read.report.issues;
       const tuningVersion = waveContextFor(join(baseDir, run), read, { warn }).entry?.tuningVersion ?? 0;
       for (const row of rows) {

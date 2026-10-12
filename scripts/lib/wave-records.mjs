@@ -2,7 +2,7 @@
 // artifacts, so emission is a consequence of the wave rather than a reminder.
 //
 // The caller reads the artifacts and hands in what they hold: the report, the
-// wave's sidecar entry (`findWaveContext`), the failure digests, and each ref's
+// wave's routing entry (`waveContextFor`: the sidecar's, else one built from its config), the failure digests, and each ref's
 // review rounds as `reviewRoundFiles` lists them (oldest first by mtime), each
 // file parsed. Only `--outcomes` supplies what no artifact records: `hitl.pointB`,
 // a manual `finalState`, a PR the report row lacks, and a floor for `bounces`.
@@ -69,7 +69,7 @@ const sameRecord = (a, b) => sameRun(a.runId, b.runId) && a.repo === b.repo && a
 /**
  * Derive one telemetry issue record per row of the wave `report` that is terminal for this wave.
  * @param {object} report parsed `<stateDir>/state/reports/<id>.json`
- * @param {object|null} entry this wave's sidecar entry (`findWaveContext`), or null
+ * @param {object|null} entry this wave's routing entry (`waveContextFor`'s `entry`: the sidecar's, else one built from its config), or null
  * @param {Record<string, object>} digests this wave's failure digests by ref (`<stateDir>/state/failure-digest/`,
  *   rewritten for every row that did not succeed); read only for those rows
  * @param {Record<string, Array<{path: string, review: object|null}>>} rounds each ref's rounds, oldest first
