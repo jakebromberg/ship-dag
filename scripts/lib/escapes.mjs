@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { ghCli, ghJson, withBackoff } from './gh.mjs';
-import { isPr, parseRef, sameRepo } from './ref.mjs';
+import { formatRef, isPr, parseRef, sameRepo } from './ref.mjs';
 import { groupBy } from './stats.mjs';
 import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { readWaveReports, waveContextFor } from './wave-reports.mjs';
@@ -184,18 +184,20 @@ function prOf(repo, pr) {
  * The PRs ship-dag opened, `[{repo, pr, tuningVersion}]`, once per `owner/repo#PR` (case-insensitive):
  * telemetry records' `pr` whatever their finalState (the newest record wins), then each report row's
  * `prNumber` under `baseDir/<run>/state/reports/` (its `tuningVersion` from the sidecar entry ingest-wave
- * reads for the report: `waveContextFor`; a report with no parseable `startedAt` is skipped), then, for a sidecar ref neither gave a PR (nor a skipped report withheld one from),
- * its one merged closing PR on an `orchestrator/` branch (cached in `cacheDir` once the issue is closed), under the ref's newest
+ * reads for the report: `waveContextFor`; a report with a row that has no `owner/repo#N` ref, or with no
+ * parseable `startedAt`, is skipped), then, for a sidecar ref neither gave a PR (nor a skipped report withheld
+ * one from; a ref that is not `owner/repo#N` is skipped, with a warning), its one merged closing PR on an
+ * `orchestrator/` branch (cached in `cacheDir` once the issue is closed), under the ref's newest
  * entry's version (none or several: skipped, with a warning, and asked again next run). Whether each merged, and when, is `findEscapes`' to ask.
  */
 export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir = escapesDir(), gh = ghCli, sleep, warn = (m) => console.error(m) } = {}) {
   const byPr = new Map();
   const covered = new Set(); // issue refs some source gave a PR for, or a skipped report withheld one from
-  const add = (p, tuningVersion) => { const k = `${p.repo}#${p.pr}`.toLowerCase(); if (!byPr.has(k)) byPr.set(k, { ...p, tuningVersion }); };
+  const add = (p, tuningVersion) => { const k = formatRef(p.repo, p.pr).toLowerCase(); if (!byPr.has(k)) byPr.set(k, { ...p, tuningVersion }); };
   for (const r of records.toReversed()) {
     const p = r.kind === 'retro' ? null : prOf(r.repo, r.pr);
     if (!p) continue;
-    covered.add(`${r.repo}#${r.issue}`.toLowerCase());
+    covered.add(formatRef(r.repo, r.issue).toLowerCase());
     add(p, r.tuningVersion ?? 0);
   }
   const sidecarRefs = new Map(); // lowercased ref → [ref, tuningVersion, emittedAt] of its newest entry
