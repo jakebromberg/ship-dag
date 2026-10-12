@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { waveSidecar as wave_, waveContextMatches, readSidecar, appendWave, findWaveContext, findWaveConfig, entryFromConfig, specBlockOn, SIDECAR_NAME } from './wave-sidecar.mjs';
+import { waveSidecar as wave_, waveContextMatches, readSidecar, appendWave, findWaveContext, findWaveConfig, waveConfigs, entryFromConfig, specBlockOn, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { parseRef } from './ref.mjs';
 import { load as loadTuning } from './tuning.mjs';
 import { buildConfig } from '../emit-config.mjs';
@@ -279,4 +279,18 @@ test('entryFromConfig routes each config issue as waveSidecar does, and carries 
   assert.deepEqual(entry.issues.map(routing), wave(s).issues.map(routing));
   assert.deepEqual(entry.issues.map((i) => i.complexity), ['complex', undefined, undefined]);
   assert.deepEqual([entry.blockOn, entry.tuningVersion], [undefined, undefined]);
+});
+
+test('findWaveConfig names the file it read as configFile, and waveConfigs lists every readable config', () => {
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, 'config-2.json'), cfg(['a/b#1']));
+    writeFileSync(join(dir, 'config-torn.json'), '{');
+    writeFileSync(join(dir, 'config-no-issues.json'), JSON.stringify({ name: 'x' }));
+    assert.equal(findWaveConfig(dir, ['a/b#1']).configFile, 'config-2.json');
+    assert.deepEqual(waveConfigs(dir).map((c) => c.configFile), ['config-2.json']);
+    assert.deepEqual(waveConfigs(join(dir, 'missing')), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

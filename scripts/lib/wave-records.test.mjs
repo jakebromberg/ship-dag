@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deriveWaveRecords, WaveRefusal } from './wave-records.mjs';
+import { deriveWaveRecords, rowCovered, WaveRefusal } from './wave-records.mjs';
 import { reviewRoundFiles } from './review-rounds.mjs';
 import { appendWave, findWaveContext } from './wave-sidecar.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
@@ -389,4 +389,32 @@ for (const [name, kind, go] of [
   test(`refusal kind: ${name} is a WaveRefusal of kind ${kind}`, () => {
     assert.throws(go, (err) => err instanceof WaveRefusal && err.kind === kind);
   });
+}
+
+// rowCovered follows sameRecord's identity: a PR-less failure is its report's own event; any other row recurs unchanged.
+{
+  const RUN = 'sd-1';
+  const report = { id: 'w2', startedAt: Date.parse('2026-10-08T19:00:00Z') };
+  const rec = (over = {}) => ({ runId: RUN, repo: 'a/b', issue: 1, ts: '2026-10-08T19:30:00Z', ...over });
+  const failed = { ref: 'a/b#1', status: 'failed', prNumber: null };
+  const merged = { ref: 'a/b#1', status: 'succeeded', prNumber: 11 };
+  const skipped = { ref: 'a/b#1', status: 'skipped', prNumber: null };
+  for (const [name, row, records, want] of [
+    ['a PR-less failure with a record carrying this reportId', failed, [rec({ reportId: 'w2' })], true],
+    ['a PR-less failure whose only record carries the first report\'s reportId', failed, [rec({ reportId: 'w1' })], false],
+    ['a PR-less failure with a hand-written record at or after startedAt', failed, [rec()], true],
+    ['a PR-less failure with a hand-written record from before startedAt', failed, [rec({ ts: '2026-10-08T18:59:59Z' })], false],
+    ['a PR-less failure with no record at all', failed, [], false],
+    ['a PR-less failure whose record is another run, repo or issue', failed, [rec({ runId: 'sd-2', reportId: 'w2' }), rec({ repo: 'a/c', reportId: 'w2' }), rec({ issue: 2, reportId: 'w2' })], false],
+    ['a PR-less failure, repo and run folded by case and suffix', failed, [rec({ runId: 'SD-1-b', repo: 'A/B', reportId: 'w2' })], true],
+    ['a succeeded row with no PR (find-pr), which no later report carries over', { ...merged, prNumber: null }, [rec({ reportId: 'w1' })], false],
+    ['a carried-over merged row recorded under the first report', merged, [rec({ reportId: 'w1' })], true],
+    ['a carried-over merged row covered by a hand-written record from before the retry', merged, [rec({ ts: '2026-10-01T00:00:00Z' })], true],
+    ['a carried-over skipped row', skipped, [rec({ reportId: 'w1' })], true],
+    ['a merged row with no record', merged, [], false],
+  ]) {
+    test(`rowCovered: ${name} is ${want ? '' : 'not '}covered`, () => {
+      assert.equal(rowCovered(row, report, records, RUN), want);
+    });
+  }
 }

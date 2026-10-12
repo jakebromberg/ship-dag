@@ -1,13 +1,13 @@
 // Tests for the telemetry log + report. Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { rmSync, readFileSync, existsSync, appendFileSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { basename, join, dirname } from 'node:path';
+import { rmSync, readFileSync, existsSync, appendFileSync, mkdirSync, mkdtempSync, renameSync, utimesSync, writeFileSync } from 'node:fs';
 import { WaveRefusal } from './lib/wave-records.mjs';
-import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave } from './telemetry.mjs';
+import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit } from './telemetry.mjs';
 import { appendWave } from './lib/wave-sidecar.mjs';
 import { artifactStem } from './lib/failure.mjs';
 
@@ -923,3 +923,100 @@ for (const [kind, rows, report, code] of [
     }
   }));
 }
+
+// audit: names waves whose terminal rows have no covering record, unreadable reports, and never-reported routing.
+describe('audit', () => {
+  const RUN_A = 'sd-20261008-153059';
+  const REF3 = 'WXYC/dj-site#3';
+  const quiet = { warn: () => {} };
+  const logged = (over = {}) => ({ kind: 'issue', runId: RUN_A, repo: 'WXYC/dj-site', issue: 1, finalState: 'merged', ts: T1, ...over });
+  const family = (dirs, fn) => {
+    const base = mkdtempSync(join(tmpdir(), 'audit-'));
+    try {
+      return fn(base, Object.fromEntries(Object.entries(dirs).map(([name, spec]) => [name, withDir(base, name, spec)])));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  };
+  const withDir = (base, name, { reports = {}, sidecar = [], files = {} }) => {
+    const dir = join(base, name);
+    mkdirSync(join(dir, 'state', 'reports'), { recursive: true });
+    for (const [n, rep] of Object.entries(reports)) writeFileSync(join(dir, 'state', 'reports', n), typeof rep === 'string' ? rep : JSON.stringify(rep));
+    for (const entry of sidecar) appendWave(dir, entry);
+    for (const [rel, body] of Object.entries(files)) writeFileSync(join(dir, rel), JSON.stringify(body));
+    return dir;
+  };
+  const audit_ = (base, records) => audit(RUN_A, { baseDir: base, records, ...quiet });
+
+  test('names the wave of a family dir that was not ingested, folds in a -b dir, and leaves a -board dir out', () => family({
+    [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry([REF])] },
+    [`${RUN_A}-b`]: { reports: { 'w2.json': stateReport([stateRow(REF2)]) }, sidecar: [sidecarEntry([REF2])] },
+    [`${RUN_A}-board`]: { reports: { 'w3.json': stateReport([stateRow(REF3)]) } },
+  }, (base, dirs) => {
+    const out = audit_(base, [logged()]);
+    assert.deepEqual(out.notIngested.map((w) => [w.dir, w.id, w.refs, w.source]), [[dirs[`${RUN_A}-b`], 'w2', [REF2], 'sidecar']]);
+    assert.deepEqual([out.unreadable, out.neverReported], [[], { sidecar: [], configs: [] }]);
+  }));
+
+  test('one dir holding two waves names only the one not ingested, and a report with no terminal row is not named', () => family({
+    [RUN_A]: {
+      reports: {
+        'w1.json': stateReport([stateRow(REF)]),
+        'w2.json': stateReport([stateRow(REF2, { status: 'failed', prNumber: null })], { startedAt: '2026-10-08T20:00:00.000Z' }),
+        'w3.json': stateReport([stateRow(REF3, { status: 'interrupted', prNumber: null })], { startedAt: '2026-10-08T21:00:00.000Z' }),
+      },
+      sidecar: [sidecarEntry([REF]), sidecarEntry([REF2]), sidecarEntry([REF3])],
+    },
+  }, (base) => {
+    assert.deepEqual(audit_(base, [logged()]).notIngested.map((w) => w.id), ['w2']);
+  }));
+
+  test('a --retry-failed report whose re-run failure has no record of its own is named, though its carried-over merge is covered by the first report\'s record', () => family({
+    [RUN_A]: {
+      reports: {
+        'w1.json': stateReport([stateRow(REF, { status: 'failed', prNumber: null }), stateRow(REF2)]),
+        'w2.json': stateReport([stateRow(REF, { status: 'failed', prNumber: null }), stateRow(REF2)], { startedAt: '2026-10-08T20:00:00.000Z' }),
+      },
+    },
+  }, (base) => {
+    const records = [logged({ reportId: 'w1', finalState: 'error' }), logged({ issue: 2, reportId: 'w1' })];
+    assert.deepEqual(audit_(base, records).notIngested.map((w) => [w.id, w.refs]), [['w2', [REF]]]);
+    assert.deepEqual(audit_(base, [...records, logged({ reportId: 'w2', finalState: 'error' })]).notIngested, []);
+  }));
+
+  test('names a torn report and one with no issues[] as unreadable, and never hands them to waveContextFor', () => family({
+    [RUN_A]: { reports: { 'torn.json': '{"issues": [', 'bare.json': { startedAt: T0 }, 'nostart.json': { issues: [stateRow(REF)] } } },
+  }, (base, dirs) => {
+    const out = audit_(base, []);
+    assert.deepEqual(out.unreadable.map((u) => basename(u.path)), ['bare.json', 'nostart.json', 'torn.json']);
+    assert.match(out.unreadable.find((u) => u.path.endsWith('nostart.json')).error, /startedAt/);
+    assert.deepEqual(out.notIngested, []);
+  }));
+
+  test('names a sidecar entry and a config-2.json no report matches as never-reported, and a pre-sidecar config-only wave as a wave', () => family({
+    [RUN_A]: {
+      reports: { 'w1.json': stateReport([stateRow(REF)]), 'w2.json': stateReport([stateRow(REF3)], { startedAt: '2026-10-08T20:00:00.000Z' }) },
+      sidecar: [sidecarEntry([REF]), sidecarEntry([REF2])],
+      files: { 'config-2.json': config([REF2]), 'config-3.json': config([REF3]) },
+    },
+  }, (base, dirs) => {
+    utimesSync(join(dirs[RUN_A], 'config-3.json'), secs(EMITTED), secs(EMITTED));
+    const out = audit_(base, [logged()]);
+    assert.deepEqual(out.neverReported.sidecar.map((e) => [e.dir, e.refs]), [[dirs[RUN_A], [REF2]]]);
+    assert.deepEqual(out.neverReported.configs, [join(dirs[RUN_A], 'config-2.json')]);
+    assert.deepEqual(out.notIngested.map((w) => [w.id, w.source]), [['w2', 'config']]);
+  }));
+
+  test('CLI: prints the audit as JSON from the XDG engine dir and the log, and refuses a missing or extra run id', () => family({
+    [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF)]) } },
+  }, (base) => {
+    const xdg = join(base, 'xdg');
+    mkdirSync(join(xdg, 'ship-dag', 'engine'), { recursive: true });
+    renameSync(join(base, RUN_A), join(xdg, 'ship-dag', 'engine', RUN_A));
+    const cli = (...args) => spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'audit', ...args],
+      { env: { ...process.env, XDG_STATE_HOME: xdg, SHIP_DAG_TELEMETRY: join(base, 'runs.jsonl') }, encoding: 'utf8' });
+    assert.deepEqual(JSON.parse(cli(RUN_A).stdout).notIngested.map((w) => w.refs), [[REF]]);
+    assert.equal(cli().status, 2);
+    assert.equal(cli(RUN_A, RUN_A).status, 2);
+  }));
+});
