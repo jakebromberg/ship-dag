@@ -17,6 +17,7 @@
 // the ingest that sees them finish, and any other status is warned about and skipped.
 import { DEFAULT_BLOCK_ON, gateReview } from '../review-gate.mjs';
 import { routeFailure } from './failure.mjs';
+import { isPr, parseRef, sameRepo } from './ref.mjs';
 import { isUnreadableEmpty } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
@@ -34,12 +35,10 @@ const SEVERITY = { clean: 0, 'nits-only': 1, blocking: 2 };
 const TERMINAL = new Set(['succeeded', 'failed', 'blocked', 'skipped']);
 const NOT_YET = new Set(['pending', 'running', 'interrupted']);
 // What routeFailure counts as a PR, so the half-supplied check and the record agree with it.
-const isPr = (n) => typeof n === 'number' && n > 0;
 // A succeeded row is supplied by a PR, in the report or --outcomes, or by an outcome
 // saying it never merged: point B left a find-pr row without one.
 const NOT_MERGED = new Set(['blocked-hitl', 'deferred', 'error']);
 /** An `owner/repo#N` ref, capturing `owner/repo` and `N`: the one pattern ingest-wave checks a report against too. */
-export const REF_RE = /^([^/#]+\/[^#]+)#(\d+)$/;
 const supplied = (row, outcome) => isPr(row.prNumber) || isPr(outcome?.pr) || NOT_MERGED.has(outcome?.finalState);
 /** A gate `blocking` entry as one string, the shape `--outcomes` takes and hand-written records carry; a field the gate left null is left out. */
 const findingLine = ({ category, file, line, summary }) => [category ?? '(blank)', file && (line == null ? file : `${file}:${line}`), summary].filter(Boolean).join(' ');
@@ -62,7 +61,7 @@ function roundVerdict({ path, review }, blockOn, warn) {
  * the rows a retry re-runs: every report re-lists the other rows as they stood, so a record with a PR,
  * or a skipped one, recurs unchanged. A hand-written record has no `reportId`, so the rest decides.
  */
-const sameRecord = (a, b) => sameRun(a.runId, b.runId) && a.repo === b.repo && a.issue === b.issue
+const sameRecord = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.repo) && a.issue === b.issue
   && a.finalState === b.finalState && (a.failureReason ?? null) === (b.failureReason ?? null)
   && (!a.reportId || !b.reportId || a.reportId === b.reportId || a.implStatus !== 'error' || b.implStatus !== 'error');
 
@@ -91,7 +90,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
   for (const r of all) if (!TERMINAL.has(r?.status) && !NOT_YET.has(r?.status)) warn(`${r?.ref}: unknown status ${JSON.stringify(r?.status)}, not recorded`);
   const rows = all.filter((r) => TERMINAL.has(r?.status));
   if (!rows.length) return { records: [] };
-  const badRow = rows.find((r) => !REF_RE.test(r.ref ?? ''));
+  const badRow = rows.find((r) => !parseRef(r.ref));
   if (badRow) throw new WaveRefusal('malformed-row', `malformed report row: no owner/repo#N ref: ${JSON.stringify(badRow)}`);
   const noCheck = new Set(noCheckRepos);
   const runId = entry?.runId || runIdFromConfigName(report?.configName);
@@ -105,7 +104,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
   const seen = [...existing];
   const records = [];
   for (const row of rows) {
-    const m = REF_RE.exec(row.ref);
+    const m = parseRef(row.ref);
     const outcome = outcomes?.[row.ref] ?? {};
     const planned = (entry?.issues ?? []).find((i) => i.ref === row.ref);
     const pr = isPr(row.prNumber) ? row.prNumber : isPr(outcome.pr) ? outcome.pr : null;
@@ -148,8 +147,8 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       return {
         runId,
         reportId,
-        repo: m[1],
-        issue: Number(m[2]),
+        repo: m.repo,
+        issue: m.number,
         complexity: planned?.complexity ?? 'normal',
         complexitySource: planned?.complexity ? 'entry' : 'default',
         triageStatus: 'clear',
@@ -159,7 +158,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         model: planned?.model ?? null,
         path: 'engine',
         implStatus,
-        ciStatus: row.status === 'succeeded' && pr ? (noCheck.has(m[1]) ? 'none' : 'pass') : null,
+        ciStatus: row.status === 'succeeded' && pr ? (noCheck.has(m.repo) ? 'none' : 'pass') : null,
         reviewVerdict: verdicts.length ? worst.verdict : null,
         reviewPath: refRounds.at(-1)?.path ?? null,
         failureReason,

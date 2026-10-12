@@ -26,6 +26,7 @@
 // transcript and feeds `failureReason` here.
 
 import { isRateLimitDeathLine } from './rate-limit.mjs';
+import { isPr } from './ref.mjs';
 
 /** JSON key present on every stream-json result record — a cheap prefilter that skips `JSON.parse` on the ~99% of transcript lines that cannot be one. */
 export const RESULT_TYPE_KEY = '"type":"result"';
@@ -191,7 +192,7 @@ export function routeFailure(row) {
   // A PR number is the disambiguator. `> 0` rather than a truthiness check so a
   // 0 can't read as "a PR exists" — routing a PR-less stall to a gate with
   // nothing to review is the expensive direction to be wrong in.
-  if (typeof prNumber === 'number' && prNumber > 0) return 'review-gate';
+  if (isPr(prNumber)) return 'review-gate';
   if (status === 'succeeded') return 'find-pr';
   if (failureReason === 'rate-limited') return 'point-E';
   return 'point-B';
