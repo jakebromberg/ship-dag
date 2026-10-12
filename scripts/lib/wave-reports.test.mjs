@@ -75,3 +75,15 @@ test('waveContextFor refuses a startedAt that is not epoch ms rather than take t
     assert.throws(() => waveContextFor(stateDir(), { report: { issues: [{ ref: REF }] }, startedAt }), TypeError);
   }
 });
+
+test('readWaveReport refuses a row with no owner/repo#N ref before it looks at startedAt, keeping the report', () => {
+  const d = stateDir();
+  for (const [id, startedAt] of [['bad-ref', STARTED], ['bad-ref-no-start', undefined]]) {
+    const bad = { ref: 'o-r-2', status: 'failed' };
+    putReport(d, id, { startedAt, issues: [{ ref: REF }, bad] });
+    const read = readWaveReport(join(d, 'state', 'reports', `${id}.json`));
+    assert.equal(read.error, `${read.path}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}`);
+    assert.equal(read.report.issues.length, 2);
+    assert.equal(read.startedAt, undefined);
+  }
+});

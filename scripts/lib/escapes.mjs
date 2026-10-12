@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { ghCli, ghJson, withBackoff } from './gh.mjs';
+import { isPr, parseRef, sameRepo } from './ref.mjs';
 import { groupBy } from './stats.mjs';
 import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { readWaveReports, waveContextFor } from './wave-reports.mjs';
@@ -23,7 +24,7 @@ const FIX = /\b(?:fix(?:es|ed|ing)?|regressions?)\b/i;
 const PR_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/i;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const same = (a, b) => a?.toLowerCase() === b?.toLowerCase();
-const repoDir = (cacheDir, repo) => join(cacheDir, `v${CACHE_VERSION}`, repo.replace('/', '__'));
+const repoDir = (cacheDir, repo) => join(cacheDir, `v${CACHE_VERSION}`, repo.toLowerCase().replace('/', '__'));
 /** The JSON cached at `file`, or undefined when absent or unreadable. */
 const readCached = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return undefined; } };
 const writeCached = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
@@ -44,7 +45,7 @@ export function escapesDir(env = process.env) {
  */
 export function cites(body, repo, n, home = repo) {
   const r = escape(repo);
-  const bare = same(repo, home) ? `(?<![\\w/])#${n}|` : '';
+  const bare = sameRepo(repo, home) ? `(?<![\\w/])#${n}|` : '';
   return new RegExp(`(?:${bare}(?<![\\w./-])${r}#${n}|github\\.com/${r}/(?:pull|issues)/${n})(?!\\d)`, 'i').test(body ?? '');
 }
 
@@ -58,7 +59,7 @@ async function revertedPrs(cand, repo, ctx) {
   const lines = [...body.matchAll(/^Reverts (?:([\w.-]+\/[\w.-]+))?#(\d+)\b/gim)];
   const shas = [...body.matchAll(/This reverts commit ([0-9a-f]{7,40})/gi)].map((m) => m[1]);
   if (!lines.length && !shas.length) return null;
-  const prs = lines.filter((m) => !m[1] || same(m[1], repo)).map((m) => Number(m[2]));
+  const prs = lines.filter((m) => !m[1] || sameRepo(m[1], repo)).map((m) => Number(m[2]));
   for (const sha of shas) {
     const { value, failure } = await ghJson(['api', `repos/${repo}/commits/${sha}/pulls`], `${repo}#${cand.number} reverts ${sha}, which is not resolved to a PR`, { ...ctx, repo });
     // A transient failure on any sha outranks a 422 on another: the day stays uncached until it resolves.
@@ -170,9 +171,11 @@ export function escapeReport(rows) {
   return { total: tally(rows), byMonth: by((r) => r.mergedAt.slice(0, 7)), byTuningVersion: by((r) => String(r.tuningVersion ?? 0)) };
 }
 
+/** A report row's PR (as `prOf` reads it), or null when its ref is not `owner/repo#N`. */
+const rowPr = (row) => { const ref = parseRef(row?.ref); return ref ? prOf(ref.repo, row.prNumber) : null; };
 /** A record's or report row's PR as `{repo, pr}`: a positive integer in `repo`, or a PR URL (its own repo). */
 function prOf(repo, pr) {
-  if (Number.isInteger(pr) && pr > 0) return { repo, pr };
+  if (isPr(pr)) return { repo, pr };
   const m = typeof pr === 'string' ? PR_URL.exec(pr) : null;
   return m ? { repo: m[1], pr: Number(m[2]) } : null;
 }
@@ -200,13 +203,13 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
     const entries = readSidecar(join(baseDir, run, SIDECAR_NAME), { warn });
     for (const read of readWaveReports(join(baseDir, run), { warn: (m) => warn(`escapes: ${m}; skipped`) })) {
       if (read.error) { // skipped, as ingest-wave refuses it; a parsed report's PRs must not come back through the closing-PR fallback
-        for (const row of read.report?.issues ?? []) if (typeof row?.ref === 'string' && prOf(row.ref.split('#')[0], row.prNumber)) covered.add(row.ref.toLowerCase());
+        for (const row of read.report?.issues ?? []) if (rowPr(row)) covered.add(row.ref.toLowerCase());
         continue;
       }
       const rows = read.report.issues;
       const tuningVersion = waveContextFor(join(baseDir, run), read, { warn }).entry?.tuningVersion ?? 0;
       for (const row of rows) {
-        const p = typeof row?.ref === 'string' ? prOf(row.ref.split('#')[0], row.prNumber) : null;
+        const p = rowPr(row);
         if (!p) continue;
         covered.add(row.ref.toLowerCase());
         add(p, tuningVersion);
@@ -220,7 +223,9 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
   for (const [ref, tuningVersion] of sidecarRefs.values()) {
     if (typeof ref !== 'string' || covered.has(ref.toLowerCase())) continue;
     covered.add(ref.toLowerCase()); // ask about each ref once
-    const [repo, n] = ref.split('#');
+    const parsed = parseRef(ref);
+    if (!parsed) { warn(`escapes: ${ref}: not an owner/repo#N ref; skipped`); continue; }
+    const { repo, number: n } = parsed;
     const [owner, name] = repo.split('/');
     const file = join(repoDir(cacheDir, repo), `closing-${n}.json`);
     const cached = readCached(file);
