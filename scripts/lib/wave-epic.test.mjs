@@ -1,6 +1,8 @@
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { planWaveEpic, openWaveEpic, closeWaveEpic, qualifyRef, WaveEpicRefusal } from './wave-epic.mjs';
+import { planWaveEpic, openWaveEpic, closeWaveEpic, sweepWaveEpics, qualifyRef, WaveEpicRefusal } from './wave-epic.mjs';
 import { WAVE_LABEL } from './sub-issues.mjs';
 import { bodyEdges } from '../plan-waves.mjs';
 
@@ -15,9 +17,9 @@ const idOf = (n) => 1000 + Number(n);
  * their writes to the state, and throws on anything else, so an unplanned call
  * fails the test. A sub-issue POST without `replace_parent` refuses a child that
  * already has a parent, as GitHub does. `failMoves` holds issue numbers whose
- * POST fails regardless.
+ * POST fails regardless, and `failListings` epics whose sub-issue query fails.
  */
-function fakeGh(issues, { failMoves = [] } = {}) {
+function fakeGh(issues, { failMoves = [], failListings = [] } = {}) {
   const calls = [];
   const flag = (argv, f) => argv[argv.indexOf(f) + 1];
   const field = (argv, k) => {
@@ -40,6 +42,7 @@ function fakeGh(issues, { failMoves = [] } = {}) {
     if (a === 'api' && b === 'graphql') {
       const n = Number(field(argv, 'n'));
       if (field(argv, 'query').includes('subIssues')) {
+        if (failListings.includes(n)) throw new Error(`HTTP 502 listing #${n}`);
         const kids = Object.keys(issues).map(Number).filter((k) => issues[k].parent === n);
         return JSON.stringify({ data: { repository: { issue: { subIssues: {
           nodes: kids.map(node), pageInfo: { hasNextPage: false, endCursor: null } } } } } });
@@ -237,5 +240,97 @@ for (const { name, issues, outcomes, error } of [
     assert.throws(() => closeWaveEpic({ repo: R, epic: 1, waveEpic: 7, outcomes }, gh), (err) => err instanceof WaveEpicRefusal && error.test(err.message));
     assert.deepEqual(gh.writes(), []);
     assert.equal(all[10].parent, 7);
+  });
+}
+
+// ---- sweepWaveEpics ---------------------------------------------------
+
+for (const { name, waves, except, dryRun, failMoves, failListings, extra = {}, expect, after, writes, note } of [
+  {
+    name: 'an open wave whose children all closed is closed',
+    waves: { 7: { state: 'OPEN', kids: { 10: 'CLOSED' } } },
+    expect: { closed: ['o/r#7'], returned: [], stuck: [], errors: [] }, after: { 7: 'CLOSED' }, writes: true, note: /left open/,
+  },
+  {
+    name: 'an open wave with an open child returns it, then closes',
+    waves: { 7: { state: 'OPEN', kids: { 10: 'CLOSED', 11: 'OPEN' } } },
+    expect: { closed: ['o/r#7'], returned: ['o/r#11'], stuck: [], errors: [] }, after: { 7: 'CLOSED', 11: 1 }, writes: true, note: /left open/,
+  },
+  {
+    name: 'a closed wave with an open child returns it, and says it was closed',
+    waves: { 7: { state: 'CLOSED', kids: { 11: 'OPEN' } } },
+    expect: { closed: [], returned: ['o/r#11'], stuck: [], errors: [] }, after: { 7: 'CLOSED', 11: 1 }, writes: true, note: /was closed with open issues/,
+  },
+  {
+    name: 'a closed wave whose children all closed costs one listing and no write',
+    waves: { 7: { state: 'CLOSED', kids: { 10: 'CLOSED', 12: 'CLOSED' } } },
+    expect: { closed: [], returned: [], stuck: [], errors: [] }, after: { 7: 'CLOSED' }, writes: false,
+  },
+  {
+    name: 'a stuck return is reported, the wave stays open, and no comment repeats',
+    waves: { 7: { state: 'OPEN', kids: { 11: 'OPEN' } } }, failMoves: [11],
+    expect: { closed: [], returned: [], stuck: ['o/r#11'], errors: [] }, after: { 7: 'OPEN', 11: 7 }, writes: true,
+  },
+  {
+    name: 'the wave this pass just opened is left alone',
+    waves: { 7: { state: 'OPEN', kids: { 11: 'OPEN' } }, 8: { state: 'OPEN', kids: { 12: 'CLOSED' } } }, except: 7,
+    expect: { closed: ['o/r#8'], returned: [], stuck: [], errors: [] }, after: { 7: 'OPEN', 11: 7, 8: 'CLOSED' }, writes: true,
+  },
+  {
+    name: 'one wave failing is reported and the rest still settle',
+    waves: { 7: { state: 'OPEN', kids: { 11: 'OPEN' } }, 8: { state: 'OPEN', kids: { 12: 'CLOSED' } } }, failListings: [7],
+    expect: { closed: ['o/r#8'], returned: [], stuck: [], errors: [{ wave: 'o/r#7', message: 'the sub-issues query failed: HTTP 502 listing #7' }] },
+    after: { 7: 'OPEN', 8: 'CLOSED' }, writes: true,
+  },
+  {
+    name: 'a wave sub-issue in another repo is not ours to settle',
+    waves: {}, extra: { 9: { title: 'x', labels: WAVE, parent: 1, repo: 'x/y' } },
+    expect: { closed: [], returned: [], stuck: [], errors: [] }, after: {}, writes: false,
+  },
+  {
+    name: '--dry-run reports what a clean run would do and writes nothing',
+    waves: { 7: { state: 'OPEN', kids: { 10: 'CLOSED', 11: 'OPEN' } }, 8: { state: 'CLOSED', kids: { 12: 'OPEN' } } }, dryRun: true,
+    expect: { closed: ['o/r#7'], returned: ['o/r#11', 'o/r#12'], stuck: [], errors: [] }, after: { 7: 'OPEN', 11: 7, 12: 8 }, writes: false,
+  },
+]) {
+  test(`sweepWaveEpics: ${name}`, () => {
+    const issues = { 1: { title: 'Epic' }, 30: { title: 'not a wave', parent: 1 }, ...extra };
+    for (const [w, { state, kids }] of Object.entries(waves)) {
+      issues[w] = { title: `Epic — wave ${w}`, labels: WAVE, state, parent: 1 };
+      for (const [n, ks] of Object.entries(kids)) issues[n] = { title: `#${n}`, state: ks, parent: Number(w) };
+    }
+    const gh = fakeGh(issues, { failMoves, failListings });
+    assert.deepEqual(sweepWaveEpics({ repo: R, epic: 1, except, dryRun }, gh), expect);
+    for (const [n, v] of Object.entries(after)) {
+      if (typeof v === 'number') assert.equal(issues[n].parent, v, `#${n}'s parent`);
+      else assert.equal(issues[n].state || 'OPEN', v, `#${n}'s state`);
+    }
+    assert.equal(gh.writes().length > 0, writes);
+    if (!writes && !dryRun) {
+      assert.equal(gh.calls.length, 1 + Object.keys(waves).length, 'one listing for the epic and one per wave, nothing else');
+    }
+    for (const w of Object.keys(waves)) {
+      const cs = issues[w].comments || [];
+      if (note) assert.match(cs[0], note);
+      if (expect.stuck.length) assert.equal(cs.length, 0, 'no comment when every return is stuck');
+    }
+    assert.equal(issues[30].state || 'OPEN', 'OPEN', 'an unlabelled sub-issue is never touched');
+  });
+}
+
+// ---- CLI --------------------------------------------------------------
+
+const CLI = fileURLToPath(new URL('../wave-epic.mjs', import.meta.url));
+for (const args of [
+  ['close', '--repo', R, '--epic', '1', '--wave-epic', '7', '--dry-run'],
+  ['open', '--repo', R, '--epic', '1', '--refs', '2', '--dry-run'],
+  ['sweep', '--repo', R, '--epic', '1', '--except', 'x'],
+  ['close', '--repo', R, '--epic', '1', '--wave-epic', '7', '--outcomes', '{bad'],
+  ['sweep', '--repo', 'not-a-repo', '--epic', '1'],
+]) {
+  test(`the CLI exits 2 before calling gh: ${args.join(' ')}`, () => {
+    // An empty PATH makes any gh call fail, so exit 2 here proves nothing ran.
+    const res = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { PATH: '' } });
+    assert.equal(res.status, 2, res.stderr);
   });
 }
