@@ -1,7 +1,7 @@
 // Tests for the escaped-defect proxy. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, existsSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withBackoff } from './gh.mjs';
@@ -453,9 +453,9 @@ test('shipDagPrs and ingest-wave read one state dir alike: a PR and its tuningVe
   assert.deepEqual(byKey(prs), [{ repo: 'o/r', pr: 11, tuningVersion: 2 }, { repo: 'o/r', pr: 13, tuningVersion: 0 }]);
 });
 
-test('shipDagPrs: a sidecar ref with no PR from either source falls back to its one merged orchestrator/ closing PR, under its newest entry\'s version', async () => {
+test('shipDagPrs: a sidecar ref with no PR from either source falls back to its one merged orchestrator/ closing PR, under its newest entry\'s version; one that is not owner/repo#N is skipped with a warning', async () => {
   const base = engineDir([{ ref: 'o/r#1', status: 'failed' }], [
-    { tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }, { ref: 'o/r#3' }, { ref: 'o/r#4' }, { ref: 'o/r#6' }] },
+    { tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'o/r#1' }, { ref: 'o/r#2' }, { ref: 'o/r#3' }, { ref: 'o/r#4' }, { ref: 'o-r-5' }, { ref: 'o/r#6' }] },
     { tuningVersion: 3, emittedAt: '2026-08-02T00:00:00Z', issues: [{ ref: 'o/r#1' }] },
   ]);
   // An older run dir, listed after sd-1 by name, holds the oldest emit of o/r#1.
@@ -477,6 +477,7 @@ test('shipDagPrs: a sidecar ref with no PR from either source falls back to its 
   assert.match(warnings.join('\n'), /o\/r#2: 2 merged orchestrator\/ PRs/);
   assert.match(warnings.join('\n'), /o\/r#3: 0 merged orchestrator\/ PRs/);
   assert.match(warnings.join('\n'), /o\/r#4.*Could not resolve/);
+  assert.match(warnings.join('\n'), /escapes: o-r-5: not an owner\/repo#N ref; skipped/);
 });
 
 test('shipDagPrs: a closed ref\'s one merged closing PR is cached; an open, ambiguous or missing one is asked about again', async () => {
@@ -492,6 +493,15 @@ test('shipDagPrs: a closed ref\'s one merged closing PR is cached; an open, ambi
   const again = fakeGh(routes);
   assert.deepEqual(await go(again), want);
   assert.deepEqual(again.calls, [closers('o/r', 2), closers('o/r', 3)]);
+});
+
+test('shipDagPrs caches a repo under its lowercased name, so the casings of one repo share a cache dir', async () => {
+  const base = engineDir([], [{ tuningVersion: 2, emittedAt: '2026-07-31T00:00:00Z', issues: [{ ref: 'O/R#1' }] }]);
+  const cacheDir = tmp();
+  const hit = { number: 21, headRefName: 'orchestrator/x', mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } };
+  await shipDagPrs([], { baseDir: base, gh: fakeGh({ [closers('O/R', 1)]: closersOf(hit) }).gh, cacheDir, sleep: async () => {}, warn: () => {} });
+  // The name as stored, which a case-insensitive filesystem would not tell apart by existsSync.
+  assert.deepEqual(readdirSync(join(cacheDir, 'v1')), ['o__r']);
 });
 
 test('shipDagPrs: a missing engine dir contributes nothing', async () => {

@@ -76,14 +76,15 @@ test('waveContextFor refuses a startedAt that is not epoch ms rather than take t
   }
 });
 
-test('readWaveReport refuses a row with no owner/repo#N ref before it looks at startedAt, keeping the report', () => {
+// The ref error wins, but a startedAt that parses still comes back: a later sibling's start bounds a wave's window.
+test('readWaveReport refuses a row with no owner/repo#N ref before it looks at startedAt, keeping the report and a parseable startedAt', () => {
   const d = stateDir();
-  for (const [id, startedAt] of [['bad-ref', STARTED], ['bad-ref-no-start', undefined]]) {
+  for (const [id, startedAt, want] of [['bad-ref', STARTED, Date.parse(STARTED)], ['bad-ref-no-start', undefined, undefined]]) {
     const bad = { ref: 'o-r-2', status: 'failed' };
     putReport(d, id, { startedAt, issues: [{ ref: REF }, bad] });
     const read = readWaveReport(join(d, 'state', 'reports', `${id}.json`));
     assert.equal(read.error, `${read.path}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}`);
     assert.equal(read.report.issues.length, 2);
-    assert.equal(read.startedAt, undefined);
+    assert.equal(read.startedAt, want);
   }
 });
