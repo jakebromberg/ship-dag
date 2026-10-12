@@ -494,6 +494,7 @@ for (const [name, kind, go] of [
     ['a hand-written deferral holding its PR as a numeric string', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: '11' })], true],
     ['a hand-written deferral holding its PR as a URL', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'https://github.com/a/b/pull/11' })], true],
     ['a find-pr row against a hand-written deferral holding its PR as a URL', findPr, asked('deferred', 11), {}, [pushed({ finalState: 'deferred', pr: 'https://github.com/a/b/pull/11' })], true],
+    ['a find-pr row against an older hand-written deferral of its PR as owner/repo#N', findPr, asked('deferred', 11), {}, [pushed({ finalState: 'deferred', pr: 'a/b#11', ts: '2026-10-01T00:00:00Z' })], true],
     ['a hand-written deferral holding another PR as owner/repo#N', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'a/b#111' })], false],
     ['a hand-written deferral whose PR string is no PR form, though it ends in the number', merged, asked('deferred'), {}, [pushed({ finalState: 'deferred', pr: 'draft-11' })], false],
     // Only the implStatus-null rule keeps a find-pr row left at point B apart from a triage defer.
