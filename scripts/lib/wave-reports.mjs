@@ -4,6 +4,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parseRef } from './ref.mjs';
+import { sameRun } from './run-id.mjs';
 import { entryFromConfig, findWaveConfig, findWaveContext } from './wave-sidecar.mjs';
 
 /**
@@ -50,14 +51,28 @@ export function readWaveReports(stateDir, { warn = (m) => console.error(m) } = {
  * The routing a report ran under, given as the `{report, startedAt}` `readWaveReport` returns for it:
  * the sidecar entry as of its start, else the entry `entryFromConfig` builds from the config that
  * matches its refs (in `stateDir`, then the older `stateDir/state`). `config` is that matching config
- * whichever `source` won, since only a config says which repos run no post-session check.
- * @returns {{entry: object|null, config: object|null, source: 'sidecar'|'config'|null}}
+ * whichever `source` won, since only a config says which repos run no post-session check; `configFile`
+ * is its path (null with no config), which tells a caller which config files some report matched.
+ * @returns {{entry: object|null, config: object|null, configFile: string|null, source: 'sidecar'|'config'|null}}
  */
 export function waveContextFor(stateDir, { report, startedAt: asOf }, { warn } = {}) {
   if (!Number.isFinite(asOf)) throw new TypeError(`waveContextFor: startedAt must be epoch ms, not ${JSON.stringify(asOf)}`);
   const refs = report.issues.map((r) => r?.ref);
   const sidecar = findWaveContext(stateDir, refs, { asOf, warn });
-  const config = findWaveConfig(stateDir, refs, { asOf }) ?? findWaveConfig(join(stateDir, 'state'), refs, { asOf });
-  if (sidecar) return { entry: sidecar, config, source: 'sidecar' };
-  return config ? { entry: entryFromConfig(config), config, source: 'config' } : { entry: null, config, source: null };
+  const top = findWaveConfig(stateDir, refs, { asOf });
+  const config = top ?? findWaveConfig(join(stateDir, 'state'), refs, { asOf });
+  const configFile = config && join(top ? stateDir : join(stateDir, 'state'), config.configFile);
+  if (sidecar) return { entry: sidecar, config, configFile, source: 'sidecar' };
+  return config ? { entry: entryFromConfig(config), config, configFile, source: 'config' } : { entry: null, config, configFile, source: null };
+}
+
+/**
+ * The dirs under `baseDir` that hold waves of `runId`'s run family: every one whose name is `sameRun`
+ * as `runId` (a `-b` retry dir folds in; `-board` does not), sorted, as paths. A missing `baseDir` reads as none.
+ * @returns {string[]}
+ */
+export function runFamilyDirs(runId, baseDir) {
+  let entries;
+  try { entries = readdirSync(baseDir, { withFileTypes: true }); } catch { return []; }
+  return entries.filter((e) => e.isDirectory() && sameRun(e.name, runId)).map((e) => join(baseDir, e.name)).sort();
 }

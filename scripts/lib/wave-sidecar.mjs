@@ -119,22 +119,34 @@ export function findWaveContext(dir, refs, { asOf = Infinity, warn } = {}) {
 }
 
 /**
+ * Every readable `config*.json` in `dir` with an `issues` array, by name, as `{configFile (the name),
+ * config, mtimeMs}`; an unreadable file or dir is skipped.
+ */
+export function waveConfigs(dir) {
+  let names;
+  try { names = readdirSync(dir).filter((n) => /^config.*\.json$/.test(n)).sort(); } catch { return []; }
+  return names.flatMap((configFile) => {
+    try {
+      const { mtimeMs } = statSync(join(dir, configFile));
+      const config = JSON.parse(readFileSync(join(dir, configFile), 'utf-8'));
+      return Array.isArray(config?.issues) ? [{ configFile, config, mtimeMs }] : [];
+    } catch { return []; }
+  });
+}
+
+/**
  * The newest `config*.json` in `dir` by mtime, written at or before `asOf` (epoch ms), whose issues
- * (`${repo}#${number}`) equal `refs` as a set, or null; on an mtime tie the last name wins. The
- * fallback for a wave emitted before the sidecar existed (a run that wrote every wave's config to
- * one `config.json` keeps only its last wave's); an unreadable file or dir, or a config without an
- * `issues` array, is skipped.
+ * (`${repo}#${number}`) equal `refs` as a set, or null; on an mtime tie the last name wins. It comes
+ * back with the name of its file as `configFile`. The fallback for a wave emitted before the sidecar
+ * existed (a run that wrote every wave's config to one `config.json` keeps only its last wave's); an
+ * unreadable file or dir, or a config without an `issues` array, is skipped.
  */
 export function findWaveConfig(dir, refs, { asOf = Infinity } = {}) {
-  let names;
-  try { names = readdirSync(dir).filter((n) => /^config.*\.json$/.test(n)).sort(); } catch { return null; }
   let newest = null;
-  for (const name of names) {
-    let config, mtimeMs;
-    try { ({ mtimeMs } = statSync(join(dir, name))); config = JSON.parse(readFileSync(join(dir, name), 'utf-8')); } catch { continue; }
-    if (!Array.isArray(config?.issues) || mtimeMs > asOf) continue;
+  for (const { configFile, config, mtimeMs } of waveConfigs(dir)) {
+    if (mtimeMs > asOf) continue;
     const issues = config.issues.map((i) => ({ ref: formatRef(i?.repo, i?.number) }));
-    if (waveContextMatches({ issues }, refs) && !(newest?.mtimeMs > mtimeMs)) newest = { config, mtimeMs };
+    if (waveContextMatches({ issues }, refs) && !(newest?.mtimeMs > mtimeMs)) newest = { config: { ...config, configFile }, mtimeMs };
   }
   return newest?.config ?? null;
 }
