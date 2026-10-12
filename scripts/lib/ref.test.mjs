@@ -1,7 +1,7 @@
 // Tests for ref.mjs. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REF_RE, parseRef, formatRef, isPr, sameRepo } from './ref.mjs';
+import { REF_RE, parseRef, formatRef, isPr, refKey, sameRepo } from './ref.mjs';
 
 test('parseRef reads owner/repo#N and nothing else', () => {
   for (const [input, want] of [
@@ -12,6 +12,9 @@ test('parseRef reads owner/repo#N and nothing else', () => {
     ['/r#1', null],
     ['o/r#s#1', null], // a # in the repo
     ['o/r#1 ', null], // trailing space
+    [' o/r#1', null], // leading space
+    ['o /r#1', null], // a space in the owner
+    ['o/r/x#1', null], // a second slash: GitHub names one owner and one repo
     ['o/r#', null],
     ['o/r#1.5', null],
     [undefined, null],
@@ -31,8 +34,10 @@ test('isPr accepts positive integers only', () => {
   }
 });
 
-test('sameRepo folds case', () => {
-  for (const [a, b, want] of [['o/r', 'o/r', true], ['O/R', 'o/r', true], ['o/r', 'o/r2', false], ['o/r', 'p/r', false]]) {
+test('sameRepo folds case, and refKey keys repos and refs by the same fold', () => {
+  for (const [a, b, want] of [['o/r', 'o/r', true], ['O/R', 'o/r', true], ['o/r', 'o/r2', false], ['o/r', 'p/r', false], ['O/R#1', 'o/r#1', true]]) {
     assert.equal(sameRepo(a, b), want, `${a} ${b}`);
+    assert.equal(refKey(a) === refKey(b), want, `${a} ${b}`);
   }
+  assert.equal(refKey(7), '7');
 });
