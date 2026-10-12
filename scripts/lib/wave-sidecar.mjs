@@ -16,6 +16,7 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { parseBlockOn } from '../review-gate.mjs';
+import { formatRef } from './ref.mjs';
 import { runIdFromConfigName } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
@@ -68,7 +69,7 @@ export function waveSidecar(spec, { config, now = () => new Date().toISOString()
 }
 
 /** What `config` assigned one of its issues: its ref, and its own effort and model, else the config's defaults. */
-const assigned = (config, built) => ({ ref: `${built.repo}#${built.number}`, effort: built.effort ?? config.defaultEffort, model: built.model ?? config.defaultModel });
+const assigned = (config, built) => ({ ref: formatRef(built.repo, built.number), effort: built.effort ?? config.defaultEffort, model: built.model ?? config.defaultModel });
 
 /**
  * The sidecar-shaped entry for a wave emitted before the sidecar, from its config: each issue's ref,
@@ -132,7 +133,7 @@ export function findWaveConfig(dir, refs, { asOf = Infinity } = {}) {
     let config, mtimeMs;
     try { ({ mtimeMs } = statSync(join(dir, name))); config = JSON.parse(readFileSync(join(dir, name), 'utf-8')); } catch { continue; }
     if (!Array.isArray(config?.issues) || mtimeMs > asOf) continue;
-    const issues = config.issues.map((i) => ({ ref: `${i?.repo}#${i?.number}` }));
+    const issues = config.issues.map((i) => ({ ref: formatRef(i?.repo, i?.number) }));
     if (waveContextMatches({ issues }, refs) && !(newest?.mtimeMs > mtimeMs)) newest = { config, mtimeMs };
   }
   return newest?.config ?? null;

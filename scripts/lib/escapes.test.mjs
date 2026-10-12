@@ -431,21 +431,24 @@ test('shipDagPrs and ingest-wave read one state dir alike: a PR and its tuningVe
   const row = (n) => ({ ref: `o/r#${n}`, number: n, status: 'succeeded', prNumber: 10 + n });
   const entry = (n, tuningVersion, emittedAt) => ({ runId: 'sd-1', wave: 1, tuningVersion, emittedAt, issues: [{ ref: `o/r#${n}`, complexity: 'normal' }] });
   // #1's wave ran under v2 (v4 is a later re-emit); #2's report has no startedAt, so the newest entry (v4) is not its routing either.
-  const base = engineDir([row(1)], [entry(1, 2, '2026-07-31T00:00:00Z'), entry(1, 4, '2026-08-02T00:00:00Z'), entry(2, 4, '2026-08-02T00:00:00Z')]);
+  const base = engineDir([row(1)], [entry(1, 2, '2026-07-31T00:00:00Z'), entry(1, 4, '2026-08-02T00:00:00Z'), entry(2, 4, '2026-08-02T00:00:00Z'), entry(4, 4, '2026-08-02T00:00:00Z')]);
   const reports = join(base, 'sd-1', 'state', 'reports');
   writeFileSync(join(reports, 'r.json'), JSON.stringify({ configName: 'ship-dag-sd-1', startedAt: '2026-08-01T00:00:00Z', issues: [row(1)] }));
   writeFileSync(join(reports, 'r2.json'), JSON.stringify({ configName: 'ship-dag-sd-1', issues: [row(2)] }));
   // #3's wave predates the sidecar: only a config emitted before it started routes it.
   writeFileSync(join(reports, 'r3.json'), JSON.stringify({ configName: 'ship-dag-sd-1', startedAt: '2026-08-01T00:00:00Z', issues: [row(3)] }));
+  // #4's report has a row with no owner/repo#N ref: ingest-wave refuses it, so none of its rows gives a PR (nor falls back to a closer).
+  writeFileSync(join(reports, 'r4.json'), JSON.stringify({ configName: 'ship-dag-sd-1', startedAt: '2026-08-01T00:00:00Z', issues: [row(4), { ref: 'o-r-5', status: 'failed' }] }));
   const config = join(base, 'sd-1', 'config.json');
   writeFileSync(config, JSON.stringify({ name: 'ship-dag-sd-1', issues: [{ repo: 'o/r', number: 3, complexity: 'normal' }] }));
   utimesSync(config, new Date('2026-07-31T00:00:00Z'), new Date('2026-07-31T00:00:00Z'));
   const ingested = [];
-  for (const name of ['r.json', 'r2.json', 'r3.json']) {
+  for (const name of ['r.json', 'r2.json', 'r3.json', 'r4.json']) {
     try { ingested.push(...ingestWave(join(reports, name), {}, { path: join(base, 'log.jsonl'), warn: () => {} }).records); } catch (err) { assert.equal(err.code, 3, err.message); }
   }
   const closer = { number: 12, headRefName: 'orchestrator/two', mergedAt: MERGED, repository: { nameWithOwner: 'o/r' } };
-  const prs = await shipDagPrs([], { baseDir: base, cacheDir: tmp(), gh: fakeGh({ [closers('o/r', 2)]: closersOf(closer) }).gh, sleep: async () => {}, warn: () => {} });
+  const closer4 = { ...closer, number: 14, headRefName: 'orchestrator/four' };
+  const prs = await shipDagPrs([], { baseDir: base, cacheDir: tmp(), gh: fakeGh({ [closers('o/r', 2)]: closersOf(closer), [closers('o/r', 4)]: closersOf(closer4) }).gh, sleep: async () => {}, warn: () => {} });
   assert.deepEqual(byKey(prs), byKey(ingested.map(({ repo, pr, tuningVersion }) => ({ repo, pr, tuningVersion }))));
   assert.deepEqual(byKey(prs), [{ repo: 'o/r', pr: 11, tuningVersion: 2 }, { repo: 'o/r', pr: 13, tuningVersion: 0 }]);
 });

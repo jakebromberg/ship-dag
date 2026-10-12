@@ -57,7 +57,8 @@ import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { mintRunId, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
-import { deriveWaveRecords, WaveRefusal, REF_RE } from './lib/wave-records.mjs';
+import { deriveWaveRecords, WaveRefusal } from './lib/wave-records.mjs';
+import { isPr, parseRef, sameRepo } from './lib/ref.mjs';
 import { readWaveReport, readWaveReports, waveContextFor } from './lib/wave-reports.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
@@ -324,11 +325,9 @@ class IngestError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
-const isPositiveInt = (v) => Number.isInteger(v) && v > 0;
 // What routeFailure (and so deriveWaveRecords) counts as a report row's PR.
-const isPr = (n) => typeof n === 'number' && n > 0;
 const OUTCOME_RULES = {
-  pr: [isPositiveInt, 'a positive integer'],
+  pr: [isPr, 'a positive integer'],
   finalState: [(v) => FINAL_STATES.has(v), `one of ${[...FINAL_STATES].join('|')}`],
   bounces: [(v) => Number.isInteger(v) && v >= 0, 'a non-negative integer'],
   findings: [(v) => Array.isArray(v) && v.every((f) => typeof f === 'string'), 'an array of strings'],
@@ -392,8 +391,6 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   const own = reports.find((r) => r.path === file) ?? readWaveReport(file);
   if (!own.report) throw new IngestError(3, own.error);
   const { report, startedAt } = own;
-  const bad = report.issues.find((r) => !REF_RE.test(r?.ref ?? ''));
-  if (bad) throw new IngestError(3, `${file}: a row has no owner/repo#N ref: ${JSON.stringify(bad)}`);
   if (own.error) throw new IngestError(3, own.error);
   const refs = report.issues.map((r) => r.ref);
   validateOutcomes(outcomes, report.issues);
@@ -470,9 +467,9 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   const taken = [];
   for (const rec of records) {
     if (rec.implStatus === null) continue;
-    const counted = [...existing, ...taken].filter((e) => e.repo === rec.repo && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
+    const counted = [...existing, ...taken].filter((e) => sameRepo(e.repo, rec.repo) && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
     // The engine named the log from the row's ref as written, so find that rather than rebuild it.
-    const ref = refs.find((r) => r.startsWith(`${rec.repo}#`) && Number(r.slice(rec.repo.length + 1)) === rec.issue);
+    const ref = refs.find((r) => { const p = parseRef(r); return sameRepo(p.repo, rec.repo) && p.number === rec.issue; });
     const implement = implementCost(logPathForRef(stateDir, ref), counted, warn);
     if (implement) { rec.cost = { implement }; taken.push(rec); }
   }
