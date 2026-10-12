@@ -487,7 +487,10 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
 /**
  * The window of the wave report `own` (in `stateDir`, among `familyReports`, the run family's reports as
  * `readWaveReports` reads them) and the failure digests it holds: ingest's and audit's one reading of them.
- * A digest or review round belongs to this wave when it was written after this report started and
+ * A digest the engine stamped with a report id (`reportId`) belongs to that report's wave and no other, whatever
+ * its mtime (a copied state dir loses mtimes). An unstamped digest (written before stamping), and every review
+ * round, which agents write from SKILL.md prose with no script writer to stamp it, keep the mtime window below:
+ * the rounds are the remaining heuristic. A digest or review round belongs to this wave when it was written after this report started and
  * before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
  * and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
  * run of other rows) re-runs nothing, so later rounds still review this row's PR. A later report
@@ -495,7 +498,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
  * @returns {{inWave: (ref: string, mtimeMs: number) => boolean, digests: Record<string, object>}} `digests` by ref,
  *   for the rows that did not succeed (deriveWaveRecords records only terminal rows and ignores a succeeded row's stale digest)
  */
-function waveWindow(stateDir, { report, startedAt }, familyReports, warn) {
+function waveWindow(stateDir, { report, startedAt, path: reportPath }, familyReports, warn) {
   const others = familyReports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
   const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
@@ -505,8 +508,12 @@ function waveWindow(stateDir, { report, startedAt }, familyReports, warn) {
     const p = digestPathForRef(stateDir, r.ref);
     let mtimeMs;
     try { ({ mtimeMs } = statSync(p)); } catch { continue; }
-    if (!inWave(r.ref, mtimeMs)) { warn(`${p}: written outside this wave; ignored`); continue; }
-    try { digests[r.ref] = JSON.parse(readFileSync(p, 'utf8')); } catch (err) { warn(`${p}: unreadable digest (${err.message}); ignored`); }
+    let digest;
+    try { digest = JSON.parse(readFileSync(p, 'utf8')); } catch (err) { digest = err; }
+    const stamped = typeof digest?.reportId === 'string';
+    if (stamped ? digest.reportId !== basename(reportPath, '.json') : !inWave(r.ref, mtimeMs)) { warn(`${p}: written outside this wave; ignored`); continue; }
+    if (digest instanceof Error) { warn(`${p}: unreadable digest (${digest.message}); ignored`); continue; }
+    digests[r.ref] = digest;
   }
   return { inWave, digests };
 }
