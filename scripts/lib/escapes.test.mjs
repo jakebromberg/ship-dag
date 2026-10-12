@@ -157,6 +157,12 @@ for (const [body, want] of [
   });
 }
 
+test('a revert is a strong escape, by body or by title', async () => {
+  const reverts = [cand({ number: 23, title: 'Revert "Something"', body: 'Reverts #5' }), cand({ number: 24, title: 'Revert "Add thing"', body: '' })];
+  const [row] = await run(fakeGh({ [SEARCH.revert]: reverts }));
+  assert.deepEqual(row.escapes.map((e) => [e.kind, e.strong]), [['revert', true], ['revert', true]]);
+});
+
 test('a bug-labelled issue citing the PR, or its same-repo closing issue, whatever the label case', async () => {
   const issues = [cand({ number: 30, body: 'broken since #5', labels: [{ name: 'bug' }] }), cand({ number: 31, body: 'regressed after #4', labels: [{ name: 'Bug' }] })];
   assert.deepEqual(kinds(await run(fakeGh({ [SEARCH.bug]: issues }))), [[30, 'follow-up-fix'], [31, 'follow-up-fix']]);
@@ -178,7 +184,9 @@ test('a fix or regression PR citing the PR counts, by whole word; one without th
   assert.deepEqual(kinds(await run(fakeGh({ [SEARCH.fix]: fixes, [SEARCH.regression]: regressions }))).map(([n]) => n), [40, 43, 44]);
 });
 
-test('a PR closed unmerged is no escape, open or merged is, and a closed bug issue is', async () => {
+// The issue search never asks for state, so a bug issue counts open or closed: it cannot tell closed-as-fixed from not-planned.
+test('a PR closed unmerged is no escape, open or merged is, and a bug issue counts whatever its state', async () => {
+  assert.ok(SEARCH.fix.includes(',state') && !SEARCH.bug.includes('state'));
   const prs = ['open', 'merged', 'closed'].map((state, i) => cand({ number: 60 + i, title: 'Fix crash', body: 'fixes #5', state }));
   const issue = cand({ number: 63, body: 'broke #5', labels: [{ name: 'bug' }] });
   assert.deepEqual(kinds(await run(fakeGh({ [SEARCH.fix]: prs, [SEARCH.bug]: [issue] }))), [[60, 'follow-up-fix'], [61, 'follow-up-fix'], [63, 'follow-up-fix']]);
@@ -190,6 +198,9 @@ for (const [body, strong] of [
   ['Resolved: #5', true],
   ['regression from #5', true],
   ['caused by https://github.com/o/r/pull/5', true],
+  ['introduced in #5', true],
+  ['A tab:\tfixes\t#5', true],
+  ['The crash this fixes\n\n#5 is related', false],
   ['fixes #4', true],
   ['follow-up to #5', false],
   ['after #5', false],
