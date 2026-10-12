@@ -929,7 +929,7 @@ describe('audit', () => {
   const RUN_A = 'sd-20261008-153059';
   const REF3 = 'WXYC/dj-site#3';
   const quiet = { warn: () => {} };
-  const logged = (over = {}) => ({ kind: 'issue', runId: RUN_A, repo: 'WXYC/dj-site', issue: 1, finalState: 'merged', ts: T1, ...over });
+  const logged = (over = {}) => ({ kind: 'issue', runId: RUN_A, implStatus: 'pushed', repo: 'WXYC/dj-site', issue: 1, finalState: 'merged', ts: T1, ...over });
   const family = (dirs, fn) => {
     const base = mkdtempSync(join(tmpdir(), 'audit-'));
     try {
@@ -979,9 +979,9 @@ describe('audit', () => {
       },
     },
   }, (base) => {
-    const records = [logged({ reportId: 'w1', finalState: 'error' }), logged({ issue: 2, reportId: 'w1' })];
+    const records = [logged({ reportId: 'w1', finalState: 'error', implStatus: 'error' }), logged({ issue: 2, reportId: 'w1' })];
     assert.deepEqual(audit_(base, records).notIngested.map((w) => [w.id, w.refs]), [['w2', [REF]]]);
-    assert.deepEqual(audit_(base, [...records, logged({ reportId: 'w2', finalState: 'error' })]).notIngested, []);
+    assert.deepEqual(audit_(base, [...records, logged({ reportId: 'w2', finalState: 'error', implStatus: 'error' })]).notIngested, []);
   }));
 
   test('names a torn report and one with no issues[] as unreadable, and never hands them to waveContextFor', () => family({
