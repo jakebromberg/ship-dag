@@ -281,14 +281,14 @@ test('entryFromConfig routes each config issue as waveSidecar does, and carries 
   assert.deepEqual([entry.blockOn, entry.tuningVersion], [undefined, undefined]);
 });
 
-test('findWaveConfig names the file it read as configFile, and waveConfigs lists every readable config', () => {
+test('findWaveConfig names the path of the file it read as configFile, and waveConfigs lists every readable config by path', () => {
   const dir = tmp();
   try {
     writeFileSync(join(dir, 'config-2.json'), cfg(['a/b#1']));
     writeFileSync(join(dir, 'config-torn.json'), '{');
     writeFileSync(join(dir, 'config-no-issues.json'), JSON.stringify({ name: 'x' }));
-    assert.equal(findWaveConfig(dir, ['a/b#1']).configFile, 'config-2.json');
-    assert.deepEqual(waveConfigs(dir).map((c) => c.configFile), ['config-2.json']);
+    assert.equal(findWaveConfig(dir, ['a/b#1']).configFile, join(dir, 'config-2.json'));
+    assert.deepEqual(waveConfigs(dir).map((c) => c.configFile), [join(dir, 'config-2.json')]);
     assert.deepEqual(waveConfigs(join(dir, 'missing')), []);
   } finally {
     rmSync(dir, { recursive: true, force: true });

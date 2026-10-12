@@ -56,6 +56,7 @@ test('waveContextFor falls back to the config in the state dir, then state/, and
     assert.equal(ctx.entry.tuningVersion, undefined);
     assert.equal(ctx.config.name, 'ship-dag-run1');
     assert.equal(ctx.configFile, join(d, ...(d === nested ? ['state'] : []), 'config.json'));
+    assert.equal(ctx.config.configFile, ctx.configFile);
   }
   assert.deepEqual(waveContextFor(stateDir(), report, { warn: () => {} }), { entry: null, config: null, configFile: null, source: null });
 });
