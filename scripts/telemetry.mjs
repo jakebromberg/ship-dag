@@ -75,7 +75,7 @@ import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
 import { isPr, parseRef, sameRepo } from './lib/ref.mjs';
-import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, waveContextFor } from './lib/wave-reports.mjs';
+import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
@@ -396,7 +396,7 @@ function validateOutcomes(outcomes, rows) {
  * over the sessions no earlier record of the run family lists), and append the ones the log lacks. `reportPath` is
  * `<stateDir>/state/reports/<id>.json`; everything else is read from beside it, except that review rounds,
  * and the later reports that end their window, come from every run-family dir (`runFamilyDirs`), or from the
- * state dir alone, with a warning, when the dir holding the family cannot be listed. Appends are
+ * state dir alone, with a warning, when the dir holding the family cannot be listed (`runFamilyStateDirs`, the scope rule diagnose-failure shares). Appends are
  * best-effort: a failed one is warned about and the rest continue.
  * @param {string} reportPath
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl:{pointB}, finalState, bounces, findings, tokens, pressureOverride}`
@@ -441,15 +441,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   // takes it), and a later report in any of them ends this wave's window. A dir is told apart by inode, since
   // a path typed in another case names the same dir as the listing's on a case-insensitive file system.
   // A base dir that cannot be listed leaves this dir's rounds, as before rounds were the run's, rather than no record.
-  let siblings = [];
-  try {
-    siblings = runFamilyDirs(entry?.runId || runIdFromConfigName(report.configName), dirname(stateDir));
-  } catch (err) {
-    warn(`ingest-wave: cannot list ${dirname(stateDir)} (${err.code ?? err.message}), so review rounds and later reports are read from ${stateDir} alone`);
-  }
-  const inodes = new Set();
-  const family = [stateDir, ...siblings]
-    .filter((d) => { const { dev, ino } = statSync(d); const key = `${dev}:${ino}`; return !inodes.has(key) && Boolean(inodes.add(key)); });
+  const family = runFamilyStateDirs(stateDir, { warn: (m) => warn(`ingest-wave: ${m}`), runId: entry?.runId || runIdFromConfigName(report.configName) });
   const familyReports = family.flatMap((d) => (d === stateDir ? reports : readWaveReports(d, { warn: () => {} })));
   const ownership = reportOwnership(familyReports);
   const { inWave, digests } = waveWindow(stateDir, own, familyReports, ownership, warn);
@@ -526,16 +518,15 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
  * and re-reviews it. A later row that carries `ran` re-ran it unless it is `carriedOver` (a `ran: false` row of its own, a retry's pre-launch failure, does end it); without `ran`, one that lists the ref with a different PR re-ran it. A report that only carries the row over with the same PR (a --retry-failed
  * run of other rows) re-runs nothing, so later rounds still review this row's PR. A later report
  * refused for a malformed row still started when it says, so it still ends the window.
- * `ownership` is `reportOwnership(familyReports)`: whether a row is its report's own event is its `owns`.
+ * `ownership` is `reportOwnership(familyReports)`: whether a row is its report's own event is its `owns`, and which refs a report lists is its `listing`.
  * @returns {{inWave: (ref: string, mtimeMs: number, reportId: unknown, path: string) => boolean, digests: Record<string, object>}}
  *   `inWave` names `path` in its warning; `digests` by ref,
  *   for the rows that did not succeed (deriveWaveRecords records only terminal rows and ignores a succeeded row's stale digest)
  */
-function waveWindow(stateDir, { report, startedAt, id }, familyReports, { owns }, warn) {
+function waveWindow(stateDir, { report, startedAt, id }, familyReports, { owns, listing: listed }, warn) {
   const others = familyReports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
   const reran = (later, row) => later.report.issues.some((r) => r?.ref === row.ref && (ranOf(r) == null ? !(isPr(row.prNumber) && r.prNumber === row.prNumber) : owns(later, r)));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
-  const listed = new Map(familyReports.map((r) => [r.id, new Set((r.report?.issues ?? []).filter((row) => row && owns(r, row)).map((row) => row?.ref))]));
   const inWave = (ref, mtimeMs, reportId, path) => {
     if (listed.get(reportId)?.has(ref)) return reportId === id;
     if (listed.has(reportId)) warn(`${path}: stamped with report id ${JSON.stringify(reportId)}, which names no report of this run that lists ${ref}; windowed by mtime`);
