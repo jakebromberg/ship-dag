@@ -6,18 +6,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { scanTranscript, readExitCode, writeFailureDigests } from './failure-digest.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 const REF = 'daisysguide/backend#620';
 const STEM = 'daisysguide%2Fbackend%23620';
+const RUN = 'sd-20261001-000000';
 
 const result = (over = {}) => line({ type: 'result', subtype: 'success', is_error: true, num_turns: 67, result: 'died', ...over });
 const quotaTurn = () => line({ type: 'assistant', message: { role: 'assistant' }, error: 'rate_limit', is_api_error_message: true });
 
 function configDir({ log, meta } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'ship-dag-digest-'));
+  // The layout run.mts hands the writer: `<stateDir>/state`, whose parent names the run family.
+  const dir = join(mkdtempSync(join(tmpdir(), 'ship-dag-digest-')), RUN, 'state');
   mkdirSync(join(dir, 'logs'), { recursive: true });
   mkdirSync(join(dir, 'metadata'), { recursive: true });
   if (log !== undefined) writeFileSync(join(dir, 'logs', `issue-${STEM}.log`), log);
@@ -138,7 +140,16 @@ test('writeFailureDigests: a carried-over row with no digest of its own still ge
   const row = { ref: REF, status: 'skipped', ran: false };
   writeReport(dir, 'w1', [row], W1);
   const [p] = await writeFailureDigests({ configDir: dir, report: writeReport(dir, 'w2', [row], W2), reportId: 'w2' });
-  assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w2');
+  assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w1', 'stamped with the report ingest and diagnose-failure name as its owner');
+});
+
+test('writeFailureDigests: the run family\'s reports count, so a row a sibling dir\'s earlier report lists is carried over', async () => {
+  const dir = configDir({ log: result({ result: 'first' }) });
+  const row = { ref: REF, status: 'skipped', ran: false };
+  const sibling = join(dirname(dirname(dir)), `${RUN}-b`, 'state');
+  writeReport(sibling, 'w1', [row], W1);
+  const [p] = await writeFailureDigests({ configDir: dir, report: writeReport(dir, 'w2', [row], W2), reportId: 'w2' });
+  assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w1');
 });
 
 test('writeFailureDigests: the report being digested, on disk as run.mts leaves it, is not its own earlier report', async () => {
