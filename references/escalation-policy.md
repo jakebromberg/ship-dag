@@ -1,6 +1,6 @@
 # Escalation policy — when to grill the human
 
-`/ship-dag` runs autonomously *except* at five human-in-the-loop points — A (triage), B (implement/review), C (cross-repo cutover), D (retrospective), E (rate-limit window). A and B fire when the design premise breaks — a well-specced issue Sonnet-implements and survives the Opus gate cleanly; **when that premise breaks, that break is the escalation signal.** C and D are **scheduled gates** built into the loop. E is neither: it fires when the account's five-hour rate-limit window can't be waited out cheaply (step 4's preflight, and the identical fork mid-recovery-recipe below) — an infra constraint, not a premise break, and deliberately kept distinct from B (see the *Point E* section — a rate-limit death is not a model failure).
+`/ship-dag` runs autonomously *except* at six human-in-the-loop points — A (triage), B (implement/review), C (cross-repo cutover), D (retrospective), E (rate-limit window), F (resource pressure). A and B fire when the design premise breaks — a well-specced issue Sonnet-implements and survives the Opus gate cleanly; **when that premise breaks, that break is the escalation signal.** C and D are **scheduled gates** built into the loop. E is neither: it fires when the account's five-hour rate-limit window can't be waited out cheaply (step 4's preflight, and the identical fork mid-recovery-recipe below) — an infra constraint, not a premise break, and deliberately kept distinct from B (see the *Point E* section — a rate-limit death is not a model failure). F fires when machine memory pressure is `critical` and waiting has not cleared it (see *Point F*).
 
 ## Triggers (any one → pause and grill)
 
@@ -12,6 +12,8 @@
 6. **Merge conflict needing judgment** — a rebase conflict whose resolution isn't mechanical.
 7. **Oversize issue** (point A) — triage estimates the issue needs more than 200 added lines of production source. The fork is split-now vs accept-the-size, and it is a scope call the human owns. It costs minutes here and a whole branch later, so it is worth a grill even though nothing is ambiguous.
 7. **Rate-limit window can't be waited out cheaply** (point E) — the step-4 preflight (`scripts/rate-limit-preflight.mjs`), or the identical fork hit mid-recovery-recipe while waiting out a live rate-limit death, finds the five-hour window at/above threshold with the reset more than `--wait-max-minutes` away, or no reset time at all: wait / defer this wave (or issue) / stop the run.
+
+8. **Resource pressure still critical after the wait cap** (point F) — the step-4 resource preflight (`scripts/resource-preflight.mjs`), run before an engine invocation, step 5's review/fix hand-off or a CI run, still reads `critical` after `--wait-max-minutes` (default 15) of waiting: wait / start anyway / defer this step / stop the run.
 
 ## Protocol
 
@@ -46,6 +48,17 @@ A rate-limit death is a distinct failure shape from a model failure: the session
    - **Fallback paths (`workflow`, `inline`): hand-write the death at death time.** The instant step 5 classifies the row as rate-limited, append its record: `implStatus: "error"`, `failureReason: "rate-limited"`, `finalState: "deferred"` (see `scripts/telemetry.mjs`). The continuation's merge is an ordinary step-6 emission.
 
    Either way, `report()` excludes every `failureReason: "rate-limited"` record from the model-quality indicators (first-pass yield, triage-miss, bounce rate) — an infra death must never make those numbers look worse than the model actually performed — and tallies it instead in the report's `quotaFailures` count (see *Telemetry* in `SKILL.md`).
+
+## Point F — resource pressure (`critical-hitl`)
+
+claude-orchestrator owns the threshold table and the machine-wide lease; ship-dag's column of it is that nothing new starts at `critical`: not an engine invocation, a review/fix hand-off, or a CI run. Waiting does not relieve memory pressure, so the wait cap (15 minutes, re-checked each minute through `--sleep-before 60 --waited-minutes <total>`) ends in asking, never in starting. Point F guards whichever step the preflight sent here, and offers:
+
+- **wait**: keep re-checking.
+- **start anyway**: run the guarded command with `CO_PRESSURE_OVERRIDE=critical-as-warning` as an inline prefix (never `export`ed), and with `--parallel 1` when it is the engine, i.e. `CO_PRESSURE_OVERRIDE=critical-as-warning … run.mts wave --parallel 1`. Everything that invocation starts (its sessions, the hook that admits their heavy commands, the engine's post-session checks) reads `critical` as `warning`: one session at a time, one heavy slot. Every other process on the machine still reads `critical` and gets 0 slots. The override covers that one invocation; the next wave's preflight asks again. `critical-as-warning` is the only accepted value.
+- **defer this step**: leave it for a later run.
+- **stop the run**.
+
+**Telemetry.** When the user chooses "start anyway" for an engine invocation, the main agent stamps `pressureOverride: true` in that wave's `--outcomes` for each row, and `ingest-wave` carries it onto the derived records (`deriveWaveRecords` passes it through; `normalizeRecord` keeps unknown keys).
 
 ## What does NOT escalate
 
