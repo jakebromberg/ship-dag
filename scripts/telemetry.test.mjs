@@ -1601,7 +1601,21 @@ describe('SKILL.md telemetry wiring', () => {
       assert.match(text, /diagnose-failure\.mjs[^\n]*? --owner/, `${name}: --owner command`);
       assert.ok(!text.includes('newest report whose row for the ref'), `${name}: no restated carry-over rule`);
       assert.ok(text.includes('step 5\'s `resource` resume in place'), `${name}: resource route`);
+      assert.ok(text.includes('even when a later report also lists the ref'), `${name}: death-report exception`);
     }
+    assert.match(skill, /it is instead the death report, the report whose row died/, 'SKILL.md 4d: death report');
+    assert.match(policy, /`\{REPORT_ID\}` = the death report's id \(the report whose row died/, 'escalation-policy point E step 4: death report');
+  });
+
+  test('step 5 and point E tell the main agent that --run-id and --state-dir find the same owner, and never to pick a wave dir', () => {
+    const policy = readFileSync(fileURLToPath(new URL('../references/escalation-policy.md', import.meta.url)), 'utf8');
+    for (const [name, text] of [['SKILL.md', skill], ['escalation-policy.md', policy]]) {
+      assert.ok(text.includes('--state-dir <any dir of the run\'s family>'), `${name}: any dir of the family`);
+      assert.ok(text.includes('across the run family') || text.includes('across the whole run family'), `${name}: owner found across the family`);
+      assert.ok(!text.includes('for a wave in a suffixed dir'), `${name}: no stale suffixed-dir advice`);
+      assert.ok(!text.includes('names the wave you mean'), `${name}: --state-dir does not name a wave`);
+    }
+    assert.ok(skill.includes('a suffixed wave dir is never needed'));
   });
 
   test('documents every telemetry.mjs subcommand the CLI dispatches', () => {
