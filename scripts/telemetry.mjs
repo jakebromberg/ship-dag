@@ -73,7 +73,7 @@ import { isMain } from './lib/is-main.mjs';
 import { INFRA_REASONS, RESOURCE_STOPS, ranOf } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
-import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
+import { carriedOver, deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
 import { isPr, parseRef, sameRepo } from './lib/ref.mjs';
 import { configDirs, readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
@@ -521,10 +521,11 @@ const earlierReports = (familyReports, startedAt) => familyReports.filter((r) =>
  * decides: `reviewRoundFiles` orders a ref's rounds. A stamp that names no report of `familyReports` (a typo, an
  * unsubstituted placeholder, a filename) is warned about and, like an unstamped digest or round (written before
  * stamping), keeps the mtime window below; so does a stamp that names a report of `familyReports` which does not list
- * the ref, because that report's ingest never reads the ref's rounds.
+ * the ref, because that report's ingest never reads the ref's rounds. A report lists a ref only by a row that is its own event, not
+ * one it `carriedOver` from an earlier report, since it derives no record for that row either.
  * A digest or review round belongs to this wave when it was written after this report started and
  * before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
- * and re-reviews it. A later row that carries `ran` says so itself; without it, one that lists the ref with a different PR re-ran it. A report that only carries the row over with the same PR (a --retry-failed
+ * and re-reviews it. A later row that carries `ran` re-ran it unless it is `carriedOver` (a `ran: false` row of its own, a retry's pre-launch failure, does end it); without `ran`, one that lists the ref with a different PR re-ran it. A report that only carries the row over with the same PR (a --retry-failed
  * run of other rows) re-runs nothing, so later rounds still review this row's PR. A later report
  * refused for a malformed row still started when it says, so it still ends the window.
  * @returns {{inWave: (ref: string, mtimeMs: number, reportId: unknown, path: string) => boolean, digests: Record<string, object>}}
@@ -533,9 +534,11 @@ const earlierReports = (familyReports, startedAt) => familyReports.filter((r) =>
  */
 function waveWindow(stateDir, { report, startedAt, id }, familyReports, warn) {
   const others = familyReports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
-  const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && (ranOf(r) ?? !(isPr(row.prNumber) && r.prNumber === row.prNumber)));
+  // One rule for whether a row is its report's own event: `carriedOver` by the reports that started before it. A row with no `ran` is its own.
+  const owns = ({ startedAt: at }, row) => !carriedOver(row, earlierReports(familyReports, at));
+  const reran = (later, row) => later.report.issues.some((r) => r?.ref === row.ref && (ranOf(r) == null ? !(isPr(row.prNumber) && r.prNumber === row.prNumber) : owns(later, r)));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
-  const listed = new Map(familyReports.map((r) => [r.id, new Set((r.report?.issues ?? []).map((row) => row?.ref))]));
+  const listed = new Map(familyReports.map((r) => [r.id, new Set((r.report?.issues ?? []).filter((row) => row && owns(r, row)).map((row) => row?.ref))]));
   const inWave = (ref, mtimeMs, reportId, path) => {
     if (listed.get(reportId)?.has(ref)) return reportId === id;
     if (listed.has(reportId)) warn(`${path}: stamped with report id ${JSON.stringify(reportId)}, which names no report of this run that lists ${ref}; windowed by mtime`);
