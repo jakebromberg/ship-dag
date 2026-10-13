@@ -9,12 +9,13 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { coHome, coDistPath } from './lib/co-home.mjs';
 import { composeCiLine, cliArgs, commandsFor, exitCodeFor, runCiProfile, setupProblem, spawnFailure } from './run-ci-profile.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROFILES = JSON.parse(readFileSync(join(HERE, '..', 'references', 'repo-ci-profiles.json'), 'utf8')).profiles;
-const CO_HOME = process.env.CO_HOME || '/Users/me/Developer/claude-orchestrator';
-const hasCli = existsSync(join(CO_HOME, 'dist', 'src', 'cli-lease.js'));
+const CO_HOME = coHome();
+const hasCli = existsSync(coDistPath(process.env, 'cli-lease.js'));
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'run-ci-profile-'));
 const isolatedEnv = (leaseDir) => {
@@ -159,7 +160,7 @@ test('the code-audit-pipeline status= assignment passes under /bin/sh', real, ()
 
 test('exit 75 when no slot frees within the wait cap', real, async () => {
   const dir = scratch();
-  const holder = spawn(process.execPath, [join(CO_HOME, 'dist', 'src', 'cli-lease.js'), '--shell', 'sleep 30'], { env: isolatedEnv(dir), stdio: 'ignore' });
+  const holder = spawn(process.execPath, [coDistPath(process.env, 'cli-lease.js'), '--shell', 'sleep 30'], { env: isolatedEnv(dir), stdio: 'ignore' });
   try {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal(run(['true'], dir, dir, 1).status, 75);

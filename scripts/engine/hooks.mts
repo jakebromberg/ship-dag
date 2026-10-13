@@ -20,12 +20,11 @@
 // AUTO_CONFIRM_CUTOVER=1 opts an unattended run in after out-of-band verification).
 
 import { createInterface } from "node:readline/promises";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { coDistPath } from "../lib/co-home.mjs";
 import { reposDirFromEnv } from "./repos-dir.mjs";
 
-const CO_HOME = process.env.CO_HOME || "/Users/me/Developer/claude-orchestrator";
-const coreUrl = pathToFileURL(path.join(CO_HOME, "dist/src/index.js")).href;
+const coreUrl = pathToFileURL(coDistPath(process.env, "index.js")).href;
 const { deriveWorktreeHooks } = await import(coreUrl);
 
 // reposDir = SHIP_DAG_REPOS_DIR ?? SHIP_DAG_PROJECT_ROOT ?? engine default. Passing

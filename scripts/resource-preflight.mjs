@@ -27,20 +27,14 @@
 // before deciding.
 
 import { setTimeout as delay } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
+import { importCo } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { parseNumberOption } from './rate-limit-preflight.mjs';
 import { DEFAULT_PARALLEL, DEFAULT_WAIT_MAX_MINUTES, handoffLimit, resourceDecision } from './lib/resource.mjs';
 
-const DEFAULT_CO_HOME = '/Users/me/Developer/claude-orchestrator';
-
 /** Import `leaseStatus` and `defaultLeaseOptions` from the engine checkout's dist; throws if either is missing. */
 async function importLease(env) {
-  const index = `${env.CO_HOME || DEFAULT_CO_HOME}/dist/src/index.js`;
-  const mod = await import(pathToFileURL(index).href);
-  for (const name of ['leaseStatus', 'defaultLeaseOptions']) {
-    if (typeof mod[name] !== 'function') throw new Error(`${index} does not export ${name}`);
-  }
+  const mod = await importCo(env, ['leaseStatus', 'defaultLeaseOptions']);
   return { leaseOptionsFor: mod.defaultLeaseOptions, leaseStatus: mod.leaseStatus };
 }
 
