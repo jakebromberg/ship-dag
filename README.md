@@ -47,7 +47,7 @@ The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [cl
 |------|------|
 | `SKILL.md` | The skill definition — arguments, the wave loop, HITL gates. |
 | `scripts/plan-waves.mjs` | DAG fetch + wave planning (imports claude-orchestrator's topo-sort core). |
-| `scripts/run-ci-profile.mjs` | Runs a repo's local-CI profile under claude-orchestrator's lease CLI (SKILL.md step 6.2): each command in its own subshell, exit code passed through, 75 on no slot. |
+| `scripts/run-ci-profile.mjs` | Runs a repo's local-CI profile under claude-orchestrator's lease CLI (SKILL.md step 6.2): each command in its own subshell, exit code passed through, 75 on no slot, 64 on a setup error. |
 | `scripts/emit-config.mjs` | Turns a cleared ready-wave into a claude-orchestrator engine config. |
 | `scripts/engine/` | The engine-invocation path: `run.mts` (entry), `hooks.mts` (worktree + cutover), `repos-dir.mjs` (org-root resolution), `prompt.md`. |
 | `references/tuning.json` | Versioned effort policy (review floor, reach→effort, implement map); `scripts/lib/tuning.mjs` loads, validates and resolves it. |
