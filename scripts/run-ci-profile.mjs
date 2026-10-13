@@ -43,6 +43,13 @@ export function runCiProfile({ repo, worktree, profilesPath = PROFILES, env = pr
   return spawnSync(process.execPath, args, { cwd: worktree, env, stdio });
 }
 
+/** One stderr line naming why a spawn produced no exit status (spawn error such as ENOENT, or a signal); null when it exited normally. */
+export function spawnFailure(result) {
+  if (result.error) return `could not start the lease CLI: ${result.error.message}${result.error.code ? ` (${result.error.code})` : ''}`;
+  if (result.status === null && result.signal) return `lease CLI killed by ${result.signal}`;
+  return null;
+}
+
 function main(argv) {
   const opt = (name) => argv[argv.indexOf(name) + 1];
   const repo = argv.includes('--repo') && opt('--repo');
@@ -52,7 +59,10 @@ function main(argv) {
     process.exit(2);
   }
   try {
-    process.exit(runCiProfile({ repo, worktree }).status ?? 1);
+    const result = runCiProfile({ repo, worktree });
+    const failure = spawnFailure(result);
+    if (failure) process.stderr.write(`run-ci-profile: ${failure}\n`);
+    process.exit(result.status ?? 1);
   } catch (err) {
     process.stderr.write(`run-ci-profile: ${err.message}\n`);
     process.exit(2);

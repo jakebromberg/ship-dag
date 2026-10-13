@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { composeCiLine, cliArgs, commandsFor, runCiProfile } from './run-ci-profile.mjs';
+import { composeCiLine, cliArgs, commandsFor, runCiProfile, spawnFailure } from './run-ci-profile.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROFILES = JSON.parse(readFileSync(join(HERE, '..', 'references', 'repo-ci-profiles.json'), 'utf8')).profiles;
@@ -42,10 +42,28 @@ test('cliArgs: lease CLI with the wait cap, a credential-free label and the line
   assert.deepEqual(args, ['/co/dist/src/cli-lease.js', '--max-wait', '100', '--label', 'run-ci-profile o/r', '--shell', "echo 'a \"b\" $(c)'"]);
 });
 
-test('every shipped profile composes to one line per command, each wrapped in its own subshell', () => {
+test('every shipped profile composes to a line /bin/sh parses, one subshell per command', () => {
   for (const [repo, { commands = [] }] of Object.entries(PROFILES)) {
-    assert.equal(composeCiLine(commands).split('\n) && (\n').length, commands.length || 1, repo);
+    const line = composeCiLine(commands);
+    assert.equal(line.split('\n) && (\n').length, commands.length || 1, repo);
+    const r = spawnSync('/bin/sh', ['-n', '-c', line], { encoding: 'utf8' });
+    assert.equal(r.status, 0, `${repo}: ${r.stderr}`);
   }
+});
+
+test('spawnFailure: names a spawn error or a signal, and is silent on a normal exit', () => {
+  assert.equal(spawnFailure({ status: 3 }), null);
+  assert.match(spawnFailure({ status: null, error: Object.assign(new Error('spawn node ENOENT'), { code: 'ENOENT' }) }), /could not start.*ENOENT/);
+  assert.match(spawnFailure({ status: null, signal: 'SIGKILL' }), /killed by SIGKILL/);
+});
+
+test('a missing worktree surfaces as a spawn error', () => {
+  const dir = scratch();
+  try {
+    const r = run(['true'], join(dir, 'no-such-worktree'), dir);
+    assert.equal(r.status, null);
+    assert.match(spawnFailure(r), /could not start.*ENOENT/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 const real = { skip: !hasCli && `no claude-orchestrator build at ${CO_HOME}` };
@@ -61,8 +79,10 @@ test('exit code passes through', real, () => {
 test('a failure before an || { …; } tail still fails and short-circuits (daisysguide/ios shape)', real, () => {
   const dir = scratch();
   try {
-    const r = run(['false', 'xcodebuild_missing_cmd > /dev/null 2>&1 || { echo tail; exit 1; }', 'touch ran-third'], dir, dir);
+    // Joined with a plain `&&`, `false && missing || { exit 0; } && touch …` would run the tail and exit 0.
+    const r = run(['false', 'xcodebuild_missing_cmd > /dev/null 2>&1 || { echo tail; exit 0; }', 'touch ran-third'], dir, dir);
     assert.equal(r.status, 1);
+    assert.doesNotMatch(String(r.stdout), /tail/);
     assert.equal(existsSync(join(dir, 'ran-third')), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
