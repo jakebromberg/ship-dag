@@ -70,7 +70,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { INFRA_REASONS, RESOURCE_STOPS } from './lib/failure.mjs';
+import { INFRA_REASONS, RESOURCE_STOPS, ranOf } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
@@ -533,7 +533,7 @@ const earlierReports = (familyReports, startedAt) => familyReports.filter((r) =>
  */
 function waveWindow(stateDir, { report, startedAt, id }, familyReports, warn) {
   const others = familyReports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
-  const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && (typeof r.ran === 'boolean' ? r.ran : !(isPr(row.prNumber) && r.prNumber === row.prNumber)));
+  const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && (ranOf(r) ?? !(isPr(row.prNumber) && r.prNumber === row.prNumber)));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
   const listed = new Map(familyReports.map((r) => [r.id, new Set((r.report?.issues ?? []).map((row) => row?.ref))]));
   const inWave = (ref, mtimeMs, reportId, path) => {
