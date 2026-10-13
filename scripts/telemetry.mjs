@@ -510,7 +510,8 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
  * point-E continuation) and a copy that lost mtimes keep their wave. Which wave a round belongs to is all the stamp
  * decides: `reviewRoundFiles` orders a ref's rounds. A stamp that names no report of `familyReports` (a typo, an
  * unsubstituted placeholder, a filename) is warned about and, like an unstamped digest or round (written before
- * stamping), keeps the mtime window below.
+ * stamping), keeps the mtime window below; so does a stamp that names a report of `familyReports` which does not list
+ * the ref, because that report's ingest never reads the ref's rounds.
  * A digest or review round belongs to this wave when it was written after this report started and
  * before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
  * and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
@@ -524,10 +525,11 @@ function waveWindow(stateDir, { report, startedAt, id }, familyReports, warn) {
   const others = familyReports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
   const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
-  const ids = new Set(familyReports.map((r) => r.id));
+  const listed = new Map(familyReports.map((r) => [r.id, new Set((r.report?.issues ?? []).map((row) => row?.ref))]));
   const inWave = (ref, mtimeMs, reportId, path) => {
-    if (ids.has(reportId)) return reportId === id;
-    if (typeof reportId === 'string') warn(`${path}: stamped with report id ${JSON.stringify(reportId)}, which names no report of this run; windowed by mtime`);
+    if (listed.get(reportId)?.has(ref)) return reportId === id;
+    if (listed.has(reportId)) warn(`${path}: stamped with report id ${JSON.stringify(reportId)}, which names no report of this run that lists ${ref}; windowed by mtime`);
+    else if (typeof reportId === 'string') warn(`${path}: stamped with report id ${JSON.stringify(reportId)}, which names no report of this run; windowed by mtime`);
     return mtimeMs >= startedAt && mtimeMs < ends[ref];
   };
   const digests = {};
