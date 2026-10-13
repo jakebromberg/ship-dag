@@ -180,6 +180,14 @@ export function terminalEvent(transcriptText) {
 }
 
 /**
+ * A report row's `ran` fact: whether the engine launched an implement session for it. Only a boolean is a fact;
+ * any other value (a malformed or hand-edited report) is absent, for every reader of it alike.
+ * @param {{ran?: unknown}|null|undefined} row
+ * @returns {boolean|undefined}
+ */
+export const ranOf = (row) => (typeof row?.ran === 'boolean' ? row.ran : undefined);
+
+/**
  * The `ciStatus` a resource stop implies for a row with a PR, or null for any other row. A `retry` stop ran the
  * engine's check and it failed; any other stop never ran one, so the PR is unverified (`"none"`), not passing:
  * SKILL.md step 5 runs the CI profile before such a row is queued.

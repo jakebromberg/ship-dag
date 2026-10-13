@@ -83,7 +83,7 @@ const EVALUATORS = {
     return share(month.filter((r) => r.path === 'workflow').length, month.length, t.trips, t.minSample);
   },
 
-  // A backfilled earlier report can absorb a later re-run's sessions until #107 lands (PR #103 `## Deferred`), so a version's mean can read low.
+  // A backfilled earlier report whose row lists no `sessionIds` can still absorb a later re-run's sessions, so a version's mean can read low.
   cost: (t, ctx) => gated(t, ctx, () => {
     const used = ctx.records.filter((r) => mergedPr(r) && r.reportId && typeof at(r, t.source) === 'number');
     const first = (rs) => [...rs].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).slice(0, t.minSample).map((r) => at(r, t.source));
@@ -132,8 +132,9 @@ const EVALUATORS = {
       rows.prCovered += a.prRows.total - a.prRows.uncovered; rows.prTotal += a.prRows.total;
       return { runId, ...share(covered, a.terminalRows, t.trips.rows, t.minSample) };
     }).filter(Boolean);
+    // A ran-false record (a row that launched no session) never carries cost, so it is no ingestion gap and stays out of the share.
     // Inside the window only: a record from before cost.implement landed (mid-version) reached implement with none, and would read as an ingestion gap.
-    const reached = ctx.window.filter((r) => inWindow(r, t) && r.reportId && r.implStatus != null);
+    const reached = ctx.window.filter((r) => inWindow(r, t) && r.reportId && r.ran !== false && r.implStatus != null);
     const withCost = reached.filter((r) => typeof at(r, t.source) === 'number');
     const cost = !t.since ? { state: 'insufficient-data', reason: 'no window date set' }
       : withCost.length ? share(withCost.length, reached.length, t.trips.cost, t.minSample) : { state: 'pending-instrumentation', source: t.source };

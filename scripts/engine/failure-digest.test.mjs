@@ -119,8 +119,8 @@ test('writeFailureDigests: a ran-false row whose digest exists keeps it, stamp a
   writeFileSync(join(dir, 'logs', `issue-${STEM}.log`), result({ result: 'later' }));
   assert.deepEqual(await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, status: 'skipped', ran: false }] }, reportId: 'w2' }), []);
   assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w1');
-  // A row that launched a session, or carries no ran, is digested afresh.
-  for (const ran of [true, undefined]) {
+  // A row that launched a session, or carries no ran (or one that is no boolean), is digested afresh.
+  for (const ran of [true, undefined, 'false', 0, null]) {
     writeFileSync(p, JSON.stringify({ reportId: 'w1' }));
     await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, status: 'failed', ran }] }, reportId: 'w2' });
     assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w2');
