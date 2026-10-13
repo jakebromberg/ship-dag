@@ -11,6 +11,7 @@
 
 import { readFileSync } from 'node:fs';
 import { isMain } from './is-main.mjs';
+import { formatRef } from './ref.mjs';
 
 /**
  * `spec` with only the issues named by `refs`, in the spec's order, and `overrides` (`wave`, `stateDir`) applied.
@@ -18,7 +19,7 @@ import { isMain } from './is-main.mjs';
  * @throws when a ref names no issue of the spec
  */
 export function filterSpec(spec, refs, overrides = {}) {
-  const refOf = (i) => `${i.repo || spec.repo}#${i.number}`;
+  const refOf = (i) => formatRef(i.repo || spec.repo, i.number);
   const unknown = refs.filter((r) => !spec.issues.some((i) => refOf(i) === r));
   if (unknown.length) throw new Error(`not in the spec: ${unknown.join(', ')}`);
   return { ...spec, ...overrides, issues: spec.issues.filter((i) => refs.includes(refOf(i))) };
