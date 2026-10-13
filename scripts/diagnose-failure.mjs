@@ -35,10 +35,12 @@
 // Prints the diagnosis as JSON on stdout and a one-line summary on stderr.
 // Exit 2 on a malformed invocation, 3 when the state dir has no such row.
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
 import { artifactStem, createTranscriptScan, buildDiagnosis, MAX_REASON_CHARS } from './lib/failure.mjs';
+import { carriedOver } from './lib/wave-records.mjs';
+import { earlierReports, readWaveReports } from './lib/wave-reports.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 
 export { MAX_REASON_CHARS };
@@ -63,37 +65,35 @@ export function digestPathForRef(stateDir, ref) {
 }
 
 /**
- * The newest-by-mtime `state/reports/*.json`, or null when there is none.
- * The engine writes a `.md` companion beside each report; only the JSON is
- * machine-readable, so the `.md` is filtered out rather than sorted against.
+ * The wave report that owns `ref`'s latest event: the latest report, by parsed `startedAt` (never mtime, which a
+ * copied state dir loses and a tie leaves to readdir order), whose row for `ref` is not one it only carries over
+ * (`carriedOver` against the reports that started before it, as ingest reads them). A report that cannot be read, or
+ * has no parseable `startedAt`, is skipped with a warning (the earliest report that lists `ref` has nothing earlier to
+ * carry it over from, so an owner exists whenever one lists it). The engine stamps a digest with the owning report's id, so this is the report that stamp
+ * must name; a report that lists other refs, however much newer, does not disown it.
  * @param {string} stateDir
- * @returns {string|null}
+ * @param {string} ref
+ * @param {{warn?: (m: string) => void}} [opts]
+ * @returns {{id: string, path: string, report: object, startedAt: number, row: object}|null} null when no report lists `ref`
  */
-export function newestReportFile(stateDir) {
-  const dir = join(stateDir, 'state', 'reports');
-  let names;
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return null;
-  }
-  const candidates = [];
-  for (const name of names) {
-    if (!name.endsWith('.json')) continue;
-    const p = join(dir, name);
-    try {
-      candidates.push({ p, mtime: statSync(p).mtimeMs });
-    } catch {
-      continue; // vanished between listing and stat
-    }
-  }
-  candidates.sort((a, b) => b.mtime - a.mtime);
-  return candidates[0]?.p ?? null;
+export function owningReport(stateDir, ref, opts) {
+  return ownerOf(usableReports(stateDir, opts), ref);
+}
+
+/** The reports of `stateDir` that read cleanly, oldest `startedAt` first (a tie by id); a refused one was warned about by `readWaveReports`. */
+const usableReports = (stateDir, { warn } = {}) => readWaveReports(stateDir, { warn })
+  .filter((r) => !r.error)
+  .sort((x, y) => x.startedAt - y.startedAt || (x.id < y.id ? -1 : 1));
+
+/** `owningReport`'s choice among `reads` (`usableReports`' result). */
+function ownerOf(reads, ref) {
+  const listing = reads.map((r) => ({ ...r, row: r.report.issues.find((row) => row?.ref === ref) })).filter((r) => r.row);
+  return listing.findLast((r) => !carriedOver(r.row, earlierReports(reads, r.startedAt))) ?? null;
 }
 
 /**
- * Diagnose one issue's engine session from its run state dir. Reads the newest
- * report for the row and, if present, the session transcript for its terminal
+ * Diagnose one issue's engine session from its run state dir. Reads the report that
+ * owns the row (`owningReport`) and, if present, the session transcript for its terminal
  * record and rate-limit signature — but returns only the handful of fields
  * step 5 acts on, never the transcript itself.
  *
@@ -105,31 +105,32 @@ export function newestReportFile(stateDir) {
  *
  * @param {string} stateDir  the run's engine state dir (`.../ship-dag/engine/<runId>`)
  * @param {string} ref       composite issue ref, `owner/repo#N`
+ * @param {{warn?: (m: string) => void}} [opts]  where a report that cannot be read is warned about (stderr by default)
  */
-export function diagnose(stateDir, ref) {
+export function diagnose(stateDir, ref, opts) {
+  const reads = usableReports(stateDir, opts);
+  const owner = ownerOf(reads, ref);
+
   // The engine already answered this if it digested the run — prefer that over
   // re-reading a transcript that may be megabytes.
-  // Only a digest of the newest report (or an unstamped, legacy one) is read: an earlier wave's would route the row by its old stop.
+  // Only a digest of the report that owns the row (or an unstamped, legacy one) is read: a digest of an earlier event would route the row by its old stop.
   const digestFile = digestPathForRef(stateDir, ref);
   if (existsSync(digestFile)) {
     try {
       const digest = JSON.parse(readFileSync(digestFile, 'utf8'));
-      const newest = newestReportFile(stateDir);
-      if (!digest.reportId || (newest && digest.reportId === basename(newest, '.json'))) return { ...digest, source: 'digest', digest: digestFile };
+      if (!digest.reportId || (owner && digest.reportId === owner.id)) return { ...digest, source: 'digest', digest: digestFile };
     } catch {
       // A torn or truncated digest is not worth failing over — recompute below.
     }
   }
 
-  const reportFile = newestReportFile(stateDir);
-  if (!reportFile) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} — is this the right run's state dir?`);
-  const report = JSON.parse(readFileSync(reportFile, 'utf8'));
-  const rows = Array.isArray(report.issues) ? report.issues : [];
-  const row = rows.find((r) => r.ref === ref);
-  if (!row) {
-    const known = rows.map((r) => r.ref).join(', ') || '(none)';
-    throw new Error(`no row for ${ref} in ${reportFile}; that report covers: ${known}`);
+  if (reads.length === 0) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} — is this the right run's state dir?`);
+  if (!owner) {
+    const latest = reads.at(-1);
+    const known = latest.report.issues.map((r) => r.ref).join(', ') || '(none)';
+    throw new Error(`no row for ${ref} in any report under ${join(stateDir, 'state', 'reports')}; the latest, ${latest.path}, covers: ${known}`);
   }
+  const { path: reportFile, row } = owner;
 
   const transcriptPath = logPathForRef(stateDir, ref);
   let transcript = null;

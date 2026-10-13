@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { engineFixture, stamped } from './lib/engine-fixture.mjs';
-import { logPathForRef, newestReportFile, digestPathForRef, diagnose, MAX_REASON_CHARS } from './diagnose-failure.mjs';
+import { logPathForRef, owningReport, digestPathForRef, diagnose, MAX_REASON_CHARS } from './diagnose-failure.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 
@@ -19,7 +19,7 @@ test.after(() => fixtures.forEach((fx) => fx.cleanup()));
 function fixture({ rows, transcript, digest, ref = REF, reportName = '2026-08-31T23-43-43.528Z.json' } = {}) {
   const fx = engineFixture({ diag: {
     digests: digest === undefined ? [] : [{ ref, body: digest }],
-    reports: rows ? { [reportName]: { configName: 'ship-dag-test', issues: rows } } : {},
+    reports: rows ? { [reportName]: { configName: 'ship-dag-test', startedAt: '2026-08-31T23:43:43.528Z', issues: rows } } : {},
     files: { 'state/logs/.keep': '', ...(transcript !== undefined && { [`state/logs/issue-${encodeURIComponent(ref)}.log`]: transcript }) },
   } });
   fixtures.push(fx);
@@ -34,16 +34,95 @@ test('logPathForRef: percent-encodes the composite ref the way the engine names 
   assert.equal(logPathForRef('/s', REF), '/s/state/logs/issue-daisysguide%2Fbackend%23620.log');
 });
 
-test('newestReportFile: picks the newest report by mtime, ignoring the .md companion', () => {
+/** A state dir of `reports` (stem -> {startedAt, rows}) and, optionally, a digest for REF; `files` writes anything else. */
+function waves(reports, { digest, files } = {}) {
   const fx = engineFixture({ diag: {
-    reports: { '2026-08-31T23-43-43.528Z.json': { configName: 'ship-dag-test', issues: [] } },
-    files: {
-      'state/reports/older.json': stamped(new Date(Date.now() - 60_000).toISOString(), {}),
-      'state/reports/2026-08-31T23-43-43.528Z.md': '# not json',
-    },
+    reports: Object.fromEntries(Object.entries(reports).map(([stem, { startedAt, rows, mtime }]) => [`${stem}.json`, mtime ? stamped(mtime, { startedAt, issues: rows }) : { startedAt, issues: rows }])),
+    digests: digest ? [{ ref: REF, body: digest }] : [],
+    files,
   } });
   fixtures.push(fx);
-  assert.match(newestReportFile(fx.dirs.diag), /2026-08-31T23-43-43\.528Z\.json$/);
+  return fx.dirs.diag;
+}
+const W1 = '2026-10-08T19:00:00.000Z';
+const W2 = '2026-10-08T20:00:00.000Z';
+const row = (over = {}) => ({ ref: REF, number: 620, status: 'failed', ...over });
+const quiet = { warn: () => {} };
+
+test('owningReport: the latest report, by startedAt, that lists the ref as its own row, ignoring the .md companion and a report that only carries the row over', () => {
+  const dir = waves({
+    a: { startedAt: W1, rows: [row({ ran: true, prNumber: 9 })] },
+    b: { startedAt: W2, rows: [row({ ran: false, prNumber: 9 })] }, // carries a's row over
+    c: { startedAt: '2026-10-08T21:00:00.000Z', rows: [row({ ref: 'o/r#2' })] }, // lists another ref
+  }, { files: { 'state/reports/d.md': '# not json' } });
+  assert.equal(owningReport(dir, REF, quiet).id, 'a');
+  assert.equal(owningReport(dir, 'o/r#2', quiet).id, 'c');
+});
+
+test('owningReport: orders by startedAt, not by mtime or name; a tie in mtime does not pick the oldest name', () => {
+  const dir = waves({
+    a: { startedAt: W2, rows: [row()], mtime: W1 },
+    b: { startedAt: W1, rows: [row({ status: 'pending', ran: false })], mtime: W2 },
+  });
+  assert.equal(owningReport(dir, REF, quiet).id, 'a');
+  const tie = waves({ a: { startedAt: W1, rows: [row()], mtime: W1 }, b: { startedAt: W2, rows: [row({ status: 'pending', ran: false })], mtime: W1 } });
+  assert.equal(owningReport(tie, REF, quiet).id, 'b');
+});
+
+test('owningReport: the only report to list a ref owns it, whatever its row says; an unlisted ref gives null', () => {
+  const dir = waves({ b: { startedAt: W2, rows: [row({ ran: false })] } });
+  assert.equal(owningReport(dir, REF, quiet).id, 'b');
+  assert.equal(owningReport(dir, 'o/r#7', quiet), null);
+});
+
+test('diagnose: a ref of an earlier wave is still diagnosed by its digest after a later wave writes a report that does not list it', () => {
+  const digest = { ref: REF, status: 'failed', failureReason: 'rate-limited', route: 'point-E', reportId: 'w1' };
+  const dir = waves({ w1: { startedAt: W1, rows: [row({ ran: true })] }, w2: { startedAt: W2, rows: [row({ ref: 'o/r#2', status: 'succeeded' })] } }, { digest });
+  const out = diagnose(dir, REF, quiet);
+  assert.equal(out.source, 'digest');
+  assert.equal(out.route, 'point-E');
+});
+
+test('diagnose: a digest kept for a row a later report carries over is served, because its stamp names the report that owns the event', () => {
+  const digest = { ref: REF, status: 'failed', prNumber: 9, exitCode: 1, route: 'review-gate', reportId: 'w1' };
+  const dir = waves({
+    w1: { startedAt: W1, rows: [row({ ran: true, prNumber: 9 })] },
+    w2: { startedAt: W2, rows: [row({ ran: false, prNumber: 9 })] },
+  }, { digest });
+  const out = diagnose(dir, REF, quiet);
+  assert.equal(out.source, 'digest');
+  assert.equal(out.exitCode, 1);
+});
+
+test('diagnose: a digest stamped by a report that is not the owner is recomputed from the owner, even when the owner is not the newest report', () => {
+  const digest = { ref: REF, status: 'failed', route: 'point-B', reportId: 'w1' };
+  const dir = waves({
+    w1: { startedAt: W1, rows: [row()] },
+    w2: { startedAt: W2, rows: [row({ status: 'pending', ran: false, failureReason: 'lease-wait' })] },
+    w3: { startedAt: '2026-10-08T21:00:00.000Z', rows: [row({ ref: 'o/r#2' })] },
+  }, { digest });
+  const out = diagnose(dir, REF, quiet);
+  assert.equal(out.source, 'report');
+  assert.equal(out.status, 'pending');
+  assert.match(out.report, /w2\.json$/);
+});
+
+test('diagnose: a tie in mtime does not discard the digest of the later report', () => {
+  const digest = { ref: REF, status: 'pending', route: 'resource', reportId: 'b' };
+  const dir = waves({
+    a: { startedAt: W1, rows: [row()], mtime: W1 },
+    b: { startedAt: W2, rows: [row({ status: 'pending', ran: false, failureReason: 'lease-wait' })], mtime: W1 },
+  }, { digest });
+  assert.equal(diagnose(dir, REF, quiet).route, 'resource');
+});
+
+test('diagnose: a torn report, or one with a row that has no ref, is skipped with a warning rather than thrown over or trusted', () => {
+  const digest = { ref: REF, status: 'failed', route: 'point-B', reportId: 'a' };
+  const dir = waves({ a: { startedAt: W1, rows: [row()] }, c: { startedAt: W2, rows: [row({ status: 'pending' }), { number: 3 }] } }, { digest, files: { 'state/reports/b.json': '{"iss' } });
+  const warnings = [];
+  assert.equal(diagnose(dir, REF, { warn: (m) => warnings.push(m) }).source, 'digest');
+  assert.equal(warnings.length, 2);
+  assert.match(warnings.join('\n'), /b\.json[^]*c\.json|c\.json[^]*b\.json/);
 });
 
 test('diagnose: the sd-20260831-162148 case — failed, but a PR is open, so it routes to the review gate', () => {

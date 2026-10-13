@@ -75,7 +75,7 @@ import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { carriedOver, deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
 import { isPr, parseRef, sameRepo } from './lib/ref.mjs';
-import { configDirs, readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './lib/wave-reports.mjs';
+import { configDirs, earlierReports, readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
@@ -508,9 +508,6 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   }
   return { records, appended };
 }
-
-/** The parsed reports of `familyReports` (`readWaveReports`' reads) that started before `startedAt`: what `carriedOver` compares a row to. */
-const earlierReports = (familyReports, startedAt) => familyReports.filter((r) => r.report && Number.isFinite(r.startedAt) && r.startedAt < startedAt).map((r) => r.report);
 
 /**
  * The window of the wave report `own` (in `stateDir`, among `familyReports`, the run family's reports as

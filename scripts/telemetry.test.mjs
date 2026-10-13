@@ -9,9 +9,11 @@ import { rmSync, readFileSync, readdirSync, existsSync, appendFileSync, chmodSyn
 import { WaveRefusal } from './lib/wave-records.mjs';
 import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit } from './telemetry.mjs';
 import { artifactStem } from './lib/failure.mjs';
+import { writeFailureDigests } from './engine/failure-digest.mjs';
+import { diagnose } from './diagnose-failure.mjs';
 import { NO_ENGINE_DIR } from './lib/tripwires.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
-import { engineFixture, stamped, putReview, putDigest, stateRow, stateReport, sidecarEntry, engineConfig as config, RUN, T0, T1, EMITTED } from './lib/engine-fixture.mjs';
+import { engineFixture, stamped, putReport, putReview, putDigest, stateRow, stateReport, sidecarEntry, engineConfig as config, RUN, T0, T1, EMITTED } from './lib/engine-fixture.mjs';
 
 const approx = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 const FIXED = () => '2026-07-23T00:00:00.000Z';
@@ -646,6 +648,33 @@ for (const [when, at, want] of [
     assert.equal(ingest(dir).records[0].failureReason, want);
   }));
 }
+
+// #193's example end to end: a PR-less rate-limited death E, then a retry R the engine stopped at launch for memory.
+// Each report's digest pass runs with the report on disk, as run.mts leaves it; diagnose then reads the digest for the
+// report that owns the row, and ingest of R reads that digest as R's own, with no `outside this wave` warning.
+test('a row that dies, then stops at launch on retry: the writer, diagnose and ingest agree on the digest', async () => {
+  const quota = [{ type: 'assistant', message: { role: 'assistant' }, error: 'rate_limit', is_api_error_message: true },
+    { type: 'result', subtype: 'success', is_error: true, num_turns: 3, result: "You've hit your session limit" }].map((o) => JSON.stringify(o)).join('\n');
+  const E = stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, ran: true })], { startedAt: T0, finishedAt: T1 });
+  const R = stateReport([stateRow(REF, { status: 'pending', prUrl: null, prNumber: null, ran: false, failureReason: 'memory-critical', stopStage: 'launch' })], { startedAt: T1, finishedAt: T2 });
+  const fx = engineFixture({ e2e: { reports: { 'e.json': E }, sidecar: [sidecarEntry()], files: logOf(REF, quota) } });
+  try {
+    const dir = fx.dirs.e2e;
+    const configDir = join(dir, 'state');
+    await writeFailureDigests({ configDir, report: E, reportId: 'e' });
+    assert.equal(diagnose(dir, REF).route, 'point-E');
+    putReport(dir, 'r.json', R);
+    await writeFailureDigests({ configDir, report: R, reportId: 'r' });
+    const out = diagnose(dir, REF);
+    assert.deepEqual([out.source, out.route, out.reportId], ['digest', 'resource', 'r']);
+    const warnings = [];
+    const { records } = ingestFile(reportPath(dir, 'r.json'), { [REF]: { finalState: 'deferred' } }, { warn: (m) => warnings.push(m) });
+    assert.deepEqual(warnings.filter((m) => /outside this wave/.test(m)), []);
+    assert.deepEqual(records.map((r) => r.failureReason), ['memory-critical']);
+  } finally {
+    fx.cleanup();
+  }
+});
 
 // A copied state dir loses mtimes, so a digest stamped with its report's id is assigned by the id alone.
 for (const [what, body, at, want] of [
