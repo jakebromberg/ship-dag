@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "tripwires": [
+    {
+      "id": "T-explore-unique",
+      "decision": "D2",
+      "metric": "explore-unique",
+      "source": "exploreOnlyBlocking",
+      "unit": "share of merged PRs, by tier, with exploreOnlyBlocking >= 1; tiers assumed by ingest-wave (complexitySource: default) are dropped and counted",
+      "baseline": "first PRs per tier after W4",
+      "trips": { "upperBelow": 0.05 },
+      "minSample": 73,
+      "action": "Propose a single pass for that tier. If a tier has not reached 73 by the review date, the date forces a decision on the evidence there is.",
+      "reviewDate": null
+    },
+    {
+      "id": "T-escapes",
+      "decision": "D2",
+      "metric": "escapes",
+      "unit": "escaped / merged PRs, per tuningVersion, from a saved `telemetry.mjs escapes` run (--escapes <file>); strong and strongRate are shown beside it and never trip",
+      "baseline": { "beforeVersion": 2, "note": "every closed-window ship-dag merge before W4 (version 2); computed under the definitions settled in #64 on 2026-10-12, and changing them requires recomputing the baseline" },
+      "trips": { "lowerAboveBaselineUpper": true },
+      "minSample": 50,
+      "action": "Propose reverting the last review change.",
+      "blindSpots": [
+        "Cross-repo follow-ups are not found: only the merged PR's own repo is searched, so a follow-up filed in another repo (for example the repo of one of the PR's closing issues) is missed.",
+        "A candidate PR is stored with the state it had when its day settled (SETTLE_DAYS after the day's window closes), and that cache is never refreshed: a follow-up PR that was open then and later closed without merging still counts. Only deleting the day file re-reads it."
+      ],
+      "reviewDate": null
+    },
+    {
+      "id": "T-scoped",
+      "decision": "D3",
+      "metric": "scoped",
+      "source": "scopedMiss",
+      "unit": "sum of scopedMiss over scoped-then-full round pairs (a record carries a non-null scopedMiss)",
+      "baseline": "0",
+      "trips": { "atLeast": 1 },
+      "minSample": 10,
+      "action": "Propose disabling the scoped re-gate. The review date forces a decision if pairs never reach 10.",
+      "reviewDate": null
+    },
+    {
+      "id": "T-reach",
+      "decision": "D4",
+      "metric": "reach",
+      "source": "exploreOutsideDiff",
+      "unit": "outside / total explore findings over merged PRs with reach in-diff; the sample is those PRs",
+      "baseline": "first 30 in-diff PRs",
+      "trips": { "lowerAbove": 0.2 },
+      "minSample": 30,
+      "action": "Propose a triage prompt change or default `repo`.",
+      "reviewDate": null
+    },
+    {
+      "id": "T-fallback",
+      "decision": "D5",
+      "metric": "fallback",
+      "unit": "share of the last 30 days' records with path workflow",
+      "baseline": "0 of 395",
+      "trips": { "lowerAbove": 0.1 },
+      "minSample": 30,
+      "action": "Propose two-pass for the fallback.",
+      "reviewDate": null
+    },
+    {
+      "id": "T-coverage",
+      "decision": "D6",
+      "metric": "coverage",
+      "source": "cost.implement.costUsd",
+      "unit": "rows: terminal report rows a log record covers, per run family (from `audit`'s terminalRows; a run with no engine dir is skipped), with the rows that have a PR as a sub-share; cost: records that reached implement, from a report, that carry cost.implement",
+      "baseline": "at T4 landing",
+      "since": null,
+      "trips": { "rows": { "upperBelow": 0.95 }, "cost": { "upperBelow": 0.9 } },
+      "minSample": 1,
+      "action": "Investigate ingestion.",
+      "reviewDate": null
+    },
+    {
+      "id": "T-cost",
+      "decision": "all",
+      "metric": "cost",
+      "source": "cost.implement.costUsd",
+      "unit": "mean exact implement cost in USD of a version's first 30 merged PRs, by tier, from records with a reportId; tiers assumed by ingest-wave are dropped and counted",
+      "baseline": "first 30 PRs per version",
+      "trips": { "ratioAbove": 1.5 },
+      "minSample": 30,
+      "action": "Surface for review; never auto-reverts.",
+      "reviewDate": null
+    }
+  ]
+}

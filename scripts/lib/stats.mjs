@@ -168,3 +168,21 @@ export function mcnemar(pairs) {
     better: aOnly > bOnly ? 'a' : bOnly > aOnly ? 'b' : 'tie',
   };
 }
+
+/**
+ * Wilson score interval for `k` events in `n` trials, at `z` standard errors (default 1.96, 95%). Unlike the
+ * normal approximation it keeps a nonzero upper bound at k=0 and a lower bound under 1 at k=n, so a tripwire
+ * can compare a rate with a threshold at small n. n=0 → the whole interval {lo: 0, hi: 1}.
+ * @param {number} k
+ * @param {number} n
+ * @param {number} [z]
+ * @returns {{lo: number, hi: number}}
+ */
+export function wilson(k, n, z = 1.96) {
+  if (n <= 0) return { lo: 0, hi: 1 };
+  const p = k / n;
+  const denom = 1 + (z * z) / n;
+  const centre = (p + (z * z) / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom;
+  return { lo: Math.max(0, centre - half), hi: Math.min(1, centre + half) };
+}
