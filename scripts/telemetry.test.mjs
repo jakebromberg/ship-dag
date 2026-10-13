@@ -704,6 +704,16 @@ for (const [what, ids, warned] of [
   }));
 }
 
+test('ingest-wave: stamped rounds whose mtimes a copy reversed still count in round order', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) },
+  sidecar: [sidecarEntry()],
+}, (dir) => {
+  putReview(dir, REF, '', JSON.stringify({ issue: 1, meta: { trigger: 'initial', reportId: 'w1' }, findings: [{ ...blocker, blocking: true }] }), '2026-10-08T19:20:00.000Z');
+  putReview(dir, REF, '.r2', JSON.stringify({ issue: 1, meta: { trigger: 'review-loop', reportId: 'w1' }, findings: [] }), '2026-10-08T19:10:00.000Z');
+  const [rec] = ingest(dir).records;
+  assert.deepEqual([rec.finalState, rec.reviewVerdict, rec.bounces, basename(rec.reviewPath)], ['merged', 'blocking', 1, `${STEM}.r2.json`]);
+}));
+
 test('ingest-wave: a pre-sidecar wave takes its routing from the matching config, default policy and tuning version 0', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) },
   sidecar: [sidecarEntry(['WXYC/other#9'])],

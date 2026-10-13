@@ -3,7 +3,7 @@
 //
 // The caller reads the artifacts and hands in what they hold: the report, the
 // wave's routing entry (`waveContextFor`: the sidecar's, else one built from its config), the failure digests, and each ref's
-// review rounds as `reviewRoundFiles` lists them (oldest first by mtime), each
+// review rounds as `reviewRoundFiles` lists them (oldest first: by round number, else mtime), each
 // file parsed. Only `--outcomes` supplies what no artifact records: `hitl.pointB`,
 // a manual `finalState`, a PR the report row lacks, a floor for `bounces`, and
 // `pressureOverride` (point F's "start anyway"; on a resumed rate-limit death it lands on the death record, the
