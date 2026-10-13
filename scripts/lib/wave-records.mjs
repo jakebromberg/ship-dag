@@ -17,8 +17,10 @@
 // A row is recorded once it is terminal for this wave (`succeeded`, `failed`,
 // `blocked`, `skipped`): `pending`, `running` and `interrupted` rows are left for
 // the ingest that sees them finish, and any other status is warned about and skipped.
+// The exception is a `pending` row the engine stopped at launch (a `RESOURCE_STOPS` failureReason): it is
+// recorded only once `--outcomes` gives it a `finalState`, because the user deferred it or stopped the run.
 import { DEFAULT_BLOCK_ON, gateReview } from '../review-gate.mjs';
-import { routeFailure } from './failure.mjs';
+import { RESOURCE_STOPS, routeFailure } from './failure.mjs';
 import { isPr, parsePr, parseRef, sameRepo } from './ref.mjs';
 import { isUnreadableEmpty } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
@@ -36,6 +38,8 @@ export class WaveRefusal extends Error {
 const SEVERITY = { clean: 0, 'nits-only': 1, blocking: 2 };
 export const TERMINAL = new Set(['succeeded', 'failed', 'blocked', 'skipped']);
 const NOT_YET = new Set(['pending', 'running', 'interrupted']);
+/** A `pending` row the engine stopped at launch: never started, so it is not yet terminal unless `--outcomes` ends it. */
+const stoppedAtLaunch = (row, outcome) => row?.status === 'pending' && RESOURCE_STOPS.has(row.failureReason) && Boolean(outcome?.finalState);
 // A succeeded row is supplied by a PR, in the report or --outcomes, or by an outcome
 // saying it never merged: point B left a find-pr row without one.
 const NOT_MERGED = new Set(['blocked-hitl', 'deferred', 'error']);
@@ -84,24 +88,30 @@ export const sameEvent = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo,
 
 /**
  * The `implStatus` a record of `row` takes when its PR is `pr` (the row's, or one `--outcomes` supplied):
- * `skipped` never reached implement; a row the gate reviews pushed; `blocked` is not an engine status,
+ * `skipped` and a `pending` launch stop never reached implement; a row the gate reviews pushed; `blocked` is not an engine status,
  * but SKILL.md step 5 and the failure-routing tests hand it in as one, so it stays.
  */
-const implStatusOf = (row, pr) => (row.status === 'skipped' ? null
+const implStatusOf = (row, pr) => (row.status === 'skipped' || row.status === 'pending' ? null
   : routeFailure({ ...row, prNumber: pr }) === 'review-gate' ? 'pushed' : row.status === 'blocked' ? 'blocked' : 'error');
 
 /**
- * Whether `row` died on quota, as ingest reads it: its failure digest's `failureReason`, else the row's own.
+ * Why `row` stopped for infrastructure, as ingest reads it: its failure digest's `failureReason`, else the row's own,
+ * when that is `rate-limited` or one of `RESOURCE_STOPS`; else null.
  * Digests are written for non-succeeded rows and never removed, so a succeeded row's digest is a stale one from an
  * earlier wave; and a session that succeeded did not die on quota, whatever the row says.
  */
-const rateLimitedRow = (row, digest) => row.status !== 'succeeded' && (digest?.failureReason ?? row.failureReason) === 'rate-limited';
+const stopReasonOf = (row, digest) => {
+  const reason = digest?.failureReason ?? row.failureReason;
+  return row.status !== 'succeeded' && (reason === 'rate-limited' || RESOURCE_STOPS.has(reason)) ? reason : null;
+};
+/** Whether a row with `implStatus` carries its stop as the record's `failureReason`: a death, or a launch stop that never started. */
+const diesWith = (row, implStatus) => implStatus === 'error' || row.status === 'pending';
 
 /**
  * Whether `records` (the telemetry log) cover terminal `row` of the report `{id, startedAt (epoch ms)}`, as run
  * `runId`'s family sees it: whether one is, by `sameEvent`, the event this report's ingest would derive for the row.
- * `digest` is the row's failure digest as `telemetry.mjs`'s `waveWindow` reads it for ingest, so the row's rate-limit
- * is the one ingest reads (`rateLimitedRow`), never a record's. Audit reads no `--outcomes`, so each record is tested
+ * `digest` is the row's failure digest as `telemetry.mjs`'s `waveWindow` reads it for ingest, so the row's stop
+ * is the one ingest reads (`stopReasonOf`), never a record's. Audit reads no `--outcomes`, so each record is tested
  * against the event ingest would derive with the --outcomes it implies: its finalState (but not `merged` for a row
  * with no PR, bar a find-pr row, whose merge has one, and nothing else ingest refuses), and its PR for a find-pr
  * row. A record that carries `id` was derived from this row, so its PR is read as given too, except on a PR-less
@@ -118,7 +128,8 @@ const rateLimitedRow = (row, digest) => row.status !== 'succeeded' && (digest?.f
 export function rowCovered(row, { id, startedAt }, records, runId, digest) {
   const { repo, number } = parseRef(row.ref);
   const findPr = row.status === 'succeeded' && !isPr(row.prNumber);
-  const rateLimited = rateLimitedRow(row, digest);
+  const stopReason = stopReasonOf(row, digest);
+  const rateLimited = stopReason === 'rate-limited';
   // Whether a PR-less run of the row is a rate-limit death (a row with a PR is gated, and reads its own PR).
   const dies = rateLimited && implStatusOf(row, null) === 'error';
   return records.some((r) => {
@@ -130,7 +141,7 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest) {
     const { finalState } = r;
     // A find-pr row's merge has a PR --outcomes supplied, whether or not the record names it.
     const implStatus = findPr && finalState === 'merged' ? 'pushed' : implStatusOf(row, pr);
-    const failureReason = rateLimited && implStatus === 'error' ? 'rate-limited' : null;
+    const failureReason = stopReason && diesWith(row, implStatus) ? stopReason : null;
     // Every finalState a record can hold is one --outcomes may give a find-pr row.
     const derivable = pr !== null || row.status === 'skipped' || findPr || finalState !== 'merged';
     const event = { runId, repo, issue: number, reportId: id, implStatus, finalState, failureReason, pr };
@@ -160,7 +171,7 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest) {
 export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing = [], warn = (m) => console.error(m), tuningVersion, reportId = null, noCheckRepos = [] } = {}) {
   const all = Array.isArray(report?.issues) ? report.issues : [];
   for (const r of all) if (!TERMINAL.has(r?.status) && !NOT_YET.has(r?.status)) warn(`${r?.ref}: unknown status ${JSON.stringify(r?.status)}, not recorded`);
-  const rows = all.filter((r) => TERMINAL.has(r?.status));
+  const rows = all.filter((r) => TERMINAL.has(r?.status) || stoppedAtLaunch(r, outcomes?.[r?.ref]));
   if (!rows.length) return { records: [] };
   const badRow = rows.find((r) => !parseRef(r.ref));
   if (badRow) throw new WaveRefusal('malformed-row', `malformed report row: no owner/repo#N ref: ${JSON.stringify(badRow)}`);
@@ -181,11 +192,11 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     const outcome = outcomes?.[row.ref] ?? {};
     const planned = (entry?.issues ?? []).find((i) => i.ref === row.ref);
     const pr = isPr(row.prNumber) ? row.prNumber : isPr(outcome.pr) ? outcome.pr : null;
-    const rateLimited = rateLimitedRow(row, digests?.[row.ref]);
+    const stopReason = stopReasonOf(row, digests?.[row.ref]);
     const skipped = row.status === 'skipped';
     // One record of this row: `outcome` and `pr` are what the record reads, since a death resumed in place is the
-    // row without them, and `dead` whether this record is the rate-limit death.
-    const build = (outcome, pr, dead) => {
+    // row without them, and `reason` the stop (`stopReasonOf`) this record is the death of, if any.
+    const build = (outcome, pr, reason) => {
       const implStatus = implStatusOf(row, pr);
 
       // Only a row the gate reviewed has rounds; older ones on disk are not this row's verdict.
@@ -207,9 +218,9 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         const d = SEVERITY[g.verdict] - SEVERITY[w.verdict];
         return d > 0 || (d === 0 && (g.blocking.length > 0 || w.blocking.length === 0)) ? g : w;
       }, { verdict: 'clean', blocking: [] });
-      // Telemetry reads a rate-limit as an infra death beside implStatus "error"; a
-      // rate-limited row that still opened a PR (backend#620) is gated, not dead.
-      const failureReason = dead && implStatus === 'error' ? 'rate-limited' : null;
+      // Telemetry reads a stop as an infra death beside implStatus "error" (or a launch stop that never started); a
+      // stopped row that still opened a PR (backend#620) is gated, not dead.
+      const failureReason = reason && diesWith(row, implStatus) ? reason : null;
 
       return {
         runId,
@@ -232,7 +243,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         findings: outcome.findings ?? worst.blocking.map(findingLine),
         bounces: Math.max(outcome.bounces ?? 0, bounced.filter(Boolean).length),
         hitl: { pointA: false, pointB: !!outcome.hitl?.pointB },
-        // A quota death is deferred, not abandoned: point E resumes it in place.
+        // A stop is deferred, not abandoned: point E resumes it in place, or a filtered re-run starts it afresh.
         finalState: outcome.finalState ?? (skipped || failureReason ? 'deferred' : pr ? 'merged' : 'error'),
         pr,
         tokens: outcome.tokens ?? null,
@@ -246,14 +257,14 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
 
     // Point E emits the death at death time, apart from the continuation's record: when --outcomes shows a
     // continuation ran (its PR, or the point B it stalled at), the row is the death and the outcome is the
-    // continuation, which carries no rate-limit of its own. Without either, the outcome is the death's own, and
-    // stays a quota death: one must never read as a model failure.
-    const resumed = rateLimited && !isPr(row.prNumber) && (isPr(outcome.pr) || outcome.hitl?.pointB === true);
+    // continuation, which carries no stop of its own. Without either, the outcome is the death's own, and
+    // stays a stop: one must never read as a model failure.
+    const resumed = stopReason && !isPr(row.prNumber) && (isPr(outcome.pr) || outcome.hitl?.pointB === true);
     // pressureOverride belongs to the engine invocation that ran under the override, which is the session that
     // died; the continuation is a later resume (point E) started without CO_PRESSURE_OVERRIDE, so it never carries it.
-    const death = resumed ? build({ pressureOverride: outcome.pressureOverride }, null, true) : null;
+    const death = resumed ? build({ pressureOverride: outcome.pressureOverride }, null, stopReason) : null;
     const { pressureOverride: _ranUnderOverride, ...continuation } = outcome;
-    const recs = death?.failureReason ? [death, build(continuation, pr, false)] : [build(outcome, pr, rateLimited)];
+    const recs = death?.failureReason ? [death, build(continuation, pr, null)] : [build(outcome, pr, stopReason)];
     for (const rec of recs) {
       if (seen.some((s) => sameEvent(s, rec))) continue;
       seen.push(rec);

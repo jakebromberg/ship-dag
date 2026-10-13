@@ -78,6 +78,12 @@ test('normalizeRecord: failureReason defaults to null and round-trips "rate-limi
   assert.equal(withIt.failureReason, 'rate-limited');
 });
 
+for (const failureReason of ['memory-critical', 'lease-wait']) {
+  test(`normalizeRecord: round-trips "${failureReason}"`, () => {
+    assert.equal(normalizeRecord(base({ finalState: 'deferred', implStatus: 'error', failureReason }), FIXED).failureReason, failureReason);
+  });
+}
+
 test('normalizeRecord: rejects an unrecognized failureReason', () => {
   assert.throws(() => normalizeRecord(base({ failureReason: 'gremlins' }), FIXED), /bad failureReason/);
 });
@@ -162,6 +168,26 @@ test('report: a rate-limited death record followed by the same issue merging is 
   assert.equal(rep.firstPassYield.rate, 1);
   assert.equal(rep.triageMiss.cleared, 1);
   assert.equal(rep.reviewCatch.reached, 1);
+});
+
+// An engine stop (memory pressure, a lease wait) is infrastructure, not a model-quality signal, so it is left out of
+// every indicator as rate-limited is, and tallied in `resourceStops` rather than `quotaFailures`.
+for (const failureReason of ['memory-critical', 'lease-wait']) {
+  test(`report: a ${failureReason} record is excluded from model-quality indicators and tallied as a resource stop`, () => {
+    const recs = [
+      normalizeRecord(base({ issue: 5, finalState: 'deferred', implStatus: 'error', failureReason, reviewVerdict: null, ciStatus: null }), FIXED),
+      normalizeRecord(base({ issue: 6, finalState: 'deferred', implStatus: null, failureReason, reviewVerdict: null, ciStatus: null }), FIXED),
+      normalizeRecord(base({ issue: 5, finalState: 'merged', implStatus: 'pushed', reviewVerdict: 'clean', bounces: 0 }), FIXED),
+    ];
+    const rep = report(recs);
+    assert.deepEqual([rep.n, rep.quotaFailures, rep.resourceStops], [3, 0, 2]);
+    assert.deepEqual([rep.firstPassYield.reached, rep.firstPassYield.pass, rep.triageMiss.cleared, rep.reviewCatch.reached], [1, 1, 1, 1]);
+    assert.match(renderReport(rep), /resource stops:\s+2/);
+  });
+}
+
+test('renderReport: a log with no resource stops has no "resource stops" line', () => {
+  assert.ok(!/resource stops/.test(renderReport(report([normalizeRecord(base(), FIXED)]))));
 });
 
 test('renderReport: quota-failure-free log has no "quota failures" line', () => {
@@ -394,6 +420,25 @@ test('ingest-wave records a terminal wave from its report, sidecar, digest and r
   assert.deepEqual([merged.finalState, merged.pr, merged.reviewVerdict, merged.bounces, merged.complexity, merged.model, merged.policySource, merged.tuningVersion], ['merged', 11, 'blocking', 1, 'complex', 'opus', 'sidecar', 7]);
   assert.deepEqual([errored.finalState, errored.implStatus, errored.failureReason], ['deferred', 'error', 'rate-limited']);
 }));
+
+// Engine stops arrive as the row's own failureReason/stopStage (claude-orchestrator#87); ship-dag scans no transcript for them.
+for (const [failureReason, stopStage, status, outcome, want] of [
+  ['lease-wait', 'session', 'failed', {}, [['error', 'lease-wait', 'deferred']]],
+  ['memory-critical', 'post-check', 'failed', {}, [['error', 'memory-critical', 'deferred']]],
+  ['memory-critical', 'launch', 'pending', { finalState: 'deferred' }, [[null, 'memory-critical', 'deferred']]],
+  ['memory-critical', 'launch', 'pending', {}, []],
+]) {
+  test(`ingest-wave: a ${status} ${failureReason} row (${stopStage}) with ${JSON.stringify(outcome)} records ${want.length} resource-stop record(s)`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF, { status, prUrl: null, prNumber: null, failureReason, stopStage })]) },
+    sidecar: [sidecarEntry([REF])],
+  }, (dir) => {
+    const { records, log } = ingest(dir, { [REF]: outcome });
+    assert.deepEqual(records.map((r) => [r.implStatus, r.failureReason, r.finalState]), want);
+    assert.equal(log.length, want.length);
+    // A stopped row is no model-quality signal: report() leaves it out of every indicator.
+    assert.equal(report(log).firstPassYield.reached, 0);
+  }));
+}
 
 test('ingest-wave stamps the report stem as reportId, and records ciStatus none for a repo whose config has no postSessionCheck', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) },
@@ -1265,7 +1310,8 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
     ["A find-pr row whose found PR's last round blocks", findPr, blocks, [[['blocked-hitl', 2, true, 0]], [['merged', 2, false, 2]]]],
     ['A rate-limit death that point E resumed', stateRow(REF, { status: 'failed', prUrl: null, prNumber: null }), dies,
       [[['deferred', null, false, 0], ['merged', 2, false, 0]], [['deferred', null, false, 0], ['blocked-hitl', null, true, 0]]]],
-    ['A wave the user started anyway at point F', stateRow(REF), () => {}, [[['merged', 11, false, 0]]]],
+    ['A stopped `pending` row', stateRow(REF, { status: 'pending', prUrl: null, prNumber: null, failureReason: 'memory-critical', stopStage: 'launch' }), () => {}, [[['deferred', null, false, 0]]]],
+    ['An engine invocation the user started anyway at point F', stateRow(REF), () => {}, [[['merged', 11, false, 0]]]],
   ];
 
   test('every row of the table is a situation this test knows, and every situation is in the table', () => {

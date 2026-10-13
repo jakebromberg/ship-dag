@@ -14,6 +14,9 @@ import {
   parseTerminalResultLine,
   createTranscriptScan,
   buildDiagnosis,
+  stopCiStatus,
+  resumeMode,
+  ciStatusAfterProfile,
 } from './failure.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
@@ -114,6 +117,66 @@ test('routeFailure: prNumber 0 and an absent prNumber are both "no PR"', () => {
   assert.equal(routeFailure({ status: 'failed' }), 'point-B');
 });
 
+// Engine stops (claude-orchestrator#87): the row says why it stopped and at which stage.
+// A PR decides first; with none, `resource` is checked before find-pr, so a stop is never read as a PR-less success.
+const STOPS = [
+  ['memory-critical', 'launch', 'pending'],
+  ['memory-critical', 'retry', 'failed'],
+  ['memory-critical', 'post-check', 'failed'],
+  ['lease-wait', 'session', 'failed'],
+];
+for (const [failureReason, stopStage, status] of STOPS) {
+  test(`routeFailure: ${failureReason} at ${stopStage}, no PR — resource, checked before find-pr`, () => {
+    assert.equal(routeFailure({ status, prNumber: null, failureReason, stopStage }), 'resource');
+    assert.equal(routeFailure({ status: 'succeeded', prNumber: null, failureReason, stopStage }), 'resource');
+  });
+  // A `retry` stop ran its check and it failed; any other stop never ran one, so it is unverified, not passing.
+  test(`routeFailure: ${failureReason} at ${stopStage}, PR open — review-gate with ciStatus ${stopStage === 'retry' ? 'fail' : 'none'}`, () => {
+    const row = { status, prNumber: 7, failureReason, stopStage };
+    assert.equal(routeFailure(row), 'review-gate');
+    assert.equal(stopCiStatus(row), stopStage === 'retry' ? 'fail' : 'none');
+    assert.equal(buildDiagnosis({ row: { ref: 'o/r#1', ...row }, terminal: null }).ciStatus, stopStage === 'retry' ? 'fail' : 'none');
+  });
+}
+
+test('stopCiStatus: a row that is not an infrastructure stop has no stop-derived ciStatus', () => {
+  for (const row of [{ status: 'failed', prNumber: 7 }, { status: 'failed', prNumber: 7, failureReason: 'rate-limited' }, { status: 'succeeded', prNumber: 7 }]) assert.equal(stopCiStatus(row), null);
+});
+
+test('buildDiagnosis: forwards memory-critical and lease-wait with their stopStage, so telemetry can record them', () => {
+  for (const [failureReason, stopStage, status] of STOPS) {
+    const d = buildDiagnosis({ row: { ref: 'o/r#1', status, failureReason, stopStage }, terminal: null, rateLimited: false });
+    assert.deepEqual([d.failureReason, d.stopStage, d.route, d.ciStatus], [failureReason, stopStage, 'resource', null]);
+  }
+});
+
+test('buildDiagnosis: a row with no stop carries a null stopStage, and a rate-limit scan beats nothing', () => {
+  assert.equal(buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed' }, terminal: null }).stopStage, null);
+});
+
+// The worktree decides how a PR-less stop recovers: work on disk is resumed in place (never re-run the engine into
+// its branch); a clean tree with no commits is re-run on a spec filtered to the stopped refs.
+for (const [name, state, want] of [
+  ['commits', { commits: 2, dirty: false }, 'resume'],
+  ['a dirty tree', { commits: 0, dirty: true }, 'resume'],
+  ['commits and a dirty tree', { commits: 1, dirty: true }, 'resume'],
+  ['a clean tree with no commits', { commits: 0, dirty: false }, 'filtered-rerun'],
+]) {
+  test(`resumeMode: ${name} → ${want}`, () => assert.equal(resumeMode(state), want));
+}
+
+// run-ci-profile.mjs's exit status for a PR whose engine check never ran (step 6.2's loop owns 75, the rerun).
+for (const [name, code, opts, want] of [
+  ['exit 0', 0, {}, 'pass'],
+  ['exit 64 "no CI profile"', 64, { noProfile: true }, 'none'],
+  ['exit 64, any other setup error', 64, {}, null],
+  ['exit 75, no lease slot', 75, {}, null],
+  ['the suite failing', 1, {}, 'fail'],
+  ['a signal, 128+n', 137, {}, 'fail'],
+]) {
+  test(`ciStatusAfterProfile: ${name} → ${want}`, () => assert.equal(ciStatusAfterProfile(code, opts), want));
+}
+
 // SKILL.md step 5 runs diagnose-failure.mjs only for failed/blocked rows, so
 // the routes nested under that bullet are reached only from such a row. A route
 // that only a succeeded row produces needs a step-5 bullet of its own, or no
@@ -122,9 +185,31 @@ test('SKILL.md step 5 nests exactly the failed/blocked routes under that bullet,
   const skill = readFileSync(new URL('../../SKILL.md', import.meta.url), 'utf8');
   const step5 = skill.slice(skill.indexOf('\n### 5. '), skill.indexOf('\n### 6. ')).split('\n');
   const nested = step5.flatMap((l) => l.match(/^ {2}- `([A-Za-z-]+)`/)?.[1] ?? []);
-  const failedOrBlocked = [{ status: 'failed', prNumber: 1 }, { status: 'failed', failureReason: 'rate-limited' }, { status: 'failed' }, { status: 'blocked' }];
+  const failedOrBlocked = [{ status: 'failed', prNumber: 1 }, { status: 'failed', failureReason: 'rate-limited' }, { status: 'failed', failureReason: 'lease-wait' }, { status: 'failed' }, { status: 'blocked' }];
   assert.deepEqual(new Set(nested), new Set(failedOrBlocked.map(routeFailure)));
   assert.equal(step5.filter((l) => l.startsWith('- ') && l.includes('`find-pr`')).length, 1, 'step 5 has no top-level bullet for a find-pr row');
+});
+
+// Step 5's Green rule and its fix rule for a stopped row's CI, pinned: a `ciStatus: "none"` PR is not green until SD-5 passes.
+const step5Text = () => {
+  const skill = readFileSync(new URL('../../SKILL.md', import.meta.url), 'utf8');
+  return skill.slice(skill.indexOf('\n### 5. '), skill.indexOf('\n### 6. '));
+};
+
+test('SKILL.md step 5 Green rule: ciStatus "none" → run-ci-profile → pass, reusing step 6.2', () => {
+  const green = step5Text().split('\n').find((l) => l.startsWith('- **Green**'));
+  assert.match(green, /`ciStatus` is `"none"`/);
+  assert.match(green, /run-ci-profile\.mjs/);
+  assert.match(green, /step 6\.2/);
+  assert.match(green, /Exit 0 sets `ciStatus: "pass"`/);
+  assert.match(green, /Exit 64 with `no CI profile`[^.]*leaves `"none"`/);
+  assert.match(green, /128 plus a signal number, sets `"fail"`/);
+});
+
+test('SKILL.md step 5: a red retry stop goes to point B quoting the check summary; the trigger covers pending rows', () => {
+  const step5 = step5Text();
+  assert.match(step5, /`memory-critical` stop at `retry` is such a failure \(`ciStatus: "fail"`\)[^.]*quote the engine's check summary/);
+  assert.match(step5, /`pending` row carrying a `failureReason` — diagnose it/);
 });
 
 // --- the shared single-pass scan + canonical diagnosis -----------------------
