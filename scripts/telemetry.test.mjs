@@ -704,6 +704,67 @@ for (const [what, ids, warned] of [
   }));
 }
 
+// A stamp that names a report of the run which does not list the ref is no better than an unknown one: that report's
+// ingest never reads the ref's rounds, so the round would belong to no wave. It warns and falls back to mtime.
+// w1 lists REF, w2 lists only REF2; REF's round 2 is written during w2 (a re-gate of a PR held over) and stamped w2.
+for (const [what, first, second, want] of [
+  ['a clean re-gate', [true, 'initial'], [false, 'review-loop'], ['merged', 'blocking', 1, '.r2']],
+  ['a blocking rebase round after a clean round 1', [false, 'initial'], [true, 'rebase'], ['merged', 'blocking', 1, '.r2']],
+]) {
+  test(`ingest-wave: ${what} stamped with a report that does not list the ref warns and is windowed by mtime`, () => withStateDir({
+    reports: {
+      'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
+      'w2.json': stateReport([stateRow(REF2, { number: 2 })], { startedAt: T1, finishedAt: T2 }),
+    },
+    sidecar: [sidecarEntry([REF]), sidecarEntry([REF2])],
+  }, (dir) => {
+    const body = ([blocking, trigger], reportId) => JSON.stringify({ issue: 1, meta: { trigger, reportId }, findings: blocking ? [{ ...blocker, blocking: true }] : [] });
+    putReview(dir, REF, '', body(first, 'w1'), '2026-10-08T19:10:00.000Z');
+    putReview(dir, REF, '.r2', body(second, 'w2'), '2026-10-08T20:30:00.000Z');
+    const warnings = [];
+    const [rec] = ingest(dir, { [REF]: { finalState: 'merged', bounces: 1 } }, { warn: (m) => warnings.push(m) }).records;
+    assert.deepEqual([rec.finalState, rec.reviewVerdict, rec.bounces, basename(rec.reviewPath).slice(STEM.length, -'.json'.length)], want);
+    assert.deepEqual(warnings.filter((m) => m.includes('lists')).map((m) => basename(m.split(':')[0])), [`${STEM}.r2.json`]);
+    const w2Warnings = [];
+    assert.deepEqual(ingestFile(reportPath(dir, 'w2.json'), {}, { warn: (m) => w2Warnings.push(m) }).records.map((r) => r.reviewPath), [null]);
+    assert.deepEqual(w2Warnings.filter((m) => m.includes('names no report')), []);
+  }));
+}
+
+// Only a string stamp can name a report, so an unstamped round, a null and a number warn about nothing; an unknown string warns once.
+for (const [what, meta, warned] of [
+  ['unstamped', {}, 0],
+  ['stamped null', { reportId: null }, 0],
+  ['stamped with a number', { reportId: 1 }, 0],
+  ['stamped with an unknown id', { reportId: 'wl' }, 1],
+]) {
+  test(`ingest-wave: a review round ${what} warns ${warned} time(s) about its stamp`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF)]) },
+    sidecar: [sidecarEntry()],
+  }, (dir) => {
+    putReview(dir, REF, '', JSON.stringify({ issue: 1, meta, findings: [] }), '2026-10-08T19:10:00.000Z');
+    const warnings = [];
+    ingest(dir, {}, { warn: (m) => warnings.push(m) });
+    assert.equal(warnings.filter((m) => m.includes('stamped with report id')).length, warned, warnings.join('\n'));
+  }));
+}
+
+// A digest stamped with an id that names no report is windowed by mtime, like a round: taken inside the wave, ignored outside it.
+for (const [what, at, want] of [
+  ['mtime inside the wave', '2026-10-08T19:30:00.000Z', 'rate-limited'],
+  ['mtime before the wave', '2026-10-08T18:00:00.000Z', null],
+]) {
+  test(`ingest-wave: a failure digest stamped with an unknown id, ${what}, is ${want ? '' : 'not '}this wave's, and warns`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })], { startedAt: T0, finishedAt: T1 }) },
+    sidecar: [sidecarEntry()],
+  }, (dir) => {
+    putDigest(dir, REF, { reportId: 'wl', failureReason: 'rate-limited' }, at);
+    const warnings = [];
+    assert.equal(ingest(dir, {}, { warn: (m) => warnings.push(m) }).records[0].failureReason, want);
+    assert.equal(warnings.filter((m) => m.includes('names no report')).length, 1, warnings.join('\n'));
+  }));
+}
+
 test('ingest-wave: stamped rounds whose mtimes a copy reversed still count in round order', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF)]) },
   sidecar: [sidecarEntry()],
