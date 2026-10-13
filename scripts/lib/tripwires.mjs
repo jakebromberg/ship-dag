@@ -16,10 +16,9 @@ export const TRIPWIRES_PATH = fileURLToPath(new URL('../../references/tripwires.
 /** The states, worst first: the order a tripwire made of several parts reports its worst. */
 export const STATES = ['tripped', 'holding', 'insufficient-data', 'pending-instrumentation'];
 const DAY = 86_400_000;
-/** `telemetry.mjs audit`'s refusal for a run family with no engine dir: the one audit error T-coverage skips. */
 /** Whether record `r` falls on or after tripwire `t`'s `since`, compared as times (a timestamp's spelling, with or without milliseconds, does not matter; an unparseable one is outside). */
 const inWindow = (r, t) => Boolean(t.since) && Date.parse(r.ts) >= Date.parse(t.since);
-
+/** `telemetry.mjs audit`'s refusal for a run family with no engine dir: the one audit error T-coverage skips. */
 export const NO_ENGINE_DIR = /^no dir under .* belongs to run /;
 
 export const loadTripwires = (path = TRIPWIRES_PATH) => JSON.parse(readFileSync(path, 'utf8'));
