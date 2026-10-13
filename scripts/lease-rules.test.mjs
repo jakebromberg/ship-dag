@@ -68,6 +68,9 @@ const LIGHT = [
   /^(env -u \w+ )?python3 scripts\/test_\w+\.py$/, // small script self-checks
   /^\.\/scripts\/bootstrap-[\w-]+\.sh$/, // writes an xcconfig
   /^go generate /, // regenerates embedded trees
+  // Backend-Service's bare static checks (BS#2591): each reads source files and
+  // exits, under a second apiece, with no build, install, or network.
+  /^(node )?scripts\/check-[\w-]+\.(sh|mjs)( --strict)?$/,
   // code-audit-pipeline's shell self-tests of its queries and extractors: small
   // fixtures, but outside the matcher's `scripts/test*.sh` pattern.
   /^pipeline\/(queries\/)?_tests\/test_\w+\.sh$/,
