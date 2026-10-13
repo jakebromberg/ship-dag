@@ -29,3 +29,15 @@ export function resourceDecision({ level, parallel = DEFAULT_PARALLEL, waitedMin
   if (waitedMinutes < waitMaxMinutes) return { action: 'wait', reason: 'critical-wait', recommendedParallel: 0 };
   return { action: 'hitl', reason: 'critical-hitl', recommendedParallel: 0 };
 }
+
+/**
+ * How many PRs one review/fix hand-off invocation may hand over: `max(1, capacity - live.length)`,
+ * never derived from a null capacity (the limit is 1), and 0 at `critical` where the floor does not apply.
+ * @param {{reason: string, capacity: number|null, live?: unknown[]}} opts
+ * @returns {number}
+ */
+export function handoffLimit({ reason, capacity, live = [] }) {
+  if (reason.startsWith('critical')) return 0;
+  if (reason === 'no-signal' || !Number.isFinite(capacity)) return 1;
+  return Math.max(1, capacity - live.length);
+}

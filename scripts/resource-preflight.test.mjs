@@ -15,18 +15,19 @@ const lease = (st, seen = []) => ({
 
 // every `reason`: sampled status + flags → decision
 const TABLE = [
-  [status('normal'), {}, 'proceed', 'normal', 3],
-  [status('warning', 1), {}, 'proceed', 'warning-engine-adapts', 3],
-  [status('unknown'), {}, 'proceed', 'no-signal', 3],
-  [status('critical', 0), { waitedMinutes: 14 }, 'wait', 'critical-wait', 0],
-  [status('critical', 0), { waitedMinutes: 15 }, 'hitl', 'critical-hitl', 0],
-  [status('critical', 0), { waitedMinutes: 16 }, 'hitl', 'critical-hitl', 0],
+  [status('normal'), {}, 'proceed', 'normal', 3, 4],
+  [status('normal', 4, ['a', 'b']), {}, 'proceed', 'normal', 3, 2],
+  [status('warning', 1), {}, 'proceed', 'warning-engine-adapts', 3, 1],
+  [status('unknown'), {}, 'proceed', 'no-signal', 3, 1],
+  [status('critical', 0), { waitedMinutes: 14 }, 'wait', 'critical-wait', 0, 0],
+  [status('critical', 0), { waitedMinutes: 15 }, 'hitl', 'critical-hitl', 0, 0],
+  [status('critical', 0), { waitedMinutes: 16 }, 'hitl', 'critical-hitl', 0, 0],
 ];
 
-for (const [st, flags, action, reason, recommendedParallel] of TABLE) {
+for (const [st, flags, action, reason, recommendedParallel, recommendedHandoff] of TABLE) {
   test(`checkResource: ${st.level} ${JSON.stringify(flags)} → ${reason}`, async () => {
     const out = await checkResource({ parallel: 3, ...flags }, { env: {}, ...lease(st) });
-    assert.deepEqual(out, { action, reason, level: st.level, capacity: st.capacity, live: [], recommendedParallel });
+    assert.deepEqual(out, { action, reason, level: st.level, capacity: st.capacity, live: st.live, recommendedParallel, recommendedHandoff });
   });
 }
 
@@ -67,6 +68,7 @@ test('checkResource: a CO_HOME whose dist lacks the exports fails open as lease-
   assert.equal(out.action, 'proceed');
   assert.equal(out.reason, 'lease-unavailable');
   assert.equal(out.recommendedParallel, 2);
+  assert.equal(out.recommendedHandoff, 1);
   assert.match(out.detail, /leaseStatus/);
 });
 

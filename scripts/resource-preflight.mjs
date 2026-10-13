@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // resource-preflight.mjs — SKILL.md step 4's memory-pressure preflight, run
-// beside rate-limit-preflight.mjs before every engine invocation. Step 5's
-// review/fix hand-offs do not run it yet; later issues wire them. Step 6.2's
-// CI re-run does, via run-ci-profile.mjs's exit 75 and the 15-minute bound.
+// beside rate-limit-preflight.mjs before every engine invocation, and before each
+// step 4d/5 review/fix hand-off, which reads `recommendedHandoff`. Step 6.2's
+// CI re-run uses it too, via run-ci-profile.mjs's exit 75 and the 15-minute bound.
+// See point F's per-step table in references/escalation-policy.md for what each
+// guarded step asks the human.
 //
 // Reads the pressure level and lease status from claude-orchestrator's
 // `$CO_HOME/dist` (`defaultLeaseOptions` + `leaseStatus`) and prints the
@@ -17,7 +19,7 @@
 // Usage:
 //   node resource-preflight.mjs check [--parallel K] [--waited-minutes N]
 //                                     [--wait-max-minutes 15] [--sleep-before S]
-// Prints `{ action, reason, level, capacity, live, recommendedParallel }` as
+// Prints `{ action, reason, level, capacity, live, recommendedParallel, recommendedHandoff }` as
 // JSON on stdout (`action`: "proceed" | "wait" | "hitl") and a one-line human
 // summary on stderr. `--sleep-before` waits before sampling, so SKILL.md's
 // loop never needs a foreground `sleep`. `--waited-minutes` is the total
@@ -28,7 +30,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { isMain } from './lib/is-main.mjs';
 import { parseNumberOption } from './rate-limit-preflight.mjs';
-import { DEFAULT_PARALLEL, DEFAULT_WAIT_MAX_MINUTES, resourceDecision } from './lib/resource.mjs';
+import { DEFAULT_PARALLEL, DEFAULT_WAIT_MAX_MINUTES, handoffLimit, resourceDecision } from './lib/resource.mjs';
 
 const DEFAULT_CO_HOME = '/Users/me/Developer/claude-orchestrator';
 
@@ -56,9 +58,10 @@ export async function checkResource(opts, { env = process.env, leaseOptionsFor, 
     const { level, capacity, live } = leaseStatus(leaseOptionsFor(realEnv));
     // --waited-minutes is the total waited before this call; this call's own sleep counts toward the cap.
     const waitedMinutes = (opts.waitedMinutes ?? 0) + (opts.sleepBefore > 0 ? opts.sleepBefore / 60 : 0);
-    return { ...resourceDecision({ level, parallel, waitedMinutes, waitMaxMinutes: opts.waitMaxMinutes }), level, capacity, live };
+    const decision = resourceDecision({ level, parallel, waitedMinutes, waitMaxMinutes: opts.waitMaxMinutes });
+    return { ...decision, level, capacity, live, recommendedHandoff: handoffLimit({ reason: decision.reason, capacity, live }) };
   } catch (err) {
-    return { action: 'proceed', reason: 'lease-unavailable', detail: err.message, level: null, capacity: null, live: [], recommendedParallel: parallel };
+    return { action: 'proceed', reason: 'lease-unavailable', detail: err.message, level: null, capacity: null, live: [], recommendedParallel: parallel, recommendedHandoff: 1 };
   }
 }
 

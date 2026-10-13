@@ -67,6 +67,8 @@ const REVIEW_SCHEMA = {
     path: { type: 'string' },
     findingCount: { type: 'number' },
     headline: { type: 'string' },
+    status: { type: 'string' },
+    notes: { type: 'string' },
   },
 }
 
@@ -85,7 +87,7 @@ function implementPrompt(iss) {
     `6. Commit (ghost-writer: no Claude/AI attribution anywhere), push a dedicated branch, open a PR whose body has \`Closes #${iss.number}\` and cross-references the issue.`,
     `7. If mid-implementation you hit a genuine open question (ambiguous spec, an architectural fork, a new third-party dependency) that you cannot resolve from the issue + repo conventions, STOP: return status "blocked" with the questions in openQuestions and DO NOT push a guess.`,
     ``,
-    `Return the schema: issue, status (pushed|blocked|error), branch, pr, ciStatus, openQuestions, splitRemainder, notes.`,
+    `Return the schema: issue, status (pushed|blocked|error), branch, pr, ciStatus, openQuestions, splitRemainder, notes. If you gave up on the lease (\`orchestrator-stop: lease-wait\`), return \`status: "error"\` with \`notes: "lease-wait"\`.`,
   ].join('\n')
 }
 
@@ -104,7 +106,7 @@ function reviewPrompt(impl) {
     `4. Classify each finding: category (correctness|security|simplification|efficiency|test-coverage|convention|contract), verdict CONFIRMED|PLAUSIBLE, and blocking true|false — your own call on whether this specific finding, not just its category, should block the merge (two test-coverage findings can differ: one blocking, one a documentary nit). Any other category — or a blank one — fails the gate closed and bounces the PR to /review-loop, which has no fix for a taxonomy error, so pick the nearest listed category rather than coining one. Do NOT decide an overall verdict — the gate is recomputed from your findings against the blocking categories (${blockOn.join(', ')}); blocking only narrows within an already-blocking category and omitting it fails toward blocking.`,
     `5. Write the full finding object — { issue, findings[] (category, verdict, blocking, file, line, summary, failure_scenario) } — as JSON to ${reviewPathFor(impl.issue)}. Return only the summary below; returning findings inline would park all of them in the orchestrator's context for the rest of the run.`,
     ``,
-    `Return the schema: issue, path (the file you wrote), findingCount, headline (one line naming the most serious finding, or "no findings"). findingCount is cross-checked against the file you wrote and must equal the number of entries in its findings[] — the gate is re-run with your count and refuses to score the review if the two disagree, so an inaccurate count stalls the PR rather than flattering it. Do not mention Claude/AI anywhere.`,
+    `Return the schema: issue, path (the file you wrote), findingCount, headline (one line naming the most serious finding, or "no findings"). findingCount is cross-checked against the file you wrote and must equal the number of entries in its findings[] — the gate is re-run with your count and refuses to score the review if the two disagree, so an inaccurate count stalls the PR rather than flattering it. Do not mention Claude/AI anywhere. If you gave up on the lease (\`orchestrator-stop: lease-wait\`), return \`status: "error"\` with \`notes: "lease-wait"\`. A gave-up review has no file: return path "" and findingCount 0 with it.`,
   ].join('\n')
 }
 
