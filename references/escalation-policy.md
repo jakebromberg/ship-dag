@@ -1,6 +1,6 @@
 # Escalation policy — when to grill the human
 
-`/ship-dag` runs autonomously *except* at six human-in-the-loop points — A (triage), B (implement/review), C (cross-repo cutover), D (retrospective), E (rate-limit window), F (resource pressure). A and B fire when the design premise breaks — a well-specced issue Sonnet-implements and survives the Opus gate cleanly; **when that premise breaks, that break is the escalation signal.** C and D are **scheduled gates** built into the loop. E is neither: it fires when the account's five-hour rate-limit window can't be waited out cheaply (step 4's preflight, and the identical fork mid-recovery-recipe below) — an infra constraint, not a premise break, and deliberately kept distinct from B (see the *Point E* section — a rate-limit death is not a model failure). F fires when machine memory pressure is `critical` and waiting has not cleared it (see *Point F*).
+`/ship-dag` runs autonomously *except* at six human-in-the-loop points — A (triage), B (implement/review), C (cross-repo cutover), D (retrospective and tripwires), E (rate-limit window), F (resource pressure). A and B fire when the design premise breaks — a well-specced issue Sonnet-implements and survives the Opus gate cleanly; **when that premise breaks, that break is the escalation signal.** C and D are **scheduled gates** built into the loop. E is neither: it fires when the account's five-hour rate-limit window can't be waited out cheaply (step 4's preflight, and the identical fork mid-recovery-recipe below) — an infra constraint, not a premise break, and deliberately kept distinct from B (see the *Point E* section — a rate-limit death is not a model failure). F fires when machine memory pressure is `critical` and waiting has not cleared it (see *Point F*).
 
 ## Triggers (any one → pause and grill)
 
@@ -13,6 +13,7 @@
 7. **Oversize issue** (point A) — triage estimates the issue needs more than 200 added lines of production source. The fork is split-now vs accept-the-size, and it is a scope call the human owns. It costs minutes here and a whole branch later, so it is worth a grill even though nothing is ambiguous.
 8. **Rate-limit window can't be waited out cheaply** (point E) — the step-4 preflight (`scripts/rate-limit-preflight.mjs`), or the identical fork hit mid-recovery-recipe while waiting out a live rate-limit death, finds the five-hour window at/above threshold with the reset more than `--wait-max-minutes` away, or no reset time at all: wait / defer this wave (or issue) / stop the run.
 9. **Resource pressure still critical after the wait cap** (point F) — the step-4 resource preflight (`scripts/resource-preflight.mjs`), run before an engine invocation, still reads `critical` after `--wait-max-minutes` (default 15) of waiting: wait / start anyway / defer this step / stop the run.
+10. **Tripped tripwire or overdue review** (point D) — step 7's `telemetry.mjs tripwires` reports a `tripped` state or a `reviewOverdue` date. Answered confirm-offline, retune, or dismiss-with-reason, batched with the wave's retrospective grilling when one ran.
 
 ## Protocol
 
@@ -32,6 +33,7 @@ Fires from step 6.5 when unretrospected merges reach `--retro-threshold` (and al
 - **Batch into one grilling.** Refactor proposals via `AskUserQuestion` `multiSelect` (title + summary + evidence PRs per option, ≤4 per question); plan adjustments likewise; open-ended respecs get the inline interview. `obsolete` closures are confirmed individually — never inside a multiSelect batch.
 - **Approved** → ghost-written side effects only: `/file-ticket` tickets (inserted per the run's issue-set form), issue comments/body edits recording the decision and reasoning, native + prose dependency edges. No Claude/AI attribution anywhere, as always.
 - **Declined** → run ledger only, never re-proposed this run, nothing written to GitHub.
+- **Tripwires (step 7).** D also fires when `telemetry.mjs tripwires` reports a `tripped` tripwire or a `reviewOverdue` date: batched into the wave's retrospective grilling when step 6.5 ran, else on its own. Each one is answered **confirm offline**, **retune** or **dismiss with a reason** (SKILL.md step 7; a dismissal is logged in `references/decisions.md`). `insufficient-data` and `pending-instrumentation` never grill; they ride the wave summary.
 - **At drain**, filing tickets re-opens a drained DAG — so the final fork is explicit: ship the new tickets in this run, or leave them filed for a future one.
 
 ## Point E — the rate-limit-window fork, and rate-limit-death recovery (resume in place, never re-run the engine)
