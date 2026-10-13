@@ -48,6 +48,15 @@ A rate-limit death is a distinct failure shape from a model failure: the session
 
    Either way, `report()` excludes every `failureReason: "rate-limited"` record from the model-quality indicators (first-pass yield, triage-miss, bounce rate) — an infra death must never make those numbers look worse than the model actually performed — and tallies it instead in the report's `quotaFailures` count (see *Telemetry* in `SKILL.md`).
 
+## Resource stops — rows the engine stopped for memory pressure or a lease wait
+
+A row whose `failureReason` is `memory-critical` or `lease-wait` (`stopStage` `launch`, `retry`, `post-check` or `session`) did not fail on the model's work: the engine stopped it. Step 5's `resource` route sends a PR-less one here, never to point B, and the worktree decides:
+
+- **Commits or a dirty tree** (`git -C <worktree> log` against the base, and `git -C <worktree> status`): resume in place, as for point E. Launch a continuation agent into the existing worktree and branch; never re-run the engine for that issue, whose existing branch it would collide with.
+- **A clean worktree with no commits**, whatever the `stopStage`: re-run it on a spec filtered to the stopped refs (`scripts/lib/wave-spec.mjs`), emitted into its own suffixed state dir. The original config is never re-run: the engine's `prepareIssues` skips only `succeeded` rows, so it would relaunch `failed` rows (with or without PRs) into their existing branches, the collision the point-E rule above forbids.
+
+Run the resource preflight first (wait, then ask at point F). A stopped row that has a PR is gated, with `ciStatus` `"fail"` for a `retry` stop and `"none"` for any other, and the CI profile runs before it is queued (SKILL.md step 5). Telemetry records the stop as `failureReason: "memory-critical"` or `"lease-wait"`, left out of the model-quality indicators as `"rate-limited"` is.
+
 ## Point F — resource pressure (`critical-hitl`)
 
 claude-orchestrator owns the threshold table and the machine-wide lease; ship-dag's column of it is that nothing new starts at `critical`. Today the preflight gates engine invocations; step 6.2's CI re-run also uses it (through `run-ci-profile.mjs`'s exit 75, the 15-minute bound, and a 30-minute cap that reaches point F whatever the pressure, SKILL.md step 6.2), and later issues wire it into step 5's review/fix hand-offs (SKILL.md step 4 says the same), which do not run it until then. Waiting does not relieve memory pressure, so the wait cap (15 minutes, re-checked each minute through `--sleep-before 60 --waited-minutes <total waited before this call>`; the script adds the call's own sleep) ends in asking, never in starting. Point F guards whichever step the preflight sent here, and offers:
@@ -57,7 +66,7 @@ claude-orchestrator owns the threshold table and the machine-wide lease; ship-da
 - **defer this step**: leave it for a later run.
 - **stop the run**.
 
-**Telemetry.** When the user chooses "start anyway" for an engine invocation, the main agent stamps `pressureOverride: true` in that wave's `--outcomes` for each row, and `ingest-wave` carries it onto the derived records (`deriveWaveRecords` passes it through; `normalizeRecord` keeps unknown keys). When a row's rate-limit death was resumed at point E, the flag lands on the death record, because the death is the session the overridden engine ran; the continuation is a separate resume that ran without the override, so it does not carry the flag.
+**Telemetry.** When the user chooses "start anyway" for an engine invocation, the main agent stamps `pressureOverride: true` in the `--outcomes` of that engine invocation's report for each row (for a filtered re-run, only in the re-run report's file), and `ingest-wave` carries it onto the derived records (`deriveWaveRecords` passes it through; `normalizeRecord` keeps unknown keys). When a row's rate-limit death was resumed at point E, the flag lands on the death record, because the death is the session the overridden engine ran; the continuation is a separate resume that ran without the override, so it does not carry the flag.
 
 ## What does NOT escalate
 

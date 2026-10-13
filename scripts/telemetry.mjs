@@ -31,7 +31,10 @@
 // failureReason is also nullable — set to "rate-limited" alongside
 // implStatus: "error" when the wrapper (scripts/rate-limit-preflight.mjs /
 // scripts/lib/rate-limit.mjs) identifies the five-hour window as the cause,
-// so the eval harness can separate quota failures from model failures.
+// so the eval harness can separate quota failures from model failures. The
+// engine's own stops, "memory-critical" and "lease-wait" (RESOURCE_STOPS in
+// scripts/lib/failure.mjs), are likewise infrastructure: implStatus "error"
+// beside a death, null beside a launch stop that never started.
 //
 // Usage:
 //   node telemetry.mjs append '<json>'      # append one record (validates + stamps ts)
@@ -64,6 +67,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
+import { RESOURCE_STOPS } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
@@ -85,7 +89,7 @@ const IMPL_STATUSES = new Set(['pushed', 'blocked', 'error', null]);
 // death (infra failure, wait-and-resume) from a model failure (HITL point B).
 // Kept as its own field rather than growing IMPL_STATUSES so existing logs and
 // the report subcommand stay valid without a coordinated schema bump.
-const FAILURE_REASONS = new Set(['rate-limited', null]);
+const FAILURE_REASONS = new Set(['rate-limited', ...RESOURCE_STOPS, null]);
 const REVIEW_VERDICTS = new Set(['clean', 'blocking', 'nits-only', null]);
 const TRIAGE_STATUSES = new Set(['clear', 'needs-decision']);
 const CI_STATUSES = new Set(['pass', 'fail', 'none', null]);
@@ -246,7 +250,8 @@ export function readRecords(path = telemetryPath()) {
  * A record with failureReason: "rate-limited" (an infra death, not a model
  * failure) is likewise excluded from yield/byComplexity/triage-miss/bounce/
  * review-catch — it still counts toward the record total and HITL, and is
- * tallied separately in `quotaFailures`.
+ * tallied separately in `quotaFailures`. So is an engine stop (`RESOURCE_STOPS`:
+ * memory-critical, lease-wait), tallied in `resourceStops`.
  * kind:"retro" records are excluded from every per-issue indicator (they are
  * pass-scoped, not issue-scoped) and aggregated into their own `retro` section.
  */
@@ -259,7 +264,8 @@ export function report(records) {
   // byComplexity breakdown), triage-miss, bounce rate, review-catch — so a
   // quota outage never dilutes those; it's counted instead in quotaFailures.
   const quotaFailures = issues.filter((r) => r.failureReason === 'rate-limited');
-  const modelIssues = issues.filter((r) => r.failureReason !== 'rate-limited');
+  const resourceStops = issues.filter((r) => RESOURCE_STOPS.has(r.failureReason));
+  const modelIssues = issues.filter((r) => r.failureReason !== 'rate-limited' && !RESOURCE_STOPS.has(r.failureReason));
   const reached = modelIssues.filter((r) => r.implStatus != null);
   const cleared = modelIssues.filter((r) => r.triageStatus === 'clear');
   const yieldOf = (rs) => {
@@ -282,6 +288,7 @@ export function report(records) {
   return {
     n: issues.length,
     quotaFailures: quotaFailures.length,
+    resourceStops: resourceStops.length,
     firstPassYield: yieldOf(reached),
     byComplexity,
     triageMiss: { cleared: cleared.length, miss, rate: cleared.length ? miss / cleared.length : 0 },
@@ -309,6 +316,7 @@ export function renderReport(rep) {
   // Gated on quotaFailures > 0 so a quota-failure-free log renders
   // byte-identically to before this field existed.
   if (rep.quotaFailures > 0) lines.push(`quota failures:    ${rep.quotaFailures}`);
+  if (rep.resourceStops > 0) lines.push(`resource stops:    ${rep.resourceStops}`);
   lines.push(`first-pass yield:  ${rep.firstPassYield.pass}/${rep.firstPassYield.reached} (${pct(rep.firstPassYield.rate)})`);
   for (const tier of TIERS) {
     const y = rep.byComplexity[tier];

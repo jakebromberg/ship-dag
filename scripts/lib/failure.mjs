@@ -28,6 +28,10 @@
 import { isRateLimitDeathLine } from './rate-limit.mjs';
 import { isPr } from './ref.mjs';
 
+/** Reasons the engine stops a row for infrastructure rather than model failure (claude-orchestrator#87), beside `"rate-limited"` which ship-dag also reads from a transcript. */
+export const RESOURCE_STOPS = new Set(['memory-critical', 'lease-wait']);
+const STRUCTURED_REASONS = new Set(['rate-limited', ...RESOURCE_STOPS]);
+
 /** JSON key present on every stream-json result record — a cheap prefilter that skips `JSON.parse` on the ~99% of transcript lines that cannot be one. */
 export const RESULT_TYPE_KEY = '"type":"result"';
 
@@ -121,16 +125,19 @@ function clipReason(text) {
  * to care which one wrote it.
  *
  * `failureReason` prefers a structured `failureReason` on the row
- * (claude-orchestrator#87) over the transcript scan, and passes through ONLY
- * `"rate-limited"` — telemetry.mjs's enum is deliberately just that value or
- * null, so forwarding some future orchestrator reason would make the telemetry
- * append throw and drop the very failure record it exists to capture.
+ * (claude-orchestrator#87) over the transcript scan, and passes through ONLY the
+ * reasons telemetry.mjs's `FAILURE_REASONS` accepts (`STRUCTURED_REASONS`) —
+ * forwarding some future orchestrator reason would make the telemetry append
+ * throw and drop the very failure record it exists to capture. A resource stop
+ * also forwards its `stopStage`, and, with a PR open, the `ciStatus` the stop
+ * implies (`stopCiStatus`).
  *
  * @param {{row: object, terminal: object|null, rateLimited?: boolean, exitCode?: number|string|null}} opts
  */
 export function buildDiagnosis({ row, terminal, rateLimited = false, exitCode = null }) {
-  const structured = row?.failureReason === 'rate-limited';
-  const failureReason = structured || rateLimited ? 'rate-limited' : null;
+  const structured = STRUCTURED_REASONS.has(row?.failureReason) ? row.failureReason : null;
+  const failureReason = structured ?? (rateLimited ? 'rate-limited' : null);
+  const stopped = RESOURCE_STOPS.has(failureReason);
   return {
     ref: row?.ref ?? null,
     status: row?.status ?? null,
@@ -138,6 +145,8 @@ export function buildDiagnosis({ row, terminal, rateLimited = false, exitCode = 
     prUrl: row?.prUrl ?? null,
     exitCode,
     failureReason,
+    stopStage: stopped ? row.stopStage ?? null : null,
+    ciStatus: stopCiStatus({ ...row, failureReason }),
     route: routeFailure({ ...row, failureReason }),
     terminal: terminal ? { ...terminal, reason: clipReason(terminal.reason) } : null,
   };
@@ -170,12 +179,52 @@ export function terminalEvent(transcriptText) {
 }
 
 /**
+ * The `ciStatus` a resource stop implies for a row with a PR, or null for any other row. A `retry` stop ran the
+ * engine's check and it failed; any other stop never ran one, so the PR is unverified (`"none"`), not passing:
+ * SKILL.md step 5 runs the CI profile before such a row is queued.
+ * @param {{prNumber?: number|null, failureReason?: string|null, stopStage?: string|null}} row
+ * @returns {"fail"|"none"|null}
+ */
+export function stopCiStatus(row) {
+  if (!RESOURCE_STOPS.has(row?.failureReason) || !isPr(row.prNumber)) return null;
+  return row.stopStage === 'retry' ? 'fail' : 'none';
+}
+
+/**
+ * How a PR-less resource stop recovers, by what its worktree holds (`git log` against the base, `git status`):
+ * work on disk is resumed in place by a continuation agent, never by re-running the engine into its branch
+ * (`references/escalation-policy.md`, point E); a clean tree with no commits is re-run on a spec filtered to
+ * the stopped refs.
+ * @param {{commits: number, dirty: boolean}} worktree
+ * @returns {"resume"|"filtered-rerun"}
+ */
+export const resumeMode = ({ commits, dirty }) => (commits > 0 || dirty ? 'resume' : 'filtered-rerun');
+
+/**
+ * The `ciStatus` a PR takes from `run-ci-profile.mjs`'s exit status, or null when the status is no verdict: 0 passes,
+ * 64 with "no CI profile" leaves it unverified (`"none"`, as for a repo with no `postSessionCheck`), and any other 64
+ * (a setup error) or 75 (no lease slot, a rerun under step 6.2) is no result. Anything else, including 128+n, is the suite's failure.
+ * @param {number} exitCode
+ * @param {{noProfile?: boolean}} [opts]
+ * @returns {"pass"|"fail"|"none"|null}
+ */
+export function ciStatusAfterProfile(exitCode, { noProfile = false } = {}) {
+  if (exitCode === 0) return 'pass';
+  if (exitCode === 64) return noProfile ? 'none' : null;
+  return exitCode === 75 ? null : 'fail';
+}
+
+/**
  * Where a report row belongs in SKILL.md step 5. A PR decides first, whatever
  * the row's `status`; only a PR-less row is routed by its status:
  *
  * - `review-gate` — a PR is open (whatever the row's status). The implement
  *   work landed; gate it exactly like a `succeeded` row. Never retry it: the
  *   branch already exists and the work may already be merged.
+ * - `resource` — no PR, and the engine stopped the row for memory pressure or a lease wait (`RESOURCE_STOPS`),
+ *   which is infrastructure, not a model failure. Checked before `find-pr` so a stop is never read as a PR-less
+ *   success; the worktree then decides the recovery (`resumeMode`). With a PR, the row is gated and
+ *   `stopCiStatus` says what its CI is.
  * - `find-pr` — a `succeeded` row with no PR. The session finished but the
  *   engine never captured its PR (it recognises one only by the branch it
  *   checked out). Look the PR up by issue before gating anything.
@@ -185,7 +234,7 @@ export function terminalEvent(transcriptText) {
  * - `point-B` — no PR, ordinary implement stall. Grill the human.
  *
  * @param {{status?: string, prNumber?: number|null, failureReason?: string|null}} row
- * @returns {"review-gate"|"find-pr"|"point-E"|"point-B"}
+ * @returns {"review-gate"|"resource"|"find-pr"|"point-E"|"point-B"}
  */
 export function routeFailure(row) {
   const { status, prNumber, failureReason } = row ?? {};
@@ -193,6 +242,7 @@ export function routeFailure(row) {
   // 0 can't read as "a PR exists" — routing a PR-less stall to a gate with
   // nothing to review is the expensive direction to be wrong in.
   if (isPr(prNumber)) return 'review-gate';
+  if (RESOURCE_STOPS.has(failureReason)) return 'resource';
   if (status === 'succeeded') return 'find-pr';
   if (failureReason === 'rate-limited') return 'point-E';
   return 'point-B';
