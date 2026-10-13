@@ -144,6 +144,41 @@ for (const [name, over, want] of reasonCases) {
   });
 }
 
+// An engine stop (memory-critical, lease-wait) rides the row's own failureReason, as rate-limited does, and is infrastructure,
+// not a model failure: a PR-less terminal row is a deferred "error" death; a launch-stopped pending row never reached implement.
+const stop = (failureReason, stopStage, status, over = {}) => row({ status, prNumber: null, prUrl: null, failureReason, stopStage, ...over });
+// [name, row, outcomes, want [implStatus, failureReason, finalState, pr] of each record]
+const stopCases = [
+  ['lease-wait, failed, no PR', stop('lease-wait', 'session', 'failed'), {}, [['error', 'lease-wait', 'deferred', null]]],
+  ['memory-critical post-check, failed, no PR', stop('memory-critical', 'post-check', 'failed'), {}, [['error', 'memory-critical', 'deferred', null]]],
+  ['memory-critical retry, failed, with a PR: gated, not dead', stop('memory-critical', 'retry', 'failed', { prNumber: 625 }), {}, [['pushed', null, 'merged', 625]]],
+  ['a pending launch stop with no outcome: no record', stop('memory-critical', 'launch', 'pending'), {}, []],
+  ['a pending launch stop the user deferred', stop('memory-critical', 'launch', 'pending'), { [REF]: { finalState: 'deferred' } }, [[null, 'memory-critical', 'deferred', null]]],
+  ['a pending launch stop the run stopped at point F', stop('memory-critical', 'launch', 'pending'), { [REF]: { finalState: 'error' } }, [[null, 'memory-critical', 'error', null]]],
+  ['a pending row with no failureReason is still not yet terminal', stop(null, null, 'pending'), { [REF]: { finalState: 'deferred' } }, []],
+  ['a succeeded row beside a lease-wait it left behind is no stop', stop('lease-wait', 'session', 'succeeded', { prNumber: 11 }), {}, [['pushed', null, 'merged', 11]]],
+  ['a lease-wait death resumed in place, continuation PR from --outcomes', stop('lease-wait', 'session', 'failed'), { [REF]: { pr: 12 } }, [['error', 'lease-wait', 'deferred', null], ['pushed', null, 'merged', 12]]],
+];
+for (const [name, r, outcomes, want] of stopCases) {
+  test(`engine stop: ${name}`, () => {
+    const { records } = derive({ report: report([r]), outcomes });
+    assert.deepEqual(records.map((rec) => [rec.implStatus, rec.failureReason, rec.finalState, rec.pr]), want);
+  });
+}
+
+test('engine stop: a pending launch stop re-listed by a later report is one record', () => {
+  const stopped = stop('memory-critical', 'launch', 'pending');
+  const outcomes = { [REF]: { finalState: 'deferred' } };
+  const first = derive({ report: report([stopped]), outcomes }, { reportId: 'w1' }).records;
+  assert.equal(derive({ report: report([stopped]), outcomes }, { reportId: 'w2', existing: first }).records.length, 0);
+});
+
+test('engine stop: rowCovered counts the record it derives as covering a lease-wait row', () => {
+  const stopped = stop('lease-wait', 'session', 'failed');
+  const records = derive({ report: report([stopped]) }, { reportId: 'w1' }).records;
+  assert.equal(rowCovered(stopped, { id: 'w1', startedAt: 0 }, records, 'sd-20261008-1', undefined), true);
+});
+
 for (const prNumber of [0, 1.5]) {
   test(`a PR number that is not a positive integer (${prNumber}) is no PR, as routeFailure reads it`, () => {
     const r = derive({ report: report([row({ prNumber })]), outcomes: { [REF]: { pr: 91 } } }).records[0];
