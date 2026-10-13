@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readRunFamilyReports, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
 import { appendWave } from './wave-sidecar.mjs';
@@ -150,4 +150,47 @@ test('readRunFamilyReports: the reports of every dir of the state dir\'s run fam
   assert.deepEqual(readRunFamilyReports(fx.dirs['sd-1-b'], { warn: () => {} }).map((r) => r.id).sort(), ['w1', 'w2']);
   assert.deepEqual(readRunFamilyReports(join(fx.base, '.', 'sd-1')).map((r) => r.id).sort(), ['w1', 'w2']);
   assert.deepEqual(readRunFamilyReports(join(fx.base, 'sd-1-b', 'gone')), [], 'a dir that is no run dir reads as no reports');
+});
+
+test('readRunFamilyReports: a dir spelled with a trailing slash, or through a symlink, is read once', () => {
+  const fx = engineFixture({ 'sd-1': {}, 'sd-1-b': {} });
+  fixtures.push(fx);
+  put(fx.dirs['sd-1'], 'w1', { startedAt: STARTED, issues: [] });
+  put(fx.dirs['sd-1-b'], 'w2', { startedAt: STARTED, issues: [] });
+  const link = join(fx.base, 'link');
+  symlinkSync(fx.dirs['sd-1'], link);
+  for (const spelling of [`${fx.dirs['sd-1']}/`, link]) {
+    // The listing's own path for sd-1 is a different string from the spelling, and names the same dir.
+    assert.deepEqual(readRunFamilyReports(spelling, { warn: () => {}, runId: 'sd-1' }).map((r) => r.id).sort(), ['w1', 'w2'], spelling);
+  }
+});
+
+test('readRunFamilyReports: a runId names the family when the dir\'s own name does not', () => {
+  const fx = engineFixture({ 'sd-1': {}, 'sd-1-retry': {}, 'sd-9': {} });
+  fixtures.push(fx);
+  for (const [d, id] of [['sd-1', 'w1'], ['sd-1-retry', 'w2'], ['sd-9', 'w3']]) put(fx.dirs[d], id, { startedAt: STARTED, issues: [] });
+  assert.deepEqual(readRunFamilyReports(fx.dirs['sd-1-retry'], { warn: () => {} }).map((r) => r.id), ['w2']);
+  assert.deepEqual(readRunFamilyReports(fx.dirs['sd-1-retry'], { warn: () => {}, runId: 'sd-1' }).map((r) => r.id).sort(), ['w1', 'w2']);
+});
+
+test('readRunFamilyReports: a parent that cannot be listed is warned about and leaves the dir alone', { skip: process.getuid?.() === 0 }, () => {
+  const fx = engineFixture({ 'sd-1': {}, 'sd-1-b': {} });
+  fixtures.push(fx);
+  put(fx.dirs['sd-1'], 'w1', { startedAt: STARTED, issues: [] });
+  put(fx.dirs['sd-1-b'], 'w2', { startedAt: STARTED, issues: [] });
+  chmodSync(fx.base, 0o311);
+  const warnings = [];
+  try {
+    assert.deepEqual(readRunFamilyReports(fx.dirs['sd-1'], { warn: (m) => warnings.push(m) }).map((r) => r.id), ['w1']);
+  } finally { chmodSync(fx.base, 0o755); }
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0].includes(fx.base) && /cannot list/.test(warnings[0]), warnings[0]);
+});
+
+test('reportOwnership: the reports each read lists are built once, whatever the number of calls', () => {
+  const all = reads(['w1', D1, [row({ ran: true })]], ['w2', D2, [row({ ran: true })]]);
+  const own = reportOwnership(all);
+  assert.deepEqual([...own.listing.keys()].sort(), ['w1', 'w2']);
+  assert.equal(own.listing, own.listing);
+  assert.deepEqual([...own.listing.get('w1')], [REF]);
 });

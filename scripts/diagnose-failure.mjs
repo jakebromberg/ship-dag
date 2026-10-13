@@ -36,7 +36,7 @@
 // Exit 2 on a malformed invocation, 3 when the state dir has no such row.
 
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
 import { artifactStem, createTranscriptScan, buildDiagnosis, MAX_REASON_CHARS } from './lib/failure.mjs';
 import { readRunFamilyReports, reportOwnership } from './lib/wave-reports.mjs';
@@ -82,7 +82,8 @@ export function owningReport(stateDir, ref, opts) {
 
 /**
  * Diagnose one issue's engine session from its run state dir. Reads the report that
- * owns the row (`owningReport`) and, if present, the session transcript for its terminal
+ * owns the row (`owningReport`, from the whole run family) and, from the dir that report is in (the given one or a
+ * sibling: the owner's dir, never the given one's by default), its digest or, if present, the session transcript for its terminal
  * record and rate-limit signature — but returns only the handful of fields
  * step 5 acts on, never the transcript itself.
  *
@@ -92,7 +93,7 @@ export function owningReport(stateDir, ref, opts) {
  * issue the engine never touched. The unknown-ref message names the refs that
  * ARE present, which is usually enough to spot the wrong runId immediately.
  *
- * @param {string} stateDir  the run's engine state dir (`.../ship-dag/engine/<runId>`)
+ * @param {string} stateDir  a dir of the run's family: the run's engine state dir (`.../ship-dag/engine/<runId>`)
  * @param {string} ref       composite issue ref, `owner/repo#N`
  * @param {{warn?: (m: string) => void}} [opts]  where a report that cannot be read is warned about (stderr by default)
  */
@@ -100,10 +101,15 @@ export function diagnose(stateDir, ref, opts) {
   const { reads, ownerOf } = reportOwnership(readRunFamilyReports(stateDir, opts));
   const owner = ownerOf(ref);
 
+  // The owner's dir is the dir whose state/reports/ holds the owning report; its digest and its transcript are that wave's,
+  // so both are read there, never from the dir diagnose was given (a sibling's session is another wave's). Without an owner
+  // there is no wave to join to, and the given dir's unstamped digest is all that can answer.
+  const ownerDir = owner ? dirname(dirname(dirname(owner.path))) : stateDir;
+
   // The engine already answered this if it digested the run — prefer that over
   // re-reading a transcript that may be megabytes.
   // Only a digest of the report that owns the row (or an unstamped, legacy one) is read: a digest of an earlier event would route the row by its old stop.
-  const digestFile = digestPathForRef(stateDir, ref);
+  const digestFile = digestPathForRef(ownerDir, ref);
   if (existsSync(digestFile)) {
     try {
       const digest = JSON.parse(readFileSync(digestFile, 'utf8'));
@@ -113,15 +119,15 @@ export function diagnose(stateDir, ref, opts) {
     }
   }
 
-  if (reads.length === 0) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} — is this the right run's state dir?`);
+  if (reads.length === 0) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} (or any dir of its run family) — is this the right run's state dir?`);
   if (!owner) {
     const latest = reads.at(-1);
     const known = latest.report.issues.map((r) => r.ref).join(', ') || '(none)';
-    throw new Error(`no row for ${ref} in any report under ${join(stateDir, 'state', 'reports')}; the latest, ${latest.path}, covers: ${known}`);
+    throw new Error(`no row for ${ref} in any report of ${stateDir}'s run family; the latest, ${latest.path}, covers: ${known}`);
   }
   const { path: reportFile, row } = owner;
 
-  const transcriptPath = logPathForRef(stateDir, ref);
+  const transcriptPath = logPathForRef(ownerDir, ref);
   let transcript = null;
   try {
     transcript = readFileSync(transcriptPath, 'utf8');

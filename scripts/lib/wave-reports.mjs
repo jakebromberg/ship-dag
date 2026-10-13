@@ -1,8 +1,8 @@
 // wave-reports.mjs — the one reader of a state dir's wave reports (`<stateDir>/state/reports/*.json`),
 // of the routing each report ran under, and of which dirs hold a run family's waves. ingest-wave, the
-// escapes proxy and audit share it, so a rule about which routing a report gets (or whether it gets
+// escapes proxy, audit, the digest writer and diagnose-failure share it, so a rule about which routing a report gets (or whether it gets
 // any) lands in one place.
-import { readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { parseRef } from './ref.mjs';
 import { sameRun } from './run-id.mjs';
@@ -100,19 +100,36 @@ export function runFamilyDirs(runId, baseDir) {
 }
 
 /**
- * Every report of `stateDir`'s run family, as `readWaveReports` reads each dir: the dir and every
- * `runFamilyDirs` sibling of it under its parent, named for the run id the dir's name carries, each
- * once (a dir spelled twice reads once). A parent that cannot be listed leaves the dir alone.
+ * The dirs of `stateDir`'s run family, `stateDir` first: it and every `runFamilyDirs` sibling of it under its parent,
+ * for `runId` (default: the run id the dir's name carries). The one scope rule of a run family: ingest, audit-side
+ * readers, the digest writer and diagnose-failure all take their dirs from here. A dir is told apart by device and
+ * inode, so a path spelled with a trailing slash, through a symlink or in another case on a case-insensitive file
+ * system is the same dir as the listing's, and is kept once. A parent that cannot be listed leaves `stateDir` alone,
+ * with a warning.
  * @param {string} stateDir
- * @param {{warn?: (m: string) => void}} [opts]
+ * @param {{warn?: (m: string) => void, runId?: string}} [opts]
+ * @returns {string[]}
+ */
+export function runFamilyStateDirs(stateDir, { warn = (m) => console.error(m), runId = basename(stateDir) } = {}) {
+  let siblings = [];
+  try {
+    siblings = runFamilyDirs(runId, dirname(stateDir));
+  } catch (err) {
+    warn(`cannot list ${dirname(stateDir)} (${err.code ?? err.message}), so the run family's reports and review rounds are read from ${stateDir} alone`);
+  }
+  const seen = new Set();
+  const key = (d) => { try { const { dev, ino } = statSync(d); return `${dev}:${ino}`; } catch { return d; } };
+  return [stateDir, ...siblings].filter((d) => !seen.has(key(d)) && seen.add(key(d)));
+}
+
+/**
+ * Every report of `stateDir`'s run family, as `readWaveReports` reads each of `runFamilyStateDirs(stateDir, opts)`.
+ * @param {string} stateDir
+ * @param {{warn?: (m: string) => void, runId?: string}} [opts]
  * @returns {ReturnType<typeof readWaveReport>[]}
  */
 export function readRunFamilyReports(stateDir, opts) {
-  let siblings = [];
-  try { siblings = runFamilyDirs(basename(stateDir), dirname(stateDir)); } catch { /* an unlistable parent reads as the one dir */ }
-  const seen = new Set();
-  const key = (d) => { try { return realpathSync.native(d); } catch { return d; } };
-  return [stateDir, ...siblings].filter((d) => !seen.has(key(d)) && seen.add(key(d))).flatMap((d) => readWaveReports(d, opts));
+  return runFamilyStateDirs(stateDir, opts).flatMap((d) => readWaveReports(d, opts));
 }
 
 /**
@@ -123,6 +140,7 @@ export function readRunFamilyReports(stateDir, opts) {
  * no report here. Returns `reads` (those that count, oldest `startedAt` first, a tie by id) and:
  * - `earlierOf(read)`: the reports that started before `read` (`earlierReports`), computed once per read;
  * - `owns(read, row)`: whether `row` of `read` is its own event, not one it `carriedOver` from `earlierOf(read)`;
+ * - `listing`: by read id, the refs each of `reads` (counted or not) lists as its own row, built once on first use;
  * - `ownerOf(ref)`: the latest of `reads` whose row for `ref` it `owns`, as `{...read, row}`, or null.
  * @param {ReturnType<typeof readWaveReport>[]} reads
  */
@@ -136,5 +154,9 @@ export function reportOwnership(reads) {
     const owner = counted.findLast((r) => { const row = rowOf(r); return row && owns(r, row); });
     return owner ? { ...owner, row: rowOf(owner) } : null;
   };
-  return { reads: counted, earlierOf, owns, ownerOf };
+  let listing;
+  return {
+    reads: counted, earlierOf, owns, ownerOf,
+    get listing() { return (listing ??= new Map(reads.map((r) => [r.id, new Set((r.report?.issues ?? []).filter((row) => row && owns(r, row)).map((row) => row.ref))]))); },
+  };
 }
