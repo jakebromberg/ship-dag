@@ -17,10 +17,10 @@ import { constants as osConstants } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { coDistPath, coHome as locateCoHome } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
 
 const PROFILES = join(dirname(fileURLToPath(import.meta.url)), '..', 'references', 'repo-ci-profiles.json');
-const DEFAULT_CO_HOME = '/Users/jake/Developer/claude-orchestrator';
 
 /** One `/bin/sh` line running each command in its own subshell, short-circuiting on the first failure. Newlines inside the parens keep a trailing comment from eating the `)`. */
 export function composeCiLine(commands) {
@@ -36,13 +36,13 @@ export function commandsFor(repo, profiles) {
 
 /** argv for `node`: the lease CLI with the composed line as a single `--shell` argument (no shell quoting needed). The label names the run without leaking credentials. */
 export function cliArgs({ repo, line, coHome, maxWait }) {
-  return [join(coHome, 'dist', 'src', 'cli-lease.js'), '--max-wait', String(maxWait), '--label', `run-ci-profile ${repo}`, '--shell', line];
+  return [coDistPath({ CO_HOME: coHome }, 'cli-lease.js'), '--max-wait', String(maxWait), '--label', `run-ci-profile ${repo}`, '--shell', line];
 }
 
 /** Runs the repo's profile under the lease from `worktree`; returns the spawnSync result. */
 export function runCiProfile({ repo, worktree, profilesPath = PROFILES, env = process.env, maxWait = 100, stdio = 'inherit' }) {
   const commands = commandsFor(repo, JSON.parse(readFileSync(profilesPath, 'utf8')).profiles);
-  const args = cliArgs({ repo, line: composeCiLine(commands), coHome: env.CO_HOME || DEFAULT_CO_HOME, maxWait });
+  const args = cliArgs({ repo, line: composeCiLine(commands), coHome: locateCoHome(env), maxWait });
   return spawnSync(process.execPath, args, { cwd: worktree, env, stdio });
 }
 
@@ -63,9 +63,9 @@ export function exitCodeFor(result) {
 }
 
 /** One line naming the first setup problem (missing worktree, missing lease CLI, repo without a CI profile), or null when the run can start. */
-export function setupProblem({ repo, worktree, profilesPath = PROFILES, coHome = process.env.CO_HOME || DEFAULT_CO_HOME }) {
+export function setupProblem({ repo, worktree, profilesPath = PROFILES, coHome = locateCoHome() }) {
   if (!existsSync(worktree)) return `worktree ${worktree} does not exist`;
-  const cliPath = join(coHome, 'dist', 'src', 'cli-lease.js');
+  const cliPath = coDistPath({ CO_HOME: coHome }, 'cli-lease.js');
   if (!existsSync(cliPath)) return `${cliPath} not found: build or point CO_HOME at a claude-orchestrator checkout`;
   try {
     commandsFor(repo, JSON.parse(readFileSync(profilesPath, 'utf8')).profiles);
