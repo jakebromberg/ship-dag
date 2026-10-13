@@ -711,6 +711,22 @@ for (const [what, ids, warned] of [
   }));
 }
 
+// A report that lists the ref only as a carried-over row (ran false, same status and PR) derives no record, so it owns no round:
+// a round stamped with it warns and is windowed by mtime, into the report that owns the event, not into none.
+test('ingest-wave: a round stamped with a report that only carries the ref over warns and is windowed by mtime, into one wave', () => withStateDir({
+  reports: {
+    'w1.json': stateReport([stateRow(REF, { ran: true })], { startedAt: T0, finishedAt: T1 }),
+    'w2.json': stateReport([stateRow(REF, { ran: false })], { startedAt: T1, finishedAt: T2 }),
+  },
+  sidecar: [sidecarEntry()],
+}, (dir) => {
+  putReview(dir, REF, '', JSON.stringify({ issue: 1, meta: { trigger: 'initial', reportId: 'w2' }, findings: [] }), '2026-10-08T19:10:00.000Z');
+  const warnings = [];
+  const owners = ['w1.json', 'w2.json'].map((w) => ingestFile(reportPath(dir, w), {}, { warn: (m) => warnings.push(m) }).records.filter((r) => r.reviewPath).length);
+  assert.deepEqual(owners, [1, 0]);
+  assert.ok(warnings.some((m) => m.includes('names no report of this run that lists')));
+}));
+
 // A stamp that names a report of the run which does not list the ref is no better than an unknown one: that report's
 // ingest never reads the ref's rounds, so the round would belong to no wave. It warns and falls back to mtime.
 // w1 lists REF, w2 lists only REF2; REF's round 2 is written during w2 (a re-gate of a PR held over) and stamped w2.
@@ -1163,7 +1179,9 @@ test('ingest-wave: a ran-false row is its own event when no earlier report lists
 
 // A later row that carries ran says whether it re-ran the ref: ran false does not end this wave's window, ran true does.
 for (const [name, later, want] of [
-  ['ran false, with a new PR', stateRow(REF, { prUrl: 'https://x/12', prNumber: 12, ran: false }), ['blocking', 0, '.r3.json']],
+  ['ran false, with the same PR (carried over)', stateRow(REF, { ran: false }), ['blocking', 0, '.r3.json']],
+  ['ran false, with a new PR (its own event)', stateRow(REF, { prUrl: 'https://x/12', prNumber: 12, ran: false }), ['clean', 0, '.r2.json']],
+  ['ran false, failed before launch (its own event)', stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, ran: false }), ['clean', 0, '.r2.json']],
   ['ran true, with the same PR', stateRow(REF, { ran: true }), ['clean', 0, '.r2.json']],
   ['ran "false" (no boolean, so no fact), with a new PR', stateRow(REF, { prUrl: 'https://x/12', prNumber: 12, ran: 'false' }), ['clean', 0, '.r2.json']],
   ['ran "true" (no boolean, so no fact), with the same PR', stateRow(REF, { ran: 'true' }), ['blocking', 0, '.r3.json']],
@@ -1546,6 +1564,14 @@ describe('SKILL.md telemetry wiring', () => {
 
   test('has the Review block write meta.reportId beside meta.trigger', () => {
     assert.ok(skill.includes('meta: { trigger: "{TRIGGER}", reportId: "{REPORT_ID}" }'));
+  });
+
+  test('names the {REPORT_ID} stamp by the row\'s ran fact, and step 5\'s resource resume beside point E', () => {
+    const policy = readFileSync(fileURLToPath(new URL('../references/escalation-policy.md', import.meta.url)), 'utf8');
+    for (const [name, text] of [['SKILL.md', skill], ['escalation-policy.md', policy]]) {
+      assert.ok(text.includes('newest report whose row for the ref is not `ran: false`'), `${name}: ran: false exclusion`);
+      assert.ok(text.includes('step 5\'s `resource` resume in place'), `${name}: resource route`);
+    }
   });
 
   test('documents every telemetry.mjs subcommand the CLI dispatches', () => {
