@@ -32,7 +32,8 @@
 // Usage:
 //   node diagnose-failure.mjs <owner/repo#N> --state-dir <dir>
 //   node diagnose-failure.mjs <owner/repo#N> --run-id <runId>   # under the default base dir
-// Prints the diagnosis as JSON on stdout and a one-line summary on stderr.
+//   node diagnose-failure.mjs <owner/repo#N> --owner --state-dir <dir>   # only the owning report's id, no transcript read
+// Prints the diagnosis as JSON on stdout and a one-line summary on stderr; with --owner, the report id alone on stdout.
 // Exit 2 on a malformed invocation, 3 when the state dir has no such row.
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -80,6 +81,27 @@ export function owningReport(stateDir, ref, opts) {
   return reportOwnership(readRunFamilyReports(stateDir, opts)).ownerOf(ref);
 }
 
+function noRowError(stateDir, ref, reads) {
+  const latest = reads.at(-1);
+  const known = latest.report.issues.map((r) => r.ref).join(', ') || '(none)';
+  return new Error(`no row for ${ref} in any report of ${stateDir}'s run family; the latest, ${latest.path}, covers: ${known}`);
+}
+
+/**
+ * The id of the report that owns `ref`'s latest event, for the `{REPORT_ID}` a review round is stamped with. Reads only
+ * the reports, never a digest or a transcript. Throws as `diagnose` does when no report lists `ref`.
+ * @param {string} stateDir
+ * @param {string} ref
+ * @param {{warn?: (m: string) => void}} [opts]
+ */
+export function ownerId(stateDir, ref, opts) {
+  const { reads, ownerOf } = reportOwnership(readRunFamilyReports(stateDir, opts));
+  const owner = ownerOf(ref);
+  if (owner) return owner.id;
+  if (reads.length === 0) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} (or any dir of its run family) — is this the right run's state dir?`);
+  throw noRowError(stateDir, ref, reads);
+}
+
 /**
  * Diagnose one issue's engine session from its run state dir. Reads the report that
  * owns the row (`owningReport`, from the whole run family) and, from the dir that report is in (the given one or a
@@ -121,9 +143,7 @@ export function diagnose(stateDir, ref, opts) {
 
   if (reads.length === 0) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} (or any dir of its run family) — is this the right run's state dir?`);
   if (!owner) {
-    const latest = reads.at(-1);
-    const known = latest.report.issues.map((r) => r.ref).join(', ') || '(none)';
-    throw new Error(`no row for ${ref} in any report of ${stateDir}'s run family; the latest, ${latest.path}, covers: ${known}`);
+    throw noRowError(stateDir, ref, reads);
   }
   const { path: reportFile, row } = owner;
 
@@ -147,20 +167,22 @@ export function diagnose(stateDir, ref, opts) {
   };
 }
 
-/** Parse `<ref> [--state-dir DIR] [--run-id ID]`. Throws on a missing ref or a state dir that can't be resolved. */
+/** Parse `<ref> [--owner] [--state-dir DIR] [--run-id ID]`. Throws on a missing ref or a state dir that can't be resolved. */
 export function parseArgs(argv, env = process.env) {
   let ref = null;
   let stateDir;
   let runId;
+  let owner = false;
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--state-dir') stateDir = argv[++i];
+    else if (a === '--owner') owner = true;
     else if (a === '--run-id') runId = argv[++i];
     else if (!a.startsWith('--') && ref === null) ref = a;
   }
   if (!ref) throw new Error('an issue ref (owner/repo#N) is required');
   if (!stateDir && !runId) throw new Error('one of --state-dir or --run-id is required');
-  return { ref, stateDir: stateDir || join(defaultBaseDir(env), runId) };
+  return { ref, owner, stateDir: stateDir || join(defaultBaseDir(env), runId) };
 }
 
 function main(argv) {
@@ -168,11 +190,15 @@ function main(argv) {
   try {
     opts = parseArgs(argv);
   } catch (err) {
-    process.stderr.write(`diagnose-failure: ${err.message}\nusage: diagnose-failure.mjs <owner/repo#N> --state-dir <dir> | --run-id <runId>\n`);
+    process.stderr.write(`diagnose-failure: ${err.message}\nusage: diagnose-failure.mjs <owner/repo#N> [--owner] --state-dir <dir> | --run-id <runId>\n`);
     process.exit(2);
   }
   let out;
   try {
+    if (opts.owner) {
+      process.stdout.write(`${ownerId(opts.stateDir, opts.ref)}\n`);
+      return;
+    }
     out = diagnose(opts.stateDir, opts.ref);
   } catch (err) {
     process.stderr.write(`diagnose-failure: ${err.message}\n`);
