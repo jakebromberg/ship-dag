@@ -57,7 +57,7 @@ function defaultIsCheckoutRoot(dir) {
   const [top, gitDir, commonDir] = gitIn(dir, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir")
     .trim()
     .split("\n");
-  return fs.realpathSync(top) === fs.realpathSync(dir) && path.resolve(dir, gitDir) === path.resolve(dir, commonDir);
+  return fs.realpathSync.native(top) === fs.realpathSync.native(dir) && path.resolve(dir, gitDir) === path.resolve(dir, commonDir);
 }
 
 /**
@@ -153,18 +153,21 @@ export function worktreeRootFor(repoDir, options = {}) {
   return PATH_DEPENDENCY.test(code) ? sibling : adjacent;
 }
 
-/** Swift source minus line comments and (nestable) block comments; string literals are kept. */
+/** Swift source minus line comments and (nestable) block comments; string literals, multi-line ones included, are kept. */
 function stripComments(source) {
   let out = "";
   let depth = 0; // block-comment nesting, which Swift allows
-  let quoted = false;
+  let quoted = ""; // the open string's delimiter: `"` or `"""`
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
     const two = source.slice(i, i + 2);
     if (quoted) {
       out += c;
       if (c === "\\") out += source[++i] ?? "";
-      else if (c === '"' || c === "\n") quoted = false;
+      else if (quoted === '"""' ? source.startsWith('"""', i) : c === '"' || c === "\n") {
+        if (quoted === '"""') (out += '""', i += 2);
+        quoted = "";
+      }
     } else if (two === "/*") {
       depth++;
       i++;
@@ -172,9 +175,13 @@ function stripComments(source) {
       if (two === "*/") (depth--, i++);
     } else if (two === "//") {
       while (i + 1 < source.length && source[i + 1] !== "\n") i++;
+    } else if (source.startsWith('"""', i)) {
+      out += '"""';
+      i += 2;
+      quoted = '"""';
     } else {
       out += c;
-      quoted = c === '"';
+      quoted = c === '"' ? '"' : "";
     }
   }
   return out;

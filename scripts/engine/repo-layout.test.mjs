@@ -168,6 +168,7 @@ for (const [name, manifest] of [
   ['a line comment', '// .package(name: "Analytics", path: "../Analytics")\n.package(url: "https://x.example/y.git", from: "1.0.0")'],
   ['a block comment', '/* .package(path: "../Analytics"), */ .package(url: "https://x.example/y.git", from: "1.0.0")'],
   ['a target path', '.target(name: "Thing", path: "../Sources/Thing")'],
+  ['a block comment holding """', '/* """ */ // .package(path: "../Analytics")\n.package(url: "https://x.example/y.git", from: "1.0.0")'],
   ['a nested block comment', '/* outer /* inner */ .package(path: "../Analytics") */ .package(url: "https://x.example/y.git", from: "1.0.0")'],
 ]) {
   test(`a ../ path in ${name} is not a sibling dependency`, () => {
@@ -177,6 +178,17 @@ for (const [name, manifest] of [
     );
   });
 }
+
+test('a /* inside a multi-line string does not hide a later path dependency', () => {
+  assert.equal(
+    worktreeRootFor('/repos/Wallpaper', {
+      existsSync: () => true,
+      readFileSync: () => 'let note = """\nglob: Sources/*\n"quoted" /* not a comment\n"""\n.package(path: "../Core")',
+      env: {},
+    }),
+    '/repos',
+  );
+});
 
 test('a path dependency after a URL on the same line is still detected', () => {
   assert.equal(
@@ -281,6 +293,12 @@ test('a submodule under a superproject resolves, a plain superproject subdir nev
     // The superproject's own origin must not resolve to a plain subdirectory of it.
     assert.equal(repoDirName('WXYC/wxyc-ios-64', { reposDir: shared }), 'wxyc-ios-64');
     assert.equal(repoDirName('WXYC/wallpaper-ios', { reposDir: shared }), 'Wallpaper');
+
+    // On a case-insensitive filesystem, a reposDir typed in the wrong case still finds the checkout.
+    const upper = shared.toUpperCase();
+    if (existsSync(upper) && upper !== shared) {
+      assert.equal(repoDirName('WXYC/wallpaper-ios', { reposDir: upper }), 'Wallpaper');
+    }
 
     const issue = (slug) => ({ number: 1, slug, repo: 'WXYC/wallpaper-ios' });
     const hooks = layoutWorktreeHooks(deriveWorktreeHooks, { reposDir: shared, env: {} });
