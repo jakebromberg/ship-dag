@@ -2,10 +2,11 @@
 // of the routing each report ran under, and of which dirs hold a run family's waves. ingest-wave, the
 // escapes proxy and audit share it, so a rule about which routing a report gets (or whether it gets
 // any) lands in one place.
-import { readdirSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { parseRef } from './ref.mjs';
 import { sameRun } from './run-id.mjs';
+import { carriedOver } from './wave-records.mjs';
 import { entryFromConfig, findWaveConfig, findWaveContext } from './wave-sidecar.mjs';
 
 /**
@@ -96,4 +97,44 @@ export function runFamilyDirs(runId, baseDir) {
   let entries;
   try { entries = readdirSync(baseDir, { withFileTypes: true }); } catch (err) { if (err.code === 'ENOENT') return []; throw err; }
   return entries.filter((e) => e.isDirectory() && sameRun(e.name, runId)).map((e) => join(baseDir, e.name)).sort();
+}
+
+/**
+ * Every report of `stateDir`'s run family, as `readWaveReports` reads each dir: the dir and every
+ * `runFamilyDirs` sibling of it under its parent, named for the run id the dir's name carries, each
+ * once (a dir spelled twice reads once). A parent that cannot be listed leaves the dir alone.
+ * @param {string} stateDir
+ * @param {{warn?: (m: string) => void}} [opts]
+ * @returns {ReturnType<typeof readWaveReport>[]}
+ */
+export function readRunFamilyReports(stateDir, opts) {
+  let siblings = [];
+  try { siblings = runFamilyDirs(basename(stateDir), dirname(stateDir)); } catch { /* an unlistable parent reads as the one dir */ }
+  const seen = new Set();
+  const key = (d) => { try { return realpathSync.native(d); } catch { return d; } };
+  return [stateDir, ...siblings].filter((d) => !seen.has(key(d)) && seen.add(key(d))).flatMap((d) => readWaveReports(d, opts));
+}
+
+/**
+ * The one reading of which report owns a row, over `reads` (a run family's reads, `readRunFamilyReports`'s):
+ * every caller that asks "is this row its report's own event" or "which report owns this ref" asks it here.
+ * A read counts when it has a parsed `report` and a finite `startedAt`, whatever its `error`: a report refused for a
+ * malformed row still started when it says, and ingest and audit have always read it so; a read without either is
+ * no report here. Returns `reads` (those that count, oldest `startedAt` first, a tie by id) and:
+ * - `earlierOf(read)`: the reports that started before `read` (`earlierReports`), computed once per read;
+ * - `owns(read, row)`: whether `row` of `read` is its own event, not one it `carriedOver` from `earlierOf(read)`;
+ * - `ownerOf(ref)`: the latest of `reads` whose row for `ref` it `owns`, as `{...read, row}`, or null.
+ * @param {ReturnType<typeof readWaveReport>[]} reads
+ */
+export function reportOwnership(reads) {
+  const counted = reads.filter((r) => r.report && Number.isFinite(r.startedAt)).sort((x, y) => x.startedAt - y.startedAt || (x.id < y.id ? -1 : 1));
+  const memo = new Map();
+  const earlierOf = (read) => memo.get(read) ?? memo.set(read, earlierReports(counted, read.startedAt)).get(read);
+  const owns = (read, row) => !carriedOver(row, earlierOf(read));
+  const ownerOf = (ref) => {
+    const rowOf = (r) => r.report.issues.find((row) => row?.ref === ref);
+    const owner = counted.findLast((r) => { const row = rowOf(r); return row && owns(r, row); });
+    return owner ? { ...owner, row: rowOf(owner) } : null;
+  };
+  return { reads: counted, earlierOf, owns, ownerOf };
 }

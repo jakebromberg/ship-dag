@@ -117,7 +117,8 @@ test('diagnose: a tie in mtime does not discard the digest of the later report',
 });
 
 test('diagnose: a torn report, or one with a row that has no ref, is skipped with a warning rather than thrown over or trusted', () => {
-  const digest = { ref: REF, status: 'failed', route: 'point-B', reportId: 'a' };
+  // c is refused for its row with no ref but still parses its report and start, so it counts, as in ingest and audit: it owns REF.
+  const digest = { ref: REF, status: 'failed', route: 'point-B', reportId: 'c' };
   const dir = waves({ a: { startedAt: W1, rows: [row()] }, c: { startedAt: W2, rows: [row({ status: 'pending' }), { number: 3 }] } }, { digest, files: { 'state/reports/b.json': '{"iss' } });
   const warnings = [];
   assert.equal(diagnose(dir, REF, { warn: (m) => warnings.push(m) }).source, 'digest');
