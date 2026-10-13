@@ -36,8 +36,24 @@ test('filterSpec: a ref the spec does not hold throws, naming it', () => {
 });
 
 test('wave-spec CLI: prints the filtered spec', () => {
-  const r = spawnSync(process.execPath, [fileURLToPath(new URL('./wave-spec.mjs', import.meta.url)), '-', '--wave', '14b', 'o/b#2'], { input: JSON.stringify(spec()), encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [fileURLToPath(new URL('./wave-spec.mjs', import.meta.url)), '-', '--wave', '14b', '--state-dir', '/s/w14b', 'o/b#2'], { input: JSON.stringify(spec()), encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   const out = JSON.parse(r.stdout);
-  assert.deepEqual([out.wave, out.issues.map((i) => i.number)], ['14b', [2]]);
+  assert.deepEqual([out.wave, out.stateDir, out.issues.map((i) => i.number)], ['14b', '/s/w14b', [2]]);
 });
+
+// A flag with no value, or no --state-dir at all, is a usage error (exit 2) naming the flag: a filtered re-run needs its own state dir.
+for (const [name, args, flag] of [
+  ['a trailing --state-dir', ['--wave', '14b', 'o/b#2', '--state-dir'], '--state-dir'],
+  ['a trailing --wave', ['--state-dir', '/s/w', 'o/b#2', '--wave'], '--wave'],
+  ['--wave followed by another flag', ['--wave', '--state-dir', '/s/w', 'o/b#2'], '--wave'],
+  ['--state-dir followed by another flag', ['--state-dir', '--wave', '14b', 'o/b#2'], '--state-dir'],
+  ['no --state-dir', ['--wave', '14b', 'o/b#2'], '--state-dir'],
+]) {
+  test(`wave-spec CLI: ${name} is a usage error naming the flag`, () => {
+    const r = spawnSync(process.execPath, [fileURLToPath(new URL('./wave-spec.mjs', import.meta.url)), '-', ...args], { input: JSON.stringify(spec()), encoding: 'utf8' });
+    assert.equal(r.status, 2);
+    assert.equal(r.stdout, '');
+    assert.ok(r.stderr.includes(flag), r.stderr);
+  });
+}

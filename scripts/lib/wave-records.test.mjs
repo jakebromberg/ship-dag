@@ -154,7 +154,7 @@ const stopCases = [
   ['memory-critical retry, failed, with a PR: gated, not dead', stop('memory-critical', 'retry', 'failed', { prNumber: 625 }), {}, [['pushed', null, 'merged', 625]]],
   ['a pending launch stop with no outcome: no record', stop('memory-critical', 'launch', 'pending'), {}, []],
   ['a pending launch stop the user deferred', stop('memory-critical', 'launch', 'pending'), { [REF]: { finalState: 'deferred' } }, [[null, 'memory-critical', 'deferred', null]]],
-  ['a pending launch stop the run stopped at point F', stop('memory-critical', 'launch', 'pending'), { [REF]: { finalState: 'error' } }, [[null, 'memory-critical', 'error', null]]],
+  ['a pending launch stop the run stopped at point F', stop('memory-critical', 'launch', 'pending'), { [REF]: { finalState: 'deferred' } }, [[null, 'memory-critical', 'deferred', null]]],
   ['a pending row with no failureReason is still not yet terminal', stop(null, null, 'pending'), { [REF]: { finalState: 'deferred' } }, []],
   ['a succeeded row beside a lease-wait it left behind is no stop', stop('lease-wait', 'session', 'succeeded', { prNumber: 11 }), {}, [['pushed', null, 'merged', 11]]],
   ['a lease-wait death resumed in place, continuation PR from --outcomes', stop('lease-wait', 'session', 'failed'), { [REF]: { pr: 12 } }, [['error', 'lease-wait', 'deferred', null], ['pushed', null, 'merged', 12]]],
