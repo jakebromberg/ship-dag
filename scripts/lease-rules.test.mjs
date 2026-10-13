@@ -25,6 +25,7 @@ const rules = [
   /Heavy commands are leased machine-wide by a hook; one may wait several minutes before it starts, which is expected\./,
   /Run heavy commands in the foreground/,
   /A denial reading `lease: no slot after <n>s` means rerun the same command; it is never a test failure and never a reason to skip CI\./,
+  /Claude Code prefixes the denial, so the tool result may read `PreToolUse:Bash hook error: lease: no slot after 450s …`; a tool result containing `lease: no slot after` anywhere, even one prefixed "hook error", means the lease is busy, not that the hook is broken, so rerun the same command\./,
   /Rerun once\. After the second `lease: no slot` denial in the session, whichever commands they hit, stop: comment on the issue, end your final message with the exact line `orchestrator-stop: lease-wait`, and exit without pushing\./,
   /Never wrap a command in `cli-lease\.js` yourself, and run `cli-lease\.js` or `run-ci-profile\.mjs` alone in its own Bash call\./,
 ];
@@ -52,23 +53,46 @@ test('both retry rules carve out lease reruns', () => {
 // Profile commands the matcher is right to leave alone: each is light, so a
 // match here would only queue behind the lease for nothing. Anything heavy that
 // the matcher misses must not be added here; it belongs in claude-orchestrator.
+// A command is exempt only when every `&&` / `||` / `;` / `|` segment is light
+// (or shell glue), so `rm -rf x && cargo nextest run` is still cross-checked.
 const LIGHT = [
-  /(^|\/|\s)ruff (check|format)/, // linters
-  /^npm run format:check/, // prettier --check
+  /^(\S*\/)?ruff (check|format)\b/, // linters
+  /^uv run --no-sync ruff (check|format)\b/,
+  /^npm run format:check\b/, // prettier --check
   /^uv venv /, // creates an empty venv
   /^git submodule update /, // fetches a submodule checkout
   /^(rm|cp|find) /, // cache and build-dir housekeeping
-  /^xcodegen generate/, // project generation, no build
+  /^xcodegen generate\b/, // project generation, no build
   /^shellcheck /, // lints a few scripts
-  /^(env -u \w+ )?python3 scripts\/test_/, // small script self-checks
-  /^\.\/scripts\/bootstrap-/, // writes an xcconfig
+  /^(env -u \w+ )?python3 scripts\/test_\w+\.py$/, // small script self-checks
+  /^\.\/scripts\/bootstrap-[\w-]+\.sh$/, // writes an xcconfig
   /^go generate /, // regenerates embedded trees
-  /^status="\$\(git status /, // embed-tree sync check
   // code-audit-pipeline's shell self-tests of its queries and extractors: small
   // fixtures, but outside the matcher's `scripts/test*.sh` pattern.
   /^pipeline\/(queries\/)?_tests\/test_\w+\.sh$/,
-  /^cd extractors\/swift \|\| exit 1; for t in tests\/\*\.sh;/,
 ];
+// Whole-command exemptions for multi-statement shell that segment splitting cannot parse.
+const LIGHT_WHOLE = [
+  /^status="\$\(git status [^;&|]*\)"; if \[ -n "\$status" \]; then echo [^;]*; echo "\$status" >&2; exit 1; fi$/, // embed-tree sync check
+  /^cd extractors\/swift \|\| exit 1; for t in tests\/\*\.sh; do echo "--- \$t"; "\$t" >\/dev\/null \|\| exit 1; done$/,
+];
+const GLUE = /^(true|exit \d+|sleep \d+|\{|\{ sleep \d+|\}|)$/;
+const segments = (cmd) => cmd.split(/&&|\|\||[;|\n]/).map((x) => x.trim());
+export const isLight = (cmd) =>
+  LIGHT_WHOLE.some((re) => re.test(cmd)) ||
+  segments(cmd).every((seg) => GLUE.test(seg) || LIGHT.some((re) => re.test(seg.replace(/^\{ /, ''))));
+
+test('a compound command is exempt only when every segment is light', () => {
+  for (const cmd of [
+    'rm -rf x && cargo nextest run',
+    'uv run --no-sync ruff check . && bundle exec rspec',
+    'ruff check . ; swift test',
+    'cp a b || true; npm test',
+  ]) assert.equal(isLight(cmd), false, cmd);
+  for (const cmd of ['rm -rf x && cp a b', 'ruff check . && cp a b || true', 'rm -rf DerivedData || { sleep 5; rm -rf DerivedData; }']) {
+    assert.equal(isLight(cmd), true, cmd);
+  }
+});
 
 test("claude-orchestrator's heavy-command matcher matches every heavy command in repo-ci-profiles.json", async () => {
   const co = process.env.CO_HOME || '/Users/me/Developer/claude-orchestrator';
@@ -77,7 +101,7 @@ test("claude-orchestrator's heavy-command matcher matches every heavy command in
   const missed = [];
   for (const [repo, { commands = [] }] of Object.entries(profiles)) {
     for (const cmd of commands) {
-      if (!LIGHT.some((re) => re.test(cmd)) && !isHeavyCommand(cmd)) missed.push(`${repo}: ${cmd}`);
+      if (!isLight(cmd) && !isHeavyCommand(cmd)) missed.push(`${repo}: ${cmd}`);
     }
   }
   assert.deepEqual(missed, []);
