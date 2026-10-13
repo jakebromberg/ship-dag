@@ -5,12 +5,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { engineFixture, stamped } from './lib/engine-fixture.mjs';
 import { logPathForRef, owningReport, digestPathForRef, diagnose, MAX_REASON_CHARS } from './diagnose-failure.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 
 const REF = 'daisysguide/backend#620';
+const CLI = fileURLToPath(new URL('./diagnose-failure.mjs', import.meta.url));
 
 const fixtures = [];
 test.after(() => fixtures.forEach((fx) => fx.cleanup()));
@@ -282,4 +285,27 @@ test('diagnose: given the retry dir, an owner in the base dir is read from the b
   assert.equal(out.source, 'digest');
   assert.equal(out.digest, digestPathForRef(d['sd-20261001-000000'], REF));
   assert.equal(out.failureReason, 'rate-limited');
+});
+
+const ownerCases = [
+  ['a ref re-run with ran: true', { a: { startedAt: W1, rows: [row()] }, b: { startedAt: W2, rows: [row({ ran: true })] } }, 'b'],
+  ['a later report that only carries the row over', { a: { startedAt: W1, rows: [row({ prNumber: 9 })] }, b: { startedAt: W2, rows: [row({ ran: false, prNumber: 9 })] } }, 'a'],
+  ['a later ran: false row with a new PR', { a: { startedAt: W1, rows: [row({ prNumber: 9 })] }, b: { startedAt: W2, rows: [row({ ran: false, prNumber: 10 })] } }, 'b'],
+  ['a later ran: false row with a changed status', { a: { startedAt: W1, rows: [row()] }, b: { startedAt: W2, rows: [row({ status: 'pending', ran: false })] } }, 'b'],
+];
+
+for (const [name, reports, id] of ownerCases) {
+  test(`--owner: prints ${id} for ${name}, with no logs dir to read`, () => {
+    const dir = waves(reports);
+    const run = spawnSync(process.execPath, [CLI, REF, '--owner', '--state-dir', dir], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, `${id}\n`);
+  });
+}
+
+test('--owner: exits 3 with the no-row message when no report lists the ref', () => {
+  const dir = waves({ a: { startedAt: W1, rows: [row({ ref: 'o/r#2' })] } });
+  const run = spawnSync(process.execPath, [CLI, REF, '--owner', '--state-dir', dir], { encoding: 'utf8' });
+  assert.equal(run.status, 3);
+  assert.match(run.stderr, /no row for daisysguide\/backend#620 in any report/);
 });

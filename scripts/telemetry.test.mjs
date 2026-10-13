@@ -1595,10 +1595,11 @@ describe('SKILL.md telemetry wiring', () => {
     assert.ok(skill.includes('meta: { trigger: "{TRIGGER}", reportId: "{REPORT_ID}" }'));
   });
 
-  test('names the {REPORT_ID} stamp by the row\'s ran fact, and step 5\'s resource resume beside point E', () => {
+  test('names the {REPORT_ID} stamp by the --owner command, and step 5\'s resource resume beside point E', () => {
     const policy = readFileSync(fileURLToPath(new URL('../references/escalation-policy.md', import.meta.url)), 'utf8');
     for (const [name, text] of [['SKILL.md', skill], ['escalation-policy.md', policy]]) {
-      assert.ok(text.includes('newest report whose row for the ref is not `ran: false`'), `${name}: ran: false exclusion`);
+      assert.match(text, /diagnose-failure\.mjs[^\n]*? --owner/, `${name}: --owner command`);
+      assert.ok(!text.includes('newest report whose row for the ref'), `${name}: no restated carry-over rule`);
       assert.ok(text.includes('step 5\'s `resource` resume in place'), `${name}: resource route`);
     }
   });
