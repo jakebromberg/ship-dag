@@ -1,6 +1,6 @@
 # Field report — the catalog edit/delete parity run
 
-> **Status (2026-10-12):** the P0 finding below, where the review gate scored unknown finding categories as nits, has since been fixed. It was filed as #25, #26, and #27, and PRs #40, #43, and #44 closed them. The report's other findings were filed as #28–#39, which are all still open.
+> **Status (2026-10-12):** the P0 finding below, where the review gate scored unknown finding categories as nits, has since been fixed. It was filed as #25, #26, and #27, and PRs #40, #43, and #44 closed them. The fix took a different shape from the proposals below: the category enum gained `convention` and `contract` rather than `test-quality`, the default `--block-on` became `correctness,security,convention,contract`, and a per-finding `blocking` field replaced the proposed `severity`; see `references/review-schema.md`. The report's other findings were filed as #28–#39, which are all still open.
 
 A second production run, and a much larger one: a 13-issue DAG plus epics across four repositories (an Express/Drizzle backend, a Next.js frontend, an OpenAPI contract package, and a Markdown wiki), driven over multiple sessions to 7 merged PRs in the final wave alone. Where the [first field report](./field-report.md) was mostly about the harness's own plumbing, this one is about the **gate**, and about the several ways the loop's assumptions about its environment turned out to be wrong.
 
