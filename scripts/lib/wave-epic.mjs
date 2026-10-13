@@ -25,6 +25,7 @@
 // `runGh` is injected, as in plan-waves.mjs, so tests drive a fake `gh`.
 
 import { listSubIssues, hasWaveLabel, subIssueRepo, WAVE_LABEL } from './sub-issues.mjs';
+import { parseRef, formatRef, refKey, sameRepo } from './ref.mjs';
 
 const WAVE_TITLE = / — wave (\d+)$/;
 
@@ -33,29 +34,30 @@ export class WaveEpicRefusal extends Error {}
 
 /** `owner/repo#N`, `#N` or `N` → `owner/repo#N`, a bare number qualified to `repo`. */
 export function qualifyRef(ref, repo) {
-  const m = String(ref).trim().match(/^(?:([\w.-]+\/[\w.-]+))?#?(\d+)$/);
-  if (!m) throw new WaveEpicRefusal(`not an issue ref: ${JSON.stringify(ref)}`);
-  return `${m[1] || repo}#${m[2]}`;
+  const text = String(ref).trim();
+  const full = parseRef(text);
+  if (full) return formatRef(full.repo, full.number);
+  const bare = /^#?(\d+)$/.exec(text);
+  if (!bare) throw new WaveEpicRefusal(`not an issue ref: ${JSON.stringify(ref)}`);
+  return formatRef(repo, Number(bare[1]));
 }
 
 // GitHub repo names are case-insensitive, and `--repo` is used as typed, so
-// refs are compared by this key and displayed as given.
-const keyOf = (ref) => ref.toLowerCase();
-const sameRepo = (a, b) => a.toLowerCase() === b.toLowerCase();
-const refOfNode = (node, repo) => `${subIssueRepo(node, repo)}#${node.number}`;
-const shortRef = (ref, repo) => (keyOf(ref).startsWith(keyOf(`${repo}#`)) ? ref.slice(ref.lastIndexOf('#')) : ref);
+// refs are compared by `refKey` and displayed as given.
+const refOfNode = (node, repo) => formatRef(subIssueRepo(node, repo), node.number);
+const shortRef = (ref, repo) => { const p = parseRef(ref); return p && sameRepo(p.repo, repo) ? `#${p.number}` : ref; };
 const waveNumberOf = (title) => { const m = String(title || '').match(WAVE_TITLE); return m ? Number(m[1]) : null; };
 
 /**
  * What a new wave sub-epic looks like, before any GitHub write. Pure.
  *
  * @param {{repo:string, epic:number, epicTitle:string, wave:number, refs:string[], movable:Set<string>}} input
- *   `refs` are qualified; `movable` holds the `keyOf` of every ref that may move.
+ *   `refs` are qualified; `movable` holds the `refKey` of every ref that may move.
  * @returns {{title:string, move:string[], listed:string[], body:string}}
  */
 export function planWaveEpic({ repo, epic, epicTitle, wave, refs, movable }) {
-  const move = refs.filter((r) => movable.has(keyOf(r)));
-  const listed = refs.filter((r) => !movable.has(keyOf(r)));
+  const move = refs.filter((r) => movable.has(refKey(r)));
+  const listed = refs.filter((r) => !movable.has(refKey(r)));
   const lines = [
     `Wave ${wave} of #${epic}, filed by ship-dag. It closes when the wave's merge queue finishes; `
       + `any issue that did not merge goes back to #${epic}.`,
@@ -104,7 +106,7 @@ export function openWaveEpic({ repo, epic, refs: rawRefs }, runGh, warn = (m) =>
   // Every issue this wave may move, keyed for lookup, with the REST id the move needs.
   const movable = new Map();
   const addMovable = (node) => {
-    if (sameRepo(subIssueRepo(node, repo), repo)) movable.set(keyOf(refOfNode(node, repo)), node.databaseId);
+    if (sameRepo(subIssueRepo(node, repo), repo)) movable.set(refKey(refOfNode(node, repo)), node.databaseId);
   };
   subs.filter((s) => !hasWaveLabel(s)).forEach(addMovable);
   for (const w of openWaves.filter((x) => x !== empty)) listSubIssues({ number: w.number, repo }, runGh).forEach(addMovable);
@@ -148,7 +150,7 @@ export function openWaveEpic({ repo, epic, refs: rawRefs }, runGh, warn = (m) =>
   const moved = [];
   const listed = [...plan.listed];
   for (const ref of plan.move) {
-    const err = attach(repo, number, movable.get(keyOf(ref)), runGh);
+    const err = attach(repo, number, movable.get(refKey(ref)), runGh);
     if (err) {
       warn(`warning: could not move ${ref} under wave sub-epic #${number} (${err}); it keeps its parent`);
       listed.push(ref);
@@ -180,7 +182,7 @@ const WAVE_VIEW_QUERY =
  * @returns {{closed:boolean, returned:string[], stuck:string[], noop:boolean}}
  */
 export function closeWaveEpic({ repo, epic, waveEpic, outcomes = {} }, runGh) {
-  const known = new Map(Object.entries(outcomes).map(([r, o]) => [keyOf(qualifyRef(r, repo)), o || {}]));
+  const known = new Map(Object.entries(outcomes).map(([r, o]) => [refKey(qualifyRef(r, repo)), o || {}]));
   const [owner, name] = repo.split('/');
   const resp = JSON.parse(runGh(['api', 'graphql', '-f', `query=${WAVE_VIEW_QUERY}`,
     '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${waveEpic}`]));
@@ -206,7 +208,7 @@ export function closeWaveEpic({ repo, epic, waveEpic, outcomes = {} }, runGh) {
     const label = { returned: `returned to #${epic}`, stuck: 'stuck (return failed)' };
     const rows = kids.map((k) => {
       const ref = refOfNode(k, repo);
-      const o = known.get(keyOf(ref)) || {};
+      const o = known.get(refKey(ref)) || {};
       return `| ${shortRef(ref, repo)} | ${label[fate.get(ref)] || 'closed'} | ${o.pr ? `#${o.pr}` : '—'} | ${o.failureReason || o.finalState || ''} |`;
     });
     const text = ['Wave closed by ship-dag.', '', '| Issue | State | PR | Note |', '|---|---|---|---|', ...rows,
