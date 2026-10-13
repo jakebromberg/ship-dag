@@ -180,8 +180,14 @@ test('exit 75 when no slot frees within the wait cap', real, async () => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal(run(['true'], dir, dir, 1).status, 75);
   } finally {
+    // Wait for the killed holder to exit: it may still be removing its lease file, and deleting the
+    // directory under it fails with ENOTEMPTY (#202).
+    const exited = holder.exitCode !== null || holder.signalCode !== null
+      ? Promise.resolve()
+      : new Promise((resolve) => holder.once('exit', resolve));
     holder.kill();
-    rmSync(dir, { recursive: true, force: true });
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))]);
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
