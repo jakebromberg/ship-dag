@@ -74,7 +74,9 @@ export function readExitCode(metaPath) {
  *
  * `reportId` (the stem of the report the rows came from) is stamped into each digest, so a reader
  * can assign the digest to its wave without trusting the file's mtime, which a copied state dir loses.
- * A later wave overwrites a ref's digest, so the stamp names the latest wave only.
+ * A later wave overwrites a ref's digest, so the stamp names the latest wave only, except for a row that
+ * launched no session (`ran: false`): it is carried over or failed before launch, so its transcript is
+ * unchanged and an existing digest is kept, still stamped with the report that wrote it.
  *
  * Best-effort per row: one row's unreadable transcript or metadata leaves that
  * field null rather than aborting the pass over the others.
@@ -91,10 +93,11 @@ export async function writeFailureDigests({ configDir, report, reportId }) {
   const written = [];
   for (const row of rows) {
     const stem = artifactStem(row.ref);
+    const digestPath = path.join(digestDir, `issue-${stem}.json`);
+    if (row.ran === false && fs.existsSync(digestPath)) continue;
     const { terminal, rateLimited } = await scanTranscript(path.join(configDir, 'logs', `issue-${stem}.log`));
     const exitCode = readExitCode(path.join(configDir, 'metadata', `issue-${stem}.json`));
     const diagnosis = { ...buildDiagnosis({ row, terminal, rateLimited, exitCode }), ...(reportId && { reportId }) };
-    const digestPath = path.join(digestDir, `issue-${stem}.json`);
     fs.writeFileSync(digestPath, `${JSON.stringify(diagnosis, null, 2)}\n`);
     written.push(digestPath);
   }

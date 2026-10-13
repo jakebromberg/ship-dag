@@ -12,10 +12,13 @@
 // logs stay valid) or "retro" (one run-scoped record per step-6.5 pass):
 //   issue: { kind, ts, runId, reportId, repo, issue, complexity, complexitySource, triageStatus,
 //            assignment, path, implStatus, ciStatus, reviewVerdict, failureReason, findings[],
-//            bounces, hitl:{pointA,pointB}, finalState, pr, tokens, cost? }
+//            bounces, hitl:{pointA,pointB}, finalState, pr, tokens, ran?, cost? }
 // reportId (ingest-wave only) is the stem of the report a record was derived from: two PR-less
 // failures (implStatus "error", the rows a retry re-runs) are one event only if their reportIds
 // match, while any other record a later report re-lists unchanged stays one; hand-written records have none.
+// ran (ingest-wave only, from a report row that carries it) is whether the engine launched a session for the row:
+// once either record carries it, records of different reports are two events, since a row a later report only
+// carries over derives none; a record from before ran, and a hand-written one, have none.
 // complexitySource is "entry" (the wave's routing named the complexity) or "default" (it did
 // not, and `complexity` is the "normal" ingest-wave assumed); absent on older records.
 //   retro: { kind, ts, runId, wave, mergedPrs[], proposedRefactors, approvedRefactors,
@@ -139,6 +142,8 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   if (rec.complexitySource != null && !COMPLEXITY_SOURCES.has(rec.complexitySource)) throw new Error(`bad complexitySource: ${rec.complexitySource}`);
   // reportId decides whether two PR-less failures are one event, so only a report stem is let in.
   if (rec.reportId != null && (typeof rec.reportId !== 'string' || !rec.reportId)) throw new Error(`bad reportId: ${JSON.stringify(rec.reportId)}`);
+  // ran (the report row's own fact, on a derived record) separates one report's event from the earlier one it re-lists.
+  if (rec.ran != null && typeof rec.ran !== 'boolean') throw new Error(`bad ran: ${JSON.stringify(rec.ran)}`);
   if (!PATHS.has(rec.path)) throw new Error(`bad path: ${rec.path}`);
   if (!FINAL_STATES.has(rec.finalState)) throw new Error(`bad finalState: ${rec.finalState}`);
   const implStatus = rec.implStatus ?? null;
@@ -445,7 +450,8 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   const inodes = new Set();
   const family = [stateDir, ...siblings]
     .filter((d) => { const { dev, ino } = statSync(d); const key = `${dev}:${ino}`; return !inodes.has(key) && Boolean(inodes.add(key)); });
-  const { inWave, digests } = waveWindow(stateDir, own, family.flatMap((d) => (d === stateDir ? reports : readWaveReports(d, { warn: () => {} }))), warn);
+  const familyReports = family.flatMap((d) => (d === stateDir ? reports : readWaveReports(d, { warn: () => {} })));
+  const { inWave, digests } = waveWindow(stateDir, own, familyReports, warn);
 
   const rounds = {};
   for (const ref of refs) {
@@ -465,7 +471,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     // A sidecar entry carries its wave's tuningVersion; a wave without one ran before the sidecar
     // did, and epic #64 reads a missing version as 0, never as today's.
     ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, {
-      existing, warn, tuningVersion: 0, reportId: basename(file, '.json'),
+      existing, warn, tuningVersion: 0, reportId: basename(file, '.json'), earlier: earlierReports(familyReports, startedAt),
       // The engine (resolveRepoSettings) runs a repo's own postSessionCheck, else the config's top-level one, else none.
       noCheckRepos: [...new Set((config?.issues ?? []).map((i) => i.repo))].filter((repo) => !(config.repos?.[repo]?.postSessionCheck ?? config.postSessionCheck)),
     }));
@@ -483,16 +489,17 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     if (err instanceof WaveRefusal) throw new IngestError(3, `${file}: ${err.message}`);
     throw err;
   }
-  // A row with no record, or a skipped one (implStatus null: it never reached implement), leaves its
-  // sessions for the ref's next record; a session an earlier record of the run family lists, in the
+  // A row with no record, a skipped one (implStatus null: it never reached implement) or one that launched no session
+  // (`ran` false) leaves its sessions for the ref's next record, and a row that lists `sessionIds` takes only those; a session an earlier record of the run family lists, in the
   // log or earlier in this wave (a point-E row derives a death and an outcome), is not counted again.
   const taken = [];
   for (const rec of records) {
-    if (rec.implStatus === null) continue;
+    if (rec.implStatus === null || rec.ran === false) continue;
     const counted = [...existing, ...taken].filter((e) => sameRepo(e.repo, rec.repo) && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
     // The engine named the log from the row's ref as written, so find that row, as written, rather than rebuild it.
     const ref = refs.find((r) => { const p = parseRef(r); return p?.repo === rec.repo && p.number === rec.issue; });
-    const implement = implementCost(logPathForRef(stateDir, ref), counted, warn);
+    const { sessionIds } = report.issues.find((r) => r.ref === ref);
+    const implement = implementCost(logPathForRef(stateDir, ref), counted, warn, sessionIds);
     if (implement) { rec.cost = { implement }; taken.push(rec); }
   }
   let appended = 0;
@@ -501,6 +508,9 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   }
   return { records, appended };
 }
+
+/** The parsed reports of `familyReports` (`readWaveReports`' reads) that started before `startedAt`: what `carriedOver` compares a row to. */
+const earlierReports = (familyReports, startedAt) => familyReports.filter((r) => r.report && Number.isFinite(r.startedAt) && r.startedAt < startedAt).map((r) => r.report);
 
 /**
  * The window of the wave report `own` (in `stateDir`, among `familyReports`, the run family's reports as
@@ -514,7 +524,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
  * the ref, because that report's ingest never reads the ref's rounds.
  * A digest or review round belongs to this wave when it was written after this report started and
  * before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
- * and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
+ * and re-reviews it. A later row that carries `ran` says so itself; without it, one that lists the ref with a different PR re-ran it. A report that only carries the row over with the same PR (a --retry-failed
  * run of other rows) re-runs nothing, so later rounds still review this row's PR. A later report
  * refused for a malformed row still started when it says, so it still ends the window.
  * @returns {{inWave: (ref: string, mtimeMs: number, reportId: unknown, path: string) => boolean, digests: Record<string, object>}}
@@ -523,7 +533,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
  */
 function waveWindow(stateDir, { report, startedAt, id }, familyReports, warn) {
   const others = familyReports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
-  const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
+  const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && (typeof r.ran === 'boolean' ? r.ran : !(isPr(row.prNumber) && r.prNumber === row.prNumber)));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
   const listed = new Map(familyReports.map((r) => [r.id, new Set((r.report?.issues ?? []).map((row) => row?.ref))]));
   const inWave = (ref, mtimeMs, reportId, path) => {
@@ -578,7 +588,8 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
       // Quiet: a digest outside the window, or unreadable, is ingest's to warn about.
       const { digests } = waveWindow(dir, read, reads.flat(), () => {});
       const terminal = read.report.issues.filter((r) => TERMINAL.has(r?.status));
-      const uncovered = terminal.filter((r) => !rowCovered(r, read, logged, runId, digests[r.ref]));
+      const earlier = earlierReports(reads.flat(), read.startedAt);
+      const uncovered = terminal.filter((r) => !rowCovered(r, read, logged, runId, digests[r.ref], earlier));
       out.terminalRows += terminal.length;
       out.prRows.total += terminal.filter((r) => isPr(r.prNumber)).length;
       out.prRows.uncovered += uncovered.filter((r) => isPr(r.prNumber)).length;

@@ -52,3 +52,11 @@ test('engineFixture throws when a sidecar entry could not be written, rather tha
   // A report key that climbs out of state/reports makes the sidecar path a directory before the sidecar is appended.
   assert.throws(() => engineFixture({ [RUN]: { reports: { '../../ship-dag-wave.jsonl/x.json': {} }, sidecar: [sidecarEntry()] } }), /appendWave did not write/);
 });
+
+test('stateRow: ran and sessionIds are options, and a row without them is a pre-change row', () => {
+  const plain = stateRow(REF);
+  assert.deepEqual(['ran' in plain, 'sessionIds' in plain], [false, false]);
+  const launched = stateRow(REF, { ran: true, sessionIds: ['a', 'b'] });
+  assert.deepEqual([launched.ran, launched.sessionIds], [true, ['a', 'b']]);
+  assert.equal(stateRow(REF, { ran: false }).ran, false);
+});
