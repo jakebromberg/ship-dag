@@ -380,6 +380,7 @@ test('run-id subcommand: echoes SHIP_DAG_RUN_ID when set, else mints (with --lab
 
 const REF = 'WXYC/dj-site#1';
 const REF2 = 'WXYC/dj-site#2';
+const STEM = 'WXYC%2Fdj-site%231'; // artifactStem(REF)
 const T2 = '2026-10-08T21:00:00.000Z';
 
 /**
@@ -657,14 +658,23 @@ for (const [what, body, at, want] of [
   }));
 }
 
-// A copied or restored reviews/ dir loses mtimes, so a round stamped with its report's id is assigned by the id alone.
-for (const [what, meta, at, want] of [
-  ['stamped with this report, mtime outside the wave', { reportId: 'w1' }, '2026-10-08T18:00:00.000Z', true],
-  ['stamped with another report, mtime inside the wave', { reportId: 'w2' }, '2026-10-08T19:30:00.000Z', false],
-  ['unstamped, mtime inside the wave', {}, '2026-10-08T19:30:00.000Z', true],
-  ['unstamped, mtime outside the wave', {}, '2026-10-08T18:00:00.000Z', false],
+// A stamped round belongs to the wave its id names, whatever its mtime: a late round (a resume, or a point-E
+// continuation reviewed after a later wave re-ran the ref) and one in a copied reviews/ dir alike. A stamp that is not a
+// string, or names no report of the run family (a typo, an unsubstituted placeholder, a filename), is windowed by mtime.
+// w2 re-ran the ref with another PR, so w1's mtime window ends at T1 and w2's starts there.
+for (const [what, meta, at, inW1, inW2] of [
+  ['stamped with w1, mtime before both waves', { reportId: 'w1' }, '2026-10-08T18:00:00.000Z', true, false],
+  ['stamped with w1, mtime after w1 ended (a late round)', { reportId: 'w1' }, '2026-10-08T20:30:00.000Z', true, false],
+  ['stamped with w2, mtime inside w1', { reportId: 'w2' }, '2026-10-08T19:30:00.000Z', false, true],
+  ['unstamped, mtime inside w1', {}, '2026-10-08T19:30:00.000Z', true, false],
+  ['unstamped, mtime inside w2', {}, '2026-10-08T20:30:00.000Z', false, true],
+  ['unstamped, mtime before both waves', {}, '2026-10-08T18:00:00.000Z', false, false],
+  ['stamped null, mtime inside w1', { reportId: null }, '2026-10-08T19:30:00.000Z', true, false],
+  ['stamped with a number, mtime inside w1', { reportId: 1 }, '2026-10-08T19:30:00.000Z', true, false],
+  ['stamped with an unsubstituted placeholder, mtime inside w1', { reportId: '{REPORT_ID}' }, '2026-10-08T19:30:00.000Z', true, false],
+  ['stamped with a filename, mtime inside w2', { reportId: 'w2.json' }, '2026-10-08T20:30:00.000Z', false, true],
 ]) {
-  test(`ingest-wave: a review round ${what} is ${want ? '' : 'not '}this wave's`, () => withStateDir({
+  test(`ingest-wave: a review round ${what} is ${inW1 ? 'w1' : inW2 ? 'w2' : 'neither wave'}'s`, () => withStateDir({
     reports: {
       'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
       'w2.json': stateReport([stateRow(REF, { prNumber: 12 })], { startedAt: T1, finishedAt: T2 }),
@@ -672,7 +682,25 @@ for (const [what, meta, at, want] of [
     sidecar: [sidecarEntry()],
   }, (dir) => {
     putReview(dir, REF, '', JSON.stringify({ issue: 1, meta, findings: [] }), at);
-    assert.equal(ingest(dir).records[0].reviewPath !== null, want);
+    assert.deepEqual(['w1.json', 'w2.json'].map((w) => ingestFile(reportPath(dir, w)).records[0].reviewPath !== null), [inW1, inW2]);
+  }));
+}
+
+// A stamp that names no report of the run family warns and falls back to mtime, rather than dropping the round from every wave.
+for (const [what, ids, warned] of [
+  ['both rounds stamped with the unsubstituted placeholder', ['{REPORT_ID}', '{REPORT_ID}'], ['', '.r2']],
+  ['round 2 stamped with a mistyped id', ['w1', 'wl'], ['.r2']],
+]) {
+  test(`ingest-wave: ${what} still counts both rounds, and warns for each unknown id`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF)]) },
+    sidecar: [sidecarEntry()],
+  }, (dir) => {
+    putReview(dir, REF, '', JSON.stringify({ issue: 1, meta: { trigger: 'initial', reportId: ids[0] }, findings: [{ ...blocker, blocking: true }] }), '2026-10-08T19:10:00.000Z');
+    putReview(dir, REF, '.r2', JSON.stringify({ issue: 1, meta: { trigger: 'review-loop', reportId: ids[1] }, findings: [] }), '2026-10-08T19:20:00.000Z');
+    const warnings = [];
+    const [rec] = ingest(dir, {}, { warn: (m) => warnings.push(m) }).records;
+    assert.deepEqual([rec.finalState, rec.reviewVerdict, rec.bounces, basename(rec.reviewPath)], ['merged', 'blocking', 1, `${STEM}.r2.json`]);
+    assert.deepEqual(warnings.filter((m) => m.includes('names no report')).map((m) => basename(m.split(':')[0])), warned.map((t) => `${STEM}${t}.json`));
   }));
 }
 
