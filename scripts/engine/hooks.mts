@@ -24,35 +24,20 @@ import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { coDistPath } from "../lib/co-home.mjs";
 import { reposDirFromEnv } from "./repos-dir.mjs";
-import { repoDirName, worktreeRootFor } from "./repo-layout.mjs";
+import { layoutWorktreeHooks } from "./repo-layout.mjs";
 
 const coreUrl = pathToFileURL(coDistPath(process.env, "index.js")).href;
 const { deriveWorktreeHooks } = await import(coreUrl);
 
-// reposDir = SHIP_DAG_REPOS_DIR ?? SHIP_DAG_PROJECT_ROOT ?? engine default. Passing
-// undefined when neither is set preserves deriveWorktreeHooks's own default, so a
-// run that sets no env var is unchanged. Per-repo base branch is still origin/HEAD.
-const reposDir = reposDirFromEnv();
-
-// repoOf / worktreeRoot break the two layout assumptions the engine's defaults
+// reposDir = SHIP_DAG_REPOS_DIR ?? SHIP_DAG_PROJECT_ROOT ?? the engine's own
+// default (~/Developer/WXYC). Per-repo base branch is still origin/HEAD.
+//
+// layoutWorktreeHooks breaks the two layout assumptions the engine's defaults
 // make — that a checkout is named after its repo, and that worktrees can live in
-// an adjacent `<repoDir>-worktrees/`. Both hold for the ordinary org layout and
-// neither holds for a repo vendored as a submodule under a package directory
-// (see repo-layout.mjs). Resolution is per-repo and falls back to the engine's
-// own behaviour, so repos in the ordinary layout are unaffected.
-const worktree = deriveWorktreeHooks({
-  reposDir,
-  repoOf: (issue: { repo?: string; number?: number; slug?: string }) => {
-    if (!issue.repo) {
-      throw new Error(
-        `deriveWorktreeHooks: issue #${issue.number} (${issue.slug}) has no repo; ` +
-          `a cross-repo worktree needs a repo. Set "repo" on the issue.`,
-      );
-    }
-    return repoDirName(issue.repo, { reposDir });
-  },
-  worktreeRoot: (repoDir: string) => worktreeRootFor(repoDir),
-});
+// an adjacent `<repoDir>-worktrees/` — for a repo vendored as a submodule under a
+// package directory, and resolves each repo's layout once for the whole run (see
+// repo-layout.mjs). Repos in the ordinary layout resolve exactly as before.
+const worktree = layoutWorktreeHooks(deriveWorktreeHooks, { reposDir: reposDirFromEnv() });
 
 const hooksOverride = {
   ...worktree,

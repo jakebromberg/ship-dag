@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { repoDirName, worktreeRootFor } from './repo-layout.mjs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { importCo } from '../lib/co-home.mjs';
+import { layoutWorktreeHooks, repoDirName, worktreeModeOf, worktreeRootFor } from './repo-layout.mjs';
 
 // Two assumptions deriveWorktreeHooks makes by default, both false for a repo
 // vendored as a git submodule under a package directory:
@@ -33,6 +38,7 @@ test('falls back to the directory whose origin remote matches the repo', () => {
       listDirs: () => ['Analytics', 'Wallpaper', 'Core'],
       remoteOf: (dir) =>
         dir === '/repos/Wallpaper' ? 'git@github.com:WXYC/wallpaper-ios.git' : 'git@github.com:WXYC/other.git',
+      isLinkedWorktree: () => false,
     }),
     'Wallpaper',
   );
@@ -45,6 +51,7 @@ test('matches a remote regardless of scheme, case, or .git suffix', () => {
       existsSync: (p) => p === '/repos/Wallpaper',
       listDirs: () => ['Wallpaper'],
       remoteOf: () => 'https://github.com/wxyc/WALLPAPER-IOS',
+      isLinkedWorktree: () => false,
     }),
     'Wallpaper',
   );
@@ -72,8 +79,24 @@ test('a directory that is not a git checkout is skipped rather than throwing', (
         if (dir === '/repos/build-output') throw new Error('not a git repository');
         return 'git@github.com:WXYC/wallpaper-ios.git';
       },
+      isLinkedWorktree: () => false,
     }),
     'Wallpaper',
+  );
+});
+
+test('skips linked worktrees that share the origin, and picks deterministically', () => {
+  // Sibling worktrees of the checkout live in the same dir and carry its origin;
+  // returning one of them would make every later hook treat it as the checkout.
+  assert.equal(
+    repoDirName('WXYC/wallpaper-ios', {
+      reposDir: '/repos',
+      existsSync: () => false,
+      listDirs: () => ['Wallpaper--add-blur', 'Wallpaper', '2-fix-colors', 'Clone'],
+      remoteOf: () => 'git@github.com:WXYC/wallpaper-ios.git',
+      isLinkedWorktree: (dir) => dir !== '/repos/Wallpaper' && dir !== '/repos/Clone',
+    }),
+    'Clone',
   );
 });
 
@@ -139,4 +162,101 @@ test('an unreadable Package.swift falls back to the adjacent root rather than th
     }),
     '/repos/Wallpaper-worktrees',
   );
+});
+
+for (const [name, manifest] of [
+  ['a line comment', '// .package(name: "Analytics", path: "../Analytics")\n.package(url: "https://x.example/y.git", from: "1.0.0")'],
+  ['a block comment', '/* .package(path: "../Analytics"), */ .package(url: "https://x.example/y.git", from: "1.0.0")'],
+  ['a target path', '.target(name: "Thing", path: "../Sources/Thing")'],
+]) {
+  test(`a ../ path in ${name} is not a sibling dependency`, () => {
+    assert.equal(
+      worktreeRootFor('/repos/Wallpaper', { existsSync: () => true, readFileSync: () => manifest, env: {} }),
+      '/repos/Wallpaper-worktrees',
+    );
+  });
+}
+
+test('a path dependency after a URL on the same line is still detected', () => {
+  assert.equal(
+    worktreeRootFor('/repos/Wallpaper', {
+      existsSync: () => true,
+      readFileSync: () => '.package(url: "https://x.example/y.git", from: "1.0.0"), .package(path: "../Core")',
+      env: {},
+    }),
+    '/repos',
+  );
+});
+
+test('an unknown SHIP_DAG_WORKTREE_MODE warns once and falls back to detection', () => {
+  const warnings = [];
+  const warn = (m) => warnings.push(m);
+  assert.equal(worktreeModeOf({ SHIP_DAG_WORKTREE_MODE: 'siblings' }, warn), '');
+  assert.equal(worktreeModeOf({ SHIP_DAG_WORKTREE_MODE: 'siblings' }, warn), '');
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /SHIP_DAG_WORKTREE_MODE.*siblings/);
+  assert.equal(worktreeModeOf({ SHIP_DAG_WORKTREE_MODE: ' Sibling ' }, warn), 'sibling');
+  assert.equal(worktreeModeOf({}, warn), '');
+  assert.equal(warnings.length, 1);
+});
+
+// ---------------------------------------- layoutWorktreeHooks, against real git
+
+const here = dirname(fileURLToPath(import.meta.url));
+const git = (cwd, ...args) =>
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+/** A bare `remotes/<owner>/<repo>.git` with one commit holding `files`, cloned to `dest`. */
+function cloneFixture(root, repo, dest, files) {
+  const bare = join(root, 'remotes', `${repo}.git`);
+  const seed = join(root, 'seed', repo);
+  mkdirSync(seed, { recursive: true });
+  git(seed, 'init', '-q', '-b', 'main');
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(seed, name), body);
+  git(seed, 'add', '.');
+  git(seed, 'commit', '-q', '-m', 'seed');
+  mkdirSync(dirname(bare), { recursive: true });
+  git(root, 'clone', '-q', '--bare', seed, bare);
+  git(root, 'clone', '-q', bare, dest);
+}
+
+test('sibling worktrees are namespaced, never shadow the checkout, and keep their path for the run', async () => {
+  const { deriveWorktreeHooks } = await importCo(process.env, ['deriveWorktreeHooks']);
+  const root = join(here, '..', '..', '.test-scratch', `repo-layout-${process.pid}`);
+  rmSync(root, { recursive: true, force: true });
+  try {
+    const shared = join(root, 'Shared');
+    mkdirSync(shared, { recursive: true });
+    cloneFixture(root, 'WXYC/Analytics', join(shared, 'Analytics'), { 'README': 'a' });
+    cloneFixture(root, 'WXYC/wallpaper-ios', join(shared, 'Wallpaper'), {
+      'Package.swift': '.package(name: "Analytics", path: "../Analytics")',
+    });
+    const issue = (slug) => ({ number: 1, slug, repo: 'WXYC/wallpaper-ios' });
+    const hooks = layoutWorktreeHooks(deriveWorktreeHooks, { reposDir: shared, env: {} });
+
+    for (const slug of ['2-fix-colors', 'analytics']) await hooks.setUpWorktree(issue(slug));
+    const wt = hooks.getWorktreePath(issue('analytics'));
+    assert.equal(wt, join(shared, 'Wallpaper--analytics'));
+    assert.equal(git(wt, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'orchestrator/analytics');
+    assert.equal(git(join(shared, 'Analytics'), 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main');
+
+    // A fresh resolver (a later process) still finds the checkout, not a worktree.
+    assert.equal(repoDirName('WXYC/wallpaper-ios', { reposDir: shared }), 'Wallpaper');
+
+    // The layout is fixed for the run even when the checkout's manifest changes.
+    writeFileSync(join(shared, 'Wallpaper', 'Package.swift'), '// no path deps');
+    assert.equal(hooks.getWorktreePath(issue('analytics')), wt);
+    await hooks.removeWorktree(issue('analytics'));
+    assert.equal(existsSync(wt), false);
+
+    // A path that exists but is not this repo's worktree is refused, not reused.
+    mkdirSync(join(shared, 'Wallpaper--stale'));
+    await assert.rejects(hooks.setUpWorktree(issue('stale')), /not a worktree of/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
