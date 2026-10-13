@@ -1122,10 +1122,51 @@ test('ingest-wave: a backfilled earlier report takes only its own sessions, not 
   assert.deepEqual(readRecords(log).map((r) => r.cost?.implement?.sessionIds), [['a'], ['b']]);
 }));
 
+// A row a later report only carries over (ran false, listed unchanged by an earlier report) derives no record: whichever order the two
+// are ingested in, each report's own event is recorded once, under its own reportId, with its sessions' cost.
+for (const [name, rows, want] of [
+  ['a merge', [{ ran: true, sessionIds: ['a'] }, { ran: false }], { mid: ['w1', 'w2'], first: [], second: [['w1', ['a']]] }],
+  ['a skipped row', [{ status: 'skipped', prUrl: null, prNumber: null, ran: false }, { status: 'skipped', prUrl: null, prNumber: null, ran: false }], { mid: ['w1', 'w2'], first: [], second: [['w1', undefined]] }],
+]) {
+  test(`ingest-wave: ${name} the later report carries over derives nothing, so ingesting it first leaves the earlier report whole`, () => {
+    const fx = engineFixture({ [RUN]: {
+      reports: { 'w1.json': stateReport([stateRow(REF, rows[0])]), 'w2.json': stateReport([stateRow(REF, rows[1])], { startedAt: T1, finishedAt: T2 }) },
+      sidecar: [sidecarEntry()], files: logOf(REF, sess('a', 1)),
+    } });
+    const log = tmpLog();
+    const [w1, w2] = ['w1.json', 'w2.json'].map((n) => reportPath(fx.dirs[RUN], n));
+    const audited = () => audit(RUN, { baseDir: fx.base, records: readRecords(log), warn: () => {} }).notIngested.map((w) => w.id);
+    const logged = () => readRecords(log).map((r) => [r.reportId, r.cost?.implement?.sessionIds]);
+    try {
+      assert.equal(ingestWave(w2, {}, { path: log, warn: () => {} }).appended, 0);
+      assert.deepEqual([logged(), audited()], [want.first.length ? want.first : [], want.mid]);
+      assert.equal(ingestWave(w1, {}, { path: log, warn: () => {} }).appended, 1);
+      assert.deepEqual([logged(), audited()], [want.second, []]);
+      assert.equal(ingestWave(w2, {}, { path: log, warn: () => {} }).appended, 0);
+    } finally {
+      fx.cleanup();
+      rmSync(log, { force: true });
+    }
+  });
+}
+
+// The earlier reports `carriedOver` compares a row to are the family's that started before this one: not this report, not a later one.
+test('ingest-wave: a ran-false row is its own event when no earlier report lists it: the report is not its own earlier, and a later one is no earlier', () => withStateDir({
+  reports: {
+    'w1.json': stateReport([stateRow(REF, { status: 'skipped', prUrl: null, prNumber: null, ran: false })], { startedAt: T0, finishedAt: T1 }),
+    'w2.json': stateReport([stateRow(REF, { status: 'skipped', prUrl: null, prNumber: null, ran: false })], { startedAt: T1, finishedAt: T2 }),
+  },
+  sidecar: [sidecarEntry()],
+}, (dir) => {
+  assert.deepEqual(ingestFile(reportPath(dir, 'w1.json')).records.map((r) => [r.reportId, r.ran]), [['w1', false]]);
+}));
+
 // A later row that carries ran says whether it re-ran the ref: ran false does not end this wave's window, ran true does.
 for (const [name, later, want] of [
   ['ran false, with a new PR', stateRow(REF, { prUrl: 'https://x/12', prNumber: 12, ran: false }), ['blocking', 0, '.r3.json']],
   ['ran true, with the same PR', stateRow(REF, { ran: true }), ['clean', 0, '.r2.json']],
+  ['ran "false" (no boolean, so no fact), with a new PR', stateRow(REF, { prUrl: 'https://x/12', prNumber: 12, ran: 'false' }), ['clean', 0, '.r2.json']],
+  ['ran "true" (no boolean, so no fact), with the same PR', stateRow(REF, { ran: 'true' }), ['blocking', 0, '.r3.json']],
 ]) {
   test(`ingest-wave: a later report's row with ${name} ${want[2] === '.r2.json' ? 'ends' : 'does not end'} this wave's window`, () => withStateDir({
     reports: {

@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import readline from 'node:readline';
 import path from 'node:path';
-import { artifactStem, createTranscriptScan, buildDiagnosis } from '../lib/failure.mjs';
+import { artifactStem, createTranscriptScan, buildDiagnosis, ranOf } from '../lib/failure.mjs';
 
 /**
  * Stream one transcript, returning the terminal record and whether the session
@@ -94,7 +94,7 @@ export async function writeFailureDigests({ configDir, report, reportId }) {
   for (const row of rows) {
     const stem = artifactStem(row.ref);
     const digestPath = path.join(digestDir, `issue-${stem}.json`);
-    if (row.ran === false && fs.existsSync(digestPath)) continue;
+    if (ranOf(row) === false && fs.existsSync(digestPath)) continue;
     const { terminal, rateLimited } = await scanTranscript(path.join(configDir, 'logs', `issue-${stem}.log`));
     const exitCode = readExitCode(path.join(configDir, 'metadata', `issue-${stem}.json`));
     const diagnosis = { ...buildDiagnosis({ row, terminal, rateLimited, exitCode }), ...(reportId && { reportId }) };
