@@ -6,10 +6,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { composeCiLine, cliArgs, commandsFor, runCiProfile, spawnFailure } from './run-ci-profile.mjs';
+import { composeCiLine, cliArgs, commandsFor, exitCodeFor, runCiProfile, setupProblem, spawnFailure } from './run-ci-profile.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROFILES = JSON.parse(readFileSync(join(HERE, '..', 'references', 'repo-ci-profiles.json'), 'utf8')).profiles;
@@ -57,12 +57,61 @@ test('spawnFailure: names a spawn error or a signal, and is silent on a normal e
   assert.match(spawnFailure({ status: null, signal: 'SIGKILL' }), /killed by SIGKILL/);
 });
 
-test('a missing worktree surfaces as a spawn error', () => {
+test('exitCodeFor: the child status passes through, a signal is 128 + its number, a spawn error is 64', () => {
+  assert.equal(exitCodeFor({ status: 0 }), 0);
+  assert.equal(exitCodeFor({ status: 7 }), 7);
+  assert.equal(exitCodeFor({ status: null, signal: 'SIGKILL' }), 128 + osConstants.signals.SIGKILL);
+  assert.equal(exitCodeFor({ status: null, signal: 'SIGTERM' }), 128 + osConstants.signals.SIGTERM);
+  assert.equal(exitCodeFor({ status: null, error: new Error('x') }), 64);
+});
+
+// Setup failures exit 64 with one stderr line naming the actual problem, never 1 (a failing suite).
+const fakeCoHome = (dir, { withCli }) => {
+  const home = join(dir, withCli ? 'co-home' : 'co-home-unbuilt');
+  if (withCli) { mkdirSync(join(home, 'dist', 'src'), { recursive: true }); writeFileSync(join(home, 'dist', 'src', 'cli-lease.js'), ''); }
+  return home;
+};
+const SCRIPT = join(HERE, 'run-ci-profile.mjs');
+const cli = (args, env = {}) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
+
+test('setupProblem: names a missing worktree, a missing lease CLI, or a repo with no profile; null when all present', () => {
   const dir = scratch();
   try {
-    const r = run(['true'], join(dir, 'no-such-worktree'), dir);
-    assert.equal(r.status, null);
-    assert.match(spawnFailure(r), /could not start.*ENOENT/);
+    const profiles = join(dir, 'profiles.json');
+    writeFileSync(profiles, JSON.stringify({ profiles: { 'o/r': { commands: ['true'] } } }));
+    const ok = { repo: 'o/r', worktree: dir, profilesPath: profiles, coHome: fakeCoHome(dir, { withCli: true }) };
+    assert.equal(setupProblem(ok), null);
+    assert.match(setupProblem({ ...ok, worktree: join(dir, 'gone') }), /worktree.*gone.*does not exist/);
+    assert.match(setupProblem({ ...ok, coHome: fakeCoHome(dir, { withCli: false }) }), /cli-lease\.js.*build or point CO_HOME at a claude-orchestrator checkout/);
+    assert.match(setupProblem({ ...ok, repo: 'o/none' }), /no CI profile for o\/none/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the script exits 64 with a named stderr line on each setup failure, and on a usage error', () => {
+  const dir = scratch();
+  try {
+    const coHome = fakeCoHome(dir, { withCli: true });
+    const missingWt = cli(['--repo', 'jakebromberg/code-audit-pipeline', '--worktree', join(dir, 'gone')], { CO_HOME: coHome });
+    assert.equal(missingWt.status, 64);
+    assert.match(missingWt.stderr, /worktree.*gone/);
+    const noCli = cli(['--repo', 'jakebromberg/code-audit-pipeline', '--worktree', dir], { CO_HOME: fakeCoHome(dir, { withCli: false }) });
+    assert.equal(noCli.status, 64);
+    assert.match(noCli.stderr, /cli-lease\.js.*CO_HOME/);
+    const noProfile = cli(['--repo', 'o/none', '--worktree', dir], { CO_HOME: coHome });
+    assert.equal(noProfile.status, 64);
+    assert.match(noProfile.stderr, /no CI profile for o\/none/);
+    assert.equal(cli([]).status, 64);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a lease CLI killed by a signal exits 128 + the signal number and names the signal', () => {
+  const dir = scratch();
+  try {
+    const coHome = fakeCoHome(dir, { withCli: true });
+    writeFileSync(join(coHome, 'dist', 'src', 'cli-lease.js'), "process.kill(process.pid, 'SIGTERM');\n");
+    const r = cli(['--repo', 'jakebromberg/code-audit-pipeline', '--worktree', dir], { CO_HOME: coHome });
+    assert.equal(r.status, 128 + osConstants.signals.SIGTERM);
+    assert.match(r.stderr, /killed by SIGTERM/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -124,4 +173,10 @@ test('SKILL.md step 6.2 re-runs local CI through run-ci-profile.mjs', () => {
   const skill = readFileSync(join(HERE, '..', 'SKILL.md'), 'utf8');
   const step = skill.split('\n').find((l) => l.startsWith('2. **If the rebase moved the base**'));
   assert.match(step, /scripts\/run-ci-profile\.mjs/);
+  // The 15-minute bound routes through the preflight with the summed wait, so critical pressure reaches point F.
+  assert.match(step, /15 minutes[^.]*resource-preflight\.mjs" check[^.]*--waited-minutes/);
+  // The exit-code contract: 75 rerun, 64 setup error (never a test failure, never a rerun), anything else the suite's own result.
+  assert.match(step, /75[^.]*rerun/);
+  assert.match(step, /64[^.]*setup error[^.]*never a test failure[^.]*never a rerun/);
+  assert.match(step, /anything else[^.]*suite/);
 });
