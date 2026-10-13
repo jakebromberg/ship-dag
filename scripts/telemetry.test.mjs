@@ -53,6 +53,13 @@ test('normalizeRecord: accepts reportId and complexitySource, and a record witho
   for (const reportId of [7, '', ['w1']]) assert.throws(() => normalizeRecord(base({ reportId }), FIXED), /bad reportId/);
 });
 
+test('normalizeRecord: accepts a boolean ran, and a record without one stays valid', () => {
+  for (const ran of [true, false]) assert.equal(normalizeRecord(base({ ran }), FIXED).ran, ran);
+  assert.equal('ran' in normalizeRecord(base(), FIXED), false);
+  // ran separates one report's own event from the earlier one it re-lists, so only a boolean is let in.
+  for (const ran of ['false', 0, [], {}]) assert.throws(() => normalizeRecord(base({ ran }), FIXED), /bad ran/);
+});
+
 test('normalizeRecord: point-A defer record — nullable downstream fields default to null', () => {
   const r = normalizeRecord(
     { runId: 'r', repo: 'WXYC/x', issue: 2, complexity: 'complex', triageStatus: 'needs-decision', path: 'inline', finalState: 'blocked-hitl', hitl: { pointA: true } },
@@ -1091,6 +1098,49 @@ test('ingest-wave: a point-E row derives two records, and its sessions are count
   assert.deepEqual(records.flatMap((r) => r.cost?.implement?.sessionIds ?? []), ['a', 'b']);
 }));
 
+test('ingest-wave: a row that lists sessionIds takes only those sessions, and a ran-false row takes none', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF, { ran: true, sessionIds: ['b', 'c'] }), stateRow(REF2, { status: 'failed', prUrl: null, prNumber: null, ran: false })]) },
+  sidecar: [sidecarEntry([REF, REF2])],
+  files: { ...logOf(REF, sess('a', 1), sess('b', 0.5), sess('c', 2)), ...logOf(REF2, sess('d', 9)) },
+}, (dir) => {
+  const { records } = ingest(dir);
+  assert.deepEqual(records.map((r) => r.cost), [{ implement: costOf(['b', 'c'], 2.5) }, undefined]);
+}));
+
+test('ingest-wave: a backfilled earlier report takes only its own sessions, not the later re-run\'s', () => withStateDir({
+  reports: {
+    'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, ran: true, sessionIds: ['a'] })]),
+    'w2.json': stateReport([stateRow(REF, { ran: true, sessionIds: ['b'] })], { startedAt: T1, finishedAt: T2 }),
+  },
+  sidecar: [sidecarEntry()],
+  files: logOf(REF, sess('a', 1), sess('b', 0.5)),
+}, (dir) => {
+  const log = join(dir, 'runs.jsonl');
+  assert.equal(ingestWave(reportPath(dir, 'w1.json'), {}, { path: log, warn: () => {} }).appended, 1);
+  assert.deepEqual(readRecords(log).map((r) => r.cost?.implement?.sessionIds), [['a']]);
+  ingestWave(reportPath(dir, 'w2.json'), {}, { path: log, warn: () => {} });
+  assert.deepEqual(readRecords(log).map((r) => r.cost?.implement?.sessionIds), [['a'], ['b']]);
+}));
+
+// A later row that carries ran says whether it re-ran the ref: ran false does not end this wave's window, ran true does.
+for (const [name, later, want] of [
+  ['ran false, with a new PR', stateRow(REF, { prUrl: 'https://x/12', prNumber: 12, ran: false }), ['blocking', 0, '.r3.json']],
+  ['ran true, with the same PR', stateRow(REF, { ran: true }), ['clean', 0, '.r2.json']],
+]) {
+  test(`ingest-wave: a later report's row with ${name} ${want[2] === '.r2.json' ? 'ends' : 'does not end'} this wave's window`, () => withStateDir({
+    reports: {
+      'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
+      'w2.json': stateReport([later], { startedAt: T1, finishedAt: T2 }),
+    },
+    sidecar: [sidecarEntry()],
+  }, (dir) => {
+    putReview(dir, REF, '.r2', [], '2026-10-08T19:30:00.000Z');
+    putReview(dir, REF, '.r3', [blocker], '2026-10-08T20:30:00.000Z');
+    const [rec] = ingest(dir, { [REF]: { finalState: 'blocked-hitl' } }).records;
+    assert.deepEqual([rec.reviewVerdict, rec.bounces, rec.reviewPath.slice(-want[2].length)], want);
+  }));
+}
+
 // escalation-policy.md point E, item 5: a continuation that finishes after its report's 6.3 already ran (point E's grill
 // chose defer or stop, or the session resumed) is recorded by adding its outcome to that report's outcomes file and
 // re-running 6.3. The first ingest recorded the death alone; the re-run must dedupe that death and append the continuation.
@@ -1179,6 +1229,20 @@ describe('audit', () => {
     const out = audit_(base, [logged()]);
     assert.deepEqual(out.notIngested.map((w) => [w.dir, w.id, w.refs, w.source]), [[dirs[`${RUN_A}-b`], 'w2', [REF2], 'sidecar']]);
     assert.deepEqual([out.unreadable, out.neverReported], [[], { sidecar: [], configs: [] }]);
+  }));
+
+  test('a ran-false row a later report carries over is covered by the first report\'s record; its repeated worktree failure is not', () => family({
+    [RUN_A]: {
+      reports: {
+        'w1.json': stateReport([stateRow(REF, { status: 'skipped', prNumber: null, ran: false }), stateRow(REF2, { status: 'failed', prNumber: null, ran: false })]),
+        'w2.json': stateReport([stateRow(REF, { status: 'skipped', prNumber: null, ran: false }), stateRow(REF2, { status: 'failed', prNumber: null, ran: false })], { startedAt: '2026-10-08T20:00:00.000Z' }),
+      },
+      sidecar: [sidecarEntry([REF, REF2])],
+    },
+  }, (base) => {
+    const first = [logged({ reportId: 'w1', ran: false, implStatus: null, finalState: 'deferred' }), logged({ issue: 2, reportId: 'w1', ran: false, implStatus: 'error', finalState: 'error' })];
+    assert.deepEqual(audit_(base, first).notIngested.map((w) => [w.id, w.refs]), [['w2', [REF2]]]);
+    assert.deepEqual(audit_(base, [...first, logged({ issue: 2, reportId: 'w2', ran: false, implStatus: 'error', finalState: 'error' })]).notIngested, []);
   }));
 
   test('one dir holding two waves names only the one not ingested, and a report with no terminal row is not named', () => family({

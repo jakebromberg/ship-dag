@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deriveWaveRecords, rowCovered, WaveRefusal } from './wave-records.mjs';
+import { deriveWaveRecords, rowCovered, sameEvent, WaveRefusal } from './wave-records.mjs';
 import { reviewRoundFiles } from './review-rounds.mjs';
 import { appendWave, findWaveContext } from './wave-sidecar.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
@@ -595,6 +595,67 @@ for (const [name, kind, go] of [
       const derived = deriveWaveRecords(wave, { runId: RUN, issues: [] }, digests, {}, outcomes, { existing: records, reportId: 'w2', warn: () => {} }).records;
       assert.equal(rowCovered(row, report, records, RUN, digests[row.ref]), covered);
       assert.equal(derived.length === 0, accepted ? !covered : covered);
+    });
+  }
+}
+
+// A report row that carries `ran` (the engine launched an implement session for it) separates the folds sameEvent
+// keeps for rows that do not: each scenario ingests the first report's row, then asks what the second report's row
+// adds and whether audit's rowCovered agrees, before and after that ingest.
+{
+  const RUN = 'sd-1';
+  const R2 = { id: 'w2', startedAt: Date.parse('2026-10-08T19:00:00Z') };
+  const at = (rows) => ({ configName: 'ship-dag-sd-1', finishedAt: '2026-10-08T19:30:00Z', issues: rows });
+  const setUp = { ref: 'a/b#1', status: 'failed', prNumber: null };
+  const merged = { ref: 'a/b#1', status: 'succeeded', prNumber: 11 };
+  const skipped = { ref: 'a/b#1', status: 'skipped', prNumber: null };
+  const ranTrue = (r) => ({ ...r, ran: true });
+  const ranFalse = (r) => ({ ...r, ran: false });
+  for (const [name, first, second, added] of [
+    ['a first report\'s worktree-setup failure (ran false, no earlier event) is recorded', null, ranFalse(setUp), 1],
+    ['a retry report\'s repeated worktree-setup failure is a second event', ranFalse(setUp), ranFalse(setUp), 1],
+    ['a merge carried over by a ran-false row is one event', ranTrue(merged), ranFalse(merged), 0],
+    ['a merge of the same PR re-run (ran true) is a second event', ranTrue(merged), ranTrue(merged), 1],
+    ['a merge of another PR (ran true) is a second event', ranTrue(merged), ranTrue({ ...merged, prNumber: 12 }), 1],
+    ['a skipped row carried over by a ran-false row is one event', ranFalse(skipped), ranFalse(skipped), 0],
+    ['a skipped row the first report launched nothing for, then skipped again after a launch (ran true)', ranFalse(skipped), ranTrue(skipped), 1],
+    ['a ran-false row whose status differs from the first report\'s is its own event', ranTrue(setUp), ranFalse(skipped), 1],
+    ['a ran-false row whose PR differs from the first report\'s is its own event', ranTrue(merged), ranFalse({ ...merged, prNumber: 12 }), 1],
+    ['a row with no ran, carried over, is one event as before', merged, merged, 0],
+  ]) {
+    test(`ran: ${name}`, () => {
+      const earlier = first ? [at([first])] : [];
+      const logged = first ? deriveWaveRecords(earlier[0], { runId: RUN, issues: [] }, {}, {}, {}, { reportId: 'w1', warn: () => {} }).records : [];
+      const { records } = deriveWaveRecords(at([second]), { runId: RUN, issues: [] }, {}, {}, {}, { existing: logged, reportId: 'w2', earlier, warn: () => {} });
+      assert.equal(records.length, added);
+      assert.equal(rowCovered(second, R2, logged, RUN, undefined, earlier), added === 0);
+      assert.equal(rowCovered(second, R2, [...logged, ...records], RUN, undefined, earlier), true);
+    });
+  }
+
+  test('ran: a derived record carries the row\'s ran, and a carried-over row\'s record is derived without it', () => {
+    const [own] = deriveWaveRecords(at([ranFalse(setUp)]), { runId: RUN, issues: [] }, {}, {}, {}, { reportId: 'w1', warn: () => {} }).records;
+    assert.deepEqual([own.ran, own.reportId], [false, 'w1']);
+    const [legacy] = deriveWaveRecords(at([merged]), { runId: RUN, issues: [] }, {}, {}, {}, { reportId: 'w1', warn: () => {} }).records;
+    assert.equal('ran' in legacy, false);
+    const [carried] = deriveWaveRecords(at([ranFalse(skipped)]), { runId: RUN, issues: [] }, {}, {}, {}, { reportId: 'w2', earlier: [at([skipped])], warn: () => {} }).records;
+    assert.deepEqual([carried.ran, carried.reportId], [false, null]);
+  });
+
+  // The record-level identity: two derived records of different reports are two events once either carries ran.
+  const rec = (over = {}) => ({ runId: RUN, repo: 'a/b', issue: 1, implStatus: 'pushed', finalState: 'merged', pr: 11, ...over });
+  for (const [name, a, b, same] of [
+    ['two merges of different PRs, the later ran', rec({ reportId: 'w1' }), rec({ pr: 12, reportId: 'w2', ran: true }), false],
+    ['two merges of different PRs, neither with ran', rec({ reportId: 'w1' }), rec({ pr: 12, reportId: 'w2' }), true],
+    ['pushed and error, the later ran', rec({ reportId: 'w1' }), rec({ implStatus: 'error', reportId: 'w2', ran: true }), false],
+    ['pushed and error, neither with ran', rec({ reportId: 'w1' }), rec({ implStatus: 'error', reportId: 'w2' }), true],
+    ['the same report\'s two records', rec({ reportId: 'w1', ran: true }), rec({ reportId: 'w1', ran: true }), true],
+    ['a hand-written record and one with ran', rec(), rec({ reportId: 'w2', ran: true }), true],
+    ['a carried-over record (no reportId) and the earlier one', rec({ reportId: 'w1', ran: true }), rec({ ran: false }), true],
+  ]) {
+    test(`ran: sameEvent: ${name} ${same ? 'are' : 'are not'} one event`, () => {
+      assert.equal(sameEvent(a, b), same);
+      assert.equal(sameEvent(b, a), same);
     });
   }
 }

@@ -55,10 +55,11 @@ function eachLine(path, onLine) {
  * @param {string} path
  * @param {string[]} [counted]
  * @param {(m: string) => void} [warn]
+ * @param {string[]} [only] when an array, the only session ids counted (the ids a report row lists as its own)
  * @returns {{costUsd:number, input:number, output:number, cacheRead:number, cacheCreate:number, sessions:number, sessionIds:string[]}|null}
  *   null when the log is missing, unreadable (warned) or holds no uncounted session
  */
-export function implementCost(path, counted = [], warn = () => {}) {
+export function implementCost(path, counted = [], warn = () => {}, only = undefined) {
   const sessions = new Map();
   /** `v` when `ok`; undefined when absent, or (warned) when it is not a valid `field`. */
   const valid = (v, ok, field) => {
@@ -71,7 +72,7 @@ export function implementCost(path, counted = [], warn = () => {}) {
       warn(`${path}: a session result has no session_id, so it cannot be counted once; not summed`);
       return;
     }
-    if (counted.includes(id)) return;
+    if (counted.includes(id) || (Array.isArray(only) && !only.includes(id))) return;
     if (!sessions.has(id)) sessions.set(id, { at: -Infinity, costUsd: undefined, input: 0, output: 0, cacheRead: 0, cacheCreate: 0 });
     const s = sessions.get(id);
     for (const [k, field] of Object.entries(USAGE)) s[k] += valid(rec.usage?.[field], isCount, `usage.${field}`) ?? 0;
