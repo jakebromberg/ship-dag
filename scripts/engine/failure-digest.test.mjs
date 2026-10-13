@@ -113,16 +113,36 @@ test('writeFailureDigests: no non-succeeded rows writes nothing and creates no d
   assert.deepEqual(await writeFailureDigests({ configDir: dir, report: {} }), []);
 });
 
-test('writeFailureDigests: a ran-false row whose digest exists keeps it, stamp and all', async () => {
+const writeReport = (dir, id, issues) => {
+  mkdirSync(join(dir, 'reports'), { recursive: true });
+  writeFileSync(join(dir, 'reports', `${id}.json`), JSON.stringify({ startedAt: '2026-10-01T00:00:00Z', issues }));
+};
+
+test('writeFailureDigests: a row an earlier report carried over keeps its digest, stamp and all', async () => {
   const dir = configDir({ log: result({ result: 'first' }) });
-  const [p] = await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, status: 'skipped', ran: false }] }, reportId: 'w1' });
+  const row = { ref: REF, status: 'skipped', ran: false };
+  const [p] = await writeFailureDigests({ configDir: dir, report: { issues: [row] }, reportId: 'w1' });
+  writeReport(dir, 'w1', [row]);
+  writeReport(dir, 'w2', [row]);
   writeFileSync(join(dir, 'logs', `issue-${STEM}.log`), result({ result: 'later' }));
-  assert.deepEqual(await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, status: 'skipped', ran: false }] }, reportId: 'w2' }), []);
+  assert.deepEqual(await writeFailureDigests({ configDir: dir, report: { issues: [row] }, reportId: 'w2' }), []);
   assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w1');
-  // A row that launched a session, or carries no ran (or one that is no boolean), is digested afresh.
-  for (const ran of [true, undefined, 'false', 0, null]) {
+});
+
+test('writeFailureDigests: any other row is digested afresh, a ran:false one its own event included', async () => {
+  const dir = configDir({ log: result({ result: 'first' }) });
+  const p = join(dir, 'failure-digest', `issue-${STEM}.json`);
+  mkdirSync(join(dir, 'failure-digest'));
+  writeReport(dir, 'w1', [{ ref: REF, status: 'failed', ran: false }, { ref: REF, status: 'failed', ran: false, prNumber: 7 }]);
+  const cases = [
+    { status: 'failed', ran: true }, { status: 'failed' }, { status: 'failed', ran: 'false' }, { status: 'failed', ran: 0 }, { status: 'failed', ran: null },
+    { status: 'failed', ran: false }, // a worktree-setup failure repeated on retry
+    { status: 'pending', ran: false }, // a launch stop no earlier report lists
+    { status: 'failed', ran: false, prNumber: 8 }, // same ref and status, another PR
+  ];
+  for (const row of cases) {
     writeFileSync(p, JSON.stringify({ reportId: 'w1' }));
-    await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, status: 'failed', ran }] }, reportId: 'w2' });
-    assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w2');
+    await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, ...row }] }, reportId: 'w2' });
+    assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w2', JSON.stringify(row));
   }
 });

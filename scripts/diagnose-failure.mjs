@@ -36,7 +36,7 @@
 // Exit 2 on a malformed invocation, 3 when the state dir has no such row.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
 import { artifactStem, createTranscriptScan, buildDiagnosis, MAX_REASON_CHARS } from './lib/failure.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
@@ -109,10 +109,13 @@ export function newestReportFile(stateDir) {
 export function diagnose(stateDir, ref) {
   // The engine already answered this if it digested the run — prefer that over
   // re-reading a transcript that may be megabytes.
+  // Only a digest of the newest report (or an unstamped, legacy one) is read: an earlier wave's would route the row by its old stop.
   const digestFile = digestPathForRef(stateDir, ref);
   if (existsSync(digestFile)) {
     try {
-      return { ...JSON.parse(readFileSync(digestFile, 'utf8')), source: 'digest', digest: digestFile };
+      const digest = JSON.parse(readFileSync(digestFile, 'utf8'));
+      const newest = newestReportFile(stateDir);
+      if (!digest.reportId || (newest && digest.reportId === basename(newest, '.json'))) return { ...digest, source: 'digest', digest: digestFile };
     } catch {
       // A torn or truncated digest is not worth failing over — recompute below.
     }
@@ -142,7 +145,7 @@ export function diagnose(stateDir, ref) {
 
   return {
     ...buildDiagnosis({ row, terminal, rateLimited }),
-    source: 'computed',
+    source: 'report',
     transcript: transcript === null ? null : transcriptPath,
     report: reportFile,
   };
