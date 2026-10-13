@@ -205,6 +205,20 @@ describe('T-coverage', () => {
     assert.deepEqual([out.state, out.rows.covered, out.rows.total, out.rows.prCovered, out.rows.prTotal], ['holding', 98, 100, 88, 90]);
   });
 
+  test('a record in the same second as since, with milliseconds, is inside the window', () => {
+    const recs = many(3, { runId: 'sd-20261010-000000', ts: '2026-10-10T00:00:00.500Z' });
+    assert.equal(cov(recs, audited(100, 2)).state, 'holding');
+  });
+
+  test('the shipped T-coverage window starts at T6 (#73, PR #159)\'s merge', () => {
+    assert.equal(TABLE.tripwires.find((t) => t.id === 'T-coverage').since, '2026-10-12T23:52:28Z');
+  });
+
+  test('NO_ENGINE_DIR matches only audit\'s refusal, from its start', () => {
+    assert.ok(NO_ENGINE_DIR.test('no dir under /x belongs to run sd-1'));
+    for (const m of ['audit: no dir under /x belongs to run sd-1', 'no dir', 'EACCES: no dir under /x']) assert.ok(!NO_ENGINE_DIR.test(m), m);
+  });
+
   test('a family whose Wilson upper bound is under 95% trips it', () => {
     assert.equal(cov(inWindow, audited(100, 10)).state, 'tripped');
   });

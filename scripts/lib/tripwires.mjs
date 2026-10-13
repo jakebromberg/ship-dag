@@ -119,7 +119,7 @@ const EVALUATORS = {
     const rows = { covered: 0, total: 0, prCovered: 0, prTotal: 0 };
     let skipped = 0;
     const fams = families.map((runId) => {
-      if (!t.since || !ctx.window.some((r) => sameRun(r.runId, runId) && r.ts >= t.since)) return { runId, state: 'insufficient-data', reason: 'before the window' };
+      if (!t.since || !ctx.window.some((r) => sameRun(r.runId, runId) && Date.parse(r.ts) >= Date.parse(t.since))) return { runId, state: 'insufficient-data', reason: 'before the window' };
       let a;
       try { a = ctx.audit(runId); } catch (err) { // no engine dir: neither tripped nor holding; anything else is a real failure
         if (!NO_ENGINE_DIR.test(err?.message)) throw err;
