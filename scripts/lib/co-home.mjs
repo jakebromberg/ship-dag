@@ -8,8 +8,11 @@ const DEFAULT_CO_HOME = '/Users/jake/Developer/claude-orchestrator';
 /** The checkout: `$CO_HOME`, or the default when it is unset or empty. */
 export const coHome = (env = process.env) => env.CO_HOME || DEFAULT_CO_HOME;
 
-/** A path under the checkout's `dist/src`. */
-export const coDistPath = (env, ...segments) => join(coHome(env), 'dist', 'src', ...segments);
+/** A path under an explicit checkout `home`, joined as given (no env fallback). */
+export const coDistPathIn = (home, ...segments) => join(home, 'dist', 'src', ...segments);
+
+/** A path under the located checkout's `dist/src`. */
+export const coDistPath = (env, ...segments) => coDistPathIn(coHome(env), ...segments);
 
 /** Import the checkout's `dist/src/index.js`; throws naming the first of `names` that is not an exported function. */
 export async function importCo(env, names = []) {
