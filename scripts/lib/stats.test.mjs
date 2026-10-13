@@ -107,6 +107,7 @@ test('wilson: empty → the whole interval, zero events keep an upper bound, and
   const all = wilson(10, 10);
   assert.equal(all.hi, 1);
   assert.ok(all.lo < 1 && all.lo > 0.7);
+  assert.equal(wilson(5, 5).hi, 1); // unclamped, k=n at n=5 rounds just above 1
 });
 
 test('wilson: a known interval (7 of 20 at 95%) and a wider z widens it', () => {

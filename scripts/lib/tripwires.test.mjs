@@ -1,7 +1,8 @@
 // Tests for the tripwire evaluator. Run: node --test "scripts/**/*.test.mjs"
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluate, evaluateAll, loadTripwires, STATES, tripwireContext } from './tripwires.mjs';
+import { evaluate, evaluateAll, loadTripwires, NO_ENGINE_DIR, STATES, tripwireContext } from './tripwires.mjs';
+import { wilson } from './stats.mjs';
 
 const TABLE = loadTripwires();
 const NOW = Date.parse('2026-11-01T00:00:00Z');
@@ -61,6 +62,7 @@ const TABLES = {
     ['73 PRs, 10 explore-only: the interval stays above 5%', many(73, (i) => ({ exploreOnlyBlocking: i < 10 ? 1 : 0 })), 'holding'],
     ['only records that carry the field are evaluated', [...many(73, { exploreOnlyBlocking: 0 }), ...many(20)], 'tripped'],
     ['an unmerged record is not a PR', many(73, { exploreOnlyBlocking: 0, finalState: 'error', pr: null }), 'pending-instrumentation'],
+    ['a merged record whose pr parsePr cannot read is not a PR', many(73, { exploreOnlyBlocking: 0, pr: 'n/a' }), 'pending-instrumentation'],
   ],
   'T-scoped': [
     ['no record carries scopedMiss', many(20), 'pending-instrumentation'],
@@ -76,6 +78,8 @@ const TABLES = {
     ['30 in-diff PRs, 30% of findings outside', many(30, { reach: 'in-diff', exploreOutsideDiff: { outside: 3, total: 10 } }), 'tripped'],
     ['30 in-diff PRs, 10% outside', many(30, { reach: 'in-diff', exploreOutsideDiff: { outside: 1, total: 10 } }), 'holding'],
     ['30 in-diff PRs, 22% outside: the interval still reaches 20%', many(30, { reach: 'in-diff', exploreOutsideDiff: { outside: 2, total: 9 } }), 'holding'],
+    ['30 in-diff PRs whose files fetch failed (a null exploreOutsideDiff) are not the sample', many(30, { reach: 'in-diff', exploreOutsideDiff: null }), 'insufficient-data'],
+    ['29 recorded in-diff PRs and 5 null ones: below the minimum sample', [...many(29, { reach: 'in-diff', exploreOutsideDiff: { outside: 3, total: 10 } }), ...many(5, { reach: 'in-diff', exploreOutsideDiff: null })], 'insufficient-data'],
   ],
   'T-fallback': [
     ['29 records', many(29, { path: 'workflow' }), 'insufficient-data'],
@@ -83,6 +87,7 @@ const TABLES = {
     ['30 records, none on the workflow path', many(30), 'holding'],
     ['30 records, half on it', many(30, (i) => ({ path: i % 2 ? 'workflow' : 'engine' })), 'tripped'],
     ['30 records, 4 on it: the interval reaches 10%', many(30, (i) => ({ path: i < 4 ? 'workflow' : 'engine' })), 'holding'],
+    ['30 records on the inline path are not fallback', many(30, { path: 'inline' }), 'holding'],
   ],
 };
 for (const [id, rows] of Object.entries(TABLES)) {
@@ -104,6 +109,26 @@ describe('T-explore-unique details', () => {
   });
 });
 
+describe('thresholds and source paths', () => {
+  // A bound exactly at the threshold does not clear it: [id, records, trips].
+  const atThreshold = [
+    ['T-explore-unique', many(73, { exploreOnlyBlocking: 0 }), { upperBelow: wilson(0, 73).hi }],
+    ['T-fallback', many(30, (i) => ({ path: i < 3 ? 'workflow' : 'engine' })), { lowerAbove: wilson(3, 30).lo }],
+  ];
+  for (const [id, records, trips] of atThreshold) {
+    test(`${id}: a bound equal to the threshold holds`, () => assert.equal(run(id, records, { twOver: { trips } }).state, 'holding'));
+  }
+
+  // The row's `source` names the field, so a nesting under `review` is a data change: [id, source, records].
+  const nested = [
+    ['T-scoped', 'review.scopedMiss', many(10, (i) => ({ review: { scopedMiss: i === 3 ? 1 : 0 } }))],
+    ['T-reach', 'review.exploreOutsideDiff', many(30, { reach: 'in-diff', review: { exploreOutsideDiff: { outside: 3, total: 10 } } })],
+  ];
+  for (const [id, source, records] of nested) {
+    test(`${id} reads its field through the row's source (${source})`, () => assert.equal(run(id, records, { twOver: { source } }).state, 'tripped'));
+  }
+});
+
 describe('T-scoped details', () => {
   test('reports the pairs and the misses', () => {
     const out = run('T-scoped', many(10, (i) => ({ scopedMiss: i < 2 ? 2 : 0 })));
@@ -122,6 +147,8 @@ describe('T-cost', () => {
     ['29 PRs in the previous version', [...v1(5, 29), ...v2(10)], 'insufficient-data'],
     ['no previous version to compare with', v2(10), 'insufficient-data'],
     ['a record without a reportId (hand-written) is not used', [...v1(5, 30, { reportId: undefined }), ...v2(10)], 'insufficient-data'],
+    ['a later version is not a baseline', [...v1(5), ...v2(7), ...v2(1, 30, { tuningVersion: 3 })], 'holding'],
+    ['a mean above 1.5x whose interval still reaches it holds', [...v1(5), ...many(30, (i) => costed(i ? 5 : 95))], 'holding'],
   ];
   for (const [name, records, state] of table) test(name, () => assert.equal(run('T-cost', records).state, state));
 
@@ -148,6 +175,7 @@ describe('T-escapes', () => {
     ['50% against a 10% baseline', escapes({ 2: { prs: 60, escaped: 30, ...strong } }), 'tripped'],
     ['10% against a 10% baseline', escapes({ 2: { prs: 60, escaped: 6 } }), 'holding'],
     ['20%: above the baseline rate but inside its interval', escapes({ 2: { prs: 60, escaped: 12 } }), 'holding'],
+    ['no earlier version has a tally: no baseline to compare with', { byTuningVersion: { 2: { prs: 60, escaped: 30 } } }, 'insufficient-data'],
   ];
   for (const [name, esc, state] of table) test(name, () => assert.equal(run('T-escapes', [], { escapes: esc }).state, state));
 
@@ -192,6 +220,11 @@ describe('T-coverage', () => {
     assert.deepEqual([out.state, out.skipped], ['insufficient-data', 1]);
   });
 
+  test('any other audit failure is thrown, not skipped', () => {
+    assert.throws(() => cov(inWindow, () => { throw new TypeError('x is undefined'); }), /x is undefined/);
+    assert.throws(() => cov(inWindow, () => { throw new Error('EACCES: permission denied'); }), /EACCES/);
+  });
+
   test('a run family from before the window is insufficient-data and is not audited', () => {
     let called = 0;
     const recs = [...inWindow, ...many(2, { runId: 'sd-20260920-100000', ts: '2026-09-20T00:00:00Z' })];
@@ -205,7 +238,7 @@ describe('T-coverage', () => {
   });
 
   test('with no window date set no family is in the window', () => {
-    assert.equal(cov(inWindow, audited(100, 50), {}).state, 'insufficient-data');
+    assert.equal(cov(inWindow, audited(100, 50), { since: null }).state, 'insufficient-data');
   });
 
   test('the cost.implement presence share: pending when no record has it, tripped when it is low, and read alongside the rows', () => {
@@ -222,7 +255,7 @@ describe('T-coverage', () => {
     const late = many(5, { reportId: 'w1', cost: { implement: { costUsd: 1 } } });
     const out = cov([...early, ...late], audited(100, 0));
     assert.deepEqual([out.cost.state, out.cost.n, out.state], ['holding', 5, 'holding']);
-    assert.equal(cov([...early, ...late], audited(100, 0), {}).cost.state, 'insufficient-data');
+    assert.equal(cov([...early, ...late], audited(100, 0), { since: null }).cost.state, 'insufficient-data');
   });
 
   test('records that never reached implement, or have no reportId, are not in the cost share', () => {
