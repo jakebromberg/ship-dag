@@ -102,7 +102,7 @@ for (const [label, trigger, wait, anyway] of [
   ['Engine invocation', /the step-4 preflight reads `critical-hitl`: `critical` after 15 minutes waited/, /the summed-wait counter, to 0/, /an inline `CO_PRESSURE_OVERRIDE=critical-as-warning` prefix plus `--parallel 1`/],
   ['Step 6\\.2 CI re-run', /summed lease waits pass 15 minutes at `critical`, or pass 30 minutes at any pressure/, /the summed lease-wait counter, to 0/, /at non-critical pressure a plain rerun, since the override changes nothing below `critical`/],
   ['Review\\/fix hand-off', /the step 4d\/5 preflight reads `critical-hitl`, or one PR returns `lease-wait` twice in a run/, /the summed-wait counter, to 0, and that PR's return count/, /hands over exactly 1 PR, with no override prefix/],
-  ['Resource-stop route', /a ref stops for resources a second time in a run, whatever the pressure/, /the summed-wait counter, to 0, and that ref's stop count/, /a filtered re-run takes the engine row's override; a continuation agent takes the hand-off row's rule/],
+  ['Resource-stop route', /a ref stops for resources a second time in a run, whatever the pressure/, /the summed-wait counter, to 0, and that ref's stop count, after waiting 10 minutes/, /at `critical` a filtered re-run takes the engine row's override; below `critical` a plain resume or re-run, with no override and no `pressureOverride`/],
 ]) {
   test(`point F's table pins the ${label} row's three cells`, () => {
     const [, t, w, a] = row(label.replaceAll('\\', ''));
@@ -125,6 +125,13 @@ test('the resource route caps a ref at two resource stops in a run, in SKILL.md 
   assert.match(route, /second resource stop in a run[^.]*point F whatever the pressure/);
   const stops = policy.slice(policy.indexOf('## Resource stops')).split(/\n## /)[0];
   assert.match(stops, /second resource stop in a run[^.]*point F whatever the pressure/);
+  // A continuation agent's lease give-up is not an engine row, so the route must count it itself.
+  for (const text of [route, stops]) assert.match(text, /continuation agent[^.]*`orchestrator-stop: lease-wait`[^.]*`notes: "lease-wait"`[^.]*counts as that ref's next resource stop/);
+});
+
+test('trigger 9 and the step 4 hitl bullet name the resource route', () => {
+  assert.match(policy.split('\n').find((l) => l.startsWith('9. ')), /resource route/);
+  assert.match(lines.find((l) => l.startsWith('- `action: "hitl"`') && l.includes('critical-hitl')), /step 5's `resource` route/);
 });
 
 test('step 4c sends a PR-less resource stop to the resource route, not point B', () => {
