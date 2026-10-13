@@ -49,6 +49,11 @@
 //   node telemetry.mjs audit <runId>         # name the waves of a run family (every dir under the engine base dir
 //                                            # that sameRun the id) whose terminal rows have no record in the log,
 //                                            # unreadable reports, and sidecar entries and configs no report matches
+//   node telemetry.mjs tripwires [--escapes <file>] [--now ISO]
+//                                            # evaluate references/tripwires.json against the current tuningVersion's
+//                                            # records: tripped, holding, insufficient-data or pending-instrumentation,
+//                                            # with past-due review dates; T-escapes reads a saved `escapes` run
+//                                            # (--escapes), never GitHub, and T-coverage runs `audit` per run family
 //   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
@@ -69,6 +74,8 @@ import { defaultBaseDir } from './rate-limit-preflight.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
+import { evaluateAll, loadTripwires, tripwireContext } from './lib/tripwires.mjs';
+import { load as loadTuning } from './lib/tuning.mjs';
 
 const COMPLEXITIES = new Set(['mechanical', 'normal', 'complex']);
 const PATHS = new Set(['engine', 'inline', 'workflow']);
@@ -523,7 +530,9 @@ function waveWindow(stateDir, { report, startedAt, path: reportPath }, familyRep
  * reports; a readable one with a terminal row `rowCovered` finds no record for (handed the row's digest as
  * `waveWindow` reads it for ingest) is `notIngested`
  * (`{dir, id, source (where its routing label came from), refs (the uncovered rows')}`; one with no
- * terminal row is not named), and one with an `error` is `unreadable` (`{path, error}`). A sidecar
+ * terminal row is not named), and one with an `error` is `unreadable` (`{path, error}`). `terminalRows`
+ * is the number of terminal rows examined (a row a retry carries over counts once per report that lists it,
+ * as `notIngested` names it) and `prRows` those with a PR, `{total, uncovered}`: the denominators for a coverage share. A sidecar
  * entry or config file (in either of `configDirs`) that no readable report matched is `neverReported`:
  * there is no report to ingest. That is a wave the engine died in before it wrote one, but also a wave
  * still running, an earlier emit of a ref set whose re-emit a report matched, and an `unreadable` report's.
@@ -532,7 +541,7 @@ function waveWindow(stateDir, { report, startedAt, path: reportPath }, familyRep
  * @throws when no dir under `baseDir` belongs to the run family, so a mistyped id does not read as all clear
  */
 export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords(telemetryPath()), warn = (m) => console.error(m) } = {}) {
-  const out = { runId, dirs: runFamilyDirs(runId, baseDir), notIngested: [], unreadable: [], neverReported: { sidecar: [], configs: [] } };
+  const out = { runId, dirs: runFamilyDirs(runId, baseDir), terminalRows: 0, prRows: { total: 0, uncovered: 0 }, notIngested: [], unreadable: [], neverReported: { sidecar: [], configs: [] } };
   if (!out.dirs.length) throw new Error(`no dir under ${baseDir} belongs to run ${runId}`);
   const logged = records.filter((r) => sameRun(r.runId, runId));
   // Quiet: an unreadable report is named in `unreadable`, so it is not warned about as well.
@@ -547,7 +556,12 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
       if (configFile) matched.add(configFile);
       // Quiet: a digest outside the window, or unreadable, is ingest's to warn about.
       const { digests } = waveWindow(dir, read, reads.flat(), () => {});
-      const refs = read.report.issues.filter((r) => TERMINAL.has(r?.status) && !rowCovered(r, read, logged, runId, digests[r.ref])).map((r) => r.ref);
+      const terminal = read.report.issues.filter((r) => TERMINAL.has(r?.status));
+      const uncovered = terminal.filter((r) => !rowCovered(r, read, logged, runId, digests[r.ref]));
+      out.terminalRows += terminal.length;
+      out.prRows.total += terminal.filter((r) => isPr(r.prNumber)).length;
+      out.prRows.uncovered += uncovered.filter((r) => isPr(r.prNumber)).length;
+      const refs = uncovered.map((r) => r.ref);
       if (refs.length) out.notIngested.push({ dir, id: read.id, source, refs });
     }
     for (const e of readSidecar(join(dir, SIDECAR_NAME), { warn })) {
@@ -631,12 +645,35 @@ function main(argv) {
     }
     return;
   }
+  if (cmd === 'tripwires') {
+    let values;
+    try {
+      ({ values } = parseArgs({ args: rest, options: { escapes: { type: 'string' }, now: { type: 'string' } } }));
+      if (values.now !== undefined && Number.isNaN(Date.parse(values.now))) throw new Error('--now requires an ISO timestamp');
+    } catch (err) {
+      process.stderr.write(`tripwires: ${err.message}\nusage: tripwires [--escapes <file>] [--now ISO]\n`);
+      process.exit(2);
+    }
+    try {
+      const records = readRecords(telemetryPath());
+      const escapes = values.escapes === undefined ? undefined : JSON.parse(readFileSync(values.escapes, 'utf8'));
+      const ctx = tripwireContext(records, {
+        version: loadTuning().version, now: values.now === undefined ? Date.now() : Date.parse(values.now), escapes,
+        audit: (runId) => audit(runId, { records, warn: () => {} }),
+      });
+      process.stdout.write(`${JSON.stringify(evaluateAll(loadTripwires(), ctx), null, 2)}\n`);
+    } catch (err) {
+      process.stderr.write(`tripwires: ${err.message}\n`);
+      process.exit(1);
+    }
+    return;
+  }
   if (cmd === 'run-id') {
     const i = rest.indexOf('--label');
     process.stdout.write(`${process.env.SHIP_DAG_RUN_ID || mintRunId({ label: i >= 0 ? rest[i + 1] : undefined })}\n`);
     return;
   }
-  process.stderr.write('usage: telemetry.mjs <append|report|ingest-wave|escapes|audit|run-id> ...\n');
+  process.stderr.write('usage: telemetry.mjs <append|report|ingest-wave|escapes|audit|tripwires|run-id> ...\n');
   process.exit(2);
 }
 

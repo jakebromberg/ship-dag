@@ -1010,6 +1010,28 @@ describe('audit', () => {
     assert.deepEqual(audit_(base, [logged()]).notIngested.map((w) => w.id), ['w2']);
   }));
 
+  test('counts the terminal rows it examined, and those with a PR, beside the uncovered ones: a carried-over row once per report, an interrupted row not at all', () => family({
+    [RUN_A]: {
+      reports: {
+        'w1.json': stateReport([stateRow(REF), stateRow(REF2, { status: 'failed', prNumber: null }), stateRow(REF3, { status: 'interrupted', prNumber: null })]),
+        'w2.json': stateReport([stateRow(REF), stateRow(REF2, { status: 'failed', prNumber: null })], { startedAt: '2026-10-08T20:00:00.000Z' }),
+      },
+      sidecar: [sidecarEntry([REF, REF2, REF3]), sidecarEntry([REF, REF2])],
+    },
+  }, (base) => {
+    const out = audit_(base, [logged()]);
+    assert.equal(out.terminalRows, 4);
+    assert.deepEqual(out.prRows, { total: 2, uncovered: 0 });
+    assert.deepEqual(out.notIngested.map((w) => w.refs), [[REF2], [REF2]]);
+  }));
+
+  test('prRows counts an uncovered row that has a PR', () => family({
+    [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2, { prNumber: 12 })]) }, sidecar: [sidecarEntry([REF, REF2])] },
+  }, (base) => {
+    const out = audit_(base, [logged()]);
+    assert.deepEqual([out.terminalRows, out.prRows], [2, { total: 2, uncovered: 1 }]);
+  }));
+
   test('a --retry-failed report whose re-run failure has no record of its own is named, though its carried-over merge is covered by the first report\'s record', () => family({
     [RUN_A]: {
       reports: {
@@ -1127,6 +1149,50 @@ describe('audit', () => {
     assert.deepEqual([typo.status, typo.stdout], [1, '']);
     assert.match(typo.stderr, /^audit: no dir under .* belongs to run sd-2026100-153059/);
   }));
+});
+
+// tripwires: the CLI over lib/tripwires.mjs (the evaluators have their own tests there). A stub `gh` first on PATH
+// marks any call to GitHub; XDG_STATE_HOME and SHIP_DAG_TELEMETRY keep it off the real state dir.
+describe('tripwires', () => {
+  const cli = (args, fn) => {
+    const fx = engineFixture({});
+    try {
+      const bin = join(fx.base, 'bin');
+      mkdirSync(bin);
+      appendFileSync(join(bin, 'gh'), `#!/bin/sh\ntouch ${join(fx.base, 'gh-called')}\nexit 1\n`);
+      chmodSync(join(bin, 'gh'), 0o755);
+      const path = join(fx.base, 'runs.jsonl');
+      appendRecord({ runId: 'sd-20261020-100000', repo: 'o/r', issue: 1, complexity: 'normal', triageStatus: 'clear', path: 'workflow', finalState: 'merged', tuningVersion: 1, ts: '2026-10-30T00:00:00Z' }, { path });
+      const res = spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'tripwires', ...args(fx.base)],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, XDG_STATE_HOME: join(fx.base, 'xdg'), SHIP_DAG_TELEMETRY: path }, encoding: 'utf8' });
+      fn(res, fx.base);
+    } finally {
+      fx.cleanup();
+    }
+  };
+
+  test('prints every tripwire as JSON, with T-escapes insufficient-data and a hint, and never calls gh', () => cli(() => ['--now', '2026-11-01T00:00:00Z'], (res, base) => {
+    assert.equal(res.status, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.deepEqual(out.map((o) => o.id).slice(0, 2), ['T-explore-unique', 'T-escapes']);
+    assert.equal(out.find((o) => o.id === 'T-fallback').state, 'insufficient-data');
+    assert.match(out.find((o) => o.id === 'T-escapes').hint, /run telemetry\.mjs escapes > <file> and pass --escapes <file>/);
+    assert.equal(existsSync(join(base, 'gh-called')), false);
+  }));
+
+  test('--escapes reads a saved escapes run from a file', () => cli((base) => {
+    appendFileSync(join(base, 'escapes.json'), JSON.stringify({ byTuningVersion: { 1: { prs: 60, escaped: 3 } } }));
+    return ['--escapes', join(base, 'escapes.json')];
+  }, (res) => {
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(JSON.parse(res.stdout).find((o) => o.id === 'T-escapes').hint, /still being collected/);
+  }));
+
+  test('refuses an unreadable --escapes file with exit 1, and a bad --now or an unknown option with exit 2', () => {
+    cli(() => ['--escapes', '/nonexistent/escapes.json'], (res) => assert.deepEqual([res.status, res.stdout, /^tripwires: /.test(res.stderr)], [1, '', true]));
+    cli(() => ['--now', 'soon'], (res) => assert.equal(res.status, 2));
+    cli(() => ['--bogus'], (res) => assert.equal(res.status, 2));
+  });
 });
 
 // The wiring SKILL.md documents for the mechanics above: the headings, audit classes and subcommands it names, and
