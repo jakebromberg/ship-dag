@@ -1,7 +1,7 @@
 // Tests for the shared stats helpers. Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mean, rate, groupBy, percentile, tabulate, bootstrapCI, mcnemar } from './stats.mjs';
+import { mean, rate, groupBy, percentile, tabulate, bootstrapCI, mcnemar, wilson } from './stats.mjs';
 
 const approx = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 
@@ -96,4 +96,22 @@ test('mcnemar: exact tail matches a hand-computed 6-1 split', () => {
   // 2·(C(7,0)+C(7,1))·0.5^7 = 2·8/128 = 0.125
   approx(r.pValue, 0.125);
   assert.equal(r.better, 'a');
+});
+
+test('wilson: empty → the whole interval, zero events keep an upper bound, and the smallest n under 5% is 73', () => {
+  assert.deepEqual(wilson(0, 0), { lo: 0, hi: 1 });
+  const zero = wilson(0, 73);
+  assert.equal(zero.lo, 0);
+  approx(zero.hi, 1.96 ** 2 / (73 + 1.96 ** 2), 1e-12);
+  assert.ok(zero.hi < 0.05 && wilson(0, 72).hi > 0.05);
+  const all = wilson(10, 10);
+  assert.equal(all.hi, 1);
+  assert.ok(all.lo < 1 && all.lo > 0.7);
+});
+
+test('wilson: a known interval (7 of 20 at 95%) and a wider z widens it', () => {
+  const { lo, hi } = wilson(7, 20);
+  approx(lo, 0.1812, 1e-3);
+  approx(hi, 0.5671, 1e-3);
+  assert.ok(wilson(7, 20, 2.576).lo < lo);
 });
