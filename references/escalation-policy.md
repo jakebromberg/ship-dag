@@ -28,7 +28,7 @@ Suggest the user run `/grill-me` themselves if they want the full adversarial tr
 
 ## Point D — the retrospective gate (scheduled, not premise-break)
 
-D has two sources. The retrospective fires from step 6.5 when unretrospected merges reach `--retro-threshold` (and always once at drain). Tripwires fire from step 7, after `tripwires` prints (bullet below). The letters are stable IDs, not loop order — within a wave, the retrospective's D (step 6.5) fires *before* C (step 7). The Retrospective subagent only proposes; every disposition is the human's:
+D has two sources. The retrospective fires from step 6.5 when unretrospected merges reach `--retro-threshold` (and always once at drain). Tripwires fire from step 7, after `tripwires` prints (bullet below). The letters are stable IDs, not loop order — within a wave, the retrospective's D (step 6.5) fires *before* C (step 7), except at drain, where step 7's stop condition runs the final 6.5 pass after it. The Retrospective subagent only proposes; every disposition is the human's:
 
 - **Batch into one grilling.** Refactor proposals via `AskUserQuestion` `multiSelect` (title + summary + evidence PRs per option, ≤4 per question); plan adjustments likewise; open-ended respecs get the inline interview. `obsolete` closures are confirmed individually — never inside a multiSelect batch.
 - **Approved** → ghost-written side effects only: `/file-ticket` tickets (inserted per the run's issue-set form), issue comments/body edits recording the decision and reasoning, native + prose dependency edges. No Claude/AI attribution anywhere, as always.
