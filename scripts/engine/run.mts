@@ -29,11 +29,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { coDistPath } from "../lib/co-home.mjs";
 import { writeFailureDigests } from "./failure-digest.mjs";
 
-const CO_HOME = process.env.CO_HOME || "/Users/jake/Developer/claude-orchestrator";
-const indexUrl = pathToFileURL(path.join(CO_HOME, "dist/src/index.js")).href;
-const loaderUrl = pathToFileURL(path.join(CO_HOME, "dist/src/yaml-loader.js")).href;
+const indexUrl = pathToFileURL(coDistPath(process.env, "index.js")).href;
+const loaderUrl = pathToFileURL(coDistPath(process.env, "yaml-loader.js")).href;
 
 const { createMain } = await import(indexUrl);
 const { loadYamlConfig } = await import(loaderUrl);
