@@ -1299,6 +1299,7 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
   const findPr = stateRow(REF, { prUrl: null, prNumber: null });
   const blocks = (dir) => putReview(dir, REF, '', [blocker], '2026-10-08T19:10:00.000Z');
   const dies = (dir) => putDigest(dir, REF, { failureReason: 'rate-limited' });
+  const deadRow = (failureReason, stopStage) => stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason, stopStage });
   // situation prefix → the report row, what else the wave left on disk, and per cell the [finalState, pr, hitl.pointB,
   // bounces] of each derived record. pointB and bounces come from the situation, not the cell, so a cell that drops
   // its hitl or its bounces fails here. A merge "after a /review-loop fix" bounced: N is 2 in these cells.
@@ -1309,6 +1310,8 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
     ['A PR whose last round blocks and that merged', stateRow(REF), blocks, [[['merged', 11, false, 2]]]],
     ["A find-pr row whose found PR's last round blocks", findPr, blocks, [[['blocked-hitl', 2, true, 0]], [['merged', 2, false, 2]]]],
     ['A rate-limit death that point E resumed', stateRow(REF, { status: 'failed', prUrl: null, prNumber: null }), dies,
+      [[['deferred', null, false, 0], ['merged', 2, false, 0]], [['deferred', null, false, 0], ['blocked-hitl', null, true, 0]]]],
+    ['A `lease-wait` or `memory-critical` row (no PR)', deadRow('lease-wait', 'session'), () => {},
       [[['deferred', null, false, 0], ['merged', 2, false, 0]], [['deferred', null, false, 0], ['blocked-hitl', null, true, 0]]]],
     ['A stopped `pending` row', stateRow(REF, { status: 'pending', prUrl: null, prNumber: null, failureReason: 'memory-critical', stopStage: 'launch' }), () => {}, [[['deferred', null, false, 0]]]],
     ['An engine invocation the user started anyway at point F', stateRow(REF), () => {}, [[['merged', 11, false, 0]]]],
@@ -1326,8 +1329,8 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
         setUp(dir);
         const { records } = ingest(dir, outcome);
         assert.deepEqual(records.map((r) => [r.finalState, r.pr, r.hitl.pointB, r.bounces]), want[i], JSON.stringify(outcome));
-        // A resumed death is the rate-limited record, then a continuation with no rate-limit of its own.
-        if (records.length === 2) assert.deepEqual(records.map((r) => [r.implStatus, r.failureReason]).slice(0, 1), [['error', 'rate-limited']]);
+        // A resumed death is the infrastructure record (rate-limited, or the engine's lease-wait), then a continuation with no stop of its own.
+        if (records.length === 2) assert.deepEqual([records[0].implStatus, ['rate-limited', 'lease-wait'].includes(records[0].failureReason)], ['error', true]);
         assert.ok(records.slice(1).every((r) => r.failureReason === null));
         // Only the point-F cell stamps pressureOverride, and it reaches every derived record except a resumed death's continuation (see the test below).
         assert.ok(records.every((r) => (r.pressureOverride === true) === (outcome[REF].pressureOverride === true)), JSON.stringify(outcome));

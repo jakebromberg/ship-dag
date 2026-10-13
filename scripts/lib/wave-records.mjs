@@ -20,7 +20,7 @@
 // The exception is a `pending` row the engine stopped at launch (a `RESOURCE_STOPS` failureReason): it is
 // recorded only once `--outcomes` gives it a `finalState`, because the user deferred it or stopped the run.
 import { DEFAULT_BLOCK_ON, gateReview } from '../review-gate.mjs';
-import { RESOURCE_STOPS, routeFailure } from './failure.mjs';
+import { INFRA_REASONS, RESOURCE_STOPS, routeFailure } from './failure.mjs';
 import { isPr, parsePr, parseRef, sameRepo } from './ref.mjs';
 import { isUnreadableEmpty } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
@@ -96,13 +96,13 @@ const implStatusOf = (row, pr) => (row.status === 'skipped' || row.status === 'p
 
 /**
  * Why `row` stopped for infrastructure, as ingest reads it: its failure digest's `failureReason`, else the row's own,
- * when that is `rate-limited` or one of `RESOURCE_STOPS`; else null.
+ * when that is one of `INFRA_REASONS`; else null.
  * Digests are written for non-succeeded rows and never removed, so a succeeded row's digest is a stale one from an
  * earlier wave; and a session that succeeded did not die on quota, whatever the row says.
  */
 const stopReasonOf = (row, digest) => {
   const reason = digest?.failureReason ?? row.failureReason;
-  return row.status !== 'succeeded' && (reason === 'rate-limited' || RESOURCE_STOPS.has(reason)) ? reason : null;
+  return row.status !== 'succeeded' && INFRA_REASONS.has(reason) ? reason : null;
 };
 /** Whether a row with `implStatus` carries its stop as the record's `failureReason`: a death, or a launch stop that never started. */
 const diesWith = (row, implStatus) => implStatus === 'error' || row.status === 'pending';
