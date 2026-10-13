@@ -386,7 +386,7 @@ function validateOutcomes(outcomes, rows) {
  * state dir alone, with a warning, when the dir holding the family cannot be listed. Appends are
  * best-effort: a failed one is warned about and the rest continue.
  * @param {string} reportPath
- * @param {Record<string, object>} outcomes per-ref `{pr, hitl:{pointB}, finalState, bounces, findings, tokens}`
+ * @param {Record<string, object>} outcomes per-ref `{pr, hitl:{pointB}, finalState, bounces, findings, tokens, pressureOverride}`
  * @param {{path?: string, warn?: (m: string) => void}} [opts]
  * @returns {{records: object[], appended: number}} `records` are the ones derived as new
  * @throws {IngestError} code 2 for a report outside `<stateDir>/state/reports/`, bad `--outcomes` or a

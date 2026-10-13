@@ -5,7 +5,9 @@
 // wave's routing entry (`waveContextFor`: the sidecar's, else one built from its config), the failure digests, and each ref's
 // review rounds as `reviewRoundFiles` lists them (oldest first by mtime), each
 // file parsed. Only `--outcomes` supplies what no artifact records: `hitl.pointB`,
-// a manual `finalState`, a PR the report row lacks, and a floor for `bounces`.
+// a manual `finalState`, a PR the report row lacks, a floor for `bounces`, and
+// `pressureOverride` (point F's "start anyway"; on a resumed rate-limit death it lands on the death record, the
+// invocation that ran under the override, not on the continuation).
 //
 // Beyond its arguments it touches two things: `isUnreadableEmpty` checks each
 // round's path for a `.raw` sibling (one rule for the #2587 signature, kept in
@@ -144,7 +146,7 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest) {
  *   rewritten for every row that did not succeed); read only for those rows
  * @param {Record<string, Array<{path: string, review: object|null}>>} rounds each ref's rounds, oldest first
  *   as `reviewRoundFiles` returns them; `review` is the parsed file, null when unparseable
- * @param {Record<string, object>} outcomes per-ref `{pr, hitl, finalState, bounces, findings, tokens}`
+ * @param {Record<string, object>} outcomes per-ref `{pr, hitl, finalState, bounces, findings, tokens, pressureOverride}`
  * @param {{existing?: object[], warn?: (m: string) => void, tuningVersion?: unknown, reportId?: string, noCheckRepos?: Iterable<string>}} [opts]
  *   a record that is the same event as an `existing` one (or an earlier row's), by `sameEvent`, is dropped; `reportId` (the report's file stem) is stamped on each record;
  *   a succeeded row in a `noCheckRepos` repo (no `postSessionCheck`, so the engine ran none) records `ciStatus: "none"`
@@ -247,8 +249,11 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     // continuation, which carries no rate-limit of its own. Without either, the outcome is the death's own, and
     // stays a quota death: one must never read as a model failure.
     const resumed = rateLimited && !isPr(row.prNumber) && (isPr(outcome.pr) || outcome.hitl?.pointB === true);
-    const death = resumed ? build({}, null, true) : null;
-    const recs = death?.failureReason ? [death, build(outcome, pr, false)] : [build(outcome, pr, rateLimited)];
+    // pressureOverride belongs to the engine invocation that ran under the override, which is the session that
+    // died; the continuation is a later resume (point E) started without CO_PRESSURE_OVERRIDE, so it never carries it.
+    const death = resumed ? build({ pressureOverride: outcome.pressureOverride }, null, true) : null;
+    const { pressureOverride: _ranUnderOverride, ...continuation } = outcome;
+    const recs = death?.failureReason ? [death, build(continuation, pr, false)] : [build(outcome, pr, rateLimited)];
     for (const rec of recs) {
       if (seen.some((s) => sameEvent(s, rec))) continue;
       seen.push(rec);

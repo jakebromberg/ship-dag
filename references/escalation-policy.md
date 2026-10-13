@@ -12,7 +12,7 @@
 6. **Merge conflict needing judgment** — a rebase conflict whose resolution isn't mechanical.
 7. **Oversize issue** (point A) — triage estimates the issue needs more than 200 added lines of production source. The fork is split-now vs accept-the-size, and it is a scope call the human owns. It costs minutes here and a whole branch later, so it is worth a grill even though nothing is ambiguous.
 8. **Rate-limit window can't be waited out cheaply** (point E) — the step-4 preflight (`scripts/rate-limit-preflight.mjs`), or the identical fork hit mid-recovery-recipe while waiting out a live rate-limit death, finds the five-hour window at/above threshold with the reset more than `--wait-max-minutes` away, or no reset time at all: wait / defer this wave (or issue) / stop the run.
-9. **Resource pressure still critical after the wait cap** (point F) — the step-4 resource preflight (`scripts/resource-preflight.mjs`), run before an engine invocation, step 5's review/fix hand-off or a CI run, still reads `critical` after `--wait-max-minutes` (default 15) of waiting: wait / start anyway / defer this step / stop the run.
+9. **Resource pressure still critical after the wait cap** (point F) — the step-4 resource preflight (`scripts/resource-preflight.mjs`), run before an engine invocation, still reads `critical` after `--wait-max-minutes` (default 15) of waiting: wait / start anyway / defer this step / stop the run.
 
 ## Protocol
 
@@ -50,14 +50,14 @@ A rate-limit death is a distinct failure shape from a model failure: the session
 
 ## Point F — resource pressure (`critical-hitl`)
 
-claude-orchestrator owns the threshold table and the machine-wide lease; ship-dag's column of it is that nothing new starts at `critical`: not an engine invocation, a review/fix hand-off, or a CI run. Waiting does not relieve memory pressure, so the wait cap (15 minutes, re-checked each minute through `--sleep-before 60 --waited-minutes <total waited before this call>`; the script adds the call's own sleep) ends in asking, never in starting. Point F guards whichever step the preflight sent here, and offers:
+claude-orchestrator owns the threshold table and the machine-wide lease; ship-dag's column of it is that nothing new starts at `critical`. Today the preflight gates engine invocations only; later issues wire the same gate into step 5's review/fix hand-offs and CI runs (SKILL.md step 4 says the same), and until then those steps do not run it. Waiting does not relieve memory pressure, so the wait cap (15 minutes, re-checked each minute through `--sleep-before 60 --waited-minutes <total waited before this call>`; the script adds the call's own sleep) ends in asking, never in starting. Point F guards whichever step the preflight sent here, and offers:
 
 - **wait**: keep re-checking, and reset the summed-wait counter to 0 (a fresh cap), so the loop asks again only after another full `--wait-max-minutes` of critical pressure; without the reset every re-check would return `critical-hitl` at once.
 - **start anyway**: run the guarded command with `CO_PRESSURE_OVERRIDE=critical-as-warning` as an inline prefix (never `export`ed), and with `--parallel 1` when it is the engine, i.e. `CO_PRESSURE_OVERRIDE=critical-as-warning … run.mts wave --parallel 1`. Everything that invocation starts (its sessions, the hook that admits their heavy commands, the engine's post-session checks) reads `critical` as `warning`: one session at a time, one heavy slot. Every other process on the machine still reads `critical` and gets 0 slots. The override covers that one invocation; the next wave's preflight asks again. `critical-as-warning` is the only accepted value.
 - **defer this step**: leave it for a later run.
 - **stop the run**.
 
-**Telemetry.** When the user chooses "start anyway" for an engine invocation, the main agent stamps `pressureOverride: true` in that wave's `--outcomes` for each row, and `ingest-wave` carries it onto the derived records (`deriveWaveRecords` passes it through; `normalizeRecord` keeps unknown keys).
+**Telemetry.** When the user chooses "start anyway" for an engine invocation, the main agent stamps `pressureOverride: true` in that wave's `--outcomes` for each row, and `ingest-wave` carries it onto the derived records (`deriveWaveRecords` passes it through; `normalizeRecord` keeps unknown keys). When a row's rate-limit death was resumed at point E, the flag lands on the death record, because the death is the session the overridden engine ran; the continuation is a separate resume that ran without the override, so it does not carry the flag.
 
 ## What does NOT escalate
 
