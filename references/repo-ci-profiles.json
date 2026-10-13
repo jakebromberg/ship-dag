@@ -52,10 +52,11 @@
         "node scripts/check-lml-caller-classification.mjs",
         "node scripts/check-bulk-update-analyze.mjs --strict",
         "node scripts/check-auth-tables-doc.mjs",
+        "node scripts/check-sql-claim-docs.mjs",
         "NODE_ENV=test npm run test:unit"
       ],
       "_note": "npm test is the INTEGRATION suite: it dotenvx-runs jest against a live stack (wait-on localhost:8080/8082 healthchecks) and times out in a bare engine worktree (ship-dag-bs1990-1991-20260807 wave-1 lesson, 2026-08-07). Engine checks stay stack-free (test:unit); the merge queue runs `npm run ci:testmock` (Docker) per PR before merging. CI lint-and-typecheck also runs prettier --check (format:check) — added 2026-08-08 after PR#2041 caught it in CI only.",
-      "_note2": "The six checks after typecheck have NO npm alias and run bare from .github/workflows/test.yml. A `npm run`-only sweep reports false green and the failure only appears in billed CI (BS#2591, 2026-09-18: check-bulk-update-analyze --strict exited 1 after five npm scripts passed). They are cheap static checks, so they run before the unit suite to fail fast."
+      "_note2": "The seven checks after typecheck run bare in .github/workflows/test.yml (three also have npm aliases, but CI calls all seven bare). A `npm run`-only sweep reports false green and the failure only appears in billed CI (BS#2591, 2026-09-18: check-bulk-update-analyze --strict exited 1 after five npm scripts passed). They are cheap static checks, so they run before the unit suite to fail fast."
     },
     "WXYC/dj-site": {
       "baseBranch": "main",
