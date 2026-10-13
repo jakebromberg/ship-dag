@@ -234,6 +234,8 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         finalState: outcome.finalState ?? (skipped || failureReason ? 'deferred' : pr ? 'merged' : 'error'),
         pr,
         tokens: outcome.tokens ?? null,
+        // Stamped when the user chose point F's "start anyway" for this wave's engine invocation.
+        ...(outcome.pressureOverride === true && { pressureOverride: true }),
         policySource: entry?.blockOn ? 'sidecar' : 'default',
         tuningVersion: version,
         ts: report.finishedAt || report.startedAt,

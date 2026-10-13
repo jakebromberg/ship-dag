@@ -153,7 +153,7 @@ export function readLatestUtilization(baseDir, { maxCandidates = DEFAULT_MAX_CAN
  * @param {{min?: number, max?: number, exclusiveMin?: number}} [bounds]
  * @returns {number}
  */
-function parseNumberOption(flag, raw, { min, max, exclusiveMin } = {}) {
+export function parseNumberOption(flag, raw, { min, max, exclusiveMin } = {}) {
   if (raw === undefined || raw.trim() === '') throw new Error(`--${flag} requires a value`);
   const n = Number(raw);
   if (!Number.isFinite(n)) throw new Error(`--${flag} must be a number, got: ${JSON.stringify(raw)}`);

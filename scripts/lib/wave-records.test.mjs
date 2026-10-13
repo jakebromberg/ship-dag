@@ -181,6 +181,13 @@ test('outcomes supply hitl.pointB, a manual finalState and a missing PR', () => 
   assert.deepEqual([r.pr, r.hitl, r.finalState], [91, { pointA: false, pointB: true }, 'blocked-hitl']);
 });
 
+test('outcomes pressureOverride: true reaches the record, and is absent otherwise', () => {
+  assert.equal(derive({ outcomes: { [REF]: { pressureOverride: true } } }).records[0].pressureOverride, true);
+  for (const outcomes of [{}, { [REF]: {} }, { [REF]: { pressureOverride: false } }, { [REF]: { pressureOverride: 'yes' } }]) {
+    assert.equal('pressureOverride' in derive({ outcomes }).records[0], false);
+  }
+});
+
 test('no entry and no configName refuses the wave rather than recording runId null', () => {
   assert.throws(() => derive({ entry: null, report: report([row()], { configName: undefined }) }), /no run id/);
 });
