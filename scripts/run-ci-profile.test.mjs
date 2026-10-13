@@ -88,17 +88,26 @@ test('setupProblem: names a missing worktree, a missing lease CLI, or a repo wit
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('cliArgs and setupProblem join an explicit coHome as-is: empty is relative, undefined cannot be joined', () => {
+  assert.equal(cliArgs({ repo: 'o/r', line: 'true', coHome: '', maxWait: 1 })[0], join('dist', 'src', 'cli-lease.js'));
+  assert.throws(() => cliArgs({ repo: 'o/r', line: 'true', coHome: undefined, maxWait: 1 }), TypeError);
+  const dir = scratch();
+  try {
+    assert.match(setupProblem({ repo: 'o/r', worktree: dir, coHome: '' }), /^dist.src.cli-lease\.js not found/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('the script exits 64 with a named stderr line on each setup failure, and on a usage error', () => {
   const dir = scratch();
   try {
-    const coHome = fakeCoHome(dir, { withCli: true });
-    const missingWt = cli(['--repo', 'jakebromberg/code-audit-pipeline', '--worktree', join(dir, 'gone')], { CO_HOME: coHome });
+    const home = fakeCoHome(dir, { withCli: true });
+    const missingWt = cli(['--repo', 'jakebromberg/code-audit-pipeline', '--worktree', join(dir, 'gone')], { CO_HOME: home });
     assert.equal(missingWt.status, 64);
     assert.match(missingWt.stderr, /worktree.*gone/);
     const noCli = cli(['--repo', 'jakebromberg/code-audit-pipeline', '--worktree', dir], { CO_HOME: fakeCoHome(dir, { withCli: false }) });
     assert.equal(noCli.status, 64);
     assert.match(noCli.stderr, /cli-lease\.js.*CO_HOME/);
-    const noProfile = cli(['--repo', 'o/none', '--worktree', dir], { CO_HOME: coHome });
+    const noProfile = cli(['--repo', 'o/none', '--worktree', dir], { CO_HOME: home });
     assert.equal(noProfile.status, 64);
     assert.match(noProfile.stderr, /no CI profile for o\/none/);
     assert.equal(cli([]).status, 64);
@@ -108,9 +117,9 @@ test('the script exits 64 with a named stderr line on each setup failure, and on
 test('a lease CLI killed by a signal exits 128 + the signal number and names the signal', () => {
   const dir = scratch();
   try {
-    const coHome = fakeCoHome(dir, { withCli: true });
-    writeFileSync(join(coHome, 'dist', 'src', 'cli-lease.js'), "process.kill(process.pid, 'SIGTERM');\n");
-    const r = cli(['--repo', 'jakebromberg/code-audit-pipeline', '--worktree', dir], { CO_HOME: coHome });
+    const home = fakeCoHome(dir, { withCli: true });
+    writeFileSync(join(home, 'dist', 'src', 'cli-lease.js'), "process.kill(process.pid, 'SIGTERM');\n");
+    const r = cli(['--repo', 'jakebromberg/code-audit-pipeline', '--worktree', dir], { CO_HOME: home });
     assert.equal(r.status, 128 + osConstants.signals.SIGTERM);
     assert.match(r.stderr, /killed by SIGTERM/);
   } finally { rmSync(dir, { recursive: true, force: true }); }

@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { coHome, coDistPath, importCo } from './co-home.mjs';
+import { coHome, coDistPath, coDistPathIn, importCo } from './co-home.mjs';
 
-const DEFAULT = '/Users/jake/Developer/claude-orchestrator';
+// Derived, so the default path is written only in co-home.mjs.
+const DEFAULT = coHome({});
 
 test('coHome: CO_HOME wins; unset and empty fall back to the default checkout', () => {
   assert.equal(coHome({ CO_HOME: '/x' }), '/x');
@@ -18,6 +19,12 @@ test('coDistPath: joins segments under dist/src', () => {
   assert.equal(coDistPath({ CO_HOME: '/x' }), '/x/dist/src');
   assert.equal(coDistPath({ CO_HOME: '/x' }, 'cli-lease.js'), '/x/dist/src/cli-lease.js');
   assert.equal(coDistPath({}, 'index.js'), `${DEFAULT}/dist/src/index.js`);
+});
+
+test('coDistPathIn: joins onto an explicit home as-is, with no env fallback', () => {
+  assert.equal(coDistPathIn('/x', 'cli-lease.js'), '/x/dist/src/cli-lease.js');
+  assert.equal(coDistPathIn('', 'cli-lease.js'), 'dist/src/cli-lease.js');
+  assert.throws(() => coDistPathIn(undefined, 'cli-lease.js'), TypeError);
 });
 
 test('importCo: returns the module, and names a missing export in the error', async () => {

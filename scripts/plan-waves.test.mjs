@@ -7,6 +7,8 @@
 // bare "N" in single-repo back-compat).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { planWaves, readySet, bodyEdges, fetchSpec } from './plan-waves.mjs';
 
 // A minimal `issue view` fixture, for the hierarchy tests where only the body
@@ -855,4 +857,12 @@ test('fetchSpec pushes a container blocker down onto a demoted all-closed epic',
   assert.deepEqual(spec.edges, [{ blocked: 'o/r#20', blockedBy: 'o/r#10' }]);
   const { waves } = planWaves(spec);
   assert.deepEqual(waves, [['o/r#10'], ['o/r#20']]);
+});
+
+test('a relative CO_HOME that cannot load names the absolute core path in the error', () => {
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', "await import('./scripts/plan-waves.mjs')"], {
+    cwd: resolve(import.meta.dirname, '..'), env: { ...process.env, CO_HOME: 'no-such-checkout' }, encoding: 'utf8',
+  });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, new RegExp(`from ${resolve(import.meta.dirname, '..', 'no-such-checkout', 'dist/src/index.js').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.`));
 });
