@@ -450,10 +450,11 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   const rounds = {};
   for (const ref of refs) {
     rounds[ref] = reviewRoundFiles(family.map((d) => join(d, 'reviews')), ref)
-      .filter((f) => inWave(ref, f.mtimeMs))
       .map((f) => {
-        try { return { path: f.path, review: JSON.parse(readFileSync(f.path, 'utf8')) }; } catch { return { path: f.path, review: null }; }
-      });
+        try { return { path: f.path, review: JSON.parse(readFileSync(f.path, 'utf8')), mtimeMs: f.mtimeMs }; } catch { return { path: f.path, review: null, mtimeMs: f.mtimeMs }; }
+      })
+      .filter((f) => inWave(ref, f.mtimeMs, f.review?.meta?.reportId))
+      .map(({ path, review }) => ({ path, review }));
   }
 
   // Read outside the try below: an unreadable log is not a malformed report.
@@ -503,22 +504,22 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
 /**
  * The window of the wave report `own` (in `stateDir`, among `familyReports`, the run family's reports as
  * `readWaveReports` reads them) and the failure digests it holds: ingest's and audit's one reading of them.
- * A digest the engine stamped with a report id (`reportId`) belongs to that report's wave and no other, whatever
- * its mtime (a copied state dir loses mtimes). An unstamped digest (written before stamping), and every review
- * round, which agents write from SKILL.md prose with no script writer to stamp it, keep the mtime window below:
- * the rounds are the remaining heuristic. A digest or review round belongs to this wave when it was written after this report started and
+ * A digest the engine stamped with a report id (`reportId`), or a review round the Review subagent stamped with one
+ * (`meta.reportId`), belongs to that report's wave and no other, whatever its mtime (a copied state dir loses
+ * mtimes). An unstamped digest or round (written before stamping) keeps the mtime window below.
+ * A digest or review round belongs to this wave when it was written after this report started and
  * before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
  * and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
  * run of other rows) re-runs nothing, so later rounds still review this row's PR. A later report
  * refused for a malformed row still started when it says, so it still ends the window.
- * @returns {{inWave: (ref: string, mtimeMs: number) => boolean, digests: Record<string, object>}} `digests` by ref,
+ * @returns {{inWave: (ref: string, mtimeMs: number, reportId?: unknown) => boolean, digests: Record<string, object>}} `digests` by ref,
  *   for the rows that did not succeed (deriveWaveRecords records only terminal rows and ignores a succeeded row's stale digest)
  */
 function waveWindow(stateDir, { report, startedAt, path: reportPath }, familyReports, warn) {
   const others = familyReports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
   const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
-  const inWave = (ref, mtimeMs) => mtimeMs >= startedAt && mtimeMs < ends[ref];
+  const inWave = (ref, mtimeMs, reportId) => typeof reportId === 'string' ? reportId === basename(reportPath, '.json') : mtimeMs >= startedAt && mtimeMs < ends[ref];
   const digests = {};
   for (const r of report.issues.filter((i) => ['failed', 'blocked', 'skipped'].includes(i?.status))) {
     const p = digestPathForRef(stateDir, r.ref);
