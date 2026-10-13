@@ -13,27 +13,27 @@
 7. **Oversize issue** (point A) — triage estimates the issue needs more than 200 added lines of production source. The fork is split-now vs accept-the-size, and it is a scope call the human owns. It costs minutes here and a whole branch later, so it is worth a grill even though nothing is ambiguous.
 8. **Rate-limit window can't be waited out cheaply** (point E) — the step-4 preflight (`scripts/rate-limit-preflight.mjs`), or the identical fork hit mid-recovery-recipe while waiting out a live rate-limit death, finds the five-hour window at/above threshold with the reset more than `--wait-max-minutes` away, or no reset time at all: wait / defer this wave (or issue) / stop the run.
 9. **Resource pressure still critical after the wait cap** (point F) — the step-4 resource preflight (`scripts/resource-preflight.mjs`), run before an engine invocation, still reads `critical` after `--wait-max-minutes` (default 15) of waiting: wait / start anyway / defer this step / stop the run.
-10. **Tripped tripwire or overdue review** (point D) — step 7's `telemetry.mjs tripwires` reports a `tripped` state or a `reviewOverdue` date. Answered confirm-offline, retune, or dismiss-with-reason, batched with the wave's retrospective grilling when one ran.
+10. **Tripped tripwire or overdue review** (point D) — step 7's `telemetry.mjs tripwires` reports a `tripped` state or a `reviewOverdue` date. Answered confirm-offline, retune, or dismiss-with-reason, in a grilling of its own in step 7.
 
 ## Protocol
 
 `grill-me` is inherently interactive and one-question-at-a-time, and the orchestrator is *already* the interactive agent — so conduct the interview **inline** rather than spawning `grill-me` (which would hijack the turn). Steps:
 
-1. **Batch, don't drip.** At the triage gate (HITL point A) and the retrospective gate (point D), collect *all* underspecced questions and proposals across the wave and grill once, not per-item.
+1. **Batch, don't drip.** At the triage gate (HITL point A), the retrospective gate (point D) and the tripwire gate (point D, step 7), collect *all* underspecced questions and proposals across the wave and grill once, not per-item.
 2. **Give full context** — the issue, the relevant diff/finding, and why the autonomous path stopped. Use `AskUserQuestion` for crisp forks (2–4 options, recommended first); use an inline grill-me-style interview for open-ended design questions.
-3. **Persist the resolution** as a GitHub issue comment (ghost-writer: no Claude/AI attribution), and update the issue body if scope changed — so peers and future waves inherit the decision.
+3. **Persist the resolution** as a GitHub issue comment (ghost-writer: no Claude/AI attribution), and update the issue body if scope changed — so peers and future waves inherit the decision. A tripwire answer has no issue: it persists in `references/decisions.md` and `references/tripwires.json` instead (SKILL.md step 7).
 4. **Resume the wave** with the decision applied. Only genuinely cleared issues proceed to implementation.
 
 Suggest the user run `/grill-me` themselves if they want the full adversarial treatment on a thorny fork.
 
 ## Point D — the retrospective gate (scheduled, not premise-break)
 
-Fires from step 6.5 when unretrospected merges reach `--retro-threshold` (and always once at drain). The letters are stable IDs, not loop order — within a wave, D (step 6.5) fires *before* C (step 7). The Retrospective subagent only proposes; every disposition is the human's:
+D has two sources. The retrospective fires from step 6.5 when unretrospected merges reach `--retro-threshold` (and always once at drain). Tripwires fire from step 7, after `tripwires` prints (bullet below). The letters are stable IDs, not loop order — within a wave, the retrospective's D (step 6.5) fires *before* C (step 7). The Retrospective subagent only proposes; every disposition is the human's:
 
 - **Batch into one grilling.** Refactor proposals via `AskUserQuestion` `multiSelect` (title + summary + evidence PRs per option, ≤4 per question); plan adjustments likewise; open-ended respecs get the inline interview. `obsolete` closures are confirmed individually — never inside a multiSelect batch.
 - **Approved** → ghost-written side effects only: `/file-ticket` tickets (inserted per the run's issue-set form), issue comments/body edits recording the decision and reasoning, native + prose dependency edges. No Claude/AI attribution anywhere, as always.
 - **Declined** → run ledger only, never re-proposed this run, nothing written to GitHub.
-- **Tripwires (step 7).** D also fires when `telemetry.mjs tripwires` reports a `tripped` tripwire or a `reviewOverdue` date: batched into the wave's retrospective grilling when step 6.5 ran, else on its own. Each one is answered **confirm offline**, **retune** or **dismiss with a reason** (SKILL.md step 7; a dismissal is logged in `references/decisions.md`). `insufficient-data` and `pending-instrumentation` never grill; they ride the wave summary.
+- **Tripwires (step 7).** D also fires when `telemetry.mjs tripwires` reports a `tripped` tripwire or a `reviewOverdue` date, in one grilling of its own in step 7. It is never batched into step 6.5's grilling, which has ended by the time step 7 runs `tripwires`. Each one is answered **confirm offline**, **retune** or **dismiss with a reason** (SKILL.md step 7; a dismissal is logged in `references/decisions.md`). `insufficient-data` and `pending-instrumentation` never grill; they ride the wave summary.
 - **At drain**, filing tickets re-opens a drained DAG — so the final fork is explicit: ship the new tickets in this run, or leave them filed for a future one.
 
 ## Point E — the rate-limit-window fork, and rate-limit-death recovery (resume in place, never re-run the engine)
@@ -65,6 +65,7 @@ claude-orchestrator owns the threshold table and the machine-wide lease; ship-da
 
 - PLAUSIBLE (unconfirmed) findings, or findings outside `--block-on` categories — surfaced in the summary, not blocking.
 - Retro items the subagent judged not worth a ticket — its block demotes them to `observations` (payoff-ranked, ≤5 proposals typical); observations never grill, they ride the wave summary. A PLAUSIBLE proposal that *did* make the cut still grills — confidence is surfaced at point D, not filtered before it.
+- A tripwire in state `insufficient-data` or `pending-instrumentation` — named in the wave summary, never grilled.
 - Cosmetic nits — listed for the human, never block a merge.
 - A CONFIRMED finding the reviewer itself marked `blocking: false`, outside `correctness`/`security` — scored as a nit, and named in the gate's `selfClearedCount`/`selfCleared[≤3]` so the human can second-guess the downgrade in the wave summary without it stopping the wave.
 - A green PR — auto-merges under the requester-authorized policy (see the skill's Merge queue).

@@ -94,7 +94,7 @@ const pointFStart = policy.indexOf('## Point F');
 const pointF = pointFStart < 0 ? '' : policy.slice(pointFStart).split(/\n## /)[0];
 
 test('SKILL.md: the Guardrails list of HITL points includes F, and step 4 runs the resource preflight', () => {
-  assert.match(skill, /the six HITL points \(A triage, B implement\/review, C cross-repo cutover, D retrospective, E rate-limit window, F resource pressure\)/);
+  assert.match(skill, /the six HITL points \(A triage, B implement\/review, C cross-repo cutover, D retrospective and tripwires, E rate-limit window, F resource pressure\)/);
   assert.match(skill, /resource-preflight\.mjs" check/);
   assert.match(skill, /--parallel <recommendedParallel>/);
   assert.match(skill, /--sleep-before 60 --waited-minutes/);
