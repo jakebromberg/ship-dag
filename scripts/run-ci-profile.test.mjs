@@ -179,4 +179,11 @@ test('SKILL.md step 6.2 re-runs local CI through run-ci-profile.mjs', () => {
   assert.match(step, /75[^.]*rerun/);
   assert.match(step, /64[^.]*setup error[^.]*never a test failure[^.]*never a rerun/);
   assert.match(step, /anything else[^.]*suite/);
+  // The preflight returns proceed at every level below critical, so busy slots alone need their own cap.
+  assert.match(step, /30 minutes[^.]*whatever the pressure[^.]*point F/);
+  // Step 6's no-loop rule and the Guardrails name the same cap, not the preflight alone.
+  for (const marker of ['**Never loop-retry a failing CI or merge.**', '- **No auto-retry loops**']) {
+    const line = skill.split('\n').find((l) => l.startsWith(marker));
+    assert.match(line, /run-ci-profile\.mjs` exit 75 in step 6\.2 is bounded[^.]*30-minute cap/, marker);
+  }
 });
