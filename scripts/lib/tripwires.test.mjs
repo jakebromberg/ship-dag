@@ -206,8 +206,9 @@ describe('T-coverage', () => {
   });
 
   test('a record in the same second as since, with milliseconds, is inside the window', () => {
-    const recs = many(3, { runId: 'sd-20261010-000000', ts: '2026-10-10T00:00:00.500Z' });
-    assert.equal(cov(recs, audited(100, 2)).state, 'holding');
+    const recs = many(40, { runId: 'sd-20261010-000000', ts: '2026-10-10T00:00:00.500Z', reportId: 'w1', cost: { implement: { costUsd: 1 } } });
+    const out = cov(recs, audited(100, 2));
+    assert.deepEqual([out.state, out.cost.state, out.cost.n], ['holding', 'holding', 40]); // both the family and the cost share
   });
 
   test('the shipped T-coverage window starts at T6 (#73, PR #159)\'s merge', () => {
