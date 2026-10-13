@@ -43,18 +43,20 @@
 
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { coDistPath, importCo } from './lib/co-home.mjs';
+import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
+import { coDistPath } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
 
 const LIST_LIMIT = 1000; // gh issue list cap; we warn if we hit it rather than truncate silently.
 
 // ---- shared topo core (single source of truth for the graph math) --------
 
-const CORE_ENTRY = coDistPath(process.env, 'index.js');
+const CORE_ENTRY = resolve(coDistPath(process.env, 'index.js'));
 
 let core;
 try {
-  core = await importCo(process.env);
+  core = await import(pathToFileURL(CORE_ENTRY).href);
 } catch (err) {
   throw new Error(
     `ship-dag: could not load the shared topo core from ${CORE_ENTRY}. `
