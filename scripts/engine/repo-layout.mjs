@@ -48,10 +48,16 @@ function gitIn(dir, ...args) {
 
 const defaultRemoteOf = (dir) => gitIn(dir, "remote", "get-url", "origin");
 
-/** A linked worktree's git dir differs from its common dir; a checkout's or submodule's does not. */
-function defaultIsLinkedWorktree(dir) {
-  const [gitDir, commonDir] = gitIn(dir, "rev-parse", "--git-dir", "--git-common-dir").trim().split("\n");
-  return path.resolve(dir, gitDir) !== path.resolve(dir, commonDir);
+/**
+ * Whether `dir` is the top of a checkout (a clone or submodule), as opposed to a
+ * plain subdirectory of an enclosing repo (git walks up from those) or a linked
+ * worktree (its git dir differs from its common dir).
+ */
+function defaultIsCheckoutRoot(dir) {
+  const [top, gitDir, commonDir] = gitIn(dir, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir")
+    .trim()
+    .split("\n");
+  return fs.realpathSync(top) === fs.realpathSync(dir) && path.resolve(dir, gitDir) === path.resolve(dir, commonDir);
 }
 
 /**
@@ -61,7 +67,7 @@ function defaultIsLinkedWorktree(dir) {
  * nothing). Falls back to scanning `reposDir` for a checkout whose `origin`
  * remote is the same repo, which covers a submodule path, a renamed clone, and a
  * case-mismatched directory alike. The scan is one level deep, skips linked
- * worktrees (which share the origin), and visits names in sorted order, so the
+ * worktrees (which share the origin) and plain subdirectories of an enclosing repo, and visits names in sorted order, so the
  * answer does not depend on readdir order. When nothing matches it returns the literal
  * repo name, so the engine still raises its own "clone it under …" error rather
  * than this function inventing a path.
@@ -75,7 +81,7 @@ export function repoDirName(repo, options = {}) {
     existsSync = fs.existsSync,
     listDirs = defaultListDirs,
     remoteOf = defaultRemoteOf,
-    isLinkedWorktree = defaultIsLinkedWorktree,
+    isCheckoutRoot = defaultIsCheckoutRoot,
   } = options;
 
   const slash = repo.lastIndexOf("/");
@@ -93,7 +99,7 @@ export function repoDirName(repo, options = {}) {
   for (const name of candidates) {
     const dir = path.join(reposDir, name);
     try {
-      if (normalizeRepo(remoteOf(dir)) === wanted && !isLinkedWorktree(dir)) return name;
+      if (normalizeRepo(remoteOf(dir)) === wanted && isCheckoutRoot(dir)) return name;
     } catch {
       // not a git checkout, or no origin — skip, never throw
     }
@@ -143,11 +149,36 @@ export function worktreeRootFor(repoDir, options = {}) {
   // by walking out of the checkout is what makes the sibling layout load-bearing.
   // Comments are dropped (string literals kept, so a URL's `//` survives) and
   // only a `.package(` declaration counts, never a target's `path:`.
-  const code = source.replace(STRING_OR_COMMENT, (m) => (m.startsWith('"') ? m : ""));
+  const code = stripComments(source);
   return PATH_DEPENDENCY.test(code) ? sibling : adjacent;
 }
 
-const STRING_OR_COMMENT = /"(?:\\.|[^"\\\n])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+/** Swift source minus line comments and (nestable) block comments; string literals are kept. */
+function stripComments(source) {
+  let out = "";
+  let depth = 0; // block-comment nesting, which Swift allows
+  let quoted = false;
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i];
+    const two = source.slice(i, i + 2);
+    if (quoted) {
+      out += c;
+      if (c === "\\") out += source[++i] ?? "";
+      else if (c === '"' || c === "\n") quoted = false;
+    } else if (two === "/*") {
+      depth++;
+      i++;
+    } else if (depth > 0) {
+      if (two === "*/") (depth--, i++);
+    } else if (two === "//") {
+      while (i + 1 < source.length && source[i + 1] !== "\n") i++;
+    } else {
+      out += c;
+      quoted = c === '"';
+    }
+  }
+  return out;
+}
 const PATH_DEPENDENCY = /\.package\s*\(\s*(?:name:\s*"[^"]*"\s*,\s*)?path:\s*"\.\.\//;
 
 const MODES = new Set(["sibling", "adjacent"]);
@@ -233,5 +264,7 @@ function isWorktreeOf(repoDir, wtPath) {
   const real = fs.realpathSync(wtPath);
   return gitIn(repoDir, "worktree", "list", "--porcelain")
     .split("\n")
-    .some((line) => line.startsWith("worktree ") && fs.realpathSync(line.slice(9)) === real);
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => line.slice(9))
+    .some((p) => fs.existsSync(p) && fs.realpathSync(p) === real); // skip prunable registrations
 }
