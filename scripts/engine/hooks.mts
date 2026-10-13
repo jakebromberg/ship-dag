@@ -6,7 +6,8 @@
 // resolved from the environment by reposDirFromEnv — see below), forks a branch
 // off that repo's OWN base branch (derived from origin/HEAD, so a repo on
 // `master` is honored, not assumed `main`), and creates the worktree in the
-// sibling <repo>-worktrees/ directory. Per-repo CI + the merge-step base branch
+// sibling <repo>-worktrees/ directory (or beside the checkout for a submodule
+// package; see repo-layout.mjs). Per-repo CI + the merge-step base branch
 // come from the `repos:` map that emit-config.mjs writes into the config.
 //
 // `.mts` (not `.ts`) so tsx always treats this as ESM — the dynamic import of the
@@ -23,6 +24,7 @@ import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { coDistPath } from "../lib/co-home.mjs";
 import { reposDirFromEnv } from "./repos-dir.mjs";
+import { repoDirName, worktreeRootFor } from "./repo-layout.mjs";
 
 const coreUrl = pathToFileURL(coDistPath(process.env, "index.js")).href;
 const { deriveWorktreeHooks } = await import(coreUrl);
@@ -30,7 +32,27 @@ const { deriveWorktreeHooks } = await import(coreUrl);
 // reposDir = SHIP_DAG_REPOS_DIR ?? SHIP_DAG_PROJECT_ROOT ?? engine default. Passing
 // undefined when neither is set preserves deriveWorktreeHooks's own default, so a
 // run that sets no env var is unchanged. Per-repo base branch is still origin/HEAD.
-const worktree = deriveWorktreeHooks({ reposDir: reposDirFromEnv() });
+const reposDir = reposDirFromEnv();
+
+// repoOf / worktreeRoot break the two layout assumptions the engine's defaults
+// make — that a checkout is named after its repo, and that worktrees can live in
+// an adjacent `<repoDir>-worktrees/`. Both hold for the ordinary org layout and
+// neither holds for a repo vendored as a submodule under a package directory
+// (see repo-layout.mjs). Resolution is per-repo and falls back to the engine's
+// own behaviour, so repos in the ordinary layout are unaffected.
+const worktree = deriveWorktreeHooks({
+  reposDir,
+  repoOf: (issue: { repo?: string; number?: number; slug?: string }) => {
+    if (!issue.repo) {
+      throw new Error(
+        `deriveWorktreeHooks: issue #${issue.number} (${issue.slug}) has no repo; ` +
+          `a cross-repo worktree needs a repo. Set "repo" on the issue.`,
+      );
+    }
+    return repoDirName(issue.repo, { reposDir });
+  },
+  worktreeRoot: (repoDir: string) => worktreeRootFor(repoDir),
+});
 
 const hooksOverride = {
   ...worktree,
