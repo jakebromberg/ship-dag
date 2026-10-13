@@ -23,6 +23,10 @@ describe('the shipped table', () => {
     for (const o of out) assert.ok(STATES.includes(o.state), `${o.id}: ${o.state}`);
   });
 
+  test('every row has a parseable review date, 60 days after its decision', () => {
+    for (const t of TABLE.tripwires) assert.ok(Number.isFinite(Date.parse(t.reviewDate)), `${t.id}: ${t.reviewDate}`);
+  });
+
   test('a metric id with no evaluator fails loudly, naming the tripwire', () => {
     const bad = { tripwires: [tw('T-fallback'), { id: 'T-nope', metric: 'nope' }] };
     assert.throws(() => evaluateAll(bad, tripwireContext([], { version: 2, now: NOW })), /no evaluator for metric "nope" \(T-nope\)/);
