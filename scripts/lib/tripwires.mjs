@@ -17,6 +17,9 @@ export const TRIPWIRES_PATH = fileURLToPath(new URL('../../references/tripwires.
 export const STATES = ['tripped', 'holding', 'insufficient-data', 'pending-instrumentation'];
 const DAY = 86_400_000;
 /** `telemetry.mjs audit`'s refusal for a run family with no engine dir: the one audit error T-coverage skips. */
+/** Whether record `r` falls on or after tripwire `t`'s `since`, compared as times (a timestamp's spelling, with or without milliseconds, does not matter; an unparseable one is outside). */
+const inWindow = (r, t) => Boolean(t.since) && Date.parse(r.ts) >= Date.parse(t.since);
+
 export const NO_ENGINE_DIR = /^no dir under .* belongs to run /;
 
 export const loadTripwires = (path = TRIPWIRES_PATH) => JSON.parse(readFileSync(path, 'utf8'));
@@ -119,7 +122,7 @@ const EVALUATORS = {
     const rows = { covered: 0, total: 0, prCovered: 0, prTotal: 0 };
     let skipped = 0;
     const fams = families.map((runId) => {
-      if (!t.since || !ctx.window.some((r) => sameRun(r.runId, runId) && Date.parse(r.ts) >= Date.parse(t.since))) return { runId, state: 'insufficient-data', reason: 'before the window' };
+      if (!t.since || !ctx.window.some((r) => sameRun(r.runId, runId) && inWindow(r, t))) return { runId, state: 'insufficient-data', reason: 'before the window' };
       let a;
       try { a = ctx.audit(runId); } catch (err) { // no engine dir: neither tripped nor holding; anything else is a real failure
         if (!NO_ENGINE_DIR.test(err?.message)) throw err;
@@ -131,7 +134,7 @@ const EVALUATORS = {
       return { runId, ...share(covered, a.terminalRows, t.trips.rows, t.minSample) };
     }).filter(Boolean);
     // Inside the window only: a record from before cost.implement landed (mid-version) reached implement with none, and would read as an ingestion gap.
-    const reached = ctx.window.filter((r) => t.since && r.ts >= t.since && r.reportId && r.implStatus != null);
+    const reached = ctx.window.filter((r) => inWindow(r, t) && r.reportId && r.implStatus != null);
     const withCost = reached.filter((r) => typeof at(r, t.source) === 'number');
     const cost = !t.since ? { state: 'insufficient-data', reason: 'no window date set' }
       : withCost.length ? share(withCost.length, reached.length, t.trips.cost, t.minSample) : { state: 'pending-instrumentation', source: t.source };
