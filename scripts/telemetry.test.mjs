@@ -9,6 +9,8 @@ import { rmSync, readFileSync, readdirSync, existsSync, appendFileSync, chmodSyn
 import { WaveRefusal } from './lib/wave-records.mjs';
 import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit } from './telemetry.mjs';
 import { artifactStem } from './lib/failure.mjs';
+import { NO_ENGINE_DIR } from './lib/tripwires.mjs';
+import { load as loadTuning } from './lib/tuning.mjs';
 import { engineFixture, stamped, putReview, putDigest, stateRow, stateReport, sidecarEntry, engineConfig as config, RUN, T0, T1, EMITTED } from './lib/engine-fixture.mjs';
 
 const approx = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
@@ -1132,6 +1134,7 @@ describe('audit', () => {
     [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF)]) } },
   }, (base) => {
     assert.throws(() => audit('sd-2026100-153059', { baseDir: base, records: [], ...quiet }), /no dir under .* belongs to run sd-2026100-153059/);
+    assert.throws(() => audit('sd-2026100-153059', { baseDir: base, records: [], ...quiet }), (err) => NO_ENGINE_DIR.test(err.message), 'tripwires skips a family on this refusal');
   }));
 
   test('CLI: prints the audit as JSON from the XDG engine dir and the log, refuses a missing or extra run id, and exits 1 for a run with no dir', () => family({
@@ -1154,7 +1157,7 @@ describe('audit', () => {
 // tripwires: the CLI over lib/tripwires.mjs (the evaluators have their own tests there). A stub `gh` first on PATH
 // marks any call to GitHub; XDG_STATE_HOME and SHIP_DAG_TELEMETRY keep it off the real state dir.
 describe('tripwires', () => {
-  const cli = (args, fn) => {
+  const cli = (args, fn, records = [{ tuningVersion: 1, ts: '2026-10-30T00:00:00Z' }]) => {
     const fx = engineFixture({});
     try {
       const bin = join(fx.base, 'bin');
@@ -1162,7 +1165,7 @@ describe('tripwires', () => {
       appendFileSync(join(bin, 'gh'), `#!/bin/sh\ntouch ${join(fx.base, 'gh-called')}\nexit 1\n`);
       chmodSync(join(bin, 'gh'), 0o755);
       const path = join(fx.base, 'runs.jsonl');
-      appendRecord({ runId: 'sd-20261020-100000', repo: 'o/r', issue: 1, complexity: 'normal', triageStatus: 'clear', path: 'workflow', finalState: 'merged', tuningVersion: 1, ts: '2026-10-30T00:00:00Z' }, { path });
+      for (const r of records) appendRecord({ runId: 'sd-20261020-100000', repo: 'o/r', issue: 1, complexity: 'normal', triageStatus: 'clear', path: 'workflow', finalState: 'merged', ...r }, { path });
       const res = spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'tripwires', ...args(fx.base)],
         { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, XDG_STATE_HOME: join(fx.base, 'xdg'), SHIP_DAG_TELEMETRY: path }, encoding: 'utf8' });
       fn(res, fx.base);
@@ -1179,6 +1182,11 @@ describe('tripwires', () => {
     assert.match(out.find((o) => o.id === 'T-escapes').hint, /run telemetry\.mjs escapes > <file> and pass --escapes <file>/);
     assert.equal(existsSync(join(base, 'gh-called')), false);
   }));
+
+  test('evaluates the window of tuning.json\'s version', () => cli(() => ['--now', '2026-11-01T00:00:00Z'], (res) => {
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).find((o) => o.id === 'T-fallback').state, 'tripped');
+  }, Array.from({ length: 30 }, () => ({ tuningVersion: loadTuning().version, ts: '2026-10-30T00:00:00Z' }))));
 
   test('--escapes reads a saved escapes run from a file', () => cli((base) => {
     appendFileSync(join(base, 'escapes.json'), JSON.stringify({ byTuningVersion: { 1: { prs: 60, escaped: 3 } } }));
