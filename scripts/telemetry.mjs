@@ -73,9 +73,9 @@ import { isMain } from './lib/is-main.mjs';
 import { INFRA_REASONS, RESOURCE_STOPS, ranOf } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
-import { carriedOver, deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
+import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
 import { isPr, parseRef, sameRepo } from './lib/ref.mjs';
-import { configDirs, earlierReports, readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './lib/wave-reports.mjs';
+import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
@@ -451,7 +451,8 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   const family = [stateDir, ...siblings]
     .filter((d) => { const { dev, ino } = statSync(d); const key = `${dev}:${ino}`; return !inodes.has(key) && Boolean(inodes.add(key)); });
   const familyReports = family.flatMap((d) => (d === stateDir ? reports : readWaveReports(d, { warn: () => {} })));
-  const { inWave, digests } = waveWindow(stateDir, own, familyReports, warn);
+  const ownership = reportOwnership(familyReports);
+  const { inWave, digests } = waveWindow(stateDir, own, familyReports, ownership, warn);
 
   const rounds = {};
   for (const ref of refs) {
@@ -471,7 +472,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     // A sidecar entry carries its wave's tuningVersion; a wave without one ran before the sidecar
     // did, and epic #64 reads a missing version as 0, never as today's.
     ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, {
-      existing, warn, tuningVersion: 0, reportId: basename(file, '.json'), earlier: earlierReports(familyReports, startedAt),
+      existing, warn, tuningVersion: 0, reportId: basename(file, '.json'), earlier: ownership.earlierOf(own),
       // The engine (resolveRepoSettings) runs a repo's own postSessionCheck, else the config's top-level one, else none.
       noCheckRepos: [...new Set((config?.issues ?? []).map((i) => i.repo))].filter((repo) => !(config.repos?.[repo]?.postSessionCheck ?? config.postSessionCheck)),
     }));
@@ -525,14 +526,13 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
  * and re-reviews it. A later row that carries `ran` re-ran it unless it is `carriedOver` (a `ran: false` row of its own, a retry's pre-launch failure, does end it); without `ran`, one that lists the ref with a different PR re-ran it. A report that only carries the row over with the same PR (a --retry-failed
  * run of other rows) re-runs nothing, so later rounds still review this row's PR. A later report
  * refused for a malformed row still started when it says, so it still ends the window.
+ * `ownership` is `reportOwnership(familyReports)`: whether a row is its report's own event is its `owns`.
  * @returns {{inWave: (ref: string, mtimeMs: number, reportId: unknown, path: string) => boolean, digests: Record<string, object>}}
  *   `inWave` names `path` in its warning; `digests` by ref,
  *   for the rows that did not succeed (deriveWaveRecords records only terminal rows and ignores a succeeded row's stale digest)
  */
-function waveWindow(stateDir, { report, startedAt, id }, familyReports, warn) {
+function waveWindow(stateDir, { report, startedAt, id }, familyReports, { owns }, warn) {
   const others = familyReports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
-  // One rule for whether a row is its report's own event: `carriedOver` by the reports that started before it. A row with no `ran` is its own.
-  const owns = ({ startedAt: at }, row) => !carriedOver(row, earlierReports(familyReports, at));
   const reran = (later, row) => later.report.issues.some((r) => r?.ref === row.ref && (ranOf(r) == null ? !(isPr(row.prNumber) && r.prNumber === row.prNumber) : owns(later, r)));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
   const listed = new Map(familyReports.map((r) => [r.id, new Set((r.report?.issues ?? []).filter((row) => row && owns(r, row)).map((row) => row?.ref))]));
@@ -577,6 +577,8 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
   const logged = records.filter((r) => sameRun(r.runId, runId));
   // Quiet: an unreadable report is named in `unreadable`, so it is not warned about as well.
   const reads = out.dirs.map((dir) => readWaveReports(dir, { warn: () => {} }));
+  const family = reads.flat();
+  const ownership = reportOwnership(family);
   for (const [i, dir] of out.dirs.entries()) {
     const matched = new Set();
     for (const read of reads[i]) {
@@ -586,10 +588,9 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
       if (source === 'sidecar') matched.add(JSON.stringify(entry));
       if (configFile) matched.add(configFile);
       // Quiet: a digest outside the window, or unreadable, is ingest's to warn about.
-      const { digests } = waveWindow(dir, read, reads.flat(), () => {});
+      const { digests } = waveWindow(dir, read, family, ownership, () => {});
       const terminal = read.report.issues.filter((r) => TERMINAL.has(r?.status));
-      const earlier = earlierReports(reads.flat(), read.startedAt);
-      const uncovered = terminal.filter((r) => !rowCovered(r, read, logged, runId, digests[r.ref], earlier));
+      const uncovered = terminal.filter((r) => !rowCovered(r, read, logged, runId, digests[r.ref], ownership.earlierOf(read)));
       out.terminalRows += terminal.length;
       out.prRows.total += terminal.filter((r) => isPr(r.prNumber)).length;
       out.prRows.uncovered += uncovered.filter((r) => isPr(r.prNumber)).length;

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readWaveReport, readWaveReports, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
+import { readRunFamilyReports, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
 import { appendWave } from './wave-sidecar.mjs';
 import { engineFixture, putReport } from './engine-fixture.mjs';
 
@@ -99,4 +99,55 @@ test('runFamilyDirs lists the dirs under baseDir that sameRun the run id: a -b r
   assert.deepEqual(runFamilyDirs('sd-1', base), ['SD-1-r2', 'sd-1', 'sd-1-b', 'sd-1-w2'].map((n) => join(base, n)));
   assert.deepEqual(runFamilyDirs('sd-1', join(base, 'missing')), []);
   assert.throws(() => runFamilyDirs('sd-1', join(base, 'sd-1-c')), { code: 'ENOTDIR' }, 'only a missing base dir reads as none');
+});
+
+const row = (over = {}) => ({ ref: REF, status: 'skipped', ran: false, ...over });
+const reads = (...specs) => specs.map(([id, startedAt, rows, extra]) => ({ id, path: `/${id}.json`, report: { startedAt, issues: rows }, startedAt: Date.parse(startedAt), ...extra }));
+const D1 = '2026-10-01T00:00:00Z';
+const D2 = '2026-10-02T00:00:00Z';
+const D3 = '2026-10-03T00:00:00Z';
+
+test('reportOwnership: earlierOf is each report\'s earlier parsed reports, computed once per report', () => {
+  const [w1, w2, w3] = reads(['w1', D1, [row()]], ['w2', D2, [row()]], ['w3', D3, [row()]]);
+  const own = reportOwnership([w3, w1, w2, { id: 'torn', path: '/torn.json', error: 'cannot read' }, { ...w1, id: 'nostart', startedAt: undefined }]);
+  assert.deepEqual(own.earlierOf(w3).map((r) => r.startedAt), [D1, D2]);
+  assert.equal(own.earlierOf(w3), own.earlierOf(w3));
+  assert.deepEqual(own.earlierOf(w1), []);
+});
+
+// Each case: the reports (oldest first), and the owner of REF (its id, or null).
+const OWNER_CASES = {
+  'a row that carries the earlier one over is not its report\'s own event': [[['w1', D1, [row()]], ['w2', D2, [row()]]], 'w1'],
+  'a ran:false row with a new PR is its own event': [[['w1', D1, [row({ prNumber: 5 })]], ['w2', D2, [row({ prNumber: 6 })]]], 'w2'],
+  'a ran:false row whose status changed is its own event': [[['w1', D1, [row()]], ['w2', D2, [row({ status: 'pending' })]]], 'w2'],
+  'a report that lists other refs does not disown it': [[['w1', D1, [row()]], ['w2', D2, [row({ ref: 'o/r#2' })]]], 'w1'],
+  'a read with a report and a startedAt counts whatever its error': [[['w1', D1, [row({ ran: true })]], ['w2', D2, [row({ ran: true })], { error: 'a row has no ref' }]], 'w2'],
+  'a read with no parseable startedAt never owns': [[['w1', D1, [row({ ran: true })]], ['w2', D2, [row({ ran: true })], { startedAt: undefined }]], 'w1'],
+  'no report lists the ref': [[['w1', D1, [row({ ref: 'o/r#2' })]]], null],
+};
+for (const [name, [specs, id]] of Object.entries(OWNER_CASES)) {
+  test(`reportOwnership: ownerOf, ${name}`, () => {
+    const all = reads(...specs);
+    const own = reportOwnership([...all].reverse());
+    assert.equal(own.ownerOf(REF)?.id ?? null, id);
+    if (id) assert.equal(own.ownerOf(REF).row.ref, REF);
+  });
+}
+
+test('reportOwnership: ownerOf breaks a startedAt tie by id, and owns is the negation of carriedOver by earlierOf', () => {
+  const [a, b] = reads(['a', D1, [row({ ran: true })]], ['b', D1, [row({ ran: true })]]);
+  assert.equal(reportOwnership([b, a]).ownerOf(REF).id, 'b');
+  const [w1, w2] = reads(['w1', D1, [row()]], ['w2', D2, [row()]]);
+  const own = reportOwnership([w1, w2]);
+  assert.equal(own.owns(w1, w1.report.issues[0]), true);
+  assert.equal(own.owns(w2, w2.report.issues[0]), false);
+});
+
+test('readRunFamilyReports: the reports of every dir of the state dir\'s run family, once each, however the dir is spelled', () => {
+  const fx = engineFixture({ 'sd-1': {}, 'sd-1-b': {}, 'sd-1-board': {}, 'sd-2': {} });
+  fixtures.push(fx);
+  for (const [d, id] of [['sd-1', 'w1'], ['sd-1-b', 'w2'], ['sd-1-board', 'w3'], ['sd-2', 'w4']]) put(fx.dirs[d], id, { startedAt: STARTED, issues: [] });
+  assert.deepEqual(readRunFamilyReports(fx.dirs['sd-1-b'], { warn: () => {} }).map((r) => r.id).sort(), ['w1', 'w2']);
+  assert.deepEqual(readRunFamilyReports(join(fx.base, '.', 'sd-1')).map((r) => r.id).sort(), ['w1', 'w2']);
+  assert.deepEqual(readRunFamilyReports(join(fx.base, 'sd-1-b', 'gone')), [], 'a dir that is no run dir reads as no reports');
 });

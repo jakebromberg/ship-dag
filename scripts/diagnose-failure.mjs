@@ -39,8 +39,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
 import { artifactStem, createTranscriptScan, buildDiagnosis, MAX_REASON_CHARS } from './lib/failure.mjs';
-import { carriedOver } from './lib/wave-records.mjs';
-import { earlierReports, readWaveReports } from './lib/wave-reports.mjs';
+import { readRunFamilyReports, reportOwnership } from './lib/wave-reports.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 
 export { MAX_REASON_CHARS };
@@ -65,7 +64,8 @@ export function digestPathForRef(stateDir, ref) {
 }
 
 /**
- * The wave report that owns `ref`'s latest event: the latest report, by parsed `startedAt` (never mtime, which a
+ * The wave report that owns `ref`'s latest event, as `reportOwnership` reads the run family of `stateDir` (the dir and its
+ * suffixed retry and resume siblings): the latest report, by parsed `startedAt` (never mtime, which a
  * copied state dir loses and a tie leaves to readdir order), whose row for `ref` is not one it only carries over
  * (`carriedOver` against the reports that started before it, as ingest reads them). A report that cannot be read, or
  * has no parseable `startedAt`, is skipped with a warning (the earliest report that lists `ref` has nothing earlier to
@@ -77,18 +77,7 @@ export function digestPathForRef(stateDir, ref) {
  * @returns {{id: string, path: string, report: object, startedAt: number, row: object}|null} null when no report lists `ref`
  */
 export function owningReport(stateDir, ref, opts) {
-  return ownerOf(usableReports(stateDir, opts), ref);
-}
-
-/** The reports of `stateDir` that read cleanly, oldest `startedAt` first (a tie by id); a refused one was warned about by `readWaveReports`. */
-const usableReports = (stateDir, { warn } = {}) => readWaveReports(stateDir, { warn })
-  .filter((r) => !r.error)
-  .sort((x, y) => x.startedAt - y.startedAt || (x.id < y.id ? -1 : 1));
-
-/** `owningReport`'s choice among `reads` (`usableReports`' result). */
-function ownerOf(reads, ref) {
-  const listing = reads.map((r) => ({ ...r, row: r.report.issues.find((row) => row?.ref === ref) })).filter((r) => r.row);
-  return listing.findLast((r) => !carriedOver(r.row, earlierReports(reads, r.startedAt))) ?? null;
+  return reportOwnership(readRunFamilyReports(stateDir, opts)).ownerOf(ref);
 }
 
 /**
@@ -108,8 +97,8 @@ function ownerOf(reads, ref) {
  * @param {{warn?: (m: string) => void}} [opts]  where a report that cannot be read is warned about (stderr by default)
  */
 export function diagnose(stateDir, ref, opts) {
-  const reads = usableReports(stateDir, opts);
-  const owner = ownerOf(reads, ref);
+  const { reads, ownerOf } = reportOwnership(readRunFamilyReports(stateDir, opts));
+  const owner = ownerOf(ref);
 
   // The engine already answered this if it digested the run — prefer that over
   // re-reading a transcript that may be megabytes.
