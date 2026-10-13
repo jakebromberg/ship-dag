@@ -217,6 +217,14 @@ describe('T-coverage', () => {
     assert.equal(cov(reached(100, 99), rows).cost.state, 'holding');
   });
 
+  test('the cost share counts only records inside the window: earlier ones predate cost.implement and would read as an ingestion gap, and with no window date set it is insufficient-data', () => {
+    const early = many(100, { reportId: 'w1', ts: '2026-10-01T00:00:00Z' });
+    const late = many(5, { reportId: 'w1', cost: { implement: { costUsd: 1 } } });
+    const out = cov([...early, ...late], audited(100, 0));
+    assert.deepEqual([out.cost.state, out.cost.n, out.state], ['holding', 5, 'holding']);
+    assert.equal(cov([...early, ...late], audited(100, 0), {}).cost.state, 'insufficient-data');
+  });
+
   test('records that never reached implement, or have no reportId, are not in the cost share', () => {
     const out = cov([...many(5, { reportId: 'w1', cost: { implement: { costUsd: 1 } } }), ...many(40, { implStatus: null, reportId: 'w1' }), ...many(40)], audited(100, 0));
     assert.deepEqual([out.cost.n, out.cost.k], [5, 5]);
