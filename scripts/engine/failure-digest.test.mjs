@@ -113,19 +113,63 @@ test('writeFailureDigests: no non-succeeded rows writes nothing and creates no d
   assert.deepEqual(await writeFailureDigests({ configDir: dir, report: {} }), []);
 });
 
-const writeReport = (dir, id, issues) => {
+const W1 = '2026-10-01T00:00:00Z';
+const W2 = '2026-10-02T00:00:00Z';
+/** Write report `id` to `<dir>/reports/`, as run.mts leaves it, and return it as the report object the writer is given. */
+const writeReport = (dir, id, issues, startedAt = W1) => {
   mkdirSync(join(dir, 'reports'), { recursive: true });
-  writeFileSync(join(dir, 'reports', `${id}.json`), JSON.stringify({ startedAt: '2026-10-01T00:00:00Z', issues }));
+  const report = { startedAt, issues };
+  writeFileSync(join(dir, 'reports', `${id}.json`), JSON.stringify(report));
+  return report;
 };
 
 test('writeFailureDigests: a row an earlier report carried over keeps its digest, stamp and all', async () => {
   const dir = configDir({ log: result({ result: 'first' }) });
   const row = { ref: REF, status: 'skipped', ran: false };
-  const [p] = await writeFailureDigests({ configDir: dir, report: { issues: [row] }, reportId: 'w1' });
-  writeReport(dir, 'w1', [row]);
-  writeReport(dir, 'w2', [row]);
+  const [p] = await writeFailureDigests({ configDir: dir, report: writeReport(dir, 'w1', [row], W1), reportId: 'w1' });
+  const w2 = writeReport(dir, 'w2', [row], W2);
   writeFileSync(join(dir, 'logs', `issue-${STEM}.log`), result({ result: 'later' }));
-  assert.deepEqual(await writeFailureDigests({ configDir: dir, report: { issues: [row] }, reportId: 'w2' }), []);
+  assert.deepEqual(await writeFailureDigests({ configDir: dir, report: w2, reportId: 'w2' }), []);
+  assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w1');
+});
+
+test('writeFailureDigests: a carried-over row with no digest of its own still gets one', async () => {
+  const dir = configDir({ log: result({ result: 'first' }) });
+  const row = { ref: REF, status: 'skipped', ran: false };
+  writeReport(dir, 'w1', [row], W1);
+  const [p] = await writeFailureDigests({ configDir: dir, report: writeReport(dir, 'w2', [row], W2), reportId: 'w2' });
+  assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w2');
+});
+
+test('writeFailureDigests: the report being digested, on disk as run.mts leaves it, is not its own earlier report', async () => {
+  const dir = configDir({ log: result({ result: 'first' }) });
+  const p = join(dir, 'failure-digest', `issue-${STEM}.json`);
+  mkdirSync(join(dir, 'failure-digest'));
+  const row = { ref: REF, status: 'pending', ran: false, failureReason: 'memory-critical' };
+  const report = writeReport(dir, 'w2', [row], W2);
+  for (const reportId of ['w2', undefined]) {
+    writeFileSync(p, JSON.stringify({ reportId: 'w1' }));
+    await writeFailureDigests({ configDir: dir, report, reportId });
+    assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, reportId, `reportId ${reportId}`);
+  }
+});
+
+test('writeFailureDigests: only a report that started before this one, and parses a start, counts as earlier, as ingest reads them', async () => {
+  const dir = configDir({ log: result({ result: 'first' }) });
+  const p = join(dir, 'failure-digest', `issue-${STEM}.json`);
+  mkdirSync(join(dir, 'failure-digest'));
+  const row = { ref: REF, status: 'pending', ran: false };
+  const report = writeReport(dir, 'w2', [row], W2);
+  const cases = { 'a later report': { startedAt: '2026-10-03T00:00:00Z' }, 'one with no startedAt': {}, 'one with an unparseable startedAt': { startedAt: 'soon' }, 'one that started with it': { startedAt: W2 } };
+  for (const [name, over] of Object.entries(cases)) {
+    writeFileSync(join(dir, 'reports', 'other.json'), JSON.stringify({ ...over, issues: [row] }));
+    writeFileSync(p, JSON.stringify({ reportId: 'w1' }));
+    await writeFailureDigests({ configDir: dir, report, reportId: 'w2' });
+    assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w2', name);
+  }
+  writeReport(dir, 'other', [row], W1); // control: an earlier report listing the row does carry it over
+  writeFileSync(p, JSON.stringify({ reportId: 'w1' }));
+  await writeFailureDigests({ configDir: dir, report, reportId: 'w2' });
   assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w1');
 });
 
@@ -134,6 +178,7 @@ test('writeFailureDigests: any other row is digested afresh, a ran:false one its
   const p = join(dir, 'failure-digest', `issue-${STEM}.json`);
   mkdirSync(join(dir, 'failure-digest'));
   writeReport(dir, 'w1', [{ ref: REF, status: 'failed', ran: false }, { ref: REF, status: 'failed', ran: false, prNumber: 7 }]);
+  const w2 = (row) => ({ startedAt: W2, issues: [{ ref: REF, ...row }] });
   const cases = [
     { status: 'failed', ran: true }, { status: 'failed' }, { status: 'failed', ran: 'false' }, { status: 'failed', ran: 0 }, { status: 'failed', ran: null },
     { status: 'failed', ran: false }, // a worktree-setup failure repeated on retry
@@ -142,7 +187,7 @@ test('writeFailureDigests: any other row is digested afresh, a ran:false one its
   ];
   for (const row of cases) {
     writeFileSync(p, JSON.stringify({ reportId: 'w1' }));
-    await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, ...row }] }, reportId: 'w2' });
+    await writeFailureDigests({ configDir: dir, report: w2(row), reportId: 'w2' });
     assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w2', JSON.stringify(row));
   }
 });
