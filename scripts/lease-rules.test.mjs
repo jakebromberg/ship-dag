@@ -4,8 +4,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { importCo } from './lib/co-home.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(root, p), 'utf8');
@@ -95,8 +96,7 @@ test('a compound command is exempt only when every segment is light', () => {
 });
 
 test("claude-orchestrator's heavy-command matcher matches every heavy command in repo-ci-profiles.json", async () => {
-  const co = process.env.CO_HOME || '/Users/jake/Developer/claude-orchestrator';
-  const { isHeavyCommand } = await import(resolve(co, 'dist/src/index.js'));
+  const { isHeavyCommand } = await importCo(process.env, ['isHeavyCommand']);
   const { profiles } = JSON.parse(read('references/repo-ci-profiles.json'));
   const missed = [];
   for (const [repo, { commands = [] }] of Object.entries(profiles)) {
