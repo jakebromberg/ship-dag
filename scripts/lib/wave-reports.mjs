@@ -31,22 +31,38 @@ export function readWaveReport(path) {
 }
 
 /**
- * Every `*.json` under `<stateDir>/state/reports/`, each read once by `readWaveReport`; one with an
+ * Every `*.json` directly under `reportsDir`, each read once by `readWaveReport`; one with an
  * `error` is warned about, for a caller to refuse or skip. A missing dir reads as no reports.
- * @param {string} stateDir
+ * @param {string} reportsDir
  * @param {{warn?: (m: string) => void}} [opts]
  * @returns {ReturnType<typeof readWaveReport>[]}
  */
-export function readWaveReports(stateDir, { warn = (m) => console.error(m) } = {}) {
-  const dir = join(stateDir, 'state', 'reports');
+export function readReportsDir(reportsDir, { warn = (m) => console.error(m) } = {}) {
   let names;
-  try { names = readdirSync(dir).filter((n) => n.endsWith('.json')).sort(); } catch { return []; }
+  try { names = readdirSync(reportsDir).filter((n) => n.endsWith('.json')).sort(); } catch { return []; }
   return names.map((name) => {
-    const read = readWaveReport(join(dir, name));
+    const read = readWaveReport(join(reportsDir, name));
     if (read.error) warn(read.error);
     return read;
   });
 }
+
+/**
+ * Every `*.json` under `<stateDir>/state/reports/`, as `readReportsDir` reads them.
+ * @param {string} stateDir
+ * @param {{warn?: (m: string) => void}} [opts]
+ * @returns {ReturnType<typeof readWaveReport>[]}
+ */
+export const readWaveReports = (stateDir, opts) => readReportsDir(join(stateDir, 'state', 'reports'), opts);
+
+/**
+ * The parsed reports of `reads` (`readWaveReports`' reads) that started before `startedAt`: what `carriedOver`
+ * compares a row to. A report with no parseable `startedAt`, or none at all, is no earlier report.
+ * @param {ReturnType<typeof readWaveReport>[]} reads
+ * @param {number} startedAt epoch ms
+ * @returns {object[]}
+ */
+export const earlierReports = (reads, startedAt) => reads.filter((r) => r.report && Number.isFinite(r.startedAt) && r.startedAt < startedAt).map((r) => r.report);
 
 /**
  * The routing a report ran under, given as the `{report, startedAt}` `readWaveReport` returns for it:

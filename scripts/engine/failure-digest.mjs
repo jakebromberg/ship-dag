@@ -27,7 +27,7 @@ import readline from 'node:readline';
 import path from 'node:path';
 import { artifactStem, createTranscriptScan, buildDiagnosis } from '../lib/failure.mjs';
 import { carriedOver } from '../lib/wave-records.mjs';
-import { readWaveReport } from '../lib/wave-reports.mjs';
+import { earlierReports, readReportsDir } from '../lib/wave-reports.mjs';
 
 /**
  * Stream one transcript, returning the terminal record and whether the session
@@ -77,13 +77,14 @@ export function readExitCode(metaPath) {
  * `reportId` (the stem of the report the rows came from) is stamped into each digest, so a reader
  * can assign the digest to its wave without trusting the file's mtime, which a copied state dir loses.
  * A later wave overwrites a ref's digest, so the stamp names the latest wave only, except for a row that
- * is a row `carriedOver` by an earlier report of `<configDir>/reports/`: its transcript is unchanged, so an existing
+ * is a row `carriedOver` by an earlier report of `<configDir>/reports/` (one that started before `report.startedAt`, as ingest reads them, so
+ * never this report itself, which is on disk by then; none count when `report.startedAt` does not parse): its transcript is unchanged, so an existing
  * digest is kept, still stamped with the report that wrote it. Any other row, a `ran: false` one included (a launch
  * stop, or a worktree-setup failure that happened again), is this report's own event and gets a fresh digest.
  *
  * Best-effort per row: one row's unreadable transcript or metadata leaves that
  * field null rather than aborting the pass over the others.
- * @param {{configDir: string, report: {issues?: Array<object>}, reportId?: string}} opts
+ * @param {{configDir: string, report: {startedAt?: string, issues?: Array<object>}, reportId?: string}} opts
  * @returns {Promise<string[]>} paths written
  */
 export async function writeFailureDigests({ configDir, report, reportId }) {
@@ -93,10 +94,9 @@ export async function writeFailureDigests({ configDir, report, reportId }) {
   const digestDir = path.join(configDir, 'failure-digest');
   fs.mkdirSync(digestDir, { recursive: true });
 
-  const reportsDir = path.join(configDir, 'reports');
-  const earlier = fs.existsSync(reportsDir)
-    ? fs.readdirSync(reportsDir).filter((n) => n.endsWith('.json') && n !== `${reportId}.json`).map((n) => readWaveReport(path.join(reportsDir, n)).report).filter(Boolean)
-    : [];
+  // The same earlier reports ingest compares a row to: those that started before this one, never this report itself.
+  const startedAt = typeof report?.startedAt === 'string' ? Date.parse(report.startedAt) : NaN;
+  const earlier = earlierReports(readReportsDir(path.join(configDir, 'reports'), { warn: () => {} }), startedAt);
   const written = [];
   for (const row of rows) {
     const stem = artifactStem(row.ref);
