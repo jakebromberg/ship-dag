@@ -1234,7 +1234,11 @@ describe('SKILL.md telemetry wiring', () => {
   });
 
   test('documents every telemetry.mjs subcommand the CLI dispatches', () => {
-    for (const cmd of ['ingest-wave', 'escapes', 'audit', 'run-id']) assert.ok(skill.includes(`telemetry.mjs" ${cmd}`), cmd);
+    // The list comes from the CLI's own usage line, so a new subcommand fails here until SKILL.md documents it.
+    const source = readFileSync(fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'utf8');
+    const cmds = source.match(/usage: telemetry\.mjs <([\w|-]+)>/)[1].split('|');
+    assert.ok(cmds.includes('tripwires'));
+    for (const cmd of cmds) assert.ok(skill.includes(`telemetry.mjs" ${cmd}`), cmd);
   });
 });
 
