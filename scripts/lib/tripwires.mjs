@@ -8,6 +8,7 @@
 // and `gh` is never called: T-escapes takes a saved `telemetry.mjs escapes` run.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parsePr } from './ref.mjs';
 import { sameRun } from './run-id.mjs';
 import { bootstrapCI, groupBy, mean, wilson } from './stats.mjs';
 
@@ -15,6 +16,8 @@ export const TRIPWIRES_PATH = fileURLToPath(new URL('../../references/tripwires.
 /** The states, worst first: the order a tripwire made of several parts reports its worst. */
 export const STATES = ['tripped', 'holding', 'insufficient-data', 'pending-instrumentation'];
 const DAY = 86_400_000;
+/** `telemetry.mjs audit`'s refusal for a run family with no engine dir: the one audit error T-coverage skips. */
+export const NO_ENGINE_DIR = /^no dir under .* belongs to run /;
 
 export const loadTripwires = (path = TRIPWIRES_PATH) => JSON.parse(readFileSync(path, 'utf8'));
 
@@ -29,7 +32,8 @@ export function tripwireContext(records, { version, now = Date.now(), escapes, a
 
 const ver = (r) => r.tuningVersion ?? 0;
 const at = (r, path) => path.split('.').reduce((v, k) => v?.[k], r);
-const isPr = (r) => r.finalState === 'merged' && r.pr != null;
+/** A merged record whose `pr` parsePr reads (ref.mjs's `isPr` tests a bare number). */
+const mergedPr = (r) => r.finalState === 'merged' && parsePr(r.pr, r.repo) != null;
 // ingest-wave writes complexitySource "default" when the routing named no complexity and "normal" was assumed: a per-tier metric cannot count it.
 const known = (r) => r.complexitySource !== 'default';
 const worst = (parts) => STATES.find((s) => parts.some((p) => p.state === s)) ?? 'insufficient-data';
@@ -44,7 +48,7 @@ function share(k, n, trips, min, sample = n) {
 
 /** `fn` over the merged PRs that carry `t.source`, with the coverage share; pending-instrumentation when none does. */
 function gated(t, { window }, fn) {
-  const prs = window.filter(isPr);
+  const prs = window.filter(mergedPr);
   const have = prs.filter((r) => at(r, t.source) !== undefined);
   if (!have.length) return { state: 'pending-instrumentation', source: t.source };
   return { ...fn(have), coverage: { have: have.length, of: prs.length } };
@@ -60,14 +64,15 @@ const EVALUATORS = {
   'explore-unique': (t, ctx) => gated(t, ctx, (have) => byTier(have, (xs) => share(xs.filter((r) => at(r, t.source) >= 1).length, xs.length, t.trips, t.minSample))),
 
   scoped: (t, ctx) => gated(t, ctx, (have) => {
-    const pairs = have.filter((r) => r.scopedMiss != null);
-    const misses = pairs.reduce((s, r) => s + r.scopedMiss, 0);
+    const pairs = have.filter((r) => at(r, t.source) != null);
+    const misses = pairs.reduce((s, r) => s + at(r, t.source), 0);
     return { state: pairs.length < t.minSample ? 'insufficient-data' : misses >= t.trips.atLeast ? 'tripped' : 'holding', pairs: pairs.length, misses };
   }),
 
   reach: (t, ctx) => gated(t, ctx, (have) => {
-    const rs = have.filter((r) => r.reach === 'in-diff');
-    const sum = (k) => rs.reduce((s, r) => s + (r.exploreOutsideDiff?.[k] ?? 0), 0);
+    // A null value is a failed files fetch (W5): instrumented, but not a sample.
+    const rs = have.filter((r) => r.reach === 'in-diff' && at(r, t.source) != null);
+    const sum = (k) => rs.reduce((s, r) => s + (at(r, t.source)[k] ?? 0), 0);
     return share(sum('outside'), sum('total'), t.trips, t.minSample, rs.length);
   }),
 
@@ -78,7 +83,7 @@ const EVALUATORS = {
 
   // A backfilled earlier report can absorb a later re-run's sessions until #107 lands (PR #103 `## Deferred`), so a version's mean can read low.
   cost: (t, ctx) => gated(t, ctx, () => {
-    const used = ctx.records.filter((r) => isPr(r) && r.reportId && typeof at(r, t.source) === 'number');
+    const used = ctx.records.filter((r) => mergedPr(r) && r.reportId && typeof at(r, t.source) === 'number');
     const first = (rs) => [...rs].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).slice(0, t.minSample).map((r) => at(r, t.source));
     return byTier(used.filter((r) => ver(r) === ctx.version), (xs, tier) => {
       const earlier = used.filter((r) => known(r) && r.complexity === tier && ver(r) < ctx.version);
@@ -106,6 +111,8 @@ const EVALUATORS = {
   },
 
   // Reads `audit`'s terminalRows rather than walking the reports again, and never calls rowCovered (it needs each row's failure digest).
+  // The window is family-granular: a family with any current-version record at or after `since` is audited whole, so a run
+  // that spans `since` brings its earlier rows into the share too. A per-row cut would need audit to window its reports by date.
   coverage: (t, ctx) => {
     const families = [];
     for (const r of ctx.records) if (!families.some((f) => sameRun(f, r.runId))) families.push(r.runId);
@@ -114,7 +121,10 @@ const EVALUATORS = {
     const fams = families.map((runId) => {
       if (!t.since || !ctx.window.some((r) => sameRun(r.runId, runId) && r.ts >= t.since)) return { runId, state: 'insufficient-data', reason: 'before the window' };
       let a;
-      try { a = ctx.audit(runId); } catch { skipped += 1; return null; } // no engine dir: neither tripped nor holding
+      try { a = ctx.audit(runId); } catch (err) { // no engine dir: neither tripped nor holding; anything else is a real failure
+        if (!NO_ENGINE_DIR.test(err?.message)) throw err;
+        skipped += 1; return null;
+      }
       const covered = a.terminalRows - a.notIngested.reduce((s, w) => s + w.refs.length, 0);
       rows.covered += covered; rows.total += a.terminalRows;
       rows.prCovered += a.prRows.total - a.prRows.uncovered; rows.prTotal += a.prRows.total;
