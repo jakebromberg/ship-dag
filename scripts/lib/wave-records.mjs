@@ -98,13 +98,14 @@ const implStatusOf = (row, pr) => (row.status === 'skipped' || row.status === 'p
 /**
  * Whether `row` is one a report only carries over: it launched no session (`ran: false`) and an `earlier` report of
  * the run family (parsed reports, as `readWaveReports` reads them) lists the same ref with the same status and PR.
- * Any other `ran: false` row is its own pre-launch event. A PR-less failure that a retry re-runs (`implStatus`
- * `error`) is never carried over: a repeated worktree-setup failure is that report's own. A `blocked` row, which
- * no retry re-runs, is carried over like any other. A `ran` that is not a boolean is no fact (`ranOf`).
+ * Any other `ran: false` row is its own pre-launch event. A failure that a retry re-runs (a row that did not succeed
+ * and has no PR the gate reviews, `implStatus` `error`) is never carried over: a repeated worktree-setup failure is that
+ * report's own. A succeeded row with no PR (a find-pr merge, which `implStatusOf` also reads as `error`) is no failure,
+ * and a `blocked` row, which no retry re-runs, is carried over like any other. A `ran` that is not a boolean is no fact (`ranOf`).
  */
 export const carriedOver = (row, earlier = []) => {
   const pr = isPr(row.prNumber) ? row.prNumber : null;
-  return ranOf(row) === false && implStatusOf(row, pr) !== 'error'
+  return ranOf(row) === false && (row.status === 'succeeded' || implStatusOf(row, pr) !== 'error')
     && earlier.some((rep) => rep?.issues?.some((r) => r?.ref === row.ref && r.status === row.status && (isPr(r.prNumber) ? r.prNumber : null) === pr));
 };
 
@@ -198,7 +199,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
   const blockOn = entry?.blockOn ?? DEFAULT_BLOCK_ON;
   const version = entry?.tuningVersion ?? tuningVersion ?? loadTuning().version;
 
-  const noPr = rows.filter((r) => r.status === 'succeeded' && !supplied(r, outcomes?.[r.ref])).map((r) => r.ref);
+  const noPr = rows.filter((r) => r.status === 'succeeded' && !carriedOver(r, earlier) && !supplied(r, outcomes?.[r.ref])).map((r) => r.ref);
   const lastBlocks = [];
 
   const seen = [...existing];

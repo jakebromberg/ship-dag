@@ -1182,6 +1182,49 @@ for (const [name, later, want] of [
   }));
 }
 
+// A find-pr row (succeeded, no PR, so routed to find-pr) is not a failure a retry re-runs: a --retry-failed report that re-lists it
+// as ran false carries it over. The retry's ingest needs no outcome for it and appends no second merge of the same PR.
+test('ingest-wave: a find-pr merge a --retry-failed report re-lists (succeeded, no PR, ran false) is carried over: no outcome needed, no second merge record', () => {
+  const noPr = { prUrl: undefined, prNumber: undefined };
+  const fx = engineFixture({ [RUN]: {
+    reports: { 'w1.json': stateReport([stateRow(REF, { ...noPr, ran: true, sessionIds: ['a'] })]), 'w2.json': stateReport([stateRow(REF, { ...noPr, ran: false })], { startedAt: T1, finishedAt: T2 }) },
+    sidecar: [sidecarEntry()], files: logOf(REF, sess('a', 1)),
+  } });
+  const log = tmpLog();
+  const [w1, w2] = ['w1.json', 'w2.json'].map((n) => reportPath(fx.dirs[RUN], n));
+  const outcomes = { [REF]: { pr: 11 } };
+  try {
+    assert.equal(ingestWave(w1, outcomes, { path: log, warn: () => {} }).appended, 1);
+    assert.deepEqual(audit(RUN, { baseDir: fx.base, records: readRecords(log), warn: () => {} }).notIngested, []);
+    assert.equal(ingestWave(w2, {}, { path: log, warn: () => {} }).appended, 0);
+    assert.equal(ingestWave(w2, outcomes, { path: log, warn: () => {} }).appended, 0);
+    assert.deepEqual(readRecords(log).map((r) => [r.reportId, r.ran, r.finalState, r.pr]), [['w1', true, 'merged', 11]]);
+  } finally {
+    fx.cleanup();
+    rmSync(log, { force: true });
+  }
+});
+
+// The earlier report still owns the carried merge's verdict: a last round that blocks (written during the later report) refuses the earlier
+// report's own ingest, though the later report's ingest records nothing for it.
+test('ingest-wave: a carried-over merge whose last round blocks leaves the later report empty and refuses the earlier one', () => {
+  const fx = engineFixture({ [RUN]: {
+    reports: { 'w1.json': stateReport([stateRow(REF, { ran: true, sessionIds: ['a'] })]), 'w2.json': stateReport([stateRow(REF, { ran: false })], { startedAt: T1, finishedAt: T2 }) },
+    sidecar: [sidecarEntry()], files: logOf(REF, sess('a', 1)),
+  } });
+  const log = tmpLog();
+  const [w1, w2] = ['w1.json', 'w2.json'].map((n) => reportPath(fx.dirs[RUN], n));
+  try {
+    putReview(fx.dirs[RUN], REF, '', [], '2026-10-08T19:30:00.000Z');
+    putReview(fx.dirs[RUN], REF, '.r2', [blocker], '2026-10-08T20:30:00.000Z');
+    assert.equal(ingestWave(w2, {}, { path: log, warn: () => {} }).appended, 0);
+    assert.throws(() => ingestWave(w1, {}, { path: log, warn: () => {} }), /half-supplied wave: a PR whose last review round blocks/);
+  } finally {
+    fx.cleanup();
+    rmSync(log, { force: true });
+  }
+});
+
 // escalation-policy.md point E, item 5: a continuation that finishes after its report's 6.3 already ran (point E's grill
 // chose defer or stop, or the session resumed) is recorded by adding its outcome to that report's outcomes file and
 // re-running 6.3. The first ingest recorded the death alone; the re-run must dedupe that death and append the continuation.
