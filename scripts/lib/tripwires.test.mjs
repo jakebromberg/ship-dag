@@ -292,6 +292,11 @@ describe('T-coverage', () => {
     assert.equal(cov([...early, ...late], audited(100, 0), { since: null }).cost.state, 'insufficient-data');
   });
 
+  test('a record of a row that launched no session (ran false) never carries cost, so it is not in the cost share', () => {
+    const out = cov([...many(5, { reportId: 'w1', cost: { implement: { costUsd: 1 } } }), ...many(40, { reportId: 'w1', ran: false, implStatus: 'error' })], audited(100, 0));
+    assert.deepEqual([out.cost.state, out.cost.n, out.cost.k], ['holding', 5, 5]);
+  });
+
   test('records that never reached implement, or have no reportId, are not in the cost share', () => {
     const out = cov([...many(5, { reportId: 'w1', cost: { implement: { costUsd: 1 } } }), ...many(40, { implStatus: null, reportId: 'w1' }), ...many(40)], audited(100, 0));
     assert.deepEqual([out.cost.n, out.cost.k], [5, 5]);
