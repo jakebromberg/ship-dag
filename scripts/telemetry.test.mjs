@@ -780,6 +780,15 @@ test('ingest-wave: --outcomes pressureOverride: true is accepted and reaches the
   assert.equal(log[0].pressureOverride, true);
 }));
 
+test('ingest-wave: pressureOverride on a resumed rate-limit death lands on the death, not the continuation', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null })]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
+  putDigest(dir, REF, { failureReason: 'rate-limited' });
+  // The overridden engine ran the session that died; point E's continuation is a later resume without CO_PRESSURE_OVERRIDE.
+  const { records } = ingest(dir, { [REF]: { pr: 2, pressureOverride: true } });
+  assert.deepEqual(records.map((r) => [r.finalState, r.failureReason, r.pressureOverride]), [['deferred', 'rate-limited', true], ['merged', null, undefined]]);
+}));
+
 test('ingest-wave: finalState merged on a PR-less row is accepted alongside the PR --outcomes supplies', () => withStateDir({
   reports: { 'w1.json': stateReport([prLess]) }, sidecar: [sidecarEntry()],
 }, (dir) => {
@@ -1268,7 +1277,7 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
         // A resumed death is the rate-limited record, then a continuation with no rate-limit of its own.
         if (records.length === 2) assert.deepEqual(records.map((r) => [r.implStatus, r.failureReason]).slice(0, 1), [['error', 'rate-limited']]);
         assert.ok(records.slice(1).every((r) => r.failureReason === null));
-        // Only the point-F cell stamps pressureOverride, and it reaches every derived record.
+        // Only the point-F cell stamps pressureOverride, and it reaches every derived record except a resumed death's continuation (see the test below).
         assert.ok(records.every((r) => (r.pressureOverride === true) === (outcome[REF].pressureOverride === true)), JSON.stringify(outcome));
       }));
     });
