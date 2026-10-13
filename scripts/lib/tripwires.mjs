@@ -39,7 +39,7 @@ const clears = (ci, trips) => ci.hi < (trips.upperBelow ?? -Infinity) || ci.lo >
 function share(k, n, trips, min, sample = n) {
   if (sample < min) return { state: 'insufficient-data', k, n };
   const ci = wilson(k, n);
-  return { state: clears(ci, trips) ? 'tripped' : 'holding', k, n, rate: k / n, ...ci };
+  return { state: clears(ci, trips) ? 'tripped' : 'holding', k, n, rate: n ? k / n : 0, ...ci };
 }
 
 /** `fn` over the merged PRs that carry `t.source`, with the coverage share; pending-instrumentation when none does. */
@@ -79,7 +79,7 @@ const EVALUATORS = {
   // A backfilled earlier report can absorb a later re-run's sessions until #107 lands (PR #103 `## Deferred`), so a version's mean can read low.
   cost: (t, ctx) => gated(t, ctx, () => {
     const used = ctx.records.filter((r) => isPr(r) && r.reportId && typeof at(r, t.source) === 'number');
-    const first = (rs) => rs.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).slice(0, t.minSample).map((r) => at(r, t.source));
+    const first = (rs) => [...rs].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).slice(0, t.minSample).map((r) => at(r, t.source));
     return byTier(used.filter((r) => ver(r) === ctx.version), (xs, tier) => {
       const earlier = used.filter((r) => known(r) && r.complexity === tier && ver(r) < ctx.version);
       const baselineVersion = Math.max(...earlier.map(ver));
@@ -120,9 +120,11 @@ const EVALUATORS = {
       rows.prCovered += a.prRows.total - a.prRows.uncovered; rows.prTotal += a.prRows.total;
       return { runId, ...share(covered, a.terminalRows, t.trips.rows, t.minSample) };
     }).filter(Boolean);
-    const reached = ctx.window.filter((r) => r.reportId && r.implStatus != null);
+    // Inside the window only: a record from before cost.implement landed (mid-version) reached implement with none, and would read as an ingestion gap.
+    const reached = ctx.window.filter((r) => t.since && r.ts >= t.since && r.reportId && r.implStatus != null);
     const withCost = reached.filter((r) => typeof at(r, t.source) === 'number');
-    const cost = withCost.length ? share(withCost.length, reached.length, t.trips.cost, t.minSample) : { state: 'pending-instrumentation', source: t.source };
+    const cost = !t.since ? { state: 'insufficient-data', reason: 'no window date set' }
+      : withCost.length ? share(withCost.length, reached.length, t.trips.cost, t.minSample) : { state: 'pending-instrumentation', source: t.source };
     return { state: worst([{ state: worst(fams) }, cost]), rows, families: fams, skipped, cost };
   },
 };
