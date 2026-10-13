@@ -102,6 +102,7 @@ for (const [label, trigger, wait, anyway] of [
   ['Engine invocation', /the step-4 preflight reads `critical-hitl`: `critical` after 15 minutes waited/, /the summed-wait counter, to 0/, /an inline `CO_PRESSURE_OVERRIDE=critical-as-warning` prefix plus `--parallel 1`/],
   ['Step 6\\.2 CI re-run', /summed lease waits pass 15 minutes at `critical`, or pass 30 minutes at any pressure/, /the summed lease-wait counter, to 0/, /at non-critical pressure a plain rerun, since the override changes nothing below `critical`/],
   ['Review\\/fix hand-off', /the step 4d\/5 preflight reads `critical-hitl`, or one PR returns `lease-wait` twice in a run/, /the summed-wait counter, to 0, and that PR's return count/, /hands over exactly 1 PR, with no override prefix/],
+  ['Resource-stop route', /a ref stops for resources a second time in a run, whatever the pressure/, /the summed-wait counter, to 0, and that ref's stop count/, /a filtered re-run takes the engine row's override; a continuation agent takes the hand-off row's rule/],
 ]) {
   test(`point F's table pins the ${label} row's three cells`, () => {
     const [, t, w, a] = row(label.replaceAll('\\', ''));
@@ -116,6 +117,18 @@ test('step 4 hitl bullet and the preflight header point at the table', () => {
   assert.ok(hitl, 'step 4 has an action: "hitl" bullet');
   assert.match(hitl, /per-step table in `references\/escalation-policy\.md`/);
   assert.match(read('scripts/resource-preflight.mjs'), /point F's per-step table in references\/escalation-policy\.md/);
+});
+
+test('the resource route caps a ref at two resource stops in a run, in SKILL.md and the policy', () => {
+  const route = lines.find((l) => l.startsWith('  - `resource` —'));
+  assert.ok(route, 'step 5 has a resource route');
+  assert.match(route, /second resource stop in a run[^.]*point F whatever the pressure/);
+  const stops = policy.slice(policy.indexOf('## Resource stops')).split(/\n## /)[0];
+  assert.match(stops, /second resource stop in a run[^.]*point F whatever the pressure/);
+});
+
+test('step 4c sends a PR-less resource stop to the resource route, not point B', () => {
+  assert.match(skill, /only a `failed`\/`blocked` row with \*\*no PR\*\* is an implement stall → \*\*HITL point B\*\* \(step 5\), unless the engine stopped it for resources/);
 });
 
 test('README mentions that review and fix fan-out is sized from lease capacity', () => {
