@@ -28,22 +28,55 @@ const HANDOFF_RULES = [
   /no environment prefix reaches an Agent-tool subagent, so `CO_PRESSURE_OVERRIDE` cannot apply/,
   /say so when you offer the choice/,
 ];
-const ROUTING = /A Review or fix subagent that ends with `orchestrator-stop: lease-wait` has given up on the lease: that is not a review verdict and not a model failure, so write no round file for it, put its PR back in the hand-off queue for the next capacity read, and after two such returns for the same PR in a run go to HITL point F\./;
+const ROUTING = /A Review or fix subagent has given up on the lease when its return ends with the closing line `orchestrator-stop: lease-wait`/;
+const FALLBACK_SIGNAL = /on the workflow\.js fallback, where returns are schema-constrained, a review return with `status: "error"`, `notes: "lease-wait"`, an empty `path` and `findingCount` 0/;
+const CHECK_FIRST = /Check for it before running `review-gate\.mjs` or reading a `\/review-loop` result as non-convergence, and never run `review-gate\.mjs` on such a return/;
+const REQUEUE = /not a review verdict and not a model failure, so no round file exists for it \(the Review subagent writes none and deletes a partial one it started[^)]*\), put its PR back in the hand-off queue for the next capacity read, and after two such returns for the same PR in a run go to HITL point F/;
 const RETURN = /If you gave up on the lease \(`orchestrator-stop: lease-wait`\), return `status: "error"` with `notes: "lease-wait"`\./;
+// The Review block and workflow.js's reviewPrompt must agree on the file rule.
+const NO_REVIEW_FILE = /If you gave up on the lease \(`orchestrator-stop: lease-wait`\), write no review file and delete a partial one you started\./;
+const CLOSING_LINE_RETURN = /return only the closing line `orchestrator-stop: lease-wait` instead of the summary/;
+const SCHEMA_RETURN = /return `status: "error"` with `notes: "lease-wait"`, `path` "" and `findingCount` 0 instead of the summary/;
 
-for (const [name, text] of [['step 4d', step4d], ['step 5', blockingBullet]]) {
-  for (const rule of HANDOFF_RULES) test(`${name} pins the hand-off rule: ${rule.source.slice(0, 48)}…`, () => assert.match(text, rule));
-  test(`${name} pins the lease-wait routing`, () => assert.match(text, ROUTING));
+for (const rule of HANDOFF_RULES) test(`step 4d pins the hand-off rule: ${rule.source.slice(0, 48)}…`, () => assert.match(step4d, rule));
+for (const [label, rule] of [['routing', ROUTING], ['fallback signal', FALLBACK_SIGNAL], ['check-first rule', CHECK_FIRST], ['requeue rule', REQUEUE]]) {
+  test(`step 4d pins the lease-wait ${label}`, () => assert.match(step4d, rule));
 }
+
+test('step 5 points at step 4d for the hand-off limit instead of repeating it', () => {
+  assert.match(blockingBullet, /Apply step 4d's hand-off limit and its lease-wait routing, with one `\/review-loop` invocation's PR set as the hand-off unit\./);
+  assert.doesNotMatch(blockingBullet, /`recommendedHandoff` is `max/);
+  assert.doesNotMatch(blockingBullet, /"Start anyway" for a hand-off/);
+});
+
+test('step 5 reads a lease give-up before it reads non-convergence as point B', () => {
+  const at = (re) => blockingBullet.search(re);
+  assert.ok(at(/orchestrator-stop: lease-wait/) >= 0, 'step 5 names the closing line');
+  assert.ok(at(/orchestrator-stop: lease-wait/) < at(/does not converge/), 'the lease check comes first');
+  assert.match(blockingBullet, /does not converge \(and its report does not end in the lease-wait line\)/);
+});
+
+test('step 4 documents recommendedHandoff in the preflight output', () => {
+  const step4 = lines.find((l) => l.startsWith('**Resource preflight (beside'));
+  assert.match(step4, /prints `\{ action, reason, level, capacity, live, recommendedParallel, recommendedHandoff \}`/);
+});
 
 const copies = {
   "SKILL.md's Implement block": block('### Implement (Sonnet, own worktree)'),
-  "SKILL.md's Review block": block('### Review (Opus, own worktree)'),
   "workflow.js's implementPrompt": workflow.split('function implementPrompt')[1].split('function reviewPathFor')[0],
-  "workflow.js's reviewPrompt": workflow.split('function reviewPrompt')[1],
 };
 for (const [name, text] of Object.entries(copies)) {
   test(`${name} maps the lease-wait give-up to status "error"`, () => assert.match(text, RETURN));
+}
+
+const reviewCopies = {
+  "SKILL.md's Review block": [block('### Review (Opus, own worktree)'), CLOSING_LINE_RETURN],
+  "workflow.js's reviewPrompt": [workflow.split('function reviewPrompt')[1], SCHEMA_RETURN],
+};
+for (const [name, [text, ret]] of Object.entries(reviewCopies)) {
+  test(`${name} writes no file for a lease give-up`, () => assert.match(text, NO_REVIEW_FILE));
+  test(`${name} returns the give-up in its own channel`, () => assert.match(text, ret));
+  test(`${name} no longer maps the review give-up the Implement way`, () => assert.doesNotMatch(text, RETURN));
 }
 
 test("workflow.js's REVIEW_SCHEMA carries the status and notes the give-up returns", () => {
@@ -79,10 +112,26 @@ for (const [label, trigger, wait, anyway] of [
 }
 
 test('step 4 hitl bullet and the preflight header point at the table', () => {
-  assert.match(skill, /per-step table in `references\/escalation-policy\.md`/);
+  const hitl = lines.find((l) => l.startsWith('- `action: "hitl"`') && l.includes('critical-hitl'));
+  assert.ok(hitl, 'step 4 has an action: "hitl" bullet');
+  assert.match(hitl, /per-step table in `references\/escalation-policy\.md`/);
   assert.match(read('scripts/resource-preflight.mjs'), /point F's per-step table in references\/escalation-policy\.md/);
 });
 
 test('README mentions that review and fix fan-out is sized from lease capacity', () => {
   assert.match(read('README.md'), /[Rr]eview and fix hand-offs are sized from lease capacity/);
+});
+
+test("point F's wait and start-anyway bullets defer to the table", () => {
+  const bullets = pointF.split('\n');
+  const wait = bullets.find((l) => l.startsWith('- **wait**'));
+  const anyway = bullets.find((l) => l.startsWith('- **start anyway**'));
+  assert.match(wait, /"wait resets" column/);
+  assert.match(anyway, /"Start anyway does" column/);
+  assert.doesNotMatch(anyway, /for a command it runs the command with `CO_PRESSURE_OVERRIDE/);
+});
+
+test("step 6.2 says start anyway is a plain rerun below critical", () => {
+  const step62 = lines.find((l) => l.startsWith('2. **If the rebase moved the base**'));
+  assert.match(step62, /"start anyway" reruns with `CO_PRESSURE_OVERRIDE=critical-as-warning` as an inline prefix on that one command, never exported, when the pressure is `critical`, and plainly below it/);
 });
