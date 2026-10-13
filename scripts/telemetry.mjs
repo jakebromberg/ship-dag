@@ -450,11 +450,12 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   const rounds = {};
   for (const ref of refs) {
     rounds[ref] = reviewRoundFiles(family.map((d) => join(d, 'reviews')), ref)
-      .map((f) => {
-        try { return { path: f.path, review: JSON.parse(readFileSync(f.path, 'utf8')), mtimeMs: f.mtimeMs }; } catch { return { path: f.path, review: null, mtimeMs: f.mtimeMs }; }
+      .map(({ path, mtimeMs }) => {
+        let review = null;
+        try { review = JSON.parse(readFileSync(path, 'utf8')); } catch { /* an unparseable round is kept as null, windowed by mtime */ }
+        return inWave(ref, mtimeMs, review?.meta?.reportId, path) && { path, review };
       })
-      .filter((f) => inWave(ref, f.mtimeMs, f.review?.meta?.reportId))
-      .map(({ path, review }) => ({ path, review }));
+      .filter(Boolean);
   }
 
   // Read outside the try below: an unreadable log is not a malformed report.
@@ -505,21 +506,30 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
  * The window of the wave report `own` (in `stateDir`, among `familyReports`, the run family's reports as
  * `readWaveReports` reads them) and the failure digests it holds: ingest's and audit's one reading of them.
  * A digest the engine stamped with a report id (`reportId`), or a review round the Review subagent stamped with one
- * (`meta.reportId`), belongs to that report's wave and no other, whatever its mtime (a copied state dir loses
- * mtimes). An unstamped digest or round (written before stamping) keeps the mtime window below.
+ * (`meta.reportId`), belongs to that report's wave and no other, whatever its mtime: a late round (a resume, or a
+ * point-E continuation) and a copy that lost mtimes keep their wave. Which wave a round belongs to is all the stamp
+ * decides: `reviewRoundFiles` orders a ref's rounds. A stamp that names no report of `familyReports` (a typo, an
+ * unsubstituted placeholder, a filename) is warned about and, like an unstamped digest or round (written before
+ * stamping), keeps the mtime window below.
  * A digest or review round belongs to this wave when it was written after this report started and
  * before the next report that re-ran the ref did: a retry or a later wave rewrites the ref's digest
  * and re-reviews it. A report that only carries the row over with the same PR (a --retry-failed
  * run of other rows) re-runs nothing, so later rounds still review this row's PR. A later report
  * refused for a malformed row still started when it says, so it still ends the window.
- * @returns {{inWave: (ref: string, mtimeMs: number, reportId?: unknown) => boolean, digests: Record<string, object>}} `digests` by ref,
+ * @returns {{inWave: (ref: string, mtimeMs: number, reportId: unknown, path: string) => boolean, digests: Record<string, object>}}
+ *   `inWave` names `path` in its warning; `digests` by ref,
  *   for the rows that did not succeed (deriveWaveRecords records only terminal rows and ignores a succeeded row's stale digest)
  */
-function waveWindow(stateDir, { report, startedAt, path: reportPath }, familyReports, warn) {
+function waveWindow(stateDir, { report, startedAt, id }, familyReports, warn) {
   const others = familyReports.filter((r) => Number.isFinite(r.startedAt) && r.startedAt > startedAt);
   const reran = ({ report: rep }, row) => rep.issues.some((r) => r?.ref === row.ref && !(isPr(row.prNumber) && r.prNumber === row.prNumber));
   const ends = Object.fromEntries(report.issues.map((row) => [row.ref, Math.min(Infinity, ...others.filter((rep) => reran(rep, row)).map((rep) => rep.startedAt))]));
-  const inWave = (ref, mtimeMs, reportId) => typeof reportId === 'string' ? reportId === basename(reportPath, '.json') : mtimeMs >= startedAt && mtimeMs < ends[ref];
+  const ids = new Set(familyReports.map((r) => r.id));
+  const inWave = (ref, mtimeMs, reportId, path) => {
+    if (ids.has(reportId)) return reportId === id;
+    if (typeof reportId === 'string') warn(`${path}: stamped with report id ${JSON.stringify(reportId)}, which names no report of this run; windowed by mtime`);
+    return mtimeMs >= startedAt && mtimeMs < ends[ref];
+  };
   const digests = {};
   for (const r of report.issues.filter((i) => ['failed', 'blocked', 'skipped'].includes(i?.status))) {
     const p = digestPathForRef(stateDir, r.ref);
@@ -527,8 +537,7 @@ function waveWindow(stateDir, { report, startedAt, path: reportPath }, familyRep
     try { ({ mtimeMs } = statSync(p)); } catch { continue; }
     let digest;
     try { digest = JSON.parse(readFileSync(p, 'utf8')); } catch (err) { digest = err; }
-    const stamped = typeof digest?.reportId === 'string';
-    if (stamped ? digest.reportId !== basename(reportPath, '.json') : !inWave(r.ref, mtimeMs)) { warn(`${p}: written outside this wave; ignored`); continue; }
+    if (!inWave(r.ref, mtimeMs, digest?.reportId, p)) { warn(`${p}: written outside this wave; ignored`); continue; }
     if (digest instanceof Error) { warn(`${p}: unreadable digest (${digest.message}); ignored`); continue; }
     digests[r.ref] = digest;
   }
