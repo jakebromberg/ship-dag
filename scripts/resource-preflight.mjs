@@ -24,12 +24,12 @@
 // summary on stderr. `--sleep-before` waits before sampling, so SKILL.md's
 // loop never needs a foreground `sleep`. `--waited-minutes` is the total
 // waited before this call; the call adds its own `--sleep-before` to it
-// before deciding.
+// before deciding. Exit codes: 2 = usage error (unknown subcommand, malformed flag).
 
 import { setTimeout as delay } from 'node:timers/promises';
 import { importCo } from './lib/co-home.mjs';
+import { parseNumberOption } from './lib/cli-args.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { parseNumberOption } from './rate-limit-preflight.mjs';
 import { DEFAULT_PARALLEL, DEFAULT_WAIT_MAX_MINUTES, handoffLimit, resourceDecision } from './lib/resource.mjs';
 
 /** Import `leaseStatus` and `defaultLeaseOptions` from the engine checkout's dist; throws if either is missing. */

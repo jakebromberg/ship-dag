@@ -114,6 +114,12 @@ test('the script exits 64 with a named stderr line on each setup failure, and on
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('a flag followed by another flag exits 64 with a usage message naming the flag', () => {
+  const r = cli(['--repo', '--worktree', 'x']);
+  assert.equal(r.status, 64);
+  assert.match(r.stderr, /--repo requires a value/);
+});
+
 test('a lease CLI killed by a signal exits 128 + the signal number and names the signal', () => {
   const dir = scratch();
   try {
