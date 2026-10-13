@@ -26,9 +26,11 @@
 //                                        [--wait-max-minutes 30]
 // Prints the decision as JSON on stdout (SKILL.md step 4 reads `action`:
 // "proceed" | "wait" | "hitl") and a one-line human summary on stderr.
+// Exit codes: 2 = usage error (unknown subcommand, malformed flag).
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { parseNumberOption } from './lib/cli-args.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { latestRateLimitEvent, preflightDecision } from './lib/rate-limit.mjs';
 
@@ -135,32 +137,6 @@ export function readLatestUtilization(baseDir, { maxCandidates = DEFAULT_MAX_CAN
     }
   }
   return { utilization: null, resetsAt: null, source: fallbackSource };
-}
-
-/**
- * Parse a `--<flag> <value>` numeric option, rejecting anything `Number()`
- * can't turn into a finite value and anything outside `[min, max]` (either
- * bound optional). A bare `Number()` coercion silently turns garbage input
- * into `NaN`, which compares false against everything downstream — an
- * `--threshold` typo like `abc` would otherwise make preflightDecision's
- * `utilization < threshold` check always false and invert a healthy window
- * into a `hitl` fork instead of erroring loudly. Guards the *other* silent
- * `Number()` trap too: `Number("")` and `Number("  ")` are `0`, not `NaN` —
- * a missing/blank value would otherwise sail through the finite check and
- * land squarely inside `--threshold`'s valid `[0, 1]` range.
- * @param {string} flag  flag name for the error message, without the leading `--`
- * @param {string|undefined} raw
- * @param {{min?: number, max?: number, exclusiveMin?: number}} [bounds]
- * @returns {number}
- */
-export function parseNumberOption(flag, raw, { min, max, exclusiveMin } = {}) {
-  if (raw === undefined || raw.trim() === '') throw new Error(`--${flag} requires a value`);
-  const n = Number(raw);
-  if (!Number.isFinite(n)) throw new Error(`--${flag} must be a number, got: ${JSON.stringify(raw)}`);
-  if (min !== undefined && n < min) throw new Error(`--${flag} must be >= ${min}, got: ${n}`);
-  if (max !== undefined && n > max) throw new Error(`--${flag} must be <= ${max}, got: ${n}`);
-  if (exclusiveMin !== undefined && n <= exclusiveMin) throw new Error(`--${flag} must be a positive number, got: ${n}`);
-  return n;
 }
 
 /**

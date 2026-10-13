@@ -17,6 +17,7 @@ import { constants as osConstants } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stringOption } from './lib/cli-args.mjs';
 import { coDistPathIn, coHome as locateCoHome } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
 
@@ -76,9 +77,15 @@ export function setupProblem({ repo, worktree, profilesPath = PROFILES, coHome =
 }
 
 function main(argv) {
-  const opt = (name) => argv[argv.indexOf(name) + 1];
-  const repo = argv.includes('--repo') && opt('--repo');
-  const worktree = argv.includes('--worktree') && opt('--worktree');
+  let repo;
+  let worktree;
+  try {
+    repo = stringOption(argv, '--repo');
+    worktree = stringOption(argv, '--worktree');
+  } catch (err) {
+    process.stderr.write(`run-ci-profile: ${err.message}\n`);
+    process.exit(EX_USAGE);
+  }
   if (!repo || !worktree) {
     process.stderr.write('usage: run-ci-profile.mjs --repo <owner/repo> --worktree <path>\n');
     process.exit(EX_USAGE);
