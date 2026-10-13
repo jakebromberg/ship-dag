@@ -657,6 +657,25 @@ for (const [what, body, at, want] of [
   }));
 }
 
+// A copied or restored reviews/ dir loses mtimes, so a round stamped with its report's id is assigned by the id alone.
+for (const [what, meta, at, want] of [
+  ['stamped with this report, mtime outside the wave', { reportId: 'w1' }, '2026-10-08T18:00:00.000Z', true],
+  ['stamped with another report, mtime inside the wave', { reportId: 'w2' }, '2026-10-08T19:30:00.000Z', false],
+  ['unstamped, mtime inside the wave', {}, '2026-10-08T19:30:00.000Z', true],
+  ['unstamped, mtime outside the wave', {}, '2026-10-08T18:00:00.000Z', false],
+]) {
+  test(`ingest-wave: a review round ${what} is ${want ? '' : 'not '}this wave's`, () => withStateDir({
+    reports: {
+      'w1.json': stateReport([stateRow(REF)], { startedAt: T0, finishedAt: T1 }),
+      'w2.json': stateReport([stateRow(REF, { prNumber: 12 })], { startedAt: T1, finishedAt: T2 }),
+    },
+    sidecar: [sidecarEntry()],
+  }, (dir) => {
+    putReview(dir, REF, '', JSON.stringify({ issue: 1, meta, findings: [] }), at);
+    assert.equal(ingest(dir).records[0].reviewPath !== null, want);
+  }));
+}
+
 test('ingest-wave: a pre-sidecar wave takes its routing from the matching config, default policy and tuning version 0', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF), stateRow(REF2)]) },
   sidecar: [sidecarEntry(['WXYC/other#9'])],
@@ -1276,6 +1295,10 @@ describe('SKILL.md telemetry wiring', () => {
     assert.match(skill, /^### 6\.3 Ingest the wave$/m);
     for (const cls of ['notIngested', 'unreadable', 'neverReported']) assert.ok(skill.includes(`\`${cls}\``), cls);
     assert.ok(!skill.includes('<url-encoded-ref>'));
+  });
+
+  test('has the Review block write meta.reportId beside meta.trigger', () => {
+    assert.ok(skill.includes('meta: { trigger: "{TRIGGER}", reportId: "{REPORT_ID}" }'));
   });
 
   test('documents every telemetry.mjs subcommand the CLI dispatches', () => {
