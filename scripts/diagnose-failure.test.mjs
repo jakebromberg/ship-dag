@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { engineFixture, stamped } from './lib/engine-fixture.mjs';
-import { logPathForRef, owningReport, digestPathForRef, diagnose, MAX_REASON_CHARS } from './diagnose-failure.mjs';
+import { logPathForRef, owningReport, digestPathForRef, diagnose, ownerId, MAX_REASON_CHARS } from './diagnose-failure.mjs';
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 
@@ -308,4 +308,27 @@ test('--owner: exits 3 with the no-row message when no report lists the ref', ()
   const run = spawnSync(process.execPath, [CLI, REF, '--owner', '--state-dir', dir], { encoding: 'utf8' });
   assert.equal(run.status, 3);
   assert.match(run.stderr, /no row for daisysguide\/backend#620 in any report/);
+});
+
+// A report whose `issues` holds a null row (an errored read) must not crash the unknown-ref message.
+for (const [mode, args] of [['--owner', ['--owner']], ['plain diagnose', []]]) {
+  test(`${mode}: a null row in the latest report still gives the no-row message and exit 3`, () => {
+    const dir = waves({ a: { startedAt: W1, rows: [null, row({ ref: 'o/r#1' })] } });
+    const run = spawnSync(process.execPath, [CLI, REF, ...args, '--state-dir', dir], { encoding: 'utf8' });
+    assert.equal(run.status, 3, run.stderr);
+    assert.match(run.stderr, /no row for daisysguide\/backend#620 in any report .*covers: o\/r#1/);
+  });
+}
+
+test('ownerId: a state dir with no report throws the no-engine-report error, as diagnose does', () => {
+  const dir = waves({});
+  assert.throws(() => ownerId(dir, REF, quiet), /no engine report under .*is this the right run's state dir\?/);
+  assert.throws(() => diagnose(dir, REF, quiet), /no engine report under .*is this the right run's state dir\?/);
+});
+
+test('--owner: exits 3 with the no-engine-report message when the run has no reports', () => {
+  const dir = waves({});
+  const run = spawnSync(process.execPath, [CLI, REF, '--owner', '--state-dir', dir], { encoding: 'utf8' });
+  assert.equal(run.status, 3);
+  assert.match(run.stderr, /no engine report under/);
 });

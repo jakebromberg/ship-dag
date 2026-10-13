@@ -81,10 +81,27 @@ export function owningReport(stateDir, ref, opts) {
   return reportOwnership(readRunFamilyReports(stateDir, opts)).ownerOf(ref);
 }
 
-function noRowError(stateDir, ref, reads) {
-  const latest = reads.at(-1);
-  const known = latest.report.issues.map((r) => r.ref).join(', ') || '(none)';
-  return new Error(`no row for ${ref} in any report of ${stateDir}'s run family; the latest, ${latest.path}, covers: ${known}`);
+/**
+ * Read the run family of `stateDir` and find the report that owns `ref`. The one place that words the two ways that can
+ * fail, so `ownerId` and `diagnose` never disagree about a misdirected state dir.
+ * @param {string} stateDir
+ * @param {string} ref
+ * @param {{warn?: (m: string) => void}} [opts]
+ * @returns {{owner: ReturnType<typeof owningReport>, require: () => NonNullable<ReturnType<typeof owningReport>>}}
+ *   `owner` is null when no report lists `ref`; `require()` returns it, or throws "no engine report" (the family has no
+ *   readable report) or "no row for ..." (naming the refs the latest report does carry; a null row in it is skipped)
+ */
+function findOwner(stateDir, ref, opts) {
+  const { reads, ownerOf } = reportOwnership(readRunFamilyReports(stateDir, opts));
+  const owner = ownerOf(ref);
+  const require = () => {
+    if (owner) return owner;
+    if (reads.length === 0) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} (or any dir of its run family) — is this the right run's state dir?`);
+    const latest = reads.at(-1);
+    const known = latest.report.issues.flatMap((r) => (r?.ref ? [r.ref] : [])).join(', ') || '(none)';
+    throw new Error(`no row for ${ref} in any report of ${stateDir}'s run family; the latest, ${latest.path}, covers: ${known}`);
+  };
+  return { owner, require };
 }
 
 /**
@@ -95,11 +112,7 @@ function noRowError(stateDir, ref, reads) {
  * @param {{warn?: (m: string) => void}} [opts]
  */
 export function ownerId(stateDir, ref, opts) {
-  const { reads, ownerOf } = reportOwnership(readRunFamilyReports(stateDir, opts));
-  const owner = ownerOf(ref);
-  if (owner) return owner.id;
-  if (reads.length === 0) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} (or any dir of its run family) — is this the right run's state dir?`);
-  throw noRowError(stateDir, ref, reads);
+  return findOwner(stateDir, ref, opts).require().id;
 }
 
 /**
@@ -120,8 +133,7 @@ export function ownerId(stateDir, ref, opts) {
  * @param {{warn?: (m: string) => void}} [opts]  where a report that cannot be read is warned about (stderr by default)
  */
 export function diagnose(stateDir, ref, opts) {
-  const { reads, ownerOf } = reportOwnership(readRunFamilyReports(stateDir, opts));
-  const owner = ownerOf(ref);
+  const { owner, require } = findOwner(stateDir, ref, opts);
 
   // The owner's dir is the dir whose state/reports/ holds the owning report; its digest and its transcript are that wave's,
   // so both are read there, never from the dir diagnose was given (a sibling's session is another wave's). Without an owner
@@ -141,10 +153,7 @@ export function diagnose(stateDir, ref, opts) {
     }
   }
 
-  if (reads.length === 0) throw new Error(`no engine report under ${join(stateDir, 'state', 'reports')} (or any dir of its run family) — is this the right run's state dir?`);
-  if (!owner) {
-    throw noRowError(stateDir, ref, reads);
-  }
+  require();
   const { path: reportFile, row } = owner;
 
   const transcriptPath = logPathForRef(ownerDir, ref);
