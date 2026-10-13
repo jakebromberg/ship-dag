@@ -129,9 +129,8 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest) {
   const { repo, number } = parseRef(row.ref);
   const findPr = row.status === 'succeeded' && !isPr(row.prNumber);
   const stopReason = stopReasonOf(row, digest);
-  const rateLimited = stopReason === 'rate-limited';
-  // Whether a PR-less run of the row is a rate-limit death (a row with a PR is gated, and reads its own PR).
-  const dies = rateLimited && implStatusOf(row, null) === 'error';
+  // Whether a PR-less run of the row is the death of a stop (a row with a PR is gated, and reads its own PR).
+  const dies = stopReason && implStatusOf(row, null) === 'error';
   return records.some((r) => {
     const rp = isPr(row.prNumber) || !(findPr || (r.reportId === id && !dies)) ? null : parsePr(r.pr, repo);
     // A find-pr row's PR comes from --outcomes: a record whose PR value is no PR holds none of it, unless it is a merge, which
