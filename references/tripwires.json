@@ -11,7 +11,7 @@
       "trips": { "upperBelow": 0.05 },
       "minSample": 73,
       "action": "Propose a single pass for that tier. If a tier has not reached 73 by the review date, the date forces a decision on the evidence there is.",
-      "reviewDate": null
+      "reviewDate": "2026-12-07"
     },
     {
       "id": "T-escapes",
@@ -26,7 +26,7 @@
         "Cross-repo follow-ups are not found: only the merged PR's own repo is searched, so a follow-up filed in another repo (for example the repo of one of the PR's closing issues) is missed.",
         "A candidate PR is stored with the state it had when its day settled (SETTLE_DAYS after the day's window closes), and that cache is never refreshed: a follow-up PR that was open then and later closed without merging still counts. Only deleting the day file re-reads it."
       ],
-      "reviewDate": null
+      "reviewDate": "2026-12-07"
     },
     {
       "id": "T-scoped",
@@ -38,7 +38,7 @@
       "trips": { "atLeast": 1 },
       "minSample": 10,
       "action": "Propose disabling the scoped re-gate. The review date forces a decision if pairs never reach 10.",
-      "reviewDate": null
+      "reviewDate": "2026-12-07"
     },
     {
       "id": "T-reach",
@@ -50,7 +50,7 @@
       "trips": { "lowerAbove": 0.2 },
       "minSample": 30,
       "action": "Propose a triage prompt change or default `repo`.",
-      "reviewDate": null
+      "reviewDate": "2026-12-07"
     },
     {
       "id": "T-fallback",
@@ -61,7 +61,7 @@
       "trips": { "lowerAbove": 0.1 },
       "minSample": 30,
       "action": "Propose two-pass for the fallback.",
-      "reviewDate": null
+      "reviewDate": "2026-12-07"
     },
     {
       "id": "T-coverage",
@@ -74,7 +74,7 @@
       "trips": { "rows": { "upperBelow": 0.95 }, "cost": { "upperBelow": 0.9 } },
       "minSample": 1,
       "action": "Investigate ingestion.",
-      "reviewDate": null
+      "reviewDate": "2026-12-07"
     },
     {
       "id": "T-cost",
@@ -86,7 +86,7 @@
       "trips": { "ratioAbove": 1.5 },
       "minSample": 30,
       "action": "Surface for review; never auto-reverts.",
-      "reviewDate": null
+      "reviewDate": "2026-12-07"
     }
   ]
 }
