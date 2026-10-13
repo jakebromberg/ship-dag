@@ -230,3 +230,56 @@ test('diagnose: both producers agree on the same run', async () => {
   }
   assert.deepEqual(fromDigest.terminal, computed.terminal);
 });
+
+/** A run family: `base` (sd-X) and its retry dir (sd-X-b), each with its own reports, digest and transcript for REF. */
+function family({ base, retry }) {
+  const spec = ({ id, startedAt, rows, digest, transcript }) => ({
+    reports: { [`${id}.json`]: { startedAt, issues: rows } },
+    digests: digest ? [{ ref: REF, body: digest }] : [],
+    files: transcript === undefined ? {} : { [`state/logs/issue-${encodeURIComponent(REF)}.log`]: transcript },
+  });
+  const fx = engineFixture({ 'sd-20261001-000000': spec(base), 'sd-20261001-000000-b': spec(retry) });
+  fixtures.push(fx);
+  return fx.dirs;
+}
+const maxTurns = () => line({ type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: 80, result: 'Reached max turns' });
+const WAVES = {
+  base: { id: 'w1', startedAt: W1, rows: [row({ ran: true })], digest: { ref: REF, status: 'failed', failureReason: 'rate-limited', route: 'point-E', reportId: 'w1' }, transcript: quotaDeath() },
+  retry: { id: 'w2', startedAt: W2, rows: [row({ ran: true })], transcript: maxTurns() },
+};
+
+test('diagnose: an owner in a sibling dir is diagnosed from that dir, not joined to the given dir\'s digest and transcript', () => {
+  const d = family(WAVES);
+  const out = diagnose(d['sd-20261001-000000'], REF, quiet);
+  assert.equal(out.source, 'report');
+  assert.equal(out.report, join(d['sd-20261001-000000-b'], 'state', 'reports', 'w2.json'));
+  assert.equal(out.transcript, logPathForRef(d['sd-20261001-000000-b'], REF));
+  assert.notEqual(out.failureReason, 'rate-limited');
+  assert.notEqual(out.route, 'point-E');
+  assert.equal(out.terminal.subtype, 'error_max_turns');
+});
+
+test('diagnose: the owner\'s dir has no transcript for the row, so the result says null rather than borrowing the given dir\'s', () => {
+  const d = family({ ...WAVES, retry: { ...WAVES.retry, transcript: undefined } });
+  const out = diagnose(d['sd-20261001-000000'], REF, quiet);
+  assert.equal(out.report, join(d['sd-20261001-000000-b'], 'state', 'reports', 'w2.json'));
+  assert.equal(out.transcript, null);
+  assert.equal(out.failureReason ?? null, null);
+});
+
+test('diagnose: the owner\'s own digest in a sibling dir is served, and the given dir\'s digest stamped by an older report is not', () => {
+  const retry = { ...WAVES.retry, digest: { ref: REF, status: 'failed', failureReason: 'max-turns', route: 'point-B', reportId: 'w2' } };
+  const d = family({ ...WAVES, retry });
+  const out = diagnose(d['sd-20261001-000000'], REF, quiet);
+  assert.equal(out.source, 'digest');
+  assert.equal(out.digest, digestPathForRef(d['sd-20261001-000000-b'], REF));
+  assert.equal(out.route, 'point-B');
+});
+
+test('diagnose: given the retry dir, an owner in the base dir is read from the base dir', () => {
+  const d = family({ base: { ...WAVES.base, startedAt: W2, rows: [row({ ran: true })] }, retry: { ...WAVES.retry, startedAt: W1, rows: [row({ ran: true })] } });
+  const out = diagnose(d['sd-20261001-000000-b'], REF, quiet);
+  assert.equal(out.source, 'digest');
+  assert.equal(out.digest, digestPathForRef(d['sd-20261001-000000'], REF));
+  assert.equal(out.failureReason, 'rate-limited');
+});
