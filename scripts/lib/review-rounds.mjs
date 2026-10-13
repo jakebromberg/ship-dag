@@ -13,8 +13,11 @@ import { join } from 'node:path';
 import { artifactStem } from './failure.mjs';
 
 /**
- * Every review round file for `ref` across `dirs`, oldest first by mtime.
- * A dir that can't be read is skipped.
+ * Every review round file for `ref` across `dirs`, oldest first. When every file has a name SKILL.md
+ * gives a round (`<stem>.json` is round 1, `<stem>.r<N>.json` or `-r<N>` is round N), they are ordered
+ * by round number, so a copy that does not keep mtimes does not reorder them. A set holding any other
+ * (legacy) tag has no round numbers to go by and is ordered by mtime, as is a tie on the number (the
+ * same round in two dirs). A dir that can't be read is skipped.
  * @param {string[]} dirs  `reviews/` dirs, typically one per run-family member
  * @param {string} ref  composite ref
  * @returns {Array<{path:string, mtimeMs:number}>}
@@ -30,10 +33,14 @@ export function reviewRoundFiles(dirs, ref) {
       if (!round.test(n)) continue;
       const path = join(d, n);
       const st = statSync(path);
-      if (st.isFile()) out.push({ path, mtimeMs: st.mtimeMs });
+      if (st.isFile()) out.push({ path, mtimeMs: st.mtimeMs, tag: round.exec(n)[1] });
     }
   }
-  return out.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const number = ({ tag }) => (tag === undefined ? 1 : Number(/^[.-]r([0-9]+)$/.exec(tag)?.[1] ?? NaN));
+  const numbered = out.every((f) => Number.isInteger(number(f)));
+  return out
+    .sort((a, b) => (numbered ? number(a) - number(b) : 0) || a.mtimeMs - b.mtimeMs)
+    .map(({ path, mtimeMs }) => ({ path, mtimeMs }));
 }
 
 /**
