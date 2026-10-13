@@ -1,6 +1,8 @@
 // Tests for the tripwire evaluator. Run: node --test "scripts/**/*.test.mjs"
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { evaluate, evaluateAll, loadTripwires, NO_ENGINE_DIR, STATES, tripwireContext } from './tripwires.mjs';
 import { wilson } from './stats.mjs';
 
@@ -23,8 +25,16 @@ describe('the shipped table', () => {
     for (const o of out) assert.ok(STATES.includes(o.state), `${o.id}: ${o.state}`);
   });
 
-  test('every row has a parseable review date, 60 days after its decision', () => {
-    for (const t of TABLE.tripwires) assert.ok(Number.isFinite(Date.parse(t.reviewDate)), `${t.id}: ${t.reviewDate}`);
+  test("every row's review date is the review date its decision's entry has in references/decisions.md", () => {
+    // Entry heading (`### D2: …`, or `### T-cost: …` for a row whose decision is `all`) → its `**Review date:**`.
+    const log = readFileSync(fileURLToPath(new URL('../../references/decisions.md', import.meta.url)), 'utf8');
+    const dates = new Map([...log.matchAll(/^### ([\w-]+):[^\n]*\n(?:(?!##)[^\n]*\n)*?- \*\*Review date:\*\* (\d{4}-\d{2}-\d{2})\b/gm)].map((m) => [m[1], m[2]]));
+    assert.ok(dates.size >= 9, `parsed ${dates.size} review dates`);
+    for (const t of TABLE.tripwires) {
+      const entry = t.decision === 'all' ? t.id : t.decision;
+      assert.ok(dates.has(entry), `${t.id}: no decisions.md entry for ${entry}`);
+      assert.equal(t.reviewDate, dates.get(entry), `${t.id} (${entry})`);
+    }
   });
 
   test('a metric id with no evaluator fails loudly, naming the tripwire', () => {

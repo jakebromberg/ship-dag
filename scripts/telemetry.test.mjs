@@ -1237,7 +1237,9 @@ describe('SKILL.md telemetry wiring', () => {
     // The list comes from the CLI's own usage line, so a new subcommand fails here until SKILL.md documents it.
     const source = readFileSync(fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'utf8');
     const cmds = source.match(/usage: telemetry\.mjs <([\w|-]+)>/)[1].split('|');
-    assert.ok(cmds.includes('tripwires'));
+    // ...and the usage line must name exactly the commands main() dispatches, so dropping one from it fails too.
+    const dispatched = [...source.matchAll(/\bcmd === '([\w-]+)'/g)].map((m) => m[1]);
+    assert.deepEqual([...cmds].sort(), [...new Set(dispatched)].sort());
     for (const cmd of cmds) assert.ok(skill.includes(`telemetry.mjs" ${cmd}`), cmd);
   });
 });
