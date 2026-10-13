@@ -181,7 +181,7 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest, earli
  * @returns {{records: object[]}}
  * @throws when a terminal row has no `owner/repo#N` ref (`malformed report row`), or exists but no run
  *   id can be determined (no `entry.runId`, no `report.configName`), or (`half-supplied wave`, naming every
- *   ref under each cause and carrying them as `err.noPr` and `err.lastBlocks`) a `succeeded` row has no PR in
+ *   ref under each cause and carrying them as `err.noPr` and `err.lastBlocks`) a `succeeded` row that is not `carriedOver` has no PR in
  *   the report or the outcomes and no outcome `finalState` of `blocked-hitl`, `deferred` or `error`, or a row
  *   with a PR and no outcome `finalState` has a blocking last round
  */

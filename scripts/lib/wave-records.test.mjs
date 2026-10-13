@@ -666,6 +666,17 @@ for (const [name, kind, go] of [
     assert.equal(carriedOver({ ...blocked, status: 'failed' }, [at([{ ...blocked, status: 'failed' }])]), false);
   });
 
+  // Rows that kill M30 (a failed row with a PR read as a death, so never carried) and M31 (a pending launch stop read as never carried).
+  for (const [name, row] of [
+    ['a failed row with a PR the gate reviews', { ref: 'a/b#1', status: 'failed', prNumber: 11, ran: false }],
+    ['a pending launch stop', { ref: 'a/b#1', status: 'pending', prNumber: null, ran: false }],
+  ]) {
+    test(`carriedOver: ${name} is carried over by an earlier report that lists it alike, not by one that lists another PR`, () => {
+      assert.equal(carriedOver(row, [at([row])]), true);
+      assert.equal(carriedOver(row, [at([{ ...row, prNumber: 12 }])]), false);
+    });
+  }
+
   // The readers of a row's ran take a boolean as the fact and anything else as absent, so a malformed report reads as one from before ran.
   for (const bad of ['false', 'true', 0, 1, null, {}, []]) {
     test(`ran: ${JSON.stringify(bad)} is no fact: the row is recorded as one with no ran, and ingest and audit fold it alike`, () => {
