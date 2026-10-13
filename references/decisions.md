@@ -1,6 +1,8 @@
 # Tuning decision log
 
-One entry per decision in #64 (D1–D8), then the metric definitions the tripwires are computed under, then the dismissals. SKILL.md step 7 runs `telemetry.mjs tripwires` and answers a tripped tripwire here. Every decision was taken on 2026-10-08 ("go with recommendations", #64), so each review date is 2026-12-07, 60 days later. The same date is the `reviewDate` of the decision's row in `references/tripwires.json`, and `tripwires` reports `reviewOverdue` once it has passed. Change the two together.
+One entry per decision in #64 (D1–D8), then the cross-cutting tripwire that guards no single decision, then the metric definitions the tripwires are computed under, then the dismissals. SKILL.md step 7 runs `telemetry.mjs tripwires` and answers a tripped tripwire here. Every decision was taken on 2026-10-08 ("go with recommendations", #64), so each first review date is 2026-12-07, 60 days later.
+
+Each entry's *Review date* is also the `reviewDate` of every row in `references/tripwires.json` whose `decision` names that entry: `D1`–`D8` name a decision, and `all` names the entry of the row's own id under *Cross-cutting tripwires*. `tripwires` reports `reviewOverdue` once that date has passed. Change the two together; `scripts/lib/tripwires.test.mjs` fails when they disagree. When a review is answered, move the date to the answer date + 60 days in both places, or every later wave reports it overdue again.
 
 ## Decisions
 
@@ -33,7 +35,7 @@ One entry per decision in #64 (D1–D8), then the metric definitions the tripwir
 - **Choice:** the main agent no longer sets them.
 - **Decided:** 2026-10-08.
 - **Tripwire:** T-reach.
-- **PR:** #90, with W3 (#81) carrying them through the ready-wave spec.
+- **PR:** #90 (W3, #81), which also carries them through the ready-wave spec.
 - **Review date:** 2026-12-07.
 
 ### D5: the `workflow.js` fallback stays single-pass
@@ -49,14 +51,14 @@ One entry per decision in #64 (D1–D8), then the metric definitions the tripwir
 - **Choice:** wave telemetry is derived from the engine's own artifacts, not remembered.
 - **Decided:** 2026-10-08.
 - **Tripwire:** T-coverage.
-- **PR:** #98, #102, #103, #104, #105, #146 and #159, with the tripwire itself in #163.
+- **PR:** #86 (T1 #67, the append-only wave sidecar that `ingest-wave` and `audit` read), #98, #102, #103, #104, #105, #146 and #159, with the tripwire itself in #163.
 - **Review date:** 2026-12-07.
 
 ### D7: retry dirs `-b` and `-c` fold into their base run
 
 - **Choice:** `sameRun` folds `-w…`, `-r…`, `-wave…`, `-resume`, `-b`, `-c`, the `ship-dag-` prefix and case.
 - **Decided:** 2026-10-08.
-- **Tripwire:** the deterministic family check from R1: every engine dir's family agrees with its config `name`. It is a test, not a row in `tripwires.json`.
+- **Tripwire:** the deterministic family check from R1: every engine dir's family agrees with its config `name`. It is not a row in `tripwires.json`, and it is not a test: the unit suite no longer reads the real state dir. PR #85 ran it once by hand on 2026-10-08 (81 of 81 dirs, 0 mismatches). Nothing has re-run it since, so re-run it by hand at the review date.
 - **PR:** #85.
 - **Review date:** 2026-12-07.
 
@@ -66,6 +68,17 @@ One entry per decision in #64 (D1–D8), then the metric definitions the tripwir
 - **Decided:** 2026-10-08.
 - **Tripwire:** none. The decision is reversible.
 - **PR:** none. #11 and #17 are closed.
+- **Review date:** 2026-12-07.
+
+## Cross-cutting tripwires
+
+A tripwire whose `decision` in `tripwires.json` is `all` guards every decision at once, so it has its own entry and review date here.
+
+### T-cost: implement cost per version
+
+- **Guards:** every decision. Per tier, it compares the mean exact implement cost of a tuning version's first 30 merged PRs with the previous version's. It trips when the lower bound of the current mean's bootstrap interval is above 1.5 times the previous mean, and the result is surfaced for review. It never reverts anything by itself.
+- **Decided:** 2026-10-08, in #64's tripwire table, with D1–D8.
+- **PR:** #163, with the tripwire table.
 - **Review date:** 2026-12-07.
 
 ## Metric definitions
@@ -82,7 +95,8 @@ Each definition lists what is counted, when it was settled, and the PR that impl
 ### T-coverage
 
 - **Definition:** the share of terminal report rows that `rowCovered` (which is `sameEvent`) covers, per run family, counted only for families after T6 (#73). It reads `audit`'s `terminalRows` and `prRows`. The `cost.implement` presence share is counted inside the same window, per record.
-- **Settled:** the wave-10 respec of #74.
+- **Counting rules:** a row that a retry carries over counts once for each report that lists it. A run with no engine dir (`audit` finds no dir under the base dir for it) is skipped and counted under `skipped`, neither tripped nor holding.
+- **Settled:** 2026-10-12 (2:15 PM PDT), the wave-10 respec of #74.
 - **Implemented:** PR #163. Its window is per family, from `since` = `2026-10-12T23:52:28Z` (4:52 PM PDT on 2026-10-12), when PR #159 merged. A family with any current-version record at or after `since` is audited whole, its earlier rows included.
 - **Note:** run sd-20261008-153059 spans `since`, so its pre-T6 rows are in the first readings.
 - **Pending change:** #160 changes `rowCovered`. That is a definition change, so it is answered with **retune**.
