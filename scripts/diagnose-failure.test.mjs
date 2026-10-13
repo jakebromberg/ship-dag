@@ -117,10 +117,20 @@ test('diagnose: prefers the engine-written digest over re-reading the transcript
   assert.equal(out.exitCode, 1);
 });
 
+test('diagnose: a digest stamped with an earlier report is recomputed from the newest report; an unstamped or newest-stamped one is returned', () => {
+  const stem = '2026-08-31T23-43-43.528Z';
+  const rows = [{ ref: REF, number: 620, status: 'pending', ran: false }];
+  const digest = (reportId) => ({ ref: REF, status: 'failed', failureReason: 'rate-limited', route: 'point-E', ...(reportId && { reportId }) });
+  const stale = diagnose(fixture({ rows, digest: digest('2026-08-30T00-00-00.000Z') }), REF);
+  assert.equal(stale.source, 'report');
+  assert.equal(stale.status, 'pending');
+  for (const reportId of [undefined, stem]) assert.equal(diagnose(fixture({ rows, digest: digest(reportId) }), REF).source, 'digest');
+});
+
 test('diagnose: a torn digest falls back to computing, rather than failing', () => {
   const dir = fixture({ rows: [{ ref: REF, number: 620, status: 'failed', prNumber: 625 }], transcript: quotaDeath(), digest: '{"ref": "trunc' });
   const out = diagnose(dir, REF);
-  assert.equal(out.source, 'computed');
+  assert.equal(out.source, 'report');
   assert.equal(out.route, 'review-gate');
 });
 

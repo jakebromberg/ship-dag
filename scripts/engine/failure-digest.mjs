@@ -25,7 +25,9 @@
 import fs from 'node:fs';
 import readline from 'node:readline';
 import path from 'node:path';
-import { artifactStem, createTranscriptScan, buildDiagnosis, ranOf } from '../lib/failure.mjs';
+import { artifactStem, createTranscriptScan, buildDiagnosis } from '../lib/failure.mjs';
+import { carriedOver } from '../lib/wave-records.mjs';
+import { readWaveReport } from '../lib/wave-reports.mjs';
 
 /**
  * Stream one transcript, returning the terminal record and whether the session
@@ -75,8 +77,9 @@ export function readExitCode(metaPath) {
  * `reportId` (the stem of the report the rows came from) is stamped into each digest, so a reader
  * can assign the digest to its wave without trusting the file's mtime, which a copied state dir loses.
  * A later wave overwrites a ref's digest, so the stamp names the latest wave only, except for a row that
- * launched no session (`ran: false`): it is carried over or failed before launch, so its transcript is
- * unchanged and an existing digest is kept, still stamped with the report that wrote it.
+ * is a row `carriedOver` by an earlier report of `<configDir>/reports/`: its transcript is unchanged, so an existing
+ * digest is kept, still stamped with the report that wrote it. Any other row, a `ran: false` one included (a launch
+ * stop, or a worktree-setup failure that happened again), is this report's own event and gets a fresh digest.
  *
  * Best-effort per row: one row's unreadable transcript or metadata leaves that
  * field null rather than aborting the pass over the others.
@@ -90,11 +93,15 @@ export async function writeFailureDigests({ configDir, report, reportId }) {
   const digestDir = path.join(configDir, 'failure-digest');
   fs.mkdirSync(digestDir, { recursive: true });
 
+  const reportsDir = path.join(configDir, 'reports');
+  const earlier = fs.existsSync(reportsDir)
+    ? fs.readdirSync(reportsDir).filter((n) => n.endsWith('.json') && n !== `${reportId}.json`).map((n) => readWaveReport(path.join(reportsDir, n)).report).filter(Boolean)
+    : [];
   const written = [];
   for (const row of rows) {
     const stem = artifactStem(row.ref);
     const digestPath = path.join(digestDir, `issue-${stem}.json`);
-    if (ranOf(row) === false && fs.existsSync(digestPath)) continue;
+    if (fs.existsSync(digestPath) && carriedOver(row, earlier)) continue;
     const { terminal, rateLimited } = await scanTranscript(path.join(configDir, 'logs', `issue-${stem}.log`));
     const exitCode = readExitCode(path.join(configDir, 'metadata', `issue-${stem}.json`));
     const diagnosis = { ...buildDiagnosis({ row, terminal, rateLimited, exitCode }), ...(reportId && { reportId }) };
