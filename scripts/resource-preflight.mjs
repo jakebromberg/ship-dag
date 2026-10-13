@@ -19,7 +19,9 @@
 // Prints `{ action, reason, level, capacity, live, recommendedParallel }` as
 // JSON on stdout (`action`: "proceed" | "wait" | "hitl") and a one-line human
 // summary on stderr. `--sleep-before` waits before sampling, so SKILL.md's
-// loop never needs a foreground `sleep`.
+// loop never needs a foreground `sleep`. `--waited-minutes` is the total
+// waited before this call; the call adds its own `--sleep-before` to it
+// before deciding.
 
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
@@ -51,7 +53,9 @@ export async function checkResource(opts, { env = process.env, leaseOptionsFor, 
     if (opts.sleepBefore > 0) await sleep(opts.sleepBefore * 1000);
     const { CO_PRESSURE_OVERRIDE: _stripped, ...realEnv } = env;
     const { level, capacity, live } = leaseStatus(leaseOptionsFor(realEnv));
-    return { ...resourceDecision({ level, parallel, waitedMinutes: opts.waitedMinutes, waitMaxMinutes: opts.waitMaxMinutes }), level, capacity, live };
+    // --waited-minutes is the total waited before this call; this call's own sleep counts toward the cap.
+    const waitedMinutes = (opts.waitedMinutes ?? 0) + (opts.sleepBefore > 0 ? opts.sleepBefore / 60 : 0);
+    return { ...resourceDecision({ level, parallel, waitedMinutes, waitMaxMinutes: opts.waitMaxMinutes }), level, capacity, live };
   } catch (err) {
     return { action: 'proceed', reason: 'lease-unavailable', detail: err.message, level: null, capacity: null, live: [], recommendedParallel: parallel };
   }
@@ -65,7 +69,10 @@ export function parseArgs(argv) {
   const opts = { parallel: undefined, waitedMinutes: 0, waitMaxMinutes: DEFAULT_WAIT_MAX_MINUTES, sleepBefore: 0 };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
-    if (a === '--parallel') opts.parallel = parseNumberOption('parallel', argv[++i], { exclusiveMin: 0 });
+    if (a === '--parallel') {
+      opts.parallel = parseNumberOption('parallel', argv[++i], { min: 1 });
+      if (!Number.isInteger(opts.parallel)) throw new Error(`--parallel must be an integer >= 1, got: ${opts.parallel}`);
+    }
     else if (a === '--waited-minutes') opts.waitedMinutes = parseNumberOption('waited-minutes', argv[++i], { min: 0 });
     else if (a === '--wait-max-minutes') opts.waitMaxMinutes = parseNumberOption('wait-max-minutes', argv[++i], { exclusiveMin: 0 });
     else if (a === '--sleep-before') opts.sleepBefore = parseNumberOption('sleep-before', argv[++i], { min: 0 });

@@ -749,6 +749,8 @@ const badOutcomes = [
   ['hitl.pointB a string', { [REF]: { hitl: { pointB: 'yes' } } }, /hitl\.pointB/],
   ['findings not strings', { [REF]: { findings: [1] } }, /findings/],
   ['tokens a string', { [REF]: { tokens: '9' } }, /tokens/],
+  ['pressureOverride a string', { [REF]: { pressureOverride: 'yes' } }, /pressureOverride/],
+  ['pressureOverride false', { [REF]: { pressureOverride: false } }, /pressureOverride/],
   ['an unknown field', { [REF]: { finalstate: 'blocked-hitl' } }, /finalstate/],
   ['an unknown hitl field', { [REF]: { hitl: { pointB: true, pointA: true } } }, /hitl\.pointA/],
   ['a pr other than the report row\'s', { [REF]: { pr: 42 } }, /pr 42.*11/],
@@ -768,6 +770,14 @@ test('ingest-wave: a well-formed --outcomes entry is applied', () => withStateDi
 }, (dir) => {
   const [rec] = ingest(dir, { [REF]: { finalState: 'blocked-hitl', bounces: 2, hitl: { pointB: true }, findings: ['f'], tokens: null } }).records;
   assert.deepEqual([rec.finalState, rec.bounces, rec.hitl.pointB, rec.findings, rec.tokens], ['blocked-hitl', 2, true, ['f'], null]);
+}));
+
+test('ingest-wave: --outcomes pressureOverride: true is accepted and reaches the log record', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
+  const { records, log } = ingest(dir, { [REF]: { pressureOverride: true } });
+  assert.equal(records[0].pressureOverride, true);
+  assert.equal(log[0].pressureOverride, true);
 }));
 
 test('ingest-wave: finalState merged on a PR-less row is accepted alongside the PR --outcomes supplies', () => withStateDir({
@@ -1240,6 +1250,7 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
     ["A find-pr row whose found PR's last round blocks", findPr, blocks, [[['blocked-hitl', 2, true, 0]], [['merged', 2, false, 2]]]],
     ['A rate-limit death that point E resumed', stateRow(REF, { status: 'failed', prUrl: null, prNumber: null }), dies,
       [[['deferred', null, false, 0], ['merged', 2, false, 0]], [['deferred', null, false, 0], ['blocked-hitl', null, true, 0]]]],
+    ['A wave the user started anyway at point F', stateRow(REF), () => {}, [[['merged', 11, false, 0]]]],
   ];
 
   test('every row of the table is a situation this test knows, and every situation is in the table', () => {
@@ -1257,6 +1268,8 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
         // A resumed death is the rate-limited record, then a continuation with no rate-limit of its own.
         if (records.length === 2) assert.deepEqual(records.map((r) => [r.implStatus, r.failureReason]).slice(0, 1), [['error', 'rate-limited']]);
         assert.ok(records.slice(1).every((r) => r.failureReason === null));
+        // Only the point-F cell stamps pressureOverride, and it reaches every derived record.
+        assert.ok(records.every((r) => (r.pressureOverride === true) === (outcome[REF].pressureOverride === true)), JSON.stringify(outcome));
       }));
     });
   }
