@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // resource-preflight.mjs — SKILL.md step 4's memory-pressure preflight, run
 // beside rate-limit-preflight.mjs before every engine invocation. Step 5's
-// review/fix hand-offs and CI runs do not run it yet; later issues wire them.
+// review/fix hand-offs do not run it yet; later issues wire them. Step 6.2's
+// CI re-run does, via run-ci-profile.mjs's exit 75 and the 15-minute bound.
 //
 // Reads the pressure level and lease status from claude-orchestrator's
 // `$CO_HOME/dist` (`defaultLeaseOptions` + `leaseStatus`) and prints the
