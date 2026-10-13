@@ -30,7 +30,8 @@ import { isPr } from './ref.mjs';
 
 /** Reasons the engine stops a row for infrastructure rather than model failure (claude-orchestrator#87), beside `"rate-limited"` which ship-dag also reads from a transcript. */
 export const RESOURCE_STOPS = new Set(['memory-critical', 'lease-wait']);
-const STRUCTURED_REASONS = new Set(['rate-limited', ...RESOURCE_STOPS]);
+/** Every `failureReason` that marks infrastructure rather than model failure: `"rate-limited"` and the engine's `RESOURCE_STOPS`. */
+export const INFRA_REASONS = new Set(['rate-limited', ...RESOURCE_STOPS]);
 
 /** JSON key present on every stream-json result record — a cheap prefilter that skips `JSON.parse` on the ~99% of transcript lines that cannot be one. */
 export const RESULT_TYPE_KEY = '"type":"result"';
@@ -126,7 +127,7 @@ function clipReason(text) {
  *
  * `failureReason` prefers a structured `failureReason` on the row
  * (claude-orchestrator#87) over the transcript scan, and passes through ONLY the
- * reasons telemetry.mjs's `FAILURE_REASONS` accepts (`STRUCTURED_REASONS`) —
+ * reasons telemetry.mjs's `FAILURE_REASONS` accepts (`INFRA_REASONS`) —
  * forwarding some future orchestrator reason would make the telemetry append
  * throw and drop the very failure record it exists to capture. A resource stop
  * also forwards its `stopStage`, and, with a PR open, the `ciStatus` the stop
@@ -135,7 +136,7 @@ function clipReason(text) {
  * @param {{row: object, terminal: object|null, rateLimited?: boolean, exitCode?: number|string|null}} opts
  */
 export function buildDiagnosis({ row, terminal, rateLimited = false, exitCode = null }) {
-  const structured = STRUCTURED_REASONS.has(row?.failureReason) ? row.failureReason : null;
+  const structured = INFRA_REASONS.has(row?.failureReason) ? row.failureReason : null;
   const failureReason = structured ?? (rateLimited ? 'rate-limited' : null);
   const stopped = RESOURCE_STOPS.has(failureReason);
   return {

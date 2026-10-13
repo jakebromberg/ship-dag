@@ -67,7 +67,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { RESOURCE_STOPS } from './lib/failure.mjs';
+import { INFRA_REASONS, RESOURCE_STOPS } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
@@ -89,7 +89,7 @@ const IMPL_STATUSES = new Set(['pushed', 'blocked', 'error', null]);
 // death (infra failure, wait-and-resume) from a model failure (HITL point B).
 // Kept as its own field rather than growing IMPL_STATUSES so existing logs and
 // the report subcommand stay valid without a coordinated schema bump.
-const FAILURE_REASONS = new Set(['rate-limited', ...RESOURCE_STOPS, null]);
+const FAILURE_REASONS = new Set([...INFRA_REASONS, null]);
 const REVIEW_VERDICTS = new Set(['clean', 'blocking', 'nits-only', null]);
 const TRIAGE_STATUSES = new Set(['clear', 'needs-decision']);
 const CI_STATUSES = new Set(['pass', 'fail', 'none', null]);
@@ -265,7 +265,7 @@ export function report(records) {
   // quota outage never dilutes those; it's counted instead in quotaFailures.
   const quotaFailures = issues.filter((r) => r.failureReason === 'rate-limited');
   const resourceStops = issues.filter((r) => RESOURCE_STOPS.has(r.failureReason));
-  const modelIssues = issues.filter((r) => r.failureReason !== 'rate-limited' && !RESOURCE_STOPS.has(r.failureReason));
+  const modelIssues = issues.filter((r) => !INFRA_REASONS.has(r.failureReason));
   const reached = modelIssues.filter((r) => r.implStatus != null);
   const cleared = modelIssues.filter((r) => r.triageStatus === 'clear');
   const yieldOf = (rs) => {
