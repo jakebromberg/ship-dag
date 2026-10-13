@@ -112,3 +112,17 @@ test('writeFailureDigests: no non-succeeded rows writes nothing and creates no d
   assert.equal(existsSync(join(dir, 'failure-digest')), false);
   assert.deepEqual(await writeFailureDigests({ configDir: dir, report: {} }), []);
 });
+
+test('writeFailureDigests: a ran-false row whose digest exists keeps it, stamp and all', async () => {
+  const dir = configDir({ log: result({ result: 'first' }) });
+  const [p] = await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, status: 'skipped', ran: false }] }, reportId: 'w1' });
+  writeFileSync(join(dir, 'logs', `issue-${STEM}.log`), result({ result: 'later' }));
+  assert.deepEqual(await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, status: 'skipped', ran: false }] }, reportId: 'w2' }), []);
+  assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w1');
+  // A row that launched a session, or carries no ran, is digested afresh.
+  for (const ran of [true, undefined]) {
+    writeFileSync(p, JSON.stringify({ reportId: 'w1' }));
+    await writeFailureDigests({ configDir: dir, report: { issues: [{ ref: REF, status: 'failed', ran }] }, reportId: 'w2' });
+    assert.equal(JSON.parse(readFileSync(p, 'utf8')).reportId, 'w2');
+  }
+});

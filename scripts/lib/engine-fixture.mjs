@@ -73,7 +73,7 @@ export function engineFixture(specs) {
   return { base, dirs, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
-/** A report row for `ref` (an `owner/repo#N` string; any other is kept as is, with `number` null, for the malformed-row refusal tests) that succeeded with PR 11; `over` overrides any field. */
+/** A report row for `ref` (an `owner/repo#N` string; any other is kept as is, with `number` null, for the malformed-row refusal tests) that succeeded with PR 11; `over` overrides any field, among them the engine's `ran` (whether it launched a session) and `sessionIds` (the sessions it launched). A row given neither is a pre-change row. */
 export const stateRow = (ref, over = {}) => ({ ref, number: parseRef(ref)?.number ?? null, status: 'succeeded', prUrl: 'https://x/11', prNumber: 11, ...over });
 /** A wave report over `rows`, run RUN's wave from T0 to T1. */
 export const stateReport = (rows, over = {}) => ({ configName: `ship-dag-${RUN}`, startedAt: T0, finishedAt: T1, issues: rows, ...over });
