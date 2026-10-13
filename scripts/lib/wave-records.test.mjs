@@ -173,6 +173,16 @@ test('engine stop: a pending launch stop re-listed by a later report is one reco
   assert.equal(derive({ report: report([stopped]), outcomes }, { reportId: 'w2', existing: first }).records.length, 0);
 });
 
+for (const [reason, stage] of [['lease-wait', 'session'], ['memory-critical', 'post-check']]) {
+  test(`engine stop: a resumed ${reason} death is not covered by its continuation alone`, () => {
+    const stopped = stop(reason, stage, 'failed');
+    const outcomes = { [REF]: { pr: 12 } };
+    const [death, continuation] = derive({ report: report([stopped]), outcomes }, { reportId: 'w1' }).records;
+    const covers = (records) => rowCovered(stopped, { id: 'w1', startedAt: 0 }, records, 'sd-20261008-1', undefined);
+    assert.deepEqual([covers([continuation]), covers([death, continuation])], [false, true]);
+  });
+}
+
 test('engine stop: rowCovered counts the record it derives as covering a lease-wait row', () => {
   const stopped = stop('lease-wait', 'session', 'failed');
   const records = derive({ report: report([stopped]) }, { reportId: 'w1' }).records;

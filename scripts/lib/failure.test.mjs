@@ -150,8 +150,9 @@ test('buildDiagnosis: forwards memory-critical and lease-wait with their stopSta
   }
 });
 
-test('buildDiagnosis: a row with no stop carries a null stopStage, and a rate-limit scan beats nothing', () => {
-  assert.equal(buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed' }, terminal: null }).stopStage, null);
+test('buildDiagnosis: a row with no stop carries a null stopStage and no ciStatus', () => {
+  const d = buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed' }, terminal: null });
+  assert.deepEqual([d.stopStage, d.ciStatus], [null, null]);
 });
 
 // The worktree decides how a PR-less stop recovers: work on disk is resumed in place (never re-run the engine into
@@ -190,7 +191,7 @@ test('SKILL.md step 5 nests exactly the failed/blocked routes under that bullet,
   assert.equal(step5.filter((l) => l.startsWith('- ') && l.includes('`find-pr`')).length, 1, 'step 5 has no top-level bullet for a find-pr row');
 });
 
-// Step 5's Green rule and its fix rule for a stopped row's CI, pinned: a `ciStatus: "none"` PR is not green until SD-5 passes.
+// Step 5's Green rule and its fix rule for a stopped row's CI, pinned: a `ciStatus: "none"` PR is not green until the CI profile run passes.
 const step5Text = () => {
   const skill = readFileSync(new URL('../../SKILL.md', import.meta.url), 'utf8');
   return skill.slice(skill.indexOf('\n### 5. '), skill.indexOf('\n### 6. '));
