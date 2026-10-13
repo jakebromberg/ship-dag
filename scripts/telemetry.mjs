@@ -344,6 +344,7 @@ const OUTCOME_RULES = {
   bounces: [(v) => Number.isInteger(v) && v >= 0, 'a non-negative integer'],
   findings: [(v) => Array.isArray(v) && v.every((f) => typeof f === 'string'), 'an array of strings'],
   tokens: [(v) => v === null || (typeof v === 'number' && Number.isFinite(v)), 'a number or null'],
+  pressureOverride: [(v) => v === true, 'true (omit the field when no override ran)'],
 };
 
 /**
