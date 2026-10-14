@@ -64,6 +64,27 @@ test('a runGh failure propagates unchanged, on any page', () => {
   assert.throws(() => listSubIssues(epic, fake([page([{ number: 1 }], more), throws(gone)]).runGh), (e) => e === gone);
 });
 
+test('a listing with sub-issues the token cannot read is a plain Error naming them, never a drop', () => {
+  const at = (...rest) => ['repository', 'issue', 'subIssues', 'nodes', ...rest];
+  const sso = { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement.' };
+  const listing = (nodes, errors) => ghError(JSON.stringify({ data: { repository: { issue: { subIssues: { nodes, pageInfo: last } } } }, errors }));
+  const cases = [
+    ['a null node, by position and message', [], listing([{ number: 1 }, null], [{ ...sso, path: at(1) }]),
+      /^listSubIssues: 1 sub-issue of o\/2048#7 could not be read: sub-issue 2 \(FORBIDDEN: Resource protected by organization SAML enforcement\.\)$/],
+    ['a node whose repo is unreadable, by number', [], listing([{ number: 3, repository: null }],
+      [{ type: 'NOT_FOUND', path: at(0, 'repository'), message: "Could not resolve to a Repository with the name 'other/private'." }]),
+      /: #3 \(NOT_FOUND: Could not resolve to a Repository with the name 'other\/private'\.\)$/],
+    ['a named node and a count of the rest', [], listing([null, null], [{ ...sso, path: at(0) }]),
+      /2 sub-issues of o\/2048#7 could not be read: sub-issue 1 \(FORBIDDEN: [^)]*\), and 1 more$/],
+    ['no error names them: a count', [], listing([null, null], [sso]), /: 2 sub-issues of o\/2048#7 could not be read$/],
+    ['on a later page, by position in the whole listing', [page([{ number: 1 }], more)], listing([null], [{ ...sso, path: at(0) }]),
+      /could not be read: sub-issue 2 \(FORBIDDEN/],
+  ];
+  for (const [name, before, err, re] of cases) {
+    assert.throws(() => listSubIssues(epic, fake([...before, throws(err)]).runGh), (e) => plain(re)(e) && e.cause === err, name);
+  }
+});
+
 test('a first page with no sub-issues connection is SubIssuesUnavailable, whether gh exits 0 or on NOT_FOUND', () => {
   const cases = [
     ['exit 0, no issue', '{"data":{"repository":{"issue":null}}}'],
