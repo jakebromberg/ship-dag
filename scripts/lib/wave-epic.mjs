@@ -24,7 +24,7 @@
 //
 // `runGh` is injected, as in plan-waves.mjs, so tests drive a fake `gh`.
 
-import { listSubIssues, hasWaveLabel, subIssueRepo, WAVE_LABEL } from './sub-issues.mjs';
+import { listSubIssues, hasWaveLabel, hasSubIssues, subIssueRepo, WAVE_LABEL } from './sub-issues.mjs';
 import { parseRef, formatRef, refKey, sameRepo } from './ref.mjs';
 
 const WAVE_TITLE = / — wave (\d+)$/;
@@ -101,7 +101,7 @@ export function openWaveEpic({ repo, epic, refs: rawRefs }, runGh, warn = (m) =>
   const subs = listSubIssues({ number: epic, repo }, runGh);
   const waves = subs.filter((s) => hasWaveLabel(s) && sameRepo(subIssueRepo(s, repo), repo));
   const openWaves = waves.filter((w) => w.state === 'OPEN');
-  const empty = openWaves.find((w) => !(w.subIssuesSummary && w.subIssuesSummary.total > 0));
+  const empty = openWaves.find((w) => !hasSubIssues(w));
 
   // Every issue this wave may move, keyed for lookup, with the REST id the move needs.
   const movable = new Map();

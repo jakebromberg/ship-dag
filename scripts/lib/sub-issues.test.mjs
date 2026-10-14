@@ -1,7 +1,7 @@
 // Tests for sub-issues.mjs. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listSubIssues, SubIssuesUnavailable } from './sub-issues.mjs';
+import { listSubIssues, SubIssuesUnavailable, hasSubIssues } from './sub-issues.mjs';
 
 const epic = { repo: 'o/2048', number: 7 };
 const page = (nodes, pageInfo) => JSON.stringify({ data: { repository: { issue: { subIssues: { nodes, pageInfo } } } } });
@@ -120,3 +120,12 @@ test('a malformed repo throws before any gh call', () => {
     assert.equal(calls.length, 0);
   }
 });
+
+for (const [node, want] of [
+  [{ subIssuesSummary: { total: 2 } }, true],
+  [{ subIssuesSummary: { total: 0 } }, false],
+  [{}, false],
+  [null, false],
+]) {
+  test(`hasSubIssues(${JSON.stringify(node)}) is ${want}`, () => assert.equal(hasSubIssues(node), want));
+}
