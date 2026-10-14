@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, formatPacific,
+  classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, formatPacific, compareRefs,
 } from './model.mjs';
 
 const R = (n) => `o/r#${n}`;
@@ -50,10 +50,29 @@ test('buildGraph places a ticket at its longest path from a ready ticket, not it
   assert.equal(g.stepOf.get(R(4)), 3);
 });
 
-test('buildGraph ignores edges to tickets outside the open set', () => {
-  const g = buildGraph([R(2)], edgesOf([[1, 2]]));
+test('buildGraph satisfies an edge from a done ticket outside the open set, and never draws it', () => {
+  const g = buildGraph([R(2)], edgesOf([[1, 2]]), [R(1)]);
   assert.deepEqual(g.steps, [[R(2)]]);
   assert.equal(g.preds.get(R(2)).size, 0);
+});
+
+// An open blocker outside the board's set is what the engine sees too: the
+// ticket can never start this run, so it gets no step.
+test('buildGraph makes a ticket waiting on an open blocker outside the set unorderable, and what waits on it', () => {
+  const g = buildGraph([2, 3, 4].map(R), edgesOf([[1, 2], [2, 3]]));
+  assert.deepEqual(g.steps, [[R(4)]]);
+  assert.deepEqual([...g.unorderable].sort(), [R(2), R(3)]);
+  assert.equal(g.preds.get(R(2)).size, 0, 'an out-of-set blocker is never drawn');
+});
+
+test('buildGraph makes a self-edge unorderable, as planWaves calls it cyclic', () => {
+  const g = buildGraph([R(1), R(2)], edgesOf([[1, 1]]));
+  assert.deepEqual(g.steps, [[R(2)]]);
+  assert.deepEqual([...g.unorderable], [R(1)]);
+});
+
+test('buildGraph breaks a longest-chain tie by ref order, numeric within a repo', () => {
+  assert.deepEqual(buildGraph([R(9), R(10)], []).chain, [R(10)]);
 });
 
 test('buildGraph reports a cycle as unorderable instead of giving it a step', () => {
@@ -75,6 +94,14 @@ test('orderSteps puts the ticket that unblocks most first, then keeps children u
   // Step 0: 1 unblocks one ticket, 2 unblocks two. Step 1: 3 (under 1) and 4 (under 2).
   const g = buildGraph([1, 2, 3, 4, 5].map(R), edgesOf([[1, 3], [2, 4], [4, 5]]));
   assert.deepEqual(orderSteps(g), [[R(2), R(1)], [R(4), R(3)], [R(5)]]);
+});
+
+test('orderSteps breaks ties by ref order, numeric within a repo', () => {
+  assert.deepEqual(orderSteps(buildGraph([R(10), R(9)], [])), [[R(9), R(10)]]);
+});
+
+test('compareRefs orders by repo, then numerically', () => {
+  assert.deepEqual([R(10), 'a/b#2', R(9)].sort(compareRefs), ['a/b#2', R(9), R(10)]);
 });
 
 // ---- projectWaves / leadingWaveNumber ------------------------------------
