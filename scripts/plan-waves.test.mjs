@@ -37,13 +37,16 @@ function graphqlVars(argv) {
  * entry — so the fixture can't disagree with itself about what is a container.
  *
  * An entry of `null` means "the parent declares children, but the query for
- * them comes back empty" (deleted epic, or one the token can't read).
+ * them comes back empty" (deleted epic, or one the token can't read): GitHub's
+ * NOT_FOUND body, which `fakeGh` turns into gh's exit 1 as real gh does.
  */
 function subIssuesResponse(tree, argv) {
   const vars = graphqlVars(argv);
   const repo = `${vars.owner}/${vars.name}`;
   const entry = tree[`${repo}#${vars.n}`];
-  if (entry === undefined || entry === null) return { data: { repository: { issue: null } } };
+  if (entry === undefined || entry === null) {
+    return { data: { repository: { issue: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an Issue with the number of ${vars.n}.` }] };
+  }
   const pages = Array.isArray(entry) ? [entry] : entry.pages;
   const idx = vars.cursor ? Number(vars.cursor) : 0;
   const isLast = idx >= pages.length - 1;
@@ -91,9 +94,10 @@ function fakeGh(fixtures) {
       return JSON.stringify(fixtures.issues[n]);
     }
     if (argv[0] === 'api' && argv[1] === 'graphql') {
-      return JSON.stringify(fixtures.tree
-        ? subIssuesResponse(fixtures.tree, argv)
-        : fixtures.graphql);
+      const body = fixtures.tree ? subIssuesResponse(fixtures.tree, argv) : fixtures.graphql;
+      // gh exits 1 whenever a GraphQL response carries `errors`, with the body on stdout.
+      if (body && body.errors) throw Object.assign(new Error('Command failed: gh api graphql'), { status: 1, stdout: JSON.stringify(body) });
+      return JSON.stringify(body);
     }
     if (argv[0] === 'api' && argv.some((a) => /\/dependencies\/blocked_by$/.test(a))) {
       // `gh api --paginate --jq '… | "\(.repository.full_name)#\(.number)"'`
