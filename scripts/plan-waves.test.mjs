@@ -38,7 +38,9 @@ function graphqlVars(argv) {
  *
  * An entry of `null` means "the parent declares children, but the query for
  * them comes back empty" (deleted epic, or one the token can't read): GitHub's
- * NOT_FOUND body, which `fakeGh` turns into gh's exit 1 as real gh does.
+ * NOT_FOUND body, which `fakeGh` turns into gh's exit 1 as real gh does. An
+ * entry of `{errors}` is any other GraphQL error body (a rate limit, say), also
+ * an exit 1.
  */
 function subIssuesResponse(tree, argv) {
   const vars = graphqlVars(argv);
@@ -47,13 +49,14 @@ function subIssuesResponse(tree, argv) {
   if (entry === undefined || entry === null) {
     return { data: { repository: { issue: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an Issue with the number of ${vars.n}.` }] };
   }
+  if (entry.errors) return { errors: entry.errors };
   const pages = Array.isArray(entry) ? [entry] : entry.pages;
   const idx = vars.cursor ? Number(vars.cursor) : 0;
   const isLast = idx >= pages.length - 1;
   const childCount = (ref) => {
     const kids = tree[ref];
     if (kids === undefined) return 0;
-    if (kids === null) return 1; // declared a container; its own query returns nothing
+    if (kids === null || kids.errors) return 1; // declared a container; its own query returns nothing
     return Array.isArray(kids) ? kids.length : kids.pages.flat().length;
   };
   const nodes = (pages[idx] || []).map((c) => {
@@ -677,6 +680,22 @@ test('fetchSpec keeps a nested epic as a node when its children cannot be read',
   });
   const spec = fetchSpec('o/r', { epic: 1 }, gh);
   assert.deepEqual(spec.nodes.map((n) => n.ref).sort(), ['o/r#10', 'o/r#20']);
+});
+
+test('fetchSpec aborts, never demotes, when a nested epic or wave sub-epic hits any other gh failure', () => {
+  // A rate limit says nothing about #20's children, so shipping it as one issue
+  // would hand its whole sub-tree to one subagent. The fetch exits; re-run it.
+  const limited = { errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] };
+  for (const labels of [undefined, [WAVE_LABEL]]) {
+    const warns = [];
+    const gh = fakeGh({
+      tree: { 'o/r#1': [{ number: 10 }, { number: 20, labels }], 'o/r#20': limited },
+      issues: { 10: issue(10), 20: issue(20) },
+    });
+    assert.throws(() => fetchSpec('o/r', { epic: 1, warn: (m) => warns.push(m) }, gh),
+      (e) => /Command failed/.test(e.message) && /RATE_LIMITED/.test(e.stdout), labels ? 'wave' : 'nested epic');
+    assert.deepEqual(warns, []);
+  }
 });
 
 // ---- fetchSpec: container-edge rewriting ----------------------------------
