@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { planWaveEpic, openWaveEpic, closeWaveEpic, sweepWaveEpics, qualifyRef, WaveEpicRefusal } from './wave-epic.mjs';
 import { WAVE_LABEL } from './sub-issues.mjs';
 import { bodyEdges } from '../plan-waves.mjs';
+import { graphqlAnswer, notFoundBody, restFailure } from './gh-fixture.mjs';
 
 const R = 'o/r';
 const WAVE = [WAVE_LABEL];
@@ -42,24 +43,24 @@ function fakeGh(issues, { failMoves = [], failListings = [] } = {}) {
     if (a === 'api' && b === 'graphql') {
       const n = Number(field(argv, 'n'));
       if (field(argv, 'query').includes('subIssues')) {
-        if (failListings.includes(n)) throw new Error(`HTTP 502 listing #${n}`);
+        if (failListings.includes(n)) throw restFailure(502, `Bad Gateway listing #${n}`);
         const kids = Object.keys(issues).map(Number).filter((k) => issues[k].parent === n);
         return JSON.stringify({ data: { repository: { issue: { subIssues: {
           nodes: kids.map(node), pageInfo: { hasNextPage: false, endCursor: null } } } } } });
       }
       const i = issues[n];
       const p = i && i.parent;
-      return JSON.stringify({ data: { repository: { issue: i ? {
+      return graphqlAnswer(i ? { data: { repository: { issue: {
         state: i.state || 'OPEN',
         labels: { nodes: labelsOf(i) },
         parent: p ? { number: p, repository: { nameWithOwner: R } } : null,
-      } : null } } });
+      } } } } : notFoundBody(n), argv);
     }
     if (a === 'api' && b === '-X' && argv[2] === 'POST') {
       const parent = Number(argv[3].match(/issues\/(\d+)\/sub_issues$/)[1]);
       const child = Number(field(argv, 'sub_issue_id')) - 1000;
-      if (failMoves.includes(child)) throw new Error(`HTTP 422 moving #${child}`);
-      if (issues[child].parent != null && field(argv, 'replace_parent') !== 'true') throw new Error('HTTP 422 already has a parent');
+      if (failMoves.includes(child)) throw restFailure(422, `Unprocessable moving #${child}`, argv);
+      if (issues[child].parent != null && field(argv, 'replace_parent') !== 'true') throw restFailure(422, 'Unprocessable: already has a parent', argv);
       issues[child].parent = parent;
       return '{}';
     }
@@ -139,7 +140,7 @@ test('openWaveEpic leaves an issue under the epic when its move fails, and warns
   const out = openWaveEpic({ repo: R, epic: 1, refs: ['10', '11'] }, fakeGh(issues, { failMoves: [11] }), (m) => seen.push(m));
   assert.deepEqual([out.moved, out.listed], [['o/r#10'], ['o/r#11']]);
   assert.equal(issues[11].parent, 1);
-  assert.match(seen[0], /o\/r#11.*keeps its parent/);
+  assert.match(seen[0], /o\/r#11.*keeps its parent/s);
 });
 
 test('openWaveEpic reuses an attached wave sub-epic that a crash left empty', () => {
@@ -279,7 +280,7 @@ for (const { name, waves, except, dryRun, failMoves, failListings, extra = {}, e
   {
     name: 'one wave failing is reported and the rest still settle',
     waves: { 7: { state: 'OPEN', kids: { 11: 'OPEN' } }, 8: { state: 'OPEN', kids: { 12: 'CLOSED' } } }, failListings: [7],
-    expect: { closed: ['o/r#8'], returned: [], stuck: [], errors: [{ wave: 'o/r#7', message: 'HTTP 502 listing #7' }] },
+    expect: { closed: ['o/r#8'], returned: [], stuck: [], errors: [{ wave: 'o/r#7', message: restFailure(502, 'Bad Gateway listing #7').message }] },
     after: { 7: 'OPEN', 8: 'CLOSED' }, writes: true,
   },
   {
