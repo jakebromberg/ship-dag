@@ -10,6 +10,7 @@
 // the longest chain, and the wave projection.
 
 import { planWaves, compareRefString } from '../plan-waves.mjs';
+import { parseRef, refKey } from '../lib/ref.mjs';
 
 /** Ref order for anything the board sorts: the topo core's, repo then number (`#9` before `#10`). */
 export const compareRefs = compareRefString;
@@ -160,25 +161,43 @@ export function projectWaves(g, status, current) {
 }
 
 /**
- * A function that shortens `owner/repo#N` for display: an explicit abbreviation
+ * A function that labels an `owner/repo` for display: an explicit abbreviation
  * for the repo if one is given, else the bare repo name — unless two owners
- * share that name, when only `owner/repo` is unambiguous.
+ * share that name, when only `owner/repo` is unambiguous. Repos match as GitHub
+ * compares them, ignoring case.
+ *
+ * @param {Iterable<string>} repos  every `owner/repo` the board shows
+ * @param {Record<string,string>} [abbreviations]  `owner/repo` → label
+ * @returns {(repo:string) => string}
+ */
+export function makeRepoLabel(repos, abbreviations = {}) {
+  const abbr = new Map(Object.entries(abbreviations).map(([repo, label]) => [refKey(repo), label]));
+  const owners = new Map();
+  for (const repo of repos) {
+    const name = refKey(repo.split('/')[1]);
+    owners.set(name, (owners.get(name) || new Set()).add(refKey(repo)));
+  }
+  return (repo) => {
+    if (abbr.has(refKey(repo))) return abbr.get(refKey(repo));
+    const name = repo.split('/')[1];
+    return owners.get(refKey(name))?.size > 1 ? repo : name;
+  };
+}
+
+/**
+ * A function that shortens `owner/repo#N` for display, its repo labelled as
+ * `makeRepoLabel` labels it. Anything that is not an `owner/repo#N` ref is
+ * shown as given.
  *
  * @param {Iterable<string>} repos  every `owner/repo` the board shows
  * @param {Record<string,string>} [abbreviations]  `owner/repo` → label
  * @returns {(ref:string) => string}
  */
 export function makeShortRef(repos, abbreviations = {}) {
-  const owners = new Map();
-  for (const repo of repos) {
-    const name = repo.split('/')[1];
-    owners.set(name, (owners.get(name) || new Set()).add(repo));
-  }
+  const label = makeRepoLabel(repos, abbreviations);
   return (ref) => {
-    const [repo, num] = ref.split('#');
-    if (Object.hasOwn(abbreviations, repo)) return `${abbreviations[repo]}#${num}`;
-    const name = repo.split('/')[1];
-    return owners.get(name)?.size > 1 ? ref : `${name}#${num}`;
+    const parsed = parseRef(ref);
+    return parsed ? `${label(parsed.repo)}#${parsed.number}` : ref;
   };
 }
 
@@ -189,15 +208,16 @@ const PACIFIC = new Intl.DateTimeFormat('en-US', {
 
 /**
  * An instant in Pacific time, always with its zone label (PDT or PST, chosen by
- * the date). `long` adds the weekday. Assembled from parts so the punctuation
+ * the date), or '' for a missing or invalid one. `long` adds the weekday. Assembled from parts so the punctuation
  * doesn't vary with the ICU version.
  *
  * @param {string|null|undefined} iso
  * @param {'long'|'short'} [style]
  */
 export function formatPacific(iso, style = 'short') {
-  if (!iso) return '';
-  const p = Object.fromEntries(PACIFIC.formatToParts(new Date(iso)).map(({ type, value }) => [type, value]));
+  const date = new Date(iso ?? NaN);
+  if (Number.isNaN(date.getTime())) return '';
+  const p = Object.fromEntries(PACIFIC.formatToParts(date).map(({ type, value }) => [type, value]));
   const s = `${p.month} ${p.day}, ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
   return style === 'long' ? `${p.weekday} ${s}` : s;
 }

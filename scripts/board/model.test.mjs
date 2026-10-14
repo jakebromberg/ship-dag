@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, formatPacific, compareRefs,
+  classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, makeRepoLabel, formatPacific, compareRefs,
 } from './model.mjs';
 
 const R = (n) => `o/r#${n}`;
@@ -148,6 +148,20 @@ test('makeShortRef uses the repo name, an explicit abbreviation, or owner/repo w
   assert.equal(short('b/web#2'), 'b/web#2');
 });
 
+for (const [name, repos, abbreviations, ref, want] of [
+  ['a bare ref is shown as given', ['a/api'], {}, '12', '12'],
+  ['a ref that is not owner/repo#N is shown as given', ['a/api'], {}, 'a/api#x', 'a/api#x'],
+  ['names differing only in case collide', ['a/Web', 'b/web'], {}, 'a/Web#1', 'a/Web#1'],
+  ['an abbreviation matches the repo in any case', ['a/ios'], { 'a/ios': 'iOS' }, 'A/IOS#9', 'iOS#9'],
+]) {
+  test(`makeShortRef: ${name}`, () => assert.equal(makeShortRef(repos, abbreviations)(ref), want));
+}
+
+test('makeRepoLabel labels a repo the way makeShortRef labels its refs', () => {
+  const label = makeRepoLabel(['a/api', 'a/web', 'b/web', 'a/ios'], { 'a/ios': 'iOS' });
+  assert.deepEqual(['a/api', 'a/ios', 'a/web'].map(label), ['api', 'iOS', 'a/web']);
+});
+
 // ---- formatPacific -------------------------------------------------------
 
 for (const [iso, style, want] of [
@@ -157,6 +171,7 @@ for (const [iso, style, want] of [
   ['2026-11-01T08:30:00Z', 'short', 'Nov 1, 1:30 AM PDT'],
   ['2026-11-01T09:30:00Z', 'short', 'Nov 1, 1:30 AM PST'],
   [null, 'short', ''],
+  ['not a date', 'short', ''],
 ]) {
   test(`formatPacific(${iso}, ${style}) → ${JSON.stringify(want)}`, () => {
     assert.equal(formatPacific(iso, style), want);
