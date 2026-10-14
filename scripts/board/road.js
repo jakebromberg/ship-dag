@@ -5,8 +5,7 @@
 (()=>{const dag=document.getElementById('dag');if(!dag)return;
 const E=JSON.parse(dag.dataset.edges),svg=dag.querySelector('svg'),N={};
 dag.querySelectorAll('.node').forEach(n=>N[n.dataset.ref]=n);
-const ns='http://www.w3.org/2000/svg';
-function draw(){const b=dag.getBoundingClientRect();svg.setAttribute('width',dag.scrollWidth);svg.setAttribute('height',dag.scrollHeight);
+function draw(){const b=dag.getBoundingClientRect();svg.setAttribute('width',dag.clientWidth);svg.setAttribute('height',dag.clientHeight);
  let h='<defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--muted);stroke:none"/></marker><marker id="ahc" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--accent);stroke:none"/></marker></defs>';
  for(const [a,c,crit] of E){const A=N[a],C=N[c];if(!A||!C)continue;const p=A.getBoundingClientRect(),q=C.getBoundingClientRect();
   const x1=p.left+p.width/2-b.left,y1=p.bottom-b.top,x2=q.left+q.width/2-b.left,y2=q.top-b.top-1,m=Math.max(18,(y2-y1)/2);
