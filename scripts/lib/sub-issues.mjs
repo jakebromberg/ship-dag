@@ -41,7 +41,11 @@ export function hasWaveLabel(node) {
   return list.some((l) => l && l.name === WAVE_LABEL);
 }
 
-/** No sub-issues connection came back for an issue — bad number, deleted, no access, feature off. */
+/**
+ * No sub-issues connection came back for an issue: a bad number, a deleted
+ * issue, or a repo the token cannot read (GitHub's NOT_FOUND). Any other
+ * GraphQL error, a schema error included, is a `runGh` failure instead.
+ */
 export class SubIssuesUnavailable extends Error {}
 
 const connectionOf = (resp) => {
@@ -66,15 +70,15 @@ function isNotFoundExit(err) {
  * exit), leaving the caller to decide whether that is fatal (the root epic) or
  * merely a warning (a nested one). Any other `runGh` failure propagates
  * unchanged. A body that is not JSON, a later page without a connection, and a
- * malformed `repo` or `pageInfo` throw a plain Error, so a half-read epic is
- * never mistaken for one without sub-issues.
+ * malformed `repo`, `nodes` or `pageInfo` throw a plain Error, so a half-read
+ * epic is never mistaken for one without sub-issues.
  *
  * @param {{number:number, repo:string}} epicNode
  * @param {(argv:string[]) => string} runGh
  * @returns {Array<{number:number,databaseId?:number,title?:string,state:string,repository:{nameWithOwner:string},subIssuesSummary?:{total:number},labels?:{nodes:Array<{name:string}>}}>}
  */
 export function listSubIssues(epicNode, runGh) {
-  if (!/^[^/\s]+\/[^/\s]+$/.test(epicNode.repo || '')) {
+  if (!/^[^/#\s]+\/[^/#\s]+$/.test(epicNode.repo || '')) {
     throw new Error(`listSubIssues: repo must be owner/repo, got ${JSON.stringify(epicNode.repo)}`);
   }
   const [owner, name] = epicNode.repo.split('/');
@@ -84,7 +88,7 @@ export function listSubIssues(epicNode, runGh) {
   do {
     const argv = ['api', 'graphql', '-H', 'GraphQL-Features: sub_issues', '-f', `query=${SUB_ISSUES_QUERY}`,
       '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${epicNode.number}`];
-    if (cursor) argv.push('-F', `cursor=${cursor}`);
+    if (cursor) argv.push('-f', `cursor=${cursor}`);
     let raw;
     try {
       raw = runGh(argv);
@@ -106,7 +110,10 @@ export function listSubIssues(epicNode, runGh) {
     if (!connection) {
       const said = JSON.stringify((resp && resp.errors) || resp);
       if (cursor) throw new Error(`listSubIssues: no sub-issues connection on a later page of ${ref}: ${said}`);
-      throw new SubIssuesUnavailable(`no sub-issues returned (bad number, or the sub-issues feature is unavailable): ${said}`);
+      throw new SubIssuesUnavailable(`no sub-issues returned (bad number, deleted, or no access): ${said}`);
+    }
+    if (!Array.isArray(connection.nodes) || connection.nodes.some((n) => !n)) {
+      throw new Error(`listSubIssues: malformed nodes for ${ref}: ${JSON.stringify(connection.nodes)}`);
     }
     out.push(...connection.nodes);
     const info = connection.pageInfo;

@@ -43,7 +43,7 @@ test('follows cursors across pages', () => {
     page([{ number: 2 }], last),
   ]);
   assert.deepEqual(listSubIssues(epic, runGh).map((n) => n.number), [1, 2]);
-  assert.ok(calls[1].includes('cursor=c1'));
+  assert.equal(calls[1][calls[1].indexOf('cursor=c1') - 1], '-f'); // a String: -F would retype an all-digit cursor
 });
 
 test('a runGh failure propagates unchanged, on any page', () => {
@@ -84,6 +84,8 @@ test('an unparseable or malformed page is a plain Error, never SubIssuesUnavaila
     ['a later page with no connection', [page([{ number: 1 }], more), noIssue(undefined)], /no sub-issues connection on a later page/],
     ['a missing pageInfo', [page([], undefined)], /malformed pageInfo/],
     ['a null cursor with more pages', [page([], { hasNextPage: true, endCursor: null })], /malformed pageInfo/],
+    ['a null nodes list', [page(null, last)], /malformed nodes/],
+    ['a null node', [page([{ number: 1 }, null], last)], /malformed nodes/],
   ];
   for (const [name, responses, re] of cases) {
     assert.throws(() => listSubIssues(epic, fake(responses).runGh), plain(re), name);
@@ -91,7 +93,7 @@ test('an unparseable or malformed page is a plain Error, never SubIssuesUnavaila
 });
 
 test('a malformed repo throws before any gh call', () => {
-  for (const repo of ['nope', 'a/b/c', '', undefined]) {
+  for (const repo of ['nope', 'a/b/c', 'o/r#5', '', undefined]) {
     const { runGh, calls } = fake([page([], last)]);
     assert.throws(() => listSubIssues({ repo, number: 1 }, runGh), plain(/repo must be owner\/repo/), String(repo));
     assert.equal(calls.length, 0);
