@@ -141,7 +141,8 @@ export function readRunFamilyReports(stateDir, opts) {
  * - `earlierOf(read)`: the reports that started before `read` (`earlierReports`), computed once per read;
  * - `owns(read, row)`: whether `row` of `read` is its own event, not one it `carriedOver` from `earlierOf(read)`;
  * - `listing`: by read id, the refs each of `reads` (counted or not) lists as its own row, built once on first use;
- * - `ownerOf(ref)`: the latest of `reads` whose row for `ref` it `owns`, as `{...read, row}`, or null.
+ * - `ownerOf(ref)`: the latest of `reads` whose row for `ref` it `owns`, as `{...read, row}`, or null;
+ * - `rowOf(id, ref)`: the row for `ref` in the read `id` (any of `reads`, counted or not), or null.
  * @param {ReturnType<typeof readWaveReport>[]} reads
  */
 export function reportOwnership(reads) {
@@ -154,9 +155,11 @@ export function reportOwnership(reads) {
     const owner = counted.findLast((r) => { const row = rowOf(r); return row && owns(r, row); });
     return owner ? { ...owner, row: rowOf(owner) } : null;
   };
+  const byId = new Map(reads.map((r) => [r.id, r]));
+  const rowOf = (id, ref) => byId.get(id)?.report?.issues?.find((row) => row?.ref === ref) ?? null;
   let listing;
   return {
-    reads: counted, earlierOf, owns, ownerOf,
+    reads: counted, earlierOf, owns, ownerOf, rowOf,
     get listing() { return (listing ??= new Map(reads.map((r) => [r.id, new Set((r.report?.issues ?? []).filter((row) => row && owns(r, row)).map((row) => row.ref))]))); },
   };
 }
