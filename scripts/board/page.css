@@ -23,7 +23,7 @@ h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:34px 0 12px;display:fl
 .card .top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.card .t{font-weight:600}.card .note{color:var(--ink2);font-size:13.5px}
 .chip{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap}
 .c-shipped{color:var(--ship);background:var(--ship-bg)}.c-flight{color:var(--flight);background:var(--flight-bg)}.c-ready{color:var(--ready);background:var(--ready-bg)}
-.c-blocked{color:var(--block);background:var(--block-bg)}.c-queued,.c-dropped{color:var(--queued);background:var(--queued-bg)}
+.c-you{color:var(--block);background:var(--block-bg)}.c-blocked,.c-queued,.c-dropped{color:var(--queued);background:var(--queued-bg)}
 .pr{font-variant-numeric:tabular-nums;font-size:13px;padding:1px 6px;border-radius:6px;border:1px solid var(--line)}.pr-merged{color:var(--ship)}.pr-open{color:var(--flight)}.pr-closed{color:var(--muted);text-decoration:line-through}
 .waves{display:grid;gap:10px}.wave{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
 .wave h3{margin:0 0 8px;font-size:14px;color:var(--ink2)}.items{display:flex;flex-wrap:wrap;gap:8px}
@@ -54,5 +54,4 @@ details summary{cursor:pointer;color:var(--ink2);margin:8px 0}footer{margin-top:
 .node .wn{font-size:11.5px;font-weight:600;color:var(--accent)}.node .wn.now{color:var(--flight)}
 .node .dep{color:var(--muted)}.node .gate{color:var(--block);font-weight:600}
 .node.dim{opacity:.28}
-.c-you{color:var(--block);background:var(--block-bg)}
 @media (max-width:700px){.dag svg{display:none}.row .ns{justify-content:flex-start}.node{width:100%}}
