@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { planWaves, readySet, bodyEdges, fetchSpec, parseFetchArgs } from './plan-waves.mjs';
 import { WAVE_LABEL } from './lib/sub-issues.mjs';
-import { graphqlAnswer, restFailure } from './lib/gh-fixture.mjs';
+import { graphqlAnswer, issueViewNotFound, notFoundBody, restFailure } from './lib/gh-fixture.mjs';
 
 // A minimal `issue view` fixture, for the hierarchy tests where only the body
 // (and hence the edges parsed out of it) varies between issues.
@@ -48,7 +48,7 @@ function subIssuesResponse(tree, argv) {
   const repo = `${vars.owner}/${vars.name}`;
   const entry = tree[`${repo}#${vars.n}`];
   if (entry === undefined || entry === null) {
-    return { data: { repository: { issue: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an Issue with the number of ${vars.n}.` }] };
+    return notFoundBody(vars.n);
   }
   if (entry.errors) return { errors: entry.errors };
   const pages = Array.isArray(entry) ? [entry] : entry.pages;
@@ -99,7 +99,7 @@ function fakeGh(fixtures) {
     }
     if (argv[0] === 'issue' && argv[1] === 'view') {
       const n = Number(argv[2]);
-      if (!fixtures.issues[n]) throw restFailure(404, `no such issue #${n}`, argv);
+      if (!fixtures.issues[n]) throw issueViewNotFound(n, argv);
       return JSON.stringify(fixtures.issues[n]);
     }
     if (argv[0] === 'api' && argv[1] === 'graphql') {
@@ -404,7 +404,7 @@ test('fetchSpec epic path throws a clear error when the issue/sub-issues are abs
 
 test('fetchSpec names the root epic on any other failure listing it, with the original as cause', () => {
   // A 502 on the root still aborts and is never SubIssuesUnavailable; it just keeps saying which epic failed.
-  const boom = restFailure(502, 'Bad Gateway');
+  const boom = restFailure(502, 'Bad Gateway', ['api', 'graphql']);
   assert.throws(() => fetchSpec('o/r', { epic: 1 }, () => { throw boom; }),
     (e) => e.constructor === Error && e.message === `epic #1 in o/r: ${boom.message}` && e.cause === boom);
 });
