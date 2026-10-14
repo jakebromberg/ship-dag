@@ -1,10 +1,23 @@
 // gh.mjs — the `gh` CLI seam: run it, classify a failure, retry a rate limit, parse its JSON. `gh` is injected
 // everywhere as `async (args) => stdout`, so nothing here touches GitHub unless a caller passes `ghCli`.
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
 /** The default `gh`: run the CLI and return stdout. */
 export const ghCli = async (args) => (await promisify(execFile)('gh', args, { maxBuffer: 64 << 20 })).stdout;
+
+/** The sync counterpart of `ghCli`: run `gh` for real and return its stdout. */
+export function realRunGh(args) {
+  return execFileSync('gh', args, { encoding: 'utf8' });
+}
+
+/**
+ * A failed `gh` call's stdout body, parsed: the JSON `gh api` prints on an HTTP error (`{message, status}`) or
+ * a GraphQL response with `errors`. Null when stdout is absent or not JSON. The only place that body is parsed.
+ */
+export function ghErrorBody(err) {
+  try { return JSON.parse(err?.stdout) ?? null; } catch { return null; }
+}
 
 /**
  * What a failed `gh` call means, `{status, rateLimited}`. `status` is the HTTP status: `err.stdout`'s JSON
@@ -14,8 +27,7 @@ export const ghCli = async (args) => (await promisify(execFile)('gh', args, { ma
  * only place gh's error text is matched.
  */
 export function ghFailure(err) {
-  let body;
-  try { body = JSON.parse(err?.stdout); } catch { /* not JSON: stdout carries no status */ }
+  const body = ghErrorBody(err);
   const text = String(err?.stderr ?? err?.message ?? '');
   const status = Number(body?.status ?? /\(HTTP (\d{3})\)|HTTP (\d{3}):/.exec(text)?.slice(1).find(Boolean)) || null;
   const said = /rate limit/i.test(`${body?.message ?? ''} ${text}`);
