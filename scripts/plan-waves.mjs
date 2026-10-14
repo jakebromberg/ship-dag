@@ -70,6 +70,9 @@ try {
 }
 const { readySet: coreReadySet, layeredTopoSort, refOf, normalizeDep, repoOfRef } = core;
 
+/** The core's ref order (repo, then number, so `#9` before `#10`), the tie-break its waves use. */
+export const { compareRefString } = core;
+
 // ---- spec → core conversion ---------------------------------------------
 
 /**

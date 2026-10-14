@@ -9,7 +9,10 @@
 // is what neither provides — ancestry, the transitive reduction drawn as edges,
 // the longest chain, and the wave projection.
 
-import { planWaves } from '../plan-waves.mjs';
+import { planWaves, compareRefString } from '../plan-waves.mjs';
+
+/** Ref order for anything the board sorts: the topo core's, repo then number (`#9` before `#10`). */
+export const compareRefs = compareRefString;
 
 /**
  * A ticket's board status, first match wins: closed as not planned → `dropped`;
@@ -31,25 +34,25 @@ export function classify({ state, stateReason, hasOpenPr, owned, openBlockers })
  *
  * `steps[i]` holds the tickets that can start once everything in earlier steps
  * has shipped — the layering `planWaves` computes, so a ticket's step is its
- * longest path from a ready ticket. Tickets caught in or behind a cycle get no
- * step and are listed in `unorderable`. `direct` is the transitive reduction of
- * `preds` (an edge implied by a longer path is dropped), which is what gets
- * drawn. `chain` is the longest path, end to end.
+ * longest path from a ready ticket. Blockers are read as the engine reads them:
+ * one in `done` is satisfied, and an open one outside `openRefs` can never ship
+ * this run. So a ticket caught in or behind a cycle (a self-edge included), or
+ * waiting on an open blocker outside the set, gets no step and is listed in
+ * `unorderable`. `preds` holds only the edges between two open tickets, since
+ * only those are drawn; `direct` is its transitive reduction (an edge implied by
+ * a longer path is dropped). `chain` is the longest path, end to end.
  *
  * @param {string[]} openRefs
- * @param {Array<{blocked:string, blockedBy:string}>} edges  any edges; those not between two open tickets are ignored
+ * @param {Array<{blocked:string, blockedBy:string}>} edges  any edges; only those into an open ticket count
+ * @param {string[]} [done]  closed refs, as the engine's `done[]`: the board's closed members and closed blockers
  */
-export function buildGraph(openRefs, edges) {
+export function buildGraph(openRefs, edges, done = []) {
   const open = new Set(openRefs);
   const preds = new Map(openRefs.map((r) => [r, new Set()]));
   for (const { blocked, blockedBy } of edges) {
-    if (open.has(blocked) && open.has(blockedBy) && blocked !== blockedBy) preds.get(blocked).add(blockedBy);
+    if (open.has(blocked) && open.has(blockedBy)) preds.get(blocked).add(blockedBy);
   }
-  const plan = planWaves({
-    nodes: openRefs,
-    edges: [...preds].flatMap(([b, ps]) => [...ps].map((p) => ({ blocked: b, blockedBy: p }))),
-    done: [],
-  });
+  const plan = planWaves({ nodes: openRefs, edges: edges.filter((e) => open.has(e.blocked)), done });
   const steps = plan.waves.map((w) => [...w]);
   const stepOf = new Map(steps.flatMap((row, i) => row.map((r) => [r, i])));
   const unorderable = new Set([...plan.cyclic, ...plan.blocked.map((b) => b.ref)]);
@@ -84,8 +87,12 @@ function longestChain(steps, stepOf, direct, ancestors, descendants) {
   return chain.reverse();
 }
 
+/** Compare sort keys element by element: numbers numerically, refs by `compareRefs`. */
 function compareKeys(a, b) {
-  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  for (let i = 0; i < a.length; i += 1) {
+    const c = typeof a[i] === 'string' ? compareRefs(a[i], b[i]) : a[i] - b[i];
+    if (c) return c;
+  }
   return 0;
 }
 
