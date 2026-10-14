@@ -294,12 +294,13 @@ const defaultWarn = (m) => console.error(m);
  * Rules, each matching how depth-1 already behaves:
  *  - A CLOSED sub-issue is out of scope, and closing an epic takes its whole
  *    sub-tree with it — the walk does not descend into it.
- *  - A container whose own sub-issue query reports *no sub-issues
- *    connection* (`SubIssuesUnavailable`) is kept as a leaf, with a warning; any
- *    other failure (rate limit, network, auth) aborts the fetch. Its children
- *    are unknown, and silently dropping the work is the dangerous direction; shipping the epic issue itself is recoverable. (A
- *    query that succeeds with no open children is a different case — it is
- *    demoted by the pass below, quietly, because nothing went wrong.)
+ *  - A container whose own sub-issue query reports *no sub-issues connection*
+ *    (`SubIssuesUnavailable`) is kept as a leaf, with a warning; any other
+ *    failure (rate limit, network, auth, a malformed page) aborts the fetch.
+ *    Its children are unknown, and silently dropping the work is the dangerous
+ *    direction; shipping the epic issue itself is recoverable. (A query that
+ *    succeeds with no open children is a different case — it is demoted by the
+ *    pass below, quietly, because nothing went wrong.)
  *  - A ref already visited is not descended into again, so a malformed cyclic
  *    hierarchy terminates instead of looping forever.
  *  - An open container with no open descendant is demoted back to a leaf: it is
@@ -312,7 +313,8 @@ const defaultWarn = (m) => console.error(m);
  *    vanish from every later fetch. Each case warns. A wave held back this way
  *    has no pending work, so it lands in `heldWaves` and an edge naming it is
  *    satisfied rather than an external blocker. A wave whose own sub-issue
- *    query fails ships nothing this pass: neither it nor its unknown children.
+ *    query reports no sub-issues connection ships nothing this pass: neither
+ *    it nor its unknown children.
  *
  * The root epic itself is a container but is *not* read for edges by the caller,
  * and is never demoted: it is the scope boundary, not a participant, exactly as

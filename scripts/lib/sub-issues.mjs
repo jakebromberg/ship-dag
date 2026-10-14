@@ -44,12 +44,30 @@ export function hasWaveLabel(node) {
 /** No sub-issues connection came back for an issue — bad number, deleted, no access, feature off. */
 export class SubIssuesUnavailable extends Error {}
 
+const connectionOf = (resp) => {
+  const issue = resp && resp.data && resp.data.repository && resp.data.repository.issue;
+  return issue && issue.subIssues;
+};
+
+// Whether a runGh failure is gh's exit on a GraphQL body with no connection and
+// only NOT_FOUND errors: a bad number, a deleted issue or an unreadable repo.
+function isNotFoundExit(err) {
+  let body;
+  try { body = JSON.parse(err && err.stdout); } catch { return false; }
+  const errors = body && body.errors;
+  return Array.isArray(errors) && errors.length > 0 && !connectionOf(body)
+    && errors.every((e) => e && e.type === 'NOT_FOUND');
+}
+
 /**
  * Every sub-issue of one epic, following cursors so a large epic isn't silently
- * truncated. Throws `SubIssuesUnavailable` when GitHub reports no sub-issues
- * connection at all, leaving the caller to decide whether that is fatal (the
- * root epic) or merely a warning (a nested one). Any other failure (`runGh`
- * throwing, a malformed `repo` or `pageInfo`) is a plain Error and propagates.
+ * truncated. Throws `SubIssuesUnavailable` when the first page reports no
+ * sub-issues connection at all (an exit-0 body without one, or gh's NOT_FOUND
+ * exit), leaving the caller to decide whether that is fatal (the root epic) or
+ * merely a warning (a nested one). Any other `runGh` failure propagates
+ * unchanged. A body that is not JSON, a later page without a connection, and a
+ * malformed `repo` or `pageInfo` throw a plain Error, so a half-read epic is
+ * never mistaken for one without sub-issues.
  *
  * @param {{number:number, repo:string}} epicNode
  * @param {(argv:string[]) => string} runGh
@@ -60,29 +78,40 @@ export function listSubIssues(epicNode, runGh) {
     throw new Error(`listSubIssues: repo must be owner/repo, got ${JSON.stringify(epicNode.repo)}`);
   }
   const [owner, name] = epicNode.repo.split('/');
+  const ref = `${epicNode.repo}#${epicNode.number}`;
   const out = [];
   let cursor = null;
   do {
     const argv = ['api', 'graphql', '-H', 'GraphQL-Features: sub_issues', '-f', `query=${SUB_ISSUES_QUERY}`,
       '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${epicNode.number}`];
     if (cursor) argv.push('-F', `cursor=${cursor}`);
-    // A runGh failure (rate limit, 502, auth) propagates: it says nothing about the connection.
-    const raw = runGh(argv);
+    let raw;
+    try {
+      raw = runGh(argv);
+    } catch (err) {
+      // gh exits 1 whenever a GraphQL response carries `errors`, so a missing
+      // connection arrives here too, its body on `err.stdout`. Only that, on the
+      // first page, is read; any other failure (rate limit, 502, network, auth)
+      // propagates unchanged.
+      if (cursor || !isNotFoundExit(err)) throw err;
+      raw = err.stdout;
+    }
     let resp;
     try {
       resp = JSON.parse(raw);
     } catch (err) {
-      throw new SubIssuesUnavailable(`the sub-issues response was not JSON: ${err.message}`);
+      throw new Error(`listSubIssues: the sub-issues response for ${ref} was not JSON: ${err.message}`);
     }
-    const issue = resp && resp.data && resp.data.repository && resp.data.repository.issue;
-    if (!issue || !issue.subIssues) {
-      throw new SubIssuesUnavailable('no sub-issues returned (bad number, or the sub-issues '
-        + `feature is unavailable): ${JSON.stringify((resp && resp.errors) || resp)}`);
+    const connection = connectionOf(resp);
+    if (!connection) {
+      const said = JSON.stringify((resp && resp.errors) || resp);
+      if (cursor) throw new Error(`listSubIssues: no sub-issues connection on a later page of ${ref}: ${said}`);
+      throw new SubIssuesUnavailable(`no sub-issues returned (bad number, or the sub-issues feature is unavailable): ${said}`);
     }
-    out.push(...issue.subIssues.nodes);
-    const info = issue.subIssues.pageInfo;
+    out.push(...connection.nodes);
+    const info = connection.pageInfo;
     if (!info || (info.hasNextPage && !info.endCursor)) {
-      throw new Error(`listSubIssues: malformed pageInfo for ${epicNode.repo}#${epicNode.number}: ${JSON.stringify(info)}`);
+      throw new Error(`listSubIssues: malformed pageInfo for ${ref}: ${JSON.stringify(info)}`);
     }
     cursor = info.hasNextPage ? info.endCursor : null;
   } while (cursor);
