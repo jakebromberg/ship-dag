@@ -25,6 +25,11 @@ export function subIssueRepo(node, parentRepo) {
   return (node.repository && node.repository.nameWithOwner) || parentRepo;
 }
 
+/** Whether a sub-issue has sub-issues of its own, from the `subIssuesSummary` that rides along on it. */
+export function hasSubIssues(node) {
+  return Boolean(node && node.subIssuesSummary && node.subIssuesSummary.total > 0);
+}
+
 /**
  * Whether an issue carries `WAVE_LABEL`. Takes either label shape: GraphQL's
  * `labels: { nodes: [{name}] }` (as `listSubIssues` returns it) or REST's and
