@@ -78,7 +78,7 @@ function unreadableNodes(connection, errors, offset) {
 function failureOf(err, { ref, first, offset }) {
   const body = ghErrorBody(err);
   if (!body) return err;
-  const errors = body && Array.isArray(body.errors) ? body.errors : [];
+  const errors = Array.isArray(body.errors) ? body.errors : [];
   const connection = connectionOf(body);
   if (!connection) {
     const notFound = first && errors.length > 0 && errors.every((e) => e && e.type === 'NOT_FOUND');

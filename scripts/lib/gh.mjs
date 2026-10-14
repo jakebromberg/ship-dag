@@ -1,5 +1,6 @@
 // gh.mjs — the `gh` CLI seam: run it, classify a failure, retry a rate limit, parse its JSON. `gh` is injected
-// everywhere as `async (args) => stdout`, so nothing here touches GitHub unless a caller passes `ghCli`.
+// everywhere, as `async (args) => stdout` or, where the caller is sync, as `(args) => stdout`, so nothing here
+// touches GitHub unless a caller passes one of the two real runners, `ghCli` or `realRunGh`.
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -16,7 +17,7 @@ export function realRunGh(args) {
  * a GraphQL response with `errors`. Null when stdout is absent or not JSON. The only place that body is parsed.
  */
 export function ghErrorBody(err) {
-  try { return JSON.parse(err?.stdout) ?? null; } catch { return null; }
+  try { return JSON.parse(err?.stdout); } catch { return null; }
 }
 
 /**
