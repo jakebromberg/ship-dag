@@ -1007,6 +1007,18 @@ for (const [name, tree, opens, members] of [
     ['o/r#21', 'o/r#22']],
   ['a closed cross-repo leaf keeps its own repo',
     { 'o/r#1': [{ number: 10 }, { number: 4, repo: 'x/y', state: 'CLOSED' }] }, [10], ['o/r#10', 'x/y#4']],
+  // A wave sub-epic only groups one wave's issues: those are real work and count,
+  // closed or not, while the grouping itself never does.
+  ['a closed wave sub-epic whose children all closed: they are members, the wave is not',
+    { 'o/r#1': [{ number: 20, labels: WAVE, state: 'CLOSED' }, { number: 10 }], 'o/r#20': [{ number: 21, state: 'CLOSED' }, { number: 22, state: 'CLOSED' }] },
+    [10], ['o/r#10', 'o/r#21', 'o/r#22']],
+  ['a closed wave sub-epic with an open child: both children are members, the wave is not',
+    { 'o/r#1': [{ number: 20, labels: WAVE, state: 'CLOSED' }], 'o/r#20': [{ number: 21 }, { number: 22, state: 'CLOSED' }] },
+    [20, 21], ['o/r#21', 'o/r#22']],
+  ['an open wave sub-epic held back with every child closed: the children are members, the wave is not',
+    { 'o/r#1': [{ number: 20, labels: WAVE }], 'o/r#20': [{ number: 21, state: 'CLOSED' }] }, [20], ['o/r#21']],
+  ['an empty closed wave sub-epic is not a member',
+    { 'o/r#1': [{ number: 20, labels: WAVE, state: 'CLOSED' }, { number: 10 }] }, [10], ['o/r#10']],
 ]) {
   // `opens` lists every open issue the walk reads, containers included (they are
   // read for their edges); `members` is the expected leaf set.
