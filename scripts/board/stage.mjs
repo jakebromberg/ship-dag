@@ -11,36 +11,42 @@
 // scored by the gate's own `gateReview`, so the board and the merge gate cannot
 // disagree about what blocks.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { statusPathForRef, metadataPathForRef } from '../diagnose-failure.mjs';
 import { routeFailure } from '../lib/failure.mjs';
 import { reviewRoundFiles, isUnreadableEmpty } from '../lib/review-rounds.mjs';
-import { readRunFamilyReports, reportOwnership, runFamilyStateDirs } from '../lib/wave-reports.mjs';
+import { readWaveReports, reportOwnership, runFamilyStateDirs } from '../lib/wave-reports.mjs';
 import { isPr } from '../lib/ref.mjs';
 import { gateReview } from '../review-gate.mjs';
 
 const readText = (path) => { try { return readFileSync(path, 'utf8'); } catch { return null; } };
 const readJson = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
+const mtimeMs = (path) => { try { return statSync(path).mtimeMs; } catch { return NaN; } };
 
 /**
  * Read a run family once, for every `deriveStage` call of one render: its dirs
  * (`runFamilyStateDirs`) and which of its reports owns each ref
- * (`reportOwnership` over `readRunFamilyReports`).
+ * (`reportOwnership` over every family dir's `readWaveReports`).
  * @param {string} dir  any dir of the run family
  * @param {{warn?: (m: string) => void}} [opts]  where an unreadable report or family listing is warned about
  * @returns {{dirs: string[], ownership: ReturnType<typeof reportOwnership>}}
  */
 export function readFamily(dir, opts) {
-  return { dirs: runFamilyStateDirs(dir, opts), ownership: reportOwnership(readRunFamilyReports(dir, opts)) };
+  const dirs = runFamilyStateDirs(dir, opts);
+  return { dirs, ownership: reportOwnership(dirs.flatMap((d) => readWaveReports(d, opts))) };
 }
 
 /**
  * Derive a ticket's stage, or null when the files say nothing about it. First
  * match wins:
  *  - `running`: **Building**, unless the report that owns the ref started at or
- *    after the wave launched — the engine writes a report only when a run
- *    finishes, so that means the session died and the ticket is **Stalled**.
+ *    after `waveTs` and finished at or after the status file was last written —
+ *    the engine writes a report only when a run finishes, so that means the
+ *    session that wrote `running` died and the ticket is **Stalled**. A report
+ *    that finished before `running` was written is an earlier session's (the
+ *    wave's first run, before a retry in a `-b` dir or in place), so it never
+ *    stalls the ticket.
  *  - `failed`/`interrupted` with no PR (`routeFailure`): **Stalled**.
  *  - no open PR: null.
  *  - an open PR and no review round of its PR: **In review**. A round stamped
@@ -59,7 +65,7 @@ export function readFamily(dir, opts) {
  * @param {object} a
  * @param {string} a.dir  the dir holding this ticket's latest wave (its `state/`)
  * @param {string} a.ref  composite ref
- * @param {number} a.waveTs  when that wave launched (ms since epoch)
+ * @param {number} a.waveTs  the start (ms since epoch) of the engine run whose session wrote `dir`'s status file
  * @param {ReturnType<typeof readFamily>} a.family  the run family, as `readFamily` reads it
  * @param {string[]} a.blockOn  the run's parsed `--block-on`
  * @param {boolean} a.prOpen  whether the ticket has an open PR
@@ -71,7 +77,10 @@ export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen }) {
   const { ownerOf, rowOf } = family.ownership;
   if (status === 'running') {
     const owner = ownerOf(ref);
-    return owner && owner.startedAt >= waveTs ? 'Stalled' : 'Building';
+    if (!owner || owner.startedAt < waveTs) return 'Building';
+    const finishedAt = Date.parse(owner.report.finishedAt ?? '');
+    const reportEnd = Number.isFinite(finishedAt) ? finishedAt : owner.startedAt;
+    return reportEnd < mtimeMs(statusPathForRef(dir, ref)) ? 'Building' : 'Stalled';
   }
   if ((status === 'failed' || status === 'interrupted') && routeFailure({ status, prNumber: metadata.prNumber }) !== 'review-gate') {
     return 'Stalled';
@@ -89,7 +98,6 @@ export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen }) {
 }
 
 function scoreReview({ path, review }, blockOn) {
-  if (!review) return 'Review unreadable';
   if (isUnreadableEmpty(path, review)) return 'Review unreadable';
   try {
     return gateReview(review, blockOn).verdict === 'blocking' ? 'Fixing' : 'Reviewed';

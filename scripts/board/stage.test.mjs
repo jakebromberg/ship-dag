@@ -103,6 +103,20 @@ for (const [name, sibling, startedAt, want] of [
   });
 }
 
+// A retry re-runs the ticket in a session that started after the wave's report finished: that report says nothing
+// about the retry's session, whether the retry has its own -b dir or reran in place (--retry-failed).
+for (const [name, specs, dirName] of [
+  ['a fresh running ticket in a -b retry dir is Building, though an earlier report of the same wave owns it',
+    { [RUN]: { reports: { 'R1.json': report(T0, { status: 'failed', prNumber: null }) } }, [`${RUN}-b`]: { status: stamped(LATER, 'running') } }, `${RUN}-b`],
+  ['a ticket rerun in place is Building, though the report of its first run owns it',
+    { [RUN]: { status: stamped(LATER, 'running'), reports: { 'R1.json': report(T0, { status: 'failed', prNumber: null }) } } }, RUN],
+]) {
+  test(`deriveStage: ${name}`, () => {
+    const dirs = family(specs);
+    assert.equal(derive(dirs, { dir: dirs[dirName] }), 'Building');
+  });
+}
+
 test('deriveStage scores a round in the base dir stamped with the owner in the wave\'s sibling dir, and never a -board dir\'s', () => {
   const dirs = family({
     [RUN]: { rounds: { 'STEM.json': round([finding('correctness')], 'R2') } },
