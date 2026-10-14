@@ -296,7 +296,8 @@ const defaultWarn = (m) => console.error(m);
  *    sub-tree with it — the walk does not descend into it.
  *  - A container whose own sub-issue query reports *no sub-issues connection*
  *    (`SubIssuesUnavailable`) is kept as a leaf, with a warning; any other
- *    failure (rate limit, network, auth, a malformed page) aborts the fetch.
+ *    failure (rate limit, network, auth, a malformed page, or a sub-issue the
+ *    token cannot read, which the error names) aborts the fetch.
  *    Its children are unknown, and silently dropping the work is the dangerous
  *    direction; shipping the epic issue itself is recoverable. (A query that
  *    succeeds with no open children is a different case — it is demoted by the
@@ -319,6 +320,8 @@ const defaultWarn = (m) => console.error(m);
  * The root epic itself is a container but is *not* read for edges by the caller,
  * and is never demoted: it is the scope boundary, not a participant, exactly as
  * at depth 1. An epic whose every descendant is closed therefore yields no nodes.
+ * Any failure listing the root aborts as `epic #N in owner/repo: <message>`,
+ * with the original error as `cause`.
  *
  * @param {string} rootRepo  owner/repo of the root epic
  * @param {number|string} rootNumber
@@ -344,10 +347,10 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
     try {
       kids = listSubIssues(epicNode, runGh);
     } catch (err) {
-      if (!(err instanceof SubIssuesUnavailable)) throw err;
       if (epicNode.ref === root.ref) {
-        throw new Error(`epic #${epicNode.number} in ${epicNode.repo}: ${err.message}`);
+        throw new Error(`epic #${epicNode.number} in ${epicNode.repo}: ${err.message}`, { cause: err });
       }
+      if (!(err instanceof SubIssuesUnavailable)) throw err;
       if (epicNode.wave) {
         warn(`warning: wave sub-epic ${epicNode.ref} reports sub-issues but none could be read `
           + `(${err.message}); shipping nothing under it this pass`);

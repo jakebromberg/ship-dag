@@ -398,6 +398,13 @@ test('fetchSpec epic path throws a clear error when the issue/sub-issues are abs
   assert.throws(() => fetchSpec('o/r', { epic: 999 }, gh), /no sub-issues returned/);
 });
 
+test('fetchSpec names the root epic on any other failure listing it, with the original as cause', () => {
+  // A 502 on the root still aborts and is never SubIssuesUnavailable; it just keeps saying which epic failed.
+  const boom = Object.assign(new Error('HTTP 502: Bad Gateway'), { stdout: '' });
+  assert.throws(() => fetchSpec('o/r', { epic: 1 }, () => { throw boom; }),
+    (e) => e.constructor === Error && e.message === 'epic #1 in o/r: HTTP 502: Bad Gateway' && e.cause === boom);
+});
+
 test('fetchSpec epic path drops closed sub-issues and paginates', () => {
   const gh = fakeGh({
     graphql: {
