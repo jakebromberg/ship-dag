@@ -29,16 +29,16 @@
 //                 "title": "...", "labels": [...], "bodyLen": 1200, "refCount": 2 }, ...],
 //     "edges": [{ "blocked": "owner/repo#3", "blockedBy": "owner/repo#1" }, ...],
 //     "done":  ["owner/repo#1", "owner/repo#2"],             // already merged/closed
-//     "members": ["owner/repo#1", "owner/repo#3", ...]       // fetch only: every leaf in scope, closed included
+//     "members": ["owner/repo#1", "owner/repo#3", ...]       // fetch --members only: every leaf in scope, closed included
 //   }
 //   `members` is for readers that report on the whole issue set (the status
-//   board); planning ignores it. A hand-built spec may omit it.
+//   board); planning ignores it, and a spec without it is complete.
 //   Edge endpoints and `done` entries may be a number, `"#N"`, `"N"`, or a
 //   fully-qualified `"owner/repo#N"`; all are normalized to refs before planning.
 //
 // Usage:
 //   node plan-waves.mjs plan <spec.json|->      # partition a spec into waves (stdin with -)
-//   node plan-waves.mjs fetch --repo owner/repo (--epic N | --label L)   # build a spec via gh
+//   node plan-waves.mjs fetch --repo owner/repo (--epic N | --label L) [--members]   # build a spec via gh
 //   node plan-waves.mjs fetch ... > spec.json && node plan-waves.mjs plan spec.json
 //   node plan-waves.mjs fetch ... | node plan-waves.mjs plan -           # or composed
 //
@@ -552,7 +552,7 @@ function rewriteContainerEdges(edges, { containers, parentOf }) {
  * Planning ignores the field; it exists so a report can count finished work,
  * which `nodes` and `done` alone cannot.
  */
-export function fetchSpec(repo, { epic, label, warn = defaultWarn }, runGh = realRunGh) {
+export function fetchSpec(repo, { epic, label, members = false, warn = defaultWarn }, runGh = realRunGh) {
   const [owner, name] = repo.split('/');
   if (!owner || !name) throw new Error(`--repo must be owner/repo, got: ${repo}`);
 
@@ -564,7 +564,7 @@ export function fetchSpec(repo, { epic, label, warn = defaultWarn }, runGh = rea
   let hierarchy = flatHierarchy();
   if (label) {
     openNodes = listLabel(repo, label, 'open', runGh, warn).map((i) => ({ number: i.number, repo }));
-    closedRefs = listLabel(repo, label, 'closed', runGh, warn).map((i) => refOf({ number: i.number, repo }));
+    if (members) closedRefs = listLabel(repo, label, 'closed', runGh, warn).map((i) => refOf({ number: i.number, repo }));
   } else if (epic) {
     hierarchy = fetchHierarchy(repo, epic, runGh, warn);
     openNodes = hierarchy.leaves.map((l) => ({ number: l.number, repo: l.repo }));
@@ -633,18 +633,35 @@ export function fetchSpec(repo, { epic, label, warn = defaultWarn }, runGh = rea
     if (state === 'CLOSED') done.push(depRef);
   }
 
-  const members = [...new Set([...nodes.map((n) => n.ref), ...closedRefs])];
-  return { repo, nodes, edges: uniqueEdges, done, members };
+  const spec = { repo, nodes, edges: uniqueEdges, done };
+  if (members) spec.members = [...new Set([...nodes.map((n) => n.ref), ...closedRefs])];
+  return spec;
 }
+
+// What a capped listing loses: open issues are the DAG's nodes, closed ones only
+// the status board's count of finished work.
+const CAP_CONSEQUENCE = { open: 'the DAG may be truncated', closed: "the status board's members may be undercounted" };
 
 /** One state of a label's issues, warning rather than truncating silently at the list cap. */
 function listLabel(repo, label, state, runGh, warn) {
   const list = JSON.parse(runGh(['issue', 'list', '--repo', repo, '--label', label,
     '--state', state, '--limit', String(LIST_LIMIT), '--json', 'number']));
   if (list.length >= LIST_LIMIT) {
-    warn(`warning: ${state} issue list hit the ${LIST_LIMIT} cap; the DAG may be truncated`);
+    warn(`warning: ${state} issue list hit the ${LIST_LIMIT} cap; ${CAP_CONSEQUENCE[state]}`);
   }
   return list;
+}
+
+/** `fetch`'s flags: `--repo`, `--epic N` or `--label L`, and `--members` to list closed leaves too. */
+export function parseFetchArgs(argv) {
+  const opts = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--repo') opts.repo = argv[++i];
+    else if (argv[i] === '--epic') opts.epic = argv[++i];
+    else if (argv[i] === '--label') opts.label = argv[++i];
+    else if (argv[i] === '--members') opts.members = true;
+  }
+  return opts;
 }
 
 // ---- CLI ----------------------------------------------------------------
@@ -674,14 +691,9 @@ function main(argv) {
     return;
   }
   if (cmd === 'fetch') {
-    const opts = {};
-    for (let i = 0; i < rest.length; i += 1) {
-      if (rest[i] === '--repo') opts.repo = rest[++i];
-      else if (rest[i] === '--epic') opts.epic = rest[++i];
-      else if (rest[i] === '--label') opts.label = rest[++i];
-    }
+    const opts = parseFetchArgs(rest);
     if (!opts.repo || (!opts.epic && !opts.label)) {
-      process.stderr.write('usage: fetch --repo owner/repo (--epic N | --label L)\n');
+      process.stderr.write('usage: fetch --repo owner/repo (--epic N | --label L) [--members]\n');
       process.exit(2);
     }
     process.stdout.write(JSON.stringify(fetchSpec(opts.repo, opts), null, 2) + '\n');

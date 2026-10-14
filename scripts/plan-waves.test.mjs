@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { planWaves, readySet, bodyEdges, fetchSpec } from './plan-waves.mjs';
+import { planWaves, readySet, bodyEdges, fetchSpec, parseFetchArgs } from './plan-waves.mjs';
 import { WAVE_LABEL } from './lib/sub-issues.mjs';
 
 // A minimal `issue view` fixture, for the hierarchy tests where only the body
@@ -1024,14 +1024,14 @@ for (const [name, tree, opens, members] of [
   // read for their edges); `members` is the expected leaf set.
   test(`fetchSpec members: ${name}`, () => {
     const gh = fakeGh({ tree, issues: Object.fromEntries(opens.map((n) => [n, issue(n)])) });
-    const spec = fetchSpec('o/r', { epic: 1, warn: () => {} }, gh);
+    const spec = fetchSpec('o/r', { epic: 1, members: true, warn: () => {} }, gh);
     assert.deepEqual([...spec.members].sort(), members);
   });
 }
 
 test('fetchSpec members on the label path adds the closed listing to the open one', () => {
   const gh = fakeGh({ list: [{ number: 5 }], closedList: [{ number: 3 }], issues: { 5: issue(5) } });
-  const spec = fetchSpec('o/r', { label: 'ship' }, gh);
+  const spec = fetchSpec('o/r', { label: 'ship', members: true }, gh);
   assert.deepEqual([...spec.members].sort(), ['o/r#3', 'o/r#5']);
   assert.deepEqual(spec.nodes.map((n) => n.ref), ['o/r#5'], 'a closed issue never becomes a node');
   const closedCall = gh.calls.find((a) => a[1] === 'list' && a.includes('closed'));
@@ -1041,10 +1041,31 @@ test('fetchSpec members on the label path adds the closed listing to the open on
 test('fetchSpec warns through warn when the closed label listing hits the cap', () => {
   const seen = [];
   const full = Array.from({ length: 1000 }, (_, i) => ({ number: i + 100 }));
-  fetchSpec('o/r', { label: 'ship', warn: (m) => seen.push(m) }, fakeGh({ list: [], closedList: full, issues: {} }));
+  fetchSpec('o/r', { label: 'ship', members: true, warn: (m) => seen.push(m) }, fakeGh({ list: [], closedList: full, issues: {} }));
   assert.equal(seen.length, 1);
-  assert.match(seen[0], /closed issue list hit the 1000 cap/);
+  assert.match(seen[0], /closed issue list hit the 1000 cap; the status board's members may be undercounted/);
+  assert.doesNotMatch(seen[0], /DAG/, 'closed issues are never nodes, so the DAG itself is whole');
 });
+
+test('fetchSpec without members makes only the open label listing and emits no members', () => {
+  const gh = fakeGh({ list: [{ number: 5 }], closedList: [{ number: 3 }], issues: { 5: issue(5) } });
+  const spec = fetchSpec('o/r', { label: 'ship' }, gh);
+  assert.equal('members' in spec, false);
+  const lists = gh.calls.filter((a) => a[0] === 'issue' && a[1] === 'list');
+  assert.deepEqual(lists.map((a) => a[a.indexOf('--state') + 1]), ['open']);
+});
+
+test('fetchSpec without members emits no members on the epic path', () => {
+  const gh = fakeGh({ tree: { 'o/r#1': [{ number: 10 }, { number: 11, state: 'CLOSED' }] }, issues: { 10: issue(10) } });
+  assert.equal('members' in fetchSpec('o/r', { epic: 1 }, gh), false);
+});
+
+for (const [argv, want] of [
+  [['--repo', 'o/r', '--epic', '7'], { repo: 'o/r', epic: '7' }],
+  [['--repo', 'o/r', '--label', 'ship', '--members'], { repo: 'o/r', label: 'ship', members: true }],
+]) {
+  test(`parseFetchArgs ${argv.join(' ')}`, () => assert.deepEqual(parseFetchArgs(argv), want));
+}
 
 test('planWaves ignores members', () => {
   const spec = { repo: 'o/r', nodes: [5, 6], edges: [{ blocked: 6, blockedBy: 5 }], done: [] };
