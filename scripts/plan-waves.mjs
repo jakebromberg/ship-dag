@@ -321,6 +321,8 @@ const defaultWarn = (m) => console.error(m);
  *    satisfied rather than an external blocker. A wave whose own sub-issue
  *    query reports no sub-issues connection ships nothing this pass: neither
  *    it nor its unknown children.
+ *    A wave sub-epic is never in `closedLeaves`, but its closed leaves are, even
+ *    when it is closed with every child closed and the walk goes no further.
  *
  * The root epic itself is a container but is *not* read for edges by the caller,
  * and is never demoted: it is the scope boundary, not a participant, exactly as
@@ -341,7 +343,7 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
   const containers = new Map(); // container ref -> its direct child refs (open and closed)
   const parentOf = new Map(); // ref -> containing epic's ref, for the ancestor test
   const leaves = [];
-  const closedLeaves = []; // refs of closed childless sub-issues: shipped (or dropped) work, never nodes
+  const closedLeaves = []; // refs of closed childless sub-issues, never a wave sub-epic: shipped (or dropped) work, never nodes
   const containerNodes = []; // open containers below the root: edges, but never nodes
   const heldWaves = new Set(); // wave sub-epics with nothing open under them: never nodes, edges satisfied
   const visited = new Set([root.ref]);
@@ -367,6 +369,13 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
       leaves.push(epicNode);
       continue;
     }
+    // A closed leaf is finished work, so `members` counts it. That includes the
+    // children of a closed wave sub-epic the walk goes no further into, since they
+    // are real issues; a wave sub-epic only groups them, so it never counts itself.
+    for (const k of kids) {
+      if (k.state !== 'CLOSED' || hasWaveLabel(k) || (k.subIssuesSummary && k.subIssuesSummary.total > 0)) continue;
+      closedLeaves.push(refOf({ number: k.number, repo: subIssueRepo(k, epicNode.repo) }));
+    }
     if (epicNode.closedWave && kids.every((k) => k.state === 'CLOSED')) continue;
     if (epicNode.ref !== root.ref) containerNodes.push(epicNode);
     const childRefs = [];
@@ -378,9 +387,6 @@ function fetchHierarchy(rootRepo, rootNumber, runGh, warn = defaultWarn) {
       if (!parentOf.has(kid.ref)) parentOf.set(kid.ref, epicNode.ref);
       const hasKids = Boolean(k.subIssuesSummary && k.subIssuesSummary.total > 0);
       if (k.state === 'CLOSED') {
-        // A closed sub-epic takes its sub-tree out of scope unread; only a closed
-        // leaf is recorded, so `members` can count finished work.
-        if (!hasKids) closedLeaves.push(kid.ref);
         if (!(kid.wave && hasKids)) continue;
         kid.closedWave = true;
       } else if (!hasKids) {
@@ -541,8 +547,10 @@ function rewriteContainerEdges(edges, { containers, parentOf }) {
  * `members` lists every leaf in scope, closed ones included — the open nodes
  * plus the closed childless sub-issues the walk saw (epic) or the label's closed
  * issues (label). A closed sub-epic is not descended into, so its children are
- * not members. Planning ignores the field; it exists so a report can count
- * finished work, which `nodes` and `done` alone cannot.
+ * not members. A wave sub-epic is the exception: it is never a member itself,
+ * but its children are, closed or open, since they are the run's real work.
+ * Planning ignores the field; it exists so a report can count finished work,
+ * which `nodes` and `done` alone cannot.
  */
 export function fetchSpec(repo, { epic, label, warn = defaultWarn }, runGh = realRunGh) {
   const [owner, name] = repo.split('/');
