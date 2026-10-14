@@ -17,6 +17,7 @@ import { statusPathForRef, metadataPathForRef } from '../diagnose-failure.mjs';
 import { routeFailure } from '../lib/failure.mjs';
 import { reviewRoundFiles, isUnreadableEmpty } from '../lib/review-rounds.mjs';
 import { readRunFamilyReports, reportOwnership, runFamilyStateDirs } from '../lib/wave-reports.mjs';
+import { isPr } from '../lib/ref.mjs';
 import { gateReview } from '../review-gate.mjs';
 
 const readText = (path) => { try { return readFileSync(path, 'utf8'); } catch { return null; } };
@@ -42,10 +43,13 @@ export function readFamily(dir, opts) {
  *    finishes, so that means the session died and the ticket is **Stalled**.
  *  - `failed`/`interrupted` with no PR (`routeFailure`): **Stalled**.
  *  - no open PR: null.
- *  - an open PR and no review round of the owning report's event: **In review**.
- *    A round stamped (`meta.reportId`) with another report that owns an event of
- *    the ref reviews that event's PR, so it is skipped; an unstamped round, or
- *    one whose stamp names no such report, counts.
+ *  - an open PR and no review round of its PR: **In review**. A round stamped
+ *    (`meta.reportId`) with a report whose row for the ref has a PR other than
+ *    the ticket's current one (`metadata.prNumber`) reviewed that older PR, so it
+ *    is skipped. Every other round counts: an unstamped one, one whose stamp
+ *    names no report listing the ref, and one stamped with a report whose row has
+ *    no PR (a point-E continuation's or a resource resume's rounds carry the
+ *    death report's id, even when a later report owns the ref).
  *  - the newest such round, as `reviewRoundFiles` orders them, scored with
  *    `gateReview` under the run's `--block-on`: blocking → **Fixing**; otherwise
  *    **Reviewed** (never "ready to merge": the board can't run the gate's
@@ -64,20 +68,24 @@ export function readFamily(dir, opts) {
 export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen }) {
   const status = (readText(statusPathForRef(dir, ref)) || 'pending').trim();
   const metadata = readJson(metadataPathForRef(dir, ref)) || {};
-  const { ownerOf, listing } = family.ownership;
-  const owner = ownerOf(ref);
-  if (status === 'running') return owner && owner.startedAt >= waveTs ? 'Stalled' : 'Building';
+  const { ownerOf, rowOf } = family.ownership;
+  if (status === 'running') {
+    const owner = ownerOf(ref);
+    return owner && owner.startedAt >= waveTs ? 'Stalled' : 'Building';
+  }
   if ((status === 'failed' || status === 'interrupted') && routeFailure({ status, prNumber: metadata.prNumber }) !== 'review-gate') {
     return 'Stalled';
   }
   if (!prOpen) return null;
-  const otherEvent = (stamp) => stamp !== owner?.id && Boolean(listing.get(stamp)?.has(ref));
-  const rounds = reviewRoundFiles(family.dirs.map((d) => join(d, 'reviews')), ref)
-    .map(({ path }) => ({ path, review: readJson(path) }))
-    .filter(({ review }) => !otherEvent(review?.meta?.reportId));
-  if (!rounds.length) return 'In review';
+  const olderPr = (stamp) => {
+    const pr = stamp ? rowOf(stamp, ref)?.prNumber : null;
+    return isPr(pr) && pr !== metadata.prNumber;
+  };
   // The newest round is the PR's current state; ingestion, not the board, takes the worst.
-  return scoreReview(rounds[rounds.length - 1], blockOn);
+  const latest = reviewRoundFiles(family.dirs.map((d) => join(d, 'reviews')), ref)
+    .map(({ path }) => ({ path, review: readJson(path) }))
+    .findLast(({ review }) => !olderPr(review?.meta?.reportId));
+  return latest ? scoreReview(latest, blockOn) : 'In review';
 }
 
 function scoreReview({ path, review }, blockOn) {
