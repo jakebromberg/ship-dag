@@ -279,7 +279,7 @@ for (const { name, waves, except, dryRun, failMoves, failListings, extra = {}, e
   {
     name: 'one wave failing is reported and the rest still settle',
     waves: { 7: { state: 'OPEN', kids: { 11: 'OPEN' } }, 8: { state: 'OPEN', kids: { 12: 'CLOSED' } } }, failListings: [7],
-    expect: { closed: ['o/r#8'], returned: [], stuck: [], errors: [{ wave: 'o/r#7', message: 'the sub-issues query failed: HTTP 502 listing #7' }] },
+    expect: { closed: ['o/r#8'], returned: [], stuck: [], errors: [{ wave: 'o/r#7', message: 'HTTP 502 listing #7' }] },
     after: { 7: 'OPEN', 8: 'CLOSED' }, writes: true,
   },
   {
