@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { planWaves, readySet, bodyEdges, fetchSpec, parseFetchArgs } from './plan-waves.mjs';
 import { WAVE_LABEL } from './lib/sub-issues.mjs';
+import { graphqlAnswer, restFailure } from './lib/gh-fixture.mjs';
 
 // A minimal `issue view` fixture, for the hierarchy tests where only the body
 // (and hence the edges parsed out of it) varies between issues.
@@ -98,14 +99,12 @@ function fakeGh(fixtures) {
     }
     if (argv[0] === 'issue' && argv[1] === 'view') {
       const n = Number(argv[2]);
-      if (!fixtures.issues[n]) throw new Error(`no such issue #${n}`);
+      if (!fixtures.issues[n]) throw restFailure(404, `no such issue #${n}`, argv);
       return JSON.stringify(fixtures.issues[n]);
     }
     if (argv[0] === 'api' && argv[1] === 'graphql') {
       const body = fixtures.tree ? subIssuesResponse(fixtures.tree, argv) : fixtures.graphql;
-      // gh exits 1 whenever a GraphQL response carries `errors`, with the body on stdout.
-      if (body && body.errors) throw Object.assign(new Error('Command failed: gh api graphql'), { status: 1, stdout: JSON.stringify(body) });
-      return JSON.stringify(body);
+      return graphqlAnswer(body, argv);
     }
     if (argv[0] === 'api' && argv.some((a) => /\/dependencies\/blocked_by$/.test(a))) {
       // `gh api --paginate --jq '… | "\(.repository.full_name)#\(.number)"'`
@@ -405,9 +404,9 @@ test('fetchSpec epic path throws a clear error when the issue/sub-issues are abs
 
 test('fetchSpec names the root epic on any other failure listing it, with the original as cause', () => {
   // A 502 on the root still aborts and is never SubIssuesUnavailable; it just keeps saying which epic failed.
-  const boom = Object.assign(new Error('HTTP 502: Bad Gateway'), { stdout: '' });
+  const boom = restFailure(502, 'Bad Gateway');
   assert.throws(() => fetchSpec('o/r', { epic: 1 }, () => { throw boom; }),
-    (e) => e.constructor === Error && e.message === 'epic #1 in o/r: HTTP 502: Bad Gateway' && e.cause === boom);
+    (e) => e.constructor === Error && e.message === `epic #1 in o/r: ${boom.message}` && e.cause === boom);
 });
 
 test('fetchSpec epic path drops closed sub-issues and paginates', () => {
@@ -528,7 +527,7 @@ test('fetchSpec tolerates a native blocked_by call failing (unconfigured/no acce
   });
   const throwingGh = (argv) => {
     if (argv[0] === 'api' && argv.some((a) => /\/dependencies\/blocked_by$/.test(a))) {
-      throw new Error('HTTP 404: Not Found');
+      throw restFailure(404, 'Not Found', argv);
     }
     return gh(argv);
   };

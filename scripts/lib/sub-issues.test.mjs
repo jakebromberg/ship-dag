@@ -2,16 +2,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { listSubIssues, SubIssuesUnavailable, hasSubIssues } from './sub-issues.mjs';
+import { ghExecError, notFoundBody, restFailure } from './gh-fixture.mjs';
 
 const epic = { repo: 'o/2048', number: 7 };
 const page = (nodes, pageInfo) => JSON.stringify({ data: { repository: { issue: { subIssues: { nodes, pageInfo } } } } });
 const last = { hasNextPage: false, endCursor: null };
 const more = { hasNextPage: true, endCursor: 'c1' };
-const notFound = { type: 'NOT_FOUND', message: 'Could not resolve to an Issue with the number of 7.' };
+const notFound = notFoundBody(7).errors[0];
 const noIssue = (errors) => JSON.stringify({ data: { repository: { issue: null } }, errors });
 
 // What realRunGh throws when gh exits non-zero; gh exits 1 whenever a GraphQL response carries `errors`.
-const ghError = (stdout) => Object.assign(new Error('Command failed: gh api graphql'), { status: 1, stdout });
+const ghError = (stdout) => ghExecError(['api', 'graphql'], { stdout });
 const throws = (err) => () => { throw err; };
 
 // A plain Error with this message: not SubIssuesUnavailable, and not the TypeError an unguarded read throws.
@@ -48,7 +49,7 @@ test('follows cursors across pages', () => {
 
 test('a runGh failure propagates unchanged, on any page', () => {
   const failures = [
-    ['no body', Object.assign(new Error('HTTP 502'), { stdout: '' })],
+    ['no body', restFailure(502, 'Bad Gateway', ['api', 'graphql'])],
     ['a body that is not JSON', ghError('<html>502 Bad Gateway</html>')],
     ['a rate limit', ghError(JSON.stringify({ errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] }))],
     ['NOT_FOUND alongside another error', ghError(noIssue([notFound, { type: 'FORBIDDEN' }]))],
