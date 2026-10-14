@@ -49,7 +49,8 @@ test('follows cursors across pages', () => {
 
 test('a runGh failure propagates unchanged, on any page', () => {
   const failures = [
-    ['no body', restFailure(502, 'Bad Gateway', ['api', 'graphql'])],
+    ['no body', ghExecError(['api', 'graphql'], { stderr: 'gh: Bad Gateway (HTTP 502)\n' })],
+    ['a REST error body', restFailure(502, 'Bad Gateway', ['api', 'graphql'])],
     ['a body that is not JSON', ghError('<html>502 Bad Gateway</html>')],
     ['a rate limit', ghError(JSON.stringify({ errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] }))],
     ['NOT_FOUND alongside another error', ghError(noIssue([notFound, { type: 'FORBIDDEN' }]))],

@@ -17,8 +17,10 @@ const idOf = (n) => 1000 + Number(n);
  * parent, repo? } }`. It answers exactly the calls wave-epic.mjs makes, applies
  * their writes to the state, and throws on anything else, so an unplanned call
  * fails the test. A sub-issue POST without `replace_parent` refuses a child that
- * already has a parent, as GitHub does. `failMoves` holds issue numbers whose
- * POST fails regardless, and `failListings` epics whose sub-issue query fails.
+ * already has a parent, as GitHub does. A GraphQL query for an issue not in
+ * `issues` throws gh's NOT_FOUND exit 1, as real gh does. `failMoves` holds
+ * issue numbers whose POST fails regardless (a REST 422), and `failListings`
+ * epics whose sub-issue query fails (a 502).
  */
 function fakeGh(issues, { failMoves = [], failListings = [] } = {}) {
   const calls = [];
@@ -43,7 +45,8 @@ function fakeGh(issues, { failMoves = [], failListings = [] } = {}) {
     if (a === 'api' && b === 'graphql') {
       const n = Number(field(argv, 'n'));
       if (field(argv, 'query').includes('subIssues')) {
-        if (failListings.includes(n)) throw restFailure(502, `Bad Gateway listing #${n}`);
+        if (failListings.includes(n)) throw restFailure(502, `Bad Gateway listing #${n}`, argv);
+        if (!issues[n]) return graphqlAnswer(notFoundBody(n), argv);
         const kids = Object.keys(issues).map(Number).filter((k) => issues[k].parent === n);
         return JSON.stringify({ data: { repository: { issue: { subIssues: {
           nodes: kids.map(node), pageInfo: { hasNextPage: false, endCursor: null } } } } } });
@@ -280,7 +283,7 @@ for (const { name, waves, except, dryRun, failMoves, failListings, extra = {}, e
   {
     name: 'one wave failing is reported and the rest still settle',
     waves: { 7: { state: 'OPEN', kids: { 11: 'OPEN' } }, 8: { state: 'OPEN', kids: { 12: 'CLOSED' } } }, failListings: [7],
-    expect: { closed: ['o/r#8'], returned: [], stuck: [], errors: [{ wave: 'o/r#7', message: restFailure(502, 'Bad Gateway listing #7').message }] },
+    expect: { closed: ['o/r#8'], returned: [], stuck: [], errors: [{ wave: 'o/r#7', message: /^Command failed: gh api graphql .*\ngh: Bad Gateway listing #7 \(HTTP 502\)\n$/s }] },
     after: { 7: 'OPEN', 8: 'CLOSED' }, writes: true,
   },
   {
@@ -301,7 +304,11 @@ for (const { name, waves, except, dryRun, failMoves, failListings, extra = {}, e
       for (const [n, ks] of Object.entries(kids)) issues[n] = { title: `#${n}`, state: ks, parent: Number(w) };
     }
     const gh = fakeGh(issues, { failMoves, failListings });
-    assert.deepEqual(sweepWaveEpics({ repo: R, epic: 1, except, dryRun }, gh), expect);
+    const out = sweepWaveEpics({ repo: R, epic: 1, except, dryRun }, gh);
+    // An error's message is gh's whole failure, the full query included, so a row matches it.
+    const byWave = (r) => ({ ...r, errors: r.errors.map((e) => e.wave) });
+    assert.deepEqual(byWave(out), byWave(expect));
+    for (const [i, { message }] of expect.errors.entries()) assert.match(out.errors[i].message, message);
     for (const [n, v] of Object.entries(after)) {
       if (typeof v === 'number') assert.equal(issues[n].parent, v, `#${n}'s parent`);
       else assert.equal(issues[n].state || 'OPEN', v, `#${n}'s state`);
