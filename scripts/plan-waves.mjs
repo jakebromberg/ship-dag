@@ -294,9 +294,10 @@ const defaultWarn = (m) => console.error(m);
  * Rules, each matching how depth-1 already behaves:
  *  - A CLOSED sub-issue is out of scope, and closing an epic takes its whole
  *    sub-tree with it — the walk does not descend into it.
- *  - A container whose own sub-issue query *fails* is kept as a leaf, with a
- *    warning. Its children are unknown, and silently dropping the work is the
- *    dangerous direction; shipping the epic issue itself is recoverable. (A
+ *  - A container whose own sub-issue query reports *no sub-issues
+ *    connection* (`SubIssuesUnavailable`) is kept as a leaf, with a warning; any
+ *    other failure (rate limit, network, auth) aborts the fetch. Its children
+ *    are unknown, and silently dropping the work is the dangerous direction; shipping the epic issue itself is recoverable. (A
  *    query that succeeds with no open children is a different case — it is
  *    demoted by the pass below, quietly, because nothing went wrong.)
  *  - A ref already visited is not descended into again, so a malformed cyclic

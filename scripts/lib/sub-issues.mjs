@@ -48,25 +48,31 @@ export class SubIssuesUnavailable extends Error {}
  * Every sub-issue of one epic, following cursors so a large epic isn't silently
  * truncated. Throws `SubIssuesUnavailable` when GitHub reports no sub-issues
  * connection at all, leaving the caller to decide whether that is fatal (the
- * root epic) or merely a warning (a nested one).
+ * root epic) or merely a warning (a nested one). Any other failure (`runGh`
+ * throwing, a malformed `repo` or `pageInfo`) is a plain Error and propagates.
  *
  * @param {{number:number, repo:string}} epicNode
  * @param {(argv:string[]) => string} runGh
  * @returns {Array<{number:number,databaseId?:number,title?:string,state:string,repository:{nameWithOwner:string},subIssuesSummary?:{total:number},labels?:{nodes:Array<{name:string}>}}>}
  */
 export function listSubIssues(epicNode, runGh) {
+  if (!/^[^/\s]+\/[^/\s]+$/.test(epicNode.repo || '')) {
+    throw new Error(`listSubIssues: repo must be owner/repo, got ${JSON.stringify(epicNode.repo)}`);
+  }
   const [owner, name] = epicNode.repo.split('/');
   const out = [];
   let cursor = null;
   do {
     const argv = ['api', 'graphql', '-H', 'GraphQL-Features: sub_issues', '-f', `query=${SUB_ISSUES_QUERY}`,
-      '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `n=${epicNode.number}`];
+      '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${epicNode.number}`];
     if (cursor) argv.push('-F', `cursor=${cursor}`);
+    // A runGh failure (rate limit, 502, auth) propagates: it says nothing about the connection.
+    const raw = runGh(argv);
     let resp;
     try {
-      resp = JSON.parse(runGh(argv));
+      resp = JSON.parse(raw);
     } catch (err) {
-      throw new SubIssuesUnavailable(`the sub-issues query failed: ${err.message}`);
+      throw new SubIssuesUnavailable(`the sub-issues response was not JSON: ${err.message}`);
     }
     const issue = resp && resp.data && resp.data.repository && resp.data.repository.issue;
     if (!issue || !issue.subIssues) {
@@ -74,7 +80,11 @@ export function listSubIssues(epicNode, runGh) {
         + `feature is unavailable): ${JSON.stringify((resp && resp.errors) || resp)}`);
     }
     out.push(...issue.subIssues.nodes);
-    cursor = issue.subIssues.pageInfo.hasNextPage ? issue.subIssues.pageInfo.endCursor : null;
+    const info = issue.subIssues.pageInfo;
+    if (!info || (info.hasNextPage && !info.endCursor)) {
+      throw new Error(`listSubIssues: malformed pageInfo for ${epicNode.repo}#${epicNode.number}: ${JSON.stringify(info)}`);
+    }
+    cursor = info.hasNextPage ? info.endCursor : null;
   } while (cursor);
   return out;
 }
