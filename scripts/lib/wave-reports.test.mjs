@@ -194,3 +194,12 @@ test('reportOwnership: the reports each read lists are built once, whatever the 
   assert.equal(own.listing, own.listing);
   assert.deepEqual([...own.listing.get('w1')], [REF]);
 });
+
+test('reportOwnership: rowOf is the row a read has for a ref, counted or not, or null', () => {
+  const all = reads(['w1', D1, [row({ prNumber: 5 })]], ['w2', D2, [row({ ref: 'o/r#2' })], { startedAt: undefined }]);
+  const own = reportOwnership(all);
+  assert.equal(own.rowOf('w1', REF).prNumber, 5);
+  assert.equal(own.rowOf('w2', 'o/r#2').ref, 'o/r#2', 'a read with no startedAt still has rows');
+  assert.equal(own.rowOf('w2', REF), null);
+  assert.equal(own.rowOf('no-such-report', REF), null);
+});

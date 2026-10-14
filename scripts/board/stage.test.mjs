@@ -12,6 +12,7 @@ const REF = 'o/r#12';
 const STEM = artifactStem(REF);
 const WAVE_TS = Date.parse(EMITTED); // the wave's config was emitted just before its run started at T0
 const EARLIER = '2026-10-08T17:00:00.000Z'; // a run of an earlier wave
+const LATER = '2026-10-08T21:00:00.000Z'; // a retry's run, after the wave's run finished at T1
 const finding = (category, extra = {}) => ({ category, verdict: 'CONFIRMED', blocking: true, file: 'a.ts', line: 1, summary: 's', failure_scenario: 'f', ...extra });
 /** A review round; `reportId` stamps it the way step 4d does. */
 const round = (findings, reportId) => ({ issue: 12, ...(reportId && { meta: { trigger: 'initial', reportId } }), findings });
@@ -25,7 +26,8 @@ const fixtures = [];
 test.after(() => fixtures.forEach((fx) => fx.cleanup()));
 
 /**
- * A run family under one base dir, `specs` mapping each dir's name to what it holds: REF's `status` and `metadata`,
+ * A run family under one base dir, `specs` mapping each dir's name to what it holds: REF's `status` (written at T0,
+ * when the wave's run started the ticket, unless `stamped`) and `metadata`,
  * `reports` (file name → report) and `rounds` (file name under `reviews/`, `STEM` standing for REF's stem → contents,
  * a string written as is, `stamped` to pin its mtime). Returns each dir's path by name.
  */
@@ -33,7 +35,7 @@ function family(specs) {
   const fx = engineFixture(Object.fromEntries(Object.entries(specs).map(([name, { status, metadata, reports = {}, rounds = {} }]) => [name, {
     reports,
     files: {
-      ...(status && { [`state/status/issue-${STEM}.status`]: status }),
+      ...(status && { [`state/status/issue-${STEM}.status`]: typeof status === 'string' ? stamped(T0, status) : status }),
       ...(metadata && { [`state/metadata/issue-${STEM}.json`]: metadata }),
       ...Object.fromEntries(Object.entries(rounds).map(([n, body]) => [`reviews/${n.replaceAll('STEM', STEM)}`, body])),
     },
@@ -77,6 +79,11 @@ for (const [name, files, over, want] of [
   ['a round stamped with an earlier report whose event a later one re-ran reviews the old PR: In review',
     { status: 'succeeded', metadata: PR, reports: { 'R1.json': report(EARLIER, { status: 'failed', prNumber: 50 }), 'R2.json': report(T0, PR) },
       rounds: { 'STEM.json': round([finding('correctness')], 'R1') } }, {}, 'In review'],
+  // A point-E continuation's or a resource resume's rounds are stamped with the death report, which had no PR,
+  // even when a later report owns the ref: they review the continuation's PR, the ticket's current one.
+  ['a round stamped with an earlier report whose row has no PR reviews the current PR: Fixing',
+    { status: 'succeeded', metadata: PR, reports: { 'R1.json': report(EARLIER, { status: 'failed', prNumber: null, prUrl: null }), 'R2.json': report(T0, PR) },
+      rounds: { 'STEM.json': round([finding('correctness')], 'R1') } }, {}, 'Fixing'],
   ['a round stamped with no report of the run is read as an unstamped one',
     { status: 'succeeded', metadata: PR, reports: { 'R1.json': report(T0, PR) }, rounds: { 'STEM.json': round([finding('correctness')], 'no-such-report') } }, {}, 'Fixing'],
 ]) {
