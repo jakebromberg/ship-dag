@@ -2,14 +2,9 @@
 //
 // Shared by plan-waves.mjs (the recursive DAG fetch) and anything else that
 // needs an epic's direct children. `runGh` is injected, so tests drive it with a
-// fake and no network; `realRunGh` is the one that shells out.
+// fake and no network; `realRunGh` (gh.mjs) is the one that shells out.
 
-import { execFileSync } from 'node:child_process';
-
-/** Run `gh` for real and return its stdout. */
-export function realRunGh(args) {
-  return execFileSync('gh', args, { encoding: 'utf8' });
-}
+import { ghErrorBody } from './gh.mjs';
 
 // One page of an epic's sub-issues. `subIssuesSummary.total` rides along on each
 // child so the walk can tell a container from a leaf without a round trip of its
@@ -81,8 +76,8 @@ function unreadableNodes(connection, errors, offset) {
 // is a plain Error naming them, failing closed rather than dropping them. Any
 // other failure (rate limit, 502, network, auth) is `err`, unchanged.
 function failureOf(err, { ref, first, offset }) {
-  let body;
-  try { body = JSON.parse(err && err.stdout); } catch { return err; }
+  const body = ghErrorBody(err);
+  if (!body) return err;
   const errors = body && Array.isArray(body.errors) ? body.errors : [];
   const connection = connectionOf(body);
   if (!connection) {

@@ -46,7 +46,8 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { coDistPath } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { SubIssuesUnavailable, listSubIssues, hasWaveLabel, subIssueRepo, realRunGh } from './lib/sub-issues.mjs';
+import { SubIssuesUnavailable, listSubIssues, hasWaveLabel, subIssueRepo } from './lib/sub-issues.mjs';
+import { realRunGh } from './lib/gh.mjs';
 
 const LIST_LIMIT = 1000; // gh issue list cap; we warn if we hit it rather than truncate silently.
 

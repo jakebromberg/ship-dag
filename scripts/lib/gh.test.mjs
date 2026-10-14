@@ -1,7 +1,7 @@
 // gh.test.mjs — ghFailure classifies a failed gh call from its structured output, not by reading its wording.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ghFailure, ghJson, withBackoff } from './gh.mjs';
+import { ghErrorBody, ghFailure, ghJson, withBackoff } from './gh.mjs';
 
 const failed = (message, extra = {}) => Object.assign(new Error(message), extra);
 const apiBody = (status, message) => JSON.stringify({ message, status: String(status) });
@@ -22,6 +22,21 @@ test('ghFailure: the HTTP status and whether it is a rate limit', () => {
     ['stdout that is not JSON', failed('Command failed: gh api', { stdout: '<html>Bad Gateway</html>', stderr: 'gh: Bad Gateway (HTTP 502)' }), { status: 502, rateLimited: false }],
   ];
   for (const [name, err, want] of table) assert.deepEqual(ghFailure(err), want, name);
+});
+
+test('ghErrorBody: a failed call\'s stdout parsed as JSON, or null', () => {
+  const notFound = { errors: [{ type: 'NOT_FOUND', path: ['repository', 'issue'], message: 'Could not resolve' }], data: { repository: null } };
+  const forbidden = { errors: [{ type: 'FORBIDDEN', path: ['repository', 'issue', 'subIssues', 'nodes', 0], message: 'no access' }], data: null };
+  const table = [
+    ['a GraphQL NOT_FOUND body', failed('x', { stdout: JSON.stringify(notFound) }), notFound],
+    ['a GraphQL FORBIDDEN body with a path', failed('x', { stdout: JSON.stringify(forbidden) }), forbidden],
+    ['a REST body', failed('x', { stdout: apiBody(422, 'Unprocessable') }), { message: 'Unprocessable', status: '422' }],
+    ['stdout that is not JSON', failed('x', { stdout: '<html>Bad Gateway</html>' }), null],
+    ['empty stdout', failed('x', { stdout: '' }), null],
+    ['no stdout', failed('x'), null],
+    ['no error', undefined, null],
+  ];
+  for (const [name, err, want] of table) assert.deepEqual(ghErrorBody(err), want, name);
 });
 
 test('ghJson: the value, or the classified failure after a warning with the caller\'s prefix', async () => {

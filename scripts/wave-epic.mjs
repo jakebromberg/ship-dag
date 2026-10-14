@@ -19,7 +19,7 @@
 import { parseArgs } from 'node:util';
 import { isMain } from './lib/is-main.mjs';
 import { readArg } from './lib/read-arg.mjs';
-import { realRunGh } from './lib/sub-issues.mjs';
+import { realRunGh } from './lib/gh.mjs';
 import { openWaveEpic, closeWaveEpic, sweepWaveEpics, WaveEpicRefusal } from './lib/wave-epic.mjs';
 
 const USAGE = 'usage: wave-epic.mjs open --repo owner/repo --epic N --refs ref,ref,...\n'
