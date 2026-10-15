@@ -3,11 +3,12 @@
 // read them as they read real gh. Shapes recorded 2026-10-14 from three read-only calls: `gh api graphql` for issue
 // 999999 (NOT_FOUND), `gh api repos/<repo>/issues/999999/dependencies/blocked_by` (REST 404) and
 // `gh issue view 999999 --repo jakebromberg/ship-dag --json state` (a missing issue), and from `execFileSync` of a
-// binary that is not on PATH (spawn ENOENT).
+// binary that is not on PATH (spawn ENOENT). Which GraphQL bodies make gh exit 1 comes from gh 2.102.0's source.
 
 /**
- * An `execFileSync` failure: `status` (the exit code), `stdout`, `stderr`, and a `message`: the one given, else
- * Node's `Command failed: gh <args>`, which adds `\n<stderr>` only when there is stderr.
+ * An `execFileSync` failure: `status` (the exit code), `stdout`, `stderr`, and Node's `Command failed: gh <args>`
+ * message, which adds `\n<stderr>` only when there is stderr. A `message` given replaces it, for a test of an
+ * error whose text is not Node's (ghFailure reads the message only when there is no stderr).
  */
 export function ghExecError(args, { stdout = '', stderr = '', status = 1, message } = {}) {
   const failed = `Command failed: gh ${args.join(' ')}`;
@@ -37,11 +38,14 @@ export function notFoundBody(number) {
 }
 
 /**
- * A GraphQL answer as `gh api graphql` gives it: the JSON text, or, when the body has `errors`, gh's exit 1, with
- * the body on stdout and each error's message on its own line of stderr.
+ * A GraphQL answer as `gh api graphql` gives it, per `parseErrorResponse` in gh 2.102.0's pkg/cmd/api/api.go: gh
+ * joins the `errors`' messages, one per line (an error with no `message` repeats the one before it, because gh
+ * decodes each into the same struct), and exits 1 with the body on stdout and `gh: <messages>` on stderr when that
+ * text is not empty. Otherwise (no `errors`, an empty list, or no message at all) it prints the JSON and exits 0.
  */
 export function graphqlAnswer(body, args = ['api', 'graphql']) {
-  if (!body?.errors) return JSON.stringify(body);
-  const said = body.errors.map((e) => e?.message).filter(Boolean).join('\n');
+  let last = '';
+  const said = (body?.errors ?? []).map((e) => (last = e?.message ?? last)).join('\n');
+  if (!said) return JSON.stringify(body);
   throw ghExecError(args, { stdout: JSON.stringify(body), stderr: `gh: ${said}\n` });
 }
