@@ -97,7 +97,7 @@ export function renderBoard(v) {
     : '<p class="sub">No PR open right now.</p>');
   const just = v.current ? v.tickets.filter((t) => t.status === 'shipped' && v.current.refs.has(t.ref)) : [];
   if (just.length) {
-    h.push(`<p class="meta" style="margin-top:10px">Shipped this wave: ${just.map((t) => `${link(t.ref)} ${prLinks(t, ['merged'])}`).join(', ')}</p>`);
+    h.push(`<p class="meta gap">Shipped this wave: ${just.map((t) => `${link(t.ref)} ${prLinks(t, ['merged'])}`).join(', ')}</p>`);
   }
 
   h.push('<h2>Road ahead <small>every open ticket, in dependency order</small></h2>');
@@ -165,8 +165,8 @@ function roadAhead(v, byRef, link, gates) {
   h.push(`<p class="road-sum"><b>${left}</b> A step is the earliest a ticket can start: once every ticket it points up to has shipped. Tickets in the same step can be built at the same time.</p>`);
   h.push(`<p class="howto"><b>Waves</b> continue the run's count.${v.current ? ` Wave ${esc(v.current.id)} is building now;` : ''} the later numbers are a projection that assumes each wave ships before the next starts. `
     + 'A ticket moves to a later wave if review sends it back, or if a wave launches without it. A ticket of yours, such as a release you cut, takes no wave: what waits on it goes in the next wave after you finish it.</p>');
-  h.push(`<div class="path"><span class="meta" style="margin:0">Longest chain:</span>${g.chain.map((r) => link(r)).join('<span class="arr">→</span>')}`
-    + `<span class="meta" style="margin:0">(${plural(g.chain.length, 'ticket')}, one after another)</span></div>`);
+  h.push(`<div class="path"><span class="meta tight">Longest chain:</span>${g.chain.map((r) => link(r)).join('<span class="arr">→</span>')}`
+    + `<span class="meta tight">(${plural(g.chain.length, 'ticket')}, one after another)</span></div>`);
   h.push('<p class="howto">Lines show direct dependencies only; one implied by a longer chain is left out. The blue chain is the longest one: nothing finishes before it does. Hover or tab to a ticket to trace everything it waits on and everything waiting on it.</p>');
   const edges = rows.flat().flatMap((r) => sorted(g.direct.get(r)).map((p) => [p, r, chainEdges.has(`${p}>${r}`)]));
   h.push(`<div class="dag" id="dag" data-edges="${esc(JSON.stringify(edges))}"><svg aria-hidden="true"></svg>`);
