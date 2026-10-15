@@ -2,10 +2,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ghErrorBody, ghFailure, ghJson, withBackoff } from './gh.mjs';
-import { ghExecError, ghMissing, graphqlAnswer, issueViewNotFound, notFoundBody, restFailure } from './gh-fixture.mjs';
+import { ghExecError, ghMissing, graphqlAnswer, graphqlFailure, issueViewNotFound, notFoundBody, restFailure } from './gh-fixture.mjs';
 
 const args = ['api', 'x'];
-const thrown = (fn) => { try { return fn(); } catch (e) { return e; } };
 
 test('ghFailure: the HTTP status and whether it is a rate limit', () => {
   const table = [
@@ -16,7 +15,7 @@ test('ghFailure: the HTTP status and whether it is a rate limit', () => {
     ['a gh search rate limit, no stdout', ghExecError(['search', 'prs'], { stderr: 'gh: API rate limit exceeded' }), { status: null, rateLimited: true }],
     ['a 502', restFailure(502, 'Bad Gateway'), { status: 502, rateLimited: false }],
     ['a 502 with only the message', ghExecError(args, { stderr: null, message: 'HTTP 502: Bad Gateway' }), { status: 502, rateLimited: false }],
-    ['a network error, no stdout or stderr', ghExecError(args, { message: 'connect ECONNREFUSED' }), { status: null, rateLimited: false }],
+    ['a network error, no stdout or stderr', ghExecError(args, { stderr: null, message: 'connect ECONNREFUSED' }), { status: null, rateLimited: false }],
     // stderr names no status: only the JSON body gh api prints on stdout says what the failure was.
     ['a status only in the stdout body', ghExecError(args, { stdout: restFailure(422, 'No commit found for SHA: deadbeef').stdout, stderr: 'gh: request failed' }), { status: 422, rateLimited: false }],
     ['a rate limit only in the stdout body', ghExecError(args, { stdout: restFailure(403, 'API rate limit exceeded for user').stdout, stderr: 'gh: request failed' }), { status: 403, rateLimited: true }],
@@ -44,7 +43,7 @@ test('the gh-fixture builders are read by ghFailure and ghErrorBody as real gh f
     ['REST 404', restFailure(404, 'Not Found'), 404, { message: 'Not Found', documentation_url: 'https://docs.github.com/rest', status: '404' }, 'gh: Not Found (HTTP 404)\n'],
     ['REST 422', restFailure(422, 'Unprocessable Entity'), 422, { message: 'Unprocessable Entity', documentation_url: 'https://docs.github.com/rest', status: '422' }, 'gh: Unprocessable Entity (HTTP 422)\n'],
     ['REST 502', restFailure(502, 'Bad Gateway'), 502, { message: 'Bad Gateway', documentation_url: 'https://docs.github.com/rest', status: '502' }, 'gh: Bad Gateway (HTTP 502)\n'],
-    ['GraphQL NOT_FOUND', thrown(() => graphqlAnswer(notFoundBody(999999))), null,
+    ['GraphQL NOT_FOUND', graphqlFailure(notFoundBody(999999)), null,
       { data: { repository: { issue: null } }, errors: [{ type: 'NOT_FOUND', path: ['repository', 'issue'], locations: [{ line: 1, column: 1 }], message: missing }] }, `gh: ${missing}\n`],
     ['issue view of a missing issue', issueViewNotFound(999999), null, null,
       'GraphQL: Could not resolve to an issue or pull request with the number of 999999. (repository.issue)\n'],
@@ -55,17 +54,34 @@ test('the gh-fixture builders are read by ghFailure and ghErrorBody as real gh f
     assert.deepEqual(ghErrorBody(err), body, name);
     assert.equal(err.stderr, stderr, name);
   }
-  assert.equal(graphqlAnswer({ data: { x: 1 } }), '{"data":{"x":1}}');
   // Node adds `\n<stderr>` to the message only when there is stderr.
   assert.equal(ghExecError(args).message, 'Command failed: gh api x');
   assert.equal(issueViewNotFound(7, ['issue', 'view', '7']).message,
     'Command failed: gh issue view 7\nGraphQL: Could not resolve to an issue or pull request with the number of 7. (repository.issue)\n');
-  // gh prints every GraphQL error's message on its own line (one with none repeats the one before it), and exits 0 when they say nothing.
-  const three = thrown(() => graphqlAnswer({ data: null, errors: [{ type: 'NOT_FOUND', message: 'No issue.' }, { type: 'FORBIDDEN' }, { message: 'No PR.' }] }));
-  assert.equal(three.stderr, 'gh: No issue.\nNo issue.\nNo PR.\n');
-  for (const body of [{ data: null, errors: [] }, { data: null, errors: [{ type: 'FORBIDDEN' }] }]) assert.equal(graphqlAnswer(body), JSON.stringify(body));
   const spawn = ghMissing(args);
   assert.deepEqual([spawn.code, spawn.status, spawn.message, spawn.stdout], ['ENOENT', null, 'spawnSync gh ENOENT', undefined]);
+});
+
+test('graphqlAnswer exits 1 exactly when gh 2.102.0\'s parseErrorResponse finds error text in the body, and prints it as gh does', () => {
+  const table = [
+    ['no errors', { data: { x: 1 } }, null],
+    ['an empty list', { data: null, errors: [] }, null],
+    ['no message at all', { data: null, errors: [{ type: 'FORBIDDEN' }] }, null],
+    ['every message, one per line; one with none repeats the one before', { data: null, errors: [{ type: 'NOT_FOUND', message: 'No issue.' }, { type: 'FORBIDDEN' }, { message: 'No PR.' }] }, 'gh: No issue.\nNo issue.\nNo PR.\n'],
+    ['a string entry as it is; a null skipped', { errors: [{ message: 'a' }, null, 'b', {}] }, 'gh: a\nb\na\n'],
+    ['errors that is a string', { errors: 'denied' }, 'gh: denied\n'],
+    ['a top-level message', { message: 'Bad credentials' }, 'gh: Bad credentials (HTTP 200)\n'],
+  ];
+  for (const [name, body, stderr] of table) {
+    if (stderr === null) {
+      assert.equal(graphqlAnswer(body), JSON.stringify(body), name);
+      assert.throws(() => graphqlFailure(body), /gh exits 0 on this body/, name);
+    } else {
+      const err = graphqlFailure(body, ['api', 'graphql']);
+      assert.deepEqual([err.status, err.stdout, err.stderr, err.message], [1, JSON.stringify(body), stderr, `Command failed: gh api graphql\n${stderr}`], name);
+      assert.throws(() => graphqlAnswer(body), (e) => e.stderr === stderr, name);
+    }
+  }
 });
 
 test('ghJson: the value, or the classified failure after a warning with the caller\'s prefix', async () => {
