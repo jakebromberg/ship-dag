@@ -2,18 +2,18 @@
 // hold its waves, each wave's display id, and the board's own files.
 //
 // Pure helpers over the filesystem, no CLI. The family, the sidecar match and the
-// wave configs come from the shared readers in lib/ (`runFamilyStateDirs`,
-// `findWaveContext`, `waveConfigs`) so the board and ingest agree on which dirs
-// and which waves are a run's.
+// wave configs come from the shared readers in lib/ (`runFamilyStateDirs`, `configDirs`,
+// `readSidecar`, `waveConfigs`) so the board and ingest agree on which dirs and which
+// waves are a run's.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { readRecords, telemetryPath } from '../telemetry.mjs';
 import { formatRef } from '../lib/ref.mjs';
 import { sameRun } from '../lib/run-id.mjs';
-import { findWaveContext, waveConfigs } from '../lib/wave-sidecar.mjs';
-import { runFamilyStateDirs } from '../lib/wave-reports.mjs';
+import { SIDECAR_NAME, readSidecar, waveConfigs, waveContextMatches } from '../lib/wave-sidecar.mjs';
+import { configDirs, runFamilyStateDirs } from '../lib/wave-reports.mjs';
 
 /**
  * The run's id and dir. `stateDir` names the dir (its basename is the run id); `runId` is looked up under
@@ -36,32 +36,44 @@ const FILE_ID = /^config[-.]?(?:wave|w)?(\d+[a-z]?)\.json$/i;
 
 /**
  * Every wave of the run's family, oldest config first (by modification time, then path), as
- * `{id, dir, configFile, config, refs, mtimeMs}`. The id is the first that applies: the sidecar's wave number
- * (when an entry's refs equal the config's; `wave: null` is absent), a `-w<id>` dir suffix, the number in the
- * config's filename, `1` for the run dir, else the previous wave's id plus `′`.
+ * `{id, dir, configFile, config, refs, mtimeMs}`. A wave is a `config*.json` with a `configDir` string and an
+ * `issues` array, in a family dir or its older layout's `state/` (`configDirs`). The id is the first that applies:
+ * the sidecar's wave number (when an entry's refs equal the config's; `wave: null` is absent), a `-w<id>` dir
+ * suffix, the number in the config's filename, `1` for the run's base dir (the family member named the run id
+ * without its wave or retry suffix), `1` for the first wave when none came before it (a family with no base dir),
+ * else the previous wave's id plus `′`.
  * @param {{runId: string, runDir: string}} run
  * @param {{warn?: (m: string) => void}} [opts]
  */
 export function runWaves({ runId, runDir }, { warn } = {}) {
-  const found = runFamilyStateDirs(runDir, { runId, warn }).flatMap((dir) =>
-    waveConfigs(dir).map((w) => ({ ...w, dir, refs: w.config.issues.map((i) => formatRef(i?.repo, i?.number)) })));
+  const baseName = runId.replace(DIR_SUFFIX, '').replace(/-[a-z]$/i, '');
+  const found = runFamilyStateDirs(runDir, { runId, warn }).flatMap((dir) => {
+    const sidecar = readSidecar(join(dir, SIDECAR_NAME), { warn });
+    return configDirs(dir).flatMap(waveConfigs).filter((w) => typeof w.config.configDir === 'string').map((w) => {
+      const refs = w.config.issues.map((i) => formatRef(i?.repo, i?.number));
+      return { ...w, dir, refs, sidecarWave: sidecar.findLast((e) => waveContextMatches(e, refs))?.wave };
+    });
+  });
   found.sort((a, b) => a.mtimeMs - b.mtimeMs || a.configFile.localeCompare(b.configFile));
   let prev = null;
-  return found.map((w) => {
-    const sidecarWave = findWaveContext(w.dir, w.refs, { warn })?.wave;
+  return found.map(({ sidecarWave, ...w }) => {
     const id = (sidecarWave != null ? String(sidecarWave) : null)
       ?? basename(w.dir).match(DIR_SUFFIX)?.[1]
       ?? basename(w.configFile).match(FILE_ID)?.[1]
-      ?? (w.dir === runDir ? '1' : prev === null ? '1' : `${prev}′`);
+      ?? (basename(w.dir) === baseName || prev === null ? '1' : `${prev}′`);
     prev = id;
     return { ...w, id };
   });
 }
 
-/** Parse `path` as JSON: null when absent, a thrown error naming the path when malformed. */
+/** Parse `path` as JSON: null when absent, a thrown error naming the path when it cannot be read or is malformed. */
 function readJson(path) {
-  if (!existsSync(path)) return null;
-  try { return JSON.parse(readFileSync(path, 'utf-8')); } catch (err) { throw new Error(`${path}: not valid JSON (${err.message})`); }
+  let text;
+  try { text = readFileSync(path, 'utf-8'); } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw new Error(`${path}: cannot read (${err.code ?? err.message})`);
+  }
+  try { return JSON.parse(text); } catch (err) { throw new Error(`${path}: not valid JSON (${err.message})`); }
 }
 
 /** `<runDir>/board-notes.json` parsed, or null when absent. */
@@ -72,13 +84,15 @@ export const readBoard = (runDir, { path } = {}) => readJson(path ?? join(runDir
 
 /**
  * The retro records filed for the run's family, from the telemetry log at `path`: `sameRun` folds a
- * `ship-dag-`-prefixed or retry id into the run, other kinds are skipped, and an identical record filed twice counts once.
+ * `ship-dag-`-prefixed or retry id into the run, other kinds are skipped, and a record filed twice (identical but for
+ * the `ts` each append stamps) counts once.
  */
 export function readRetros(runId, { path = telemetryPath() } = {}) {
   const seen = new Set();
   return readRecords(path).filter((r) => {
     if (r?.kind !== 'retro' || !sameRun(r.runId, runId)) return false;
-    const key = JSON.stringify(r);
+    const { ts, ...rest } = r;
+    const key = JSON.stringify(rest);
     return !seen.has(key) && seen.add(key);
   });
 }
