@@ -139,11 +139,11 @@ test('board-notes.json and board.json read as null when missing, parsed when pre
 });
 
 const unreadable = [
-  ['a directory', (path) => mkdirSync(path)],
-  ['a file it may not read', (path) => { writeFileSync(path, '{}'); chmodSync(path, 0o000); }],
+  ['a directory', (path) => mkdirSync(path), false],
+  ['a file it may not read', (path) => { writeFileSync(path, '{}'); chmodSync(path, 0o000); }, process.getuid?.() === 0], // root reads it anyway
 ];
-for (const [name, make] of unreadable) {
-  test(`board.json that is ${name} throws a read error naming the path, not a JSON one`, () => {
+for (const [name, make, skip] of unreadable) {
+  test(`board.json that is ${name} throws a read error naming the path, not a JSON one`, { skip }, () => {
     const dir = mkdtempSync(join(tmpdir(), 'board-run-'));
     fixtures.push({ cleanup: () => rmSync(dir, { recursive: true, force: true }) });
     const path = join(dir, 'board.json');
