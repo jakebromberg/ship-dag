@@ -117,6 +117,29 @@ for (const [name, specs, dirName] of [
   });
 }
 
+// The engine writes metadata.startedAt at each launch, right after it writes `running`, so the session start is read
+// from there; the status file's mtime is only a fallback, since a copy or restore that loses mtimes moves it.
+const FAILED_FIRST = report(T0, { status: 'failed', prNumber: null }); // the wave's first run: T0 to T1
+for (const [name, specs, dirName, want] of [
+  ['a session that launched before the report finished is Stalled, though the status file\'s mtime is newer',
+    { [RUN]: { status: stamped(LATER, 'running'), metadata: { startedAt: T0 }, reports: { 'R1.json': FAILED_FIRST } } }, RUN, 'Stalled'],
+  ['a session that launched after the report finished is Building, though the status file\'s mtime is older',
+    { [RUN]: { status: stamped(T0, 'running'), metadata: { startedAt: LATER }, reports: { 'R1.json': FAILED_FIRST } } }, RUN, 'Building'],
+  ['a -b retry that launched after the wave\'s report finished is Building, whatever its mtime',
+    { [RUN]: { reports: { 'R1.json': FAILED_FIRST } }, [`${RUN}-b`]: { status: stamped(T0, 'running'), metadata: { startedAt: LATER } } }, `${RUN}-b`, 'Building'],
+  ['a -b retry that launched before the wave\'s report finished is Stalled, whatever its mtime',
+    { [RUN]: { reports: { 'R1.json': FAILED_FIRST } }, [`${RUN}-b`]: { status: stamped(LATER, 'running'), metadata: { startedAt: T0 } } }, `${RUN}-b`, 'Stalled'],
+  ['an unparseable metadata.startedAt falls back to the mtime',
+    { [RUN]: { status: stamped(LATER, 'running'), metadata: { startedAt: 'soon' }, reports: { 'R1.json': FAILED_FIRST } } }, RUN, 'Building'],
+  ['a report with no finishedAt is measured from its startedAt',
+    { [RUN]: { status: stamped(T0, 'running'), metadata: { startedAt: LATER }, reports: { 'R1.json': { ...FAILED_FIRST, finishedAt: undefined } } } }, RUN, 'Building'],
+]) {
+  test(`deriveStage: ${name}`, () => {
+    const dirs = family(specs);
+    assert.equal(derive(dirs, { dir: dirs[dirName] }), want);
+  });
+}
+
 test('deriveStage scores a round in the base dir stamped with the owner in the wave\'s sibling dir, and never a -board dir\'s', () => {
   const dirs = family({
     [RUN]: { rounds: { 'STEM.json': round([finding('correctness')], 'R2') } },
