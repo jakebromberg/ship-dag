@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mintRunId, canonicalRunId, runIdFromConfigName, sameRun } from './run-id.mjs';
+import { mintRunId, canonicalRunId, runFamily, runIdFromConfigName, sameRun } from './run-id.mjs';
 
 test('mintRunId: local-time stamp, with an optional slugged label', () => {
   const now = new Date(2026, 9, 8, 7, 5, 9);
@@ -27,6 +27,13 @@ test('canonicalRunId: folds prefix, case and wave suffixes; null for blank', () 
   assert.equal(canonicalRunId('-w2'), '-w2');
   assert.equal(canonicalRunId('  '), null);
   assert.equal(canonicalRunId(null), null);
+});
+
+test('runFamily: canonicalRunId with a single-letter retry suffix folded too; null for blank', () => {
+  assert.equal(runFamily('Ship-Dag-SD-1-W2-B'), 'sd-1');
+  assert.equal(runFamily('sd-1-c-r2'), 'sd-1');
+  assert.equal(runFamily('sd-1-board'), 'sd-1-board');
+  assert.equal(runFamily(' '), null);
 });
 
 const BASE = 'sd-20261001-211607';
