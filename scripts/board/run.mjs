@@ -57,7 +57,9 @@ export function runWaves({ runId, runDir }, { warn } = {}) {
       });
     return waves.map(({ refSet, ...w }) => {
       // An entry emitted at or after the next config of the same ref set is that config's, not this one's.
-      const next = Math.min(...waves.filter((o) => o.refSet === refSet && o.mtimeMs > w.mtimeMs).map((o) => o.mtimeMs));
+      // emit-config stamps an entry just after writing its config, but at millisecond precision, so compare
+      // against the next config's mtime truncated to the millisecond too.
+      const next = Math.floor(Math.min(...waves.filter((o) => o.refSet === refSet && o.mtimeMs > w.mtimeMs).map((o) => o.mtimeMs)));
       return { ...w, sidecarWave: sidecar.findLast((e) => waveContextMatches(e, w.refs) && !(Date.parse(e.emittedAt) >= next))?.wave };
     });
   });
