@@ -123,6 +123,15 @@ test('renderBoard counts one ticket and one step in the singular', () => {
   assert.match(html, /Shipped <small>1 ticket, newest first/);
 });
 
+// The summary counts every open ticket, so it can't disagree with the "Can't be ordered" callout.
+test('renderBoard counts unorderable tickets in the road-ahead summary', () => {
+  const v = view();
+  const tickets = [ticket(3, 'ready'), ticket(4, 'ready'), ticket(6, 'blocked'), ticket(7, 'blocked')];
+  const graph = buildGraph(tickets.map((t) => t.ref), [{ blockedBy: R(6), blocked: R(7) }, { blockedBy: R(7), blocked: R(6) }], []);
+  const html = renderBoard({ ...v, tickets, graph, waves: new Map(), current: null });
+  assert.match(html, /<b>4 tickets left: 2 in 1 step, 2 can't be ordered\.<\/b>/);
+});
+
 test('renderBoard sorts refs numerically within a repo: #9 before #10', () => {
   const v = view();
   const tickets = [ticket(10, 'flight'), ticket(9, 'flight'), ticket(20, 'blocked'), ticket(19, 'blocked')];
