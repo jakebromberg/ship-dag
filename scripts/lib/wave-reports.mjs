@@ -151,9 +151,9 @@ export function reportOwnership(reads) {
   const earlierOf = (read) => memo.get(read) ?? memo.set(read, earlierReports(counted, read.startedAt)).get(read);
   const owns = (read, row) => !carriedOver(row, earlierOf(read));
   const ownerOf = (ref) => {
-    const rowOf = (r) => r.report.issues.find((row) => row?.ref === ref);
-    const owner = counted.findLast((r) => { const row = rowOf(r); return row && owns(r, row); });
-    return owner ? { ...owner, row: rowOf(owner) } : null;
+    const rowIn = (r) => r.report.issues.find((row) => row?.ref === ref);
+    const owner = counted.findLast((r) => { const row = rowIn(r); return row && owns(r, row); });
+    return owner ? { ...owner, row: rowIn(owner) } : null;
   };
   const byId = new Map(reads.map((r) => [r.id, r]));
   const rowOf = (id, ref) => byId.get(id)?.report?.issues?.find((row) => row?.ref === ref) ?? null;
