@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { planWaveEpic, openWaveEpic, closeWaveEpic, sweepWaveEpics, qualifyRef, WaveEpicRefusal } from './wave-epic.mjs';
 import { WAVE_LABEL } from './sub-issues.mjs';
 import { bodyEdges } from '../plan-waves.mjs';
-import { graphqlAnswer, notFoundBody, restFailure } from './gh-fixture.mjs';
+import { graphqlAnswer, issueViewNotFound, notFoundBody, restFailure } from './gh-fixture.mjs';
 
 const R = 'o/r';
 const WAVE = [WAVE_LABEL];
@@ -17,8 +17,8 @@ const idOf = (n) => 1000 + Number(n);
  * parent, repo? } }`. It answers exactly the calls wave-epic.mjs makes, applies
  * their writes to the state, and throws on anything else, so an unplanned call
  * fails the test. A sub-issue POST without `replace_parent` refuses a child that
- * already has a parent, as GitHub does. A GraphQL query for an issue not in
- * `issues` throws gh's NOT_FOUND exit 1, as real gh does. `failMoves` holds
+ * already has a parent, as GitHub does. A GraphQL query or `issue view` for an
+ * issue not in `issues` throws gh's exit 1, as real gh does. `failMoves` holds
  * issue numbers whose POST fails regardless (a REST 422), and `failListings`
  * epics whose sub-issue query fails (a 502).
  */
@@ -73,7 +73,11 @@ function fakeGh(issues, { failMoves = [], failListings = [] } = {}) {
       issues[n] = { title: field(argv, 'title'), body: field(argv, 'body'), labels: [field(argv, 'labels[]')], state: 'OPEN' };
       return JSON.stringify({ number: n, id: idOf(n) });
     }
-    if (a === 'issue' && b === 'view' && flag(argv, '--jq') === '.title') return `${issues[Number(argv[2])].title}\n`;
+    if (a === 'issue' && b === 'view' && flag(argv, '--jq') === '.title') {
+      const i = issues[Number(argv[2])];
+      if (!i) throw issueViewNotFound(argv[2], argv);
+      return `${i.title}\n`;
+    }
     if (a === 'issue' && b === 'list') {
       return JSON.stringify(Object.entries(issues)
         .filter(([, i]) => (i.labels || []).includes(WAVE_LABEL) && (i.state || 'OPEN') === 'OPEN')
@@ -305,7 +309,7 @@ for (const { name, waves, except, dryRun, failMoves, failListings, extra = {}, e
     }
     const gh = fakeGh(issues, { failMoves, failListings });
     const out = sweepWaveEpics({ repo: R, epic: 1, except, dryRun }, gh);
-    // An error's message is gh's whole failure, the full query included, so a row matches it.
+    // An error's message is gh's whole failure, the full query included, so a row's `message` is a RegExp to match.
     const byWave = (r) => ({ ...r, errors: r.errors.map((e) => e.wave) });
     assert.deepEqual(byWave(out), byWave(expect));
     for (const [i, { message }] of expect.errors.entries()) assert.match(out.errors[i].message, message);

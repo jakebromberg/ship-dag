@@ -56,12 +56,14 @@ test('the gh-fixture builders are read by ghFailure and ghErrorBody as real gh f
     assert.equal(err.stderr, stderr, name);
   }
   assert.equal(graphqlAnswer({ data: { x: 1 } }), '{"data":{"x":1}}');
-  // Node adds `\n<stderr>` to the message only when there is stderr; gh prints each GraphQL error's message on its own line.
+  // Node adds `\n<stderr>` to the message only when there is stderr.
   assert.equal(ghExecError(args).message, 'Command failed: gh api x');
   assert.equal(issueViewNotFound(7, ['issue', 'view', '7']).message,
     'Command failed: gh issue view 7\nGraphQL: Could not resolve to an issue or pull request with the number of 7. (repository.issue)\n');
-  const two = thrown(() => graphqlAnswer({ data: null, errors: [{ type: 'NOT_FOUND', message: 'No issue.' }, { type: 'FORBIDDEN' }, { message: 'No PR.' }] }));
-  assert.equal(two.stderr, 'gh: No issue.\nNo PR.\n');
+  // gh prints every GraphQL error's message on its own line (one with none repeats the one before it), and exits 0 when they say nothing.
+  const three = thrown(() => graphqlAnswer({ data: null, errors: [{ type: 'NOT_FOUND', message: 'No issue.' }, { type: 'FORBIDDEN' }, { message: 'No PR.' }] }));
+  assert.equal(three.stderr, 'gh: No issue.\nNo issue.\nNo PR.\n');
+  for (const body of [{ data: null, errors: [] }, { data: null, errors: [{ type: 'FORBIDDEN' }] }]) assert.equal(graphqlAnswer(body), JSON.stringify(body));
   const spawn = ghMissing(args);
   assert.deepEqual([spawn.code, spawn.status, spawn.message, spawn.stdout], ['ENOENT', null, 'spawnSync gh ENOENT', undefined]);
 });
@@ -70,9 +72,9 @@ test('ghJson: the value, or the classified failure after a warning with the call
   const warns = [];
   const ctx = { repo: 'o/r', sleep: async () => {}, warn: (m) => warns.push(m), prefix: 'pfx' };
   assert.deepEqual(await ghJson(['x'], 'what', { ...ctx, gh: async () => '[1]' }), { value: [1] });
-  const bad = ghExecError(args, { stderr: 'gh: nope (HTTP 422)', message: 'gh: nope (HTTP 422)' });
+  const bad = restFailure(422, 'nope', ['x']);
   assert.deepEqual(await ghJson(['x'], 'what', { ...ctx, gh: async () => { throw bad; } }), { failure: { status: 422, rateLimited: false } });
-  assert.deepEqual(warns, ['pfx: what: gh: nope (HTTP 422)']);
+  assert.deepEqual(warns, ['pfx: what: Command failed: gh x\ngh: nope (HTTP 422)\n']);
 });
 
 test('withBackoff retries on ghFailure\'s classification, not on the message, and ghJson rethrows the exhausted rate limit unwarned', async () => {

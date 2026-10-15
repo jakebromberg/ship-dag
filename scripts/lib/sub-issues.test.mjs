@@ -2,17 +2,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { listSubIssues, SubIssuesUnavailable, hasSubIssues } from './sub-issues.mjs';
-import { ghExecError, notFoundBody, restFailure } from './gh-fixture.mjs';
+import { ghExecError, graphqlAnswer, notFoundBody, restFailure } from './gh-fixture.mjs';
 
 const epic = { repo: 'o/2048', number: 7 };
 const page = (nodes, pageInfo) => JSON.stringify({ data: { repository: { issue: { subIssues: { nodes, pageInfo } } } } });
 const last = { hasNextPage: false, endCursor: null };
 const more = { hasNextPage: true, endCursor: 'c1' };
 const notFound = notFoundBody(7).errors[0];
-const noIssue = (errors) => JSON.stringify({ data: { repository: { issue: null } }, errors });
+const noIssue = (errors) => ({ data: { repository: { issue: null } }, errors });
 
-// What realRunGh throws when gh exits non-zero; gh exits 1 whenever a GraphQL response carries `errors`.
-const ghError = (stdout) => ghExecError(['api', 'graphql'], { stdout });
+// What realRunGh throws for a GraphQL body whose `errors` make gh exit 1, built by the fixture.
+const ghError = (body) => {
+  try { graphqlAnswer(body); } catch (e) { return e; }
+  throw new Error('gh exits 0 on this body');
+};
 const throws = (err) => () => { throw err; };
 
 // A plain Error with this message: not SubIssuesUnavailable, and not the TypeError an unguarded read throws.
@@ -51,10 +54,10 @@ test('a runGh failure propagates unchanged, on any page', () => {
   const failures = [
     ['no body', ghExecError(['api', 'graphql'], { stderr: 'gh: Bad Gateway (HTTP 502)\n' })],
     ['a REST error body', restFailure(502, 'Bad Gateway', ['api', 'graphql'])],
-    ['a body that is not JSON', ghError('<html>502 Bad Gateway</html>')],
-    ['a rate limit', ghError(JSON.stringify({ errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] }))],
+    ['a body that is not JSON', ghExecError(['api', 'graphql'], { stdout: '<html>502 Bad Gateway</html>', stderr: 'gh: HTTP 502\n' })],
+    ['a rate limit', ghError({ errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] })],
     ['NOT_FOUND alongside another error', ghError(noIssue([notFound, { type: 'FORBIDDEN' }]))],
-    ['NOT_FOUND with the connection present', ghError(JSON.stringify({ ...JSON.parse(page([], last)), errors: [notFound] }))],
+    ['NOT_FOUND with the connection present', ghError({ ...JSON.parse(page([], last)), errors: [notFound] })],
   ];
   for (const [name, err] of failures) {
     for (const responses of [[throws(err)], [page([{ number: 1 }], more), throws(err)]]) {
@@ -69,7 +72,7 @@ test('a runGh failure propagates unchanged, on any page', () => {
 test('a listing with sub-issues the token cannot read is a plain Error naming them, never a drop', () => {
   const at = (...rest) => ['repository', 'issue', 'subIssues', 'nodes', ...rest];
   const sso = { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement.' };
-  const listing = (nodes, errors) => ghError(JSON.stringify({ data: { repository: { issue: { subIssues: { nodes, pageInfo: last } } } }, errors }));
+  const listing = (nodes, errors) => ghError({ data: { repository: { issue: { subIssues: { nodes, pageInfo: last } } } }, errors });
   const cases = [
     ['a null node, by position and message', [], listing([{ number: 1 }, null], [{ ...sso, path: at(1) }]),
       /^listSubIssues: 1 sub-issue of o\/2048#7 could not be read: sub-issue 2 \(FORBIDDEN: Resource protected by organization SAML enforcement\.\)$/],
@@ -92,7 +95,7 @@ test('a first page with no sub-issues connection is SubIssuesUnavailable, whethe
     ['exit 0, no issue', '{"data":{"repository":{"issue":null}}}'],
     ['exit 0, only errors', '{"errors":[{"message":"x"}]}'],
     ['gh NOT_FOUND exit, no issue', throws(ghError(noIssue([notFound])))],
-    ['gh NOT_FOUND exit, no repo', throws(ghError(JSON.stringify({ data: { repository: null }, errors: [{ ...notFound, path: ['repository'] }] })))],
+    ['gh NOT_FOUND exit, no repo', throws(ghError({ data: { repository: null }, errors: [{ ...notFound, path: ['repository'] }] }))],
   ];
   for (const [name, response] of cases) {
     assert.throws(() => listSubIssues(epic, fake([response]).runGh),
@@ -104,7 +107,7 @@ test('an unparseable or malformed page is a plain Error, never SubIssuesUnavaila
   const cases = [
     ['a first page that is not JSON', ['<html>502 Bad Gateway</html>'], /not JSON/],
     ['a later page that is not JSON', [page([{ number: 1 }], more), '<html>502 Bad Gateway</html>'], /not JSON/],
-    ['a later page with no connection', [page([{ number: 1 }], more), noIssue(undefined)], /no sub-issues connection on a later page/],
+    ['a later page with no connection', [page([{ number: 1 }], more), graphqlAnswer(noIssue())], /no sub-issues connection on a later page/],
     ['a missing pageInfo', [page([], undefined)], /malformed pageInfo/],
     ['a null cursor with more pages', [page([], { hasNextPage: true, endCursor: null })], /malformed pageInfo/],
     ['a null nodes list', [page(null, last)], /malformed nodes/],
