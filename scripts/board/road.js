@@ -16,6 +16,9 @@ function focus(r){active=r;const n=N[r],keep=new Set([r,...(n.dataset.anc||'').s
  dag.classList.add('focusing');for(const k in N)N[k].classList.toggle('dim',!keep.has(k));
  svg.querySelectorAll('path[data-a]').forEach(p=>{const on=keep.has(p.dataset.a)&&keep.has(p.dataset.b);p.classList.toggle('lit',on);arrow(p,on)})}
 function clear(){active=null;dag.classList.remove('focusing');for(const k in N)N[k].classList.remove('dim');svg.querySelectorAll('path[data-a]').forEach(p=>{p.classList.remove('lit');arrow(p,false)})}
-function restore(){const f=document.activeElement;f&&f.dataset&&N[f.dataset.ref]===f?focus(f.dataset.ref):clear()}
+// A click focuses a node too; only keyboard focus (:focus-visible, which shows the ring) keeps
+// its trace once the pointer leaves. Engines without :focus-visible keep any focused node's trace.
+const kbd=f=>{try{return f.matches(':focus-visible')}catch(e){return true}};
+function restore(){const f=document.activeElement;f&&f.dataset&&N[f.dataset.ref]===f&&kbd(f)?focus(f.dataset.ref):clear()}
 for(const k in N){const n=N[k];n.addEventListener('mouseenter',()=>focus(k));n.addEventListener('mouseleave',restore);n.addEventListener('focus',()=>focus(k));n.addEventListener('blur',restore)}
 draw();if(window.ResizeObserver)new ResizeObserver(draw).observe(dag);else addEventListener('resize',draw);if(document.fonts)document.fonts.ready.then(draw)})();
