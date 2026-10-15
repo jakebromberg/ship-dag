@@ -2,6 +2,7 @@
 // complete in both themes, and the browser script at least parses.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { PAGE_CSS, ROAD_JS } from './assets.mjs';
 
 const declared = (css) => new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]));
@@ -67,4 +68,110 @@ test('the edge layer takes the dag\'s own size, so it can shrink after a resize'
   const page = fakePage({ clientWidth: 600, clientHeight: 400, scrollWidth: 1200, scrollHeight: 900 });
   page.run();
   assert.deepEqual(page.attrs, { width: '600', height: '400' });
+});
+
+// A fuller fake: nodes that count measurements and carry classes, paths parsed out of the
+// svg markup the script writes, and an observer-less or observer-ful window.
+function fakeDag({ ro = true, edges = [['a', 'b', 0], ['b', 'c', 1]] } = {}) {
+  const classes = () => { const s = new Set(); return { add: (c) => s.add(c), remove: (c) => s.delete(c), has: (c) => s.has(c), contains: (c) => s.has(c), toggle: (c, on) => (on ? s.add(c) : s.delete(c)), s }; };
+  const handlers = {};
+  const nodes = {};
+  for (const [ref, anc, desc] of [['a', '', 'b c'], ['b', 'a', 'c'], ['c', 'a b', ''], ['d', '', '']]) {
+    const n = { dataset: { ref, anc, desc }, classList: classes(), measured: 0, h: {} };
+    n.getBoundingClientRect = () => { n.measured++; return { left: 0, top: 0, width: 10, bottom: 10 }; };
+    n.addEventListener = (ev, fn) => { n.h[ev] = fn; };
+    nodes[ref] = n;
+  }
+  let paths = [];
+  const svg = {
+    setAttribute() {},
+    set innerHTML(html) {
+      paths = [...html.matchAll(/<path data-a="(\w+)" data-b="(\w+)" class="(\w*)" marker-end="([^"]*)"/g)].map(([, a, b, cls, m]) => {
+        const p = { dataset: { a, b }, classList: classes(), attrs: { 'marker-end': m } };
+        if (cls) p.classList.add(cls);
+        p.setAttribute = (k, v) => { p.attrs[k] = v; };
+        return p;
+      });
+    },
+    querySelectorAll: () => paths,
+  };
+  const dag = {
+    dataset: { edges: JSON.stringify(edges) }, clientWidth: 1, clientHeight: 1, querySelector: () => svg,
+    querySelectorAll: () => Object.values(nodes), getBoundingClientRect: () => ({ left: 0, top: 0 }), classList: classes(),
+  };
+  const doc = { getElementById: () => dag, activeElement: null };
+  const calls = { observed: 0, resize: 0, observerDraws: null };
+  const win = {};
+  if (ro) win.ResizeObserver = function (fn) { calls.observerDraws = fn; this.observe = () => { calls.observed++; }; };
+  const run = () => new Function('document', 'window', 'addEventListener', 'ResizeObserver', ROAD_JS)(
+    doc, win, (ev) => { if (ev === 'resize') calls.resize++; }, win.ResizeObserver);
+  return { nodes, dag, doc, calls, run, paths: () => paths };
+}
+
+test('each node is measured once per draw, however many edges touch it', () => {
+  const page = fakeDag();
+  page.run();
+  assert.deepEqual(Object.values(page.nodes).map((n) => n.measured), [1, 1, 1, 1]);
+});
+
+test('the window resize listener is only added without ResizeObserver', () => {
+  const withRo = fakeDag({ ro: true });
+  withRo.run();
+  assert.equal(withRo.calls.resize, 0);
+  assert.equal(withRo.calls.observed, 1);
+  const without = fakeDag({ ro: false });
+  without.run();
+  assert.equal(without.calls.resize, 1);
+});
+
+test('a lit edge uses the accent arrowhead, and clearing restores each edge\'s own', () => {
+  const page = fakeDag();
+  page.run();
+  page.nodes.a.h.mouseenter();
+  assert.deepEqual(page.paths().map((p) => p.attrs['marker-end']), ['url(#ahc)', 'url(#ahc)']);
+  page.nodes.d.h.mouseenter();
+  assert.deepEqual(page.paths().map((p) => p.attrs['marker-end']), ['url(#ah)', 'url(#ahc)']);
+  page.nodes.d.h.mouseleave();
+  assert.deepEqual(page.paths().map((p) => p.attrs['marker-end']), ['url(#ah)', 'url(#ahc)']);
+});
+
+test('focus survives a redraw', () => {
+  const page = fakeDag();
+  page.run();
+  page.nodes.b.h.mouseenter();
+  page.calls.observerDraws();
+  assert.ok(page.dag.classList.has('focusing'));
+  assert.deepEqual(page.paths().map((p) => p.classList.has('lit')), [true, true]);
+  assert.ok(page.nodes.d.classList.has('dim'));
+});
+
+test('keyboard focus survives a hover elsewhere', () => {
+  const page = fakeDag();
+  page.run();
+  page.doc.activeElement = page.nodes.c;
+  page.nodes.c.h.focus();
+  page.nodes.d.h.mouseenter();
+  page.nodes.d.h.mouseleave();
+  assert.ok(page.dag.classList.has('focusing'));
+  assert.ok(!page.nodes.c.classList.has('dim'));
+  assert.ok(page.nodes.d.classList.has('dim'));
+  page.doc.activeElement = null;
+  page.nodes.c.h.blur();
+  assert.ok(!page.dag.classList.has('focusing'));
+});
+
+test('edges dim with path opacity, which reaches the arrowhead', () => {
+  assert.match(PAGE_CSS, /\.dag\.focusing path\[data-a\]\{opacity:/);
+  assert.doesNotMatch(PAGE_CSS, /stroke-opacity:\.08/);
+});
+
+test('dead wave rules are gone and the card surface is declared once', () => {
+  assert.doesNotMatch(PAGE_CSS, /\.waves?\b/);
+  assert.equal(PAGE_CSS.match(/background:var\(--card\);border:1px solid var\(--line\)/g).length, 1);
+});
+
+test('the render module carries no inline layout styles, only data-driven ones', () => {
+  const src = readFileSync(new URL('./render.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /style="margin/);
+  for (const cls of ['gap', 'tight']) assert.match(PAGE_CSS, new RegExp(`\\.meta\\.${cls}\\{margin`));
 });
