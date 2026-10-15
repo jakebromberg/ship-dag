@@ -41,13 +41,19 @@ export function classify({ state, stateReason, hasOpenPr, owned, openBlockers })
  * waiting on an open blocker outside the set, gets no step and is listed in
  * `unorderable`. `preds` holds only the edges between two open tickets, since
  * only those are drawn; `direct` is its transitive reduction (an edge implied by
- * a longer path is dropped). `chain` is the longest path, end to end.
+ * a longer path is dropped). `chain` is the longest path, end to end. A ref in
+ * both `openRefs` and `done` is done, as the engine reads it.
  *
  * @param {string[]} openRefs
  * @param {Array<{blocked:string, blockedBy:string}>} edges  any edges; only those into an open ticket count
- * @param {string[]} [done]  closed refs, as the engine's `done[]`: the board's closed members and closed blockers
+ * @param {string[]} done  required: closed refs, as the engine's `done[]` (the board's closed members and
+ *   closed blockers). Pass `[]` when nothing is closed; a forgotten argument would leave every ticket behind
+ *   a closed blocker unorderable, so its absence throws.
  */
-export function buildGraph(openRefs, edges, done = []) {
+export function buildGraph(openRefs, edges, done) {
+  if (!Array.isArray(done)) throw new TypeError('buildGraph: done is required (pass [] when nothing is closed)');
+  const closed = new Set(done);
+  openRefs = openRefs.filter((r) => !closed.has(r)); // one set for preds, planWaves and the ancestry
   const open = new Set(openRefs);
   const preds = new Map(openRefs.map((r) => [r, new Set()]));
   for (const { blocked, blockedBy } of edges) {
