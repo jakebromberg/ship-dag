@@ -80,6 +80,13 @@ function fakeDag({ ro = true, edges = [['a', 'b', 0], ['b', 'c', 1]] } = {}) {
     const n = { dataset: { ref, anc, desc }, classList: classes(), measured: 0, h: {} };
     n.getBoundingClientRect = () => { n.measured++; return { left: 0, top: 0, width: 10, bottom: 10 }; };
     n.addEventListener = (ev, fn) => { n.h[ev] = fn; };
+    // focusVisible: true after keyboard focus, false after a mouse click, null in an engine without :focus-visible.
+    n.focusVisible = true;
+    n.matches = (sel) => {
+      if (sel !== ':focus-visible') throw new Error(`unexpected selector ${sel}`);
+      if (n.focusVisible === null) throw new SyntaxError(`'${sel}' is not a valid selector`);
+      return n.focusVisible;
+    };
     nodes[ref] = n;
   }
   let paths = [];
@@ -159,6 +166,22 @@ test('keyboard focus survives a hover elsewhere', () => {
   page.nodes.c.h.blur();
   assert.ok(!page.dag.classList.has('focusing'));
 });
+
+// A mouse click focuses the node too (nodes are tabindex="0"), but only keyboard focus
+// matches :focus-visible and shows a ring, so only keyboard focus keeps the trace on mouseleave.
+for (const [how, focusVisible, sticks] of [['keyboard focus', true, true], ['a mouse click', false, false], ['focus without :focus-visible support', null, true]]) {
+  test(`after ${how}, mouseleave ${sticks ? 'keeps' : 'clears'} the node's trace`, () => {
+    const page = fakeDag();
+    page.run();
+    page.nodes.c.h.mouseenter();
+    page.nodes.c.focusVisible = focusVisible;
+    page.doc.activeElement = page.nodes.c;
+    page.nodes.c.h.focus();
+    page.nodes.c.h.mouseleave();
+    assert.equal(page.dag.classList.has('focusing'), sticks);
+    assert.equal(page.nodes.d.classList.has('dim'), sticks);
+  });
+}
 
 test('edges dim with path opacity, which reaches the arrowhead', () => {
   assert.match(PAGE_CSS, /\.dag\.focusing path\[data-a\]\{opacity:/);
