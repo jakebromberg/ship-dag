@@ -174,7 +174,7 @@ const WAVE_VIEW_QUERY =
  * not repeat itself.
  *
  * Refuses, before any write, an issue that isn't labelled `ship-dag-wave`, isn't
- * a sub-issue of `epic`, or an `outcomes` key that isn't an issue ref.
+ * a sub-issue of `epic`, a `waveEpic` gh cannot find ("could not be read"), or an `outcomes` key that isn't an issue ref.
  *
  * @param {{repo:string, epic:number, waveEpic:number,
  *          outcomes?:Record<string,{finalState?:string, failureReason?:string, pr?:number|string}>}} input

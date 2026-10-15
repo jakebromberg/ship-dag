@@ -20,7 +20,7 @@ export function ghErrorBody(err) {
   try { return JSON.parse(err?.stdout); } catch { return null; }
 }
 
-/** Whether a failed `gh` call's GraphQL body holds errors and every one is NOT_FOUND: the issue is not there. */
+/** Whether a failed `gh` call's GraphQL body holds errors and every one is NOT_FOUND. That is all it checks; it does not prove the issue is absent, so callers pair it with their own absence check. */
 export function ghNotFound(err) {
   const errors = ghErrorBody(err)?.errors;
   return Array.isArray(errors) && errors.length > 0 && errors.every((e) => e?.type === 'NOT_FOUND');

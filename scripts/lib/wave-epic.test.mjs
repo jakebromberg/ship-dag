@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { planWaveEpic, openWaveEpic, closeWaveEpic, sweepWaveEpics, qualifyRef, WaveEpicRefusal } from './wave-epic.mjs';
@@ -240,6 +243,7 @@ for (const { name, wave = {}, kids, failMoves, expect, waveState, parents, comme
 for (const { name, issues, outcomes, error } of [
   { name: 'an issue without the wave label', issues: { 7: { title: 'not a wave', parent: 1 } }, error: /not labelled ship-dag-wave/ },
   { name: 'a wave under a different epic', issues: { 2: { title: 'Other' }, 7: { title: 'W', labels: WAVE, parent: 2 } }, error: /not a sub-issue of #1/ },
+  { name: 'a --wave-epic gh cannot find', issues: {}, error: /#7 in o\/r could not be read/ },
   { name: 'an outcomes key that is not an issue ref', issues: { 7: { title: 'W', labels: WAVE, parent: 1 } }, outcomes: { 'r#15': {} }, error: /not an issue ref/ },
 ]) {
   test(`closeWaveEpic refuses ${name}, before any write`, () => {
@@ -251,18 +255,19 @@ for (const { name, issues, outcomes, error } of [
   });
 }
 
-test('closeWaveEpic refuses a --wave-epic gh cannot find (gh exit 1, NOT_FOUND body), before any write', () => {
-  const issues = { 1: { title: 'Epic' }, 10: { title: '#10', parent: 7 } };
-  const gh = fakeGh(issues);
-  assert.throws(() => closeWaveEpic({ repo: R, epic: 1, waveEpic: 7 }, gh),
-    (err) => err instanceof WaveEpicRefusal && /#7 in o\/r could not be read/.test(err.message));
-  assert.deepEqual(gh.writes(), []);
-});
-
-test('closeWaveEpic lets any other failure reading the wave propagate as itself', () => {
-  const err = restFailure(502, 'Bad Gateway');
-  assert.throws(() => closeWaveEpic({ repo: R, epic: 1, waveEpic: 7 }, () => { throw err; }), (e) => e === err);
-});
+const MIXED = { data: null, errors: [{ type: 'NOT_FOUND', message: 'gone' }, { type: 'FORBIDDEN', message: 'no access' }] };
+for (const [name, err] of [
+  ['a REST 502', restFailure(502, 'Bad Gateway')],
+  ['a RATE_LIMITED GraphQL body', graphqlFailure({ data: null, errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] })],
+  ['a FORBIDDEN GraphQL body', graphqlFailure({ data: null, errors: [{ type: 'FORBIDDEN', message: 'no access' }] })],
+  ['NOT_FOUND mixed with FORBIDDEN', graphqlFailure(MIXED)],
+]) {
+  test(`closeWaveEpic lets ${name} reading the wave propagate as itself, with no write`, () => {
+    const calls = [];
+    assert.throws(() => closeWaveEpic({ repo: R, epic: 1, waveEpic: 7 }, (argv) => { calls.push(argv); throw err; }), (e) => e === err && !(e instanceof WaveEpicRefusal));
+    assert.equal(calls.length, 1, 'only the wave query ran, so nothing was written');
+  });
+}
 
 // ---- sweepWaveEpics ---------------------------------------------------
 
@@ -360,5 +365,27 @@ for (const args of [
     // An empty PATH makes any gh call fail, so exit 2 here proves nothing ran.
     const res = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { PATH: '' } });
     assert.equal(res.status, 2, res.stderr);
+  });
+}
+
+// A stub `gh` first on PATH answers the wave query with a failed GraphQL body, as real gh does (stdout, exit 1).
+for (const { name, body, status, stderr } of [
+  { name: 'a --wave-epic gh cannot find is a refusal', body: notFoundBody(7), status: 2, stderr: /#7 in o\/r could not be read/ },
+  { name: 'a RATE_LIMITED failure reading the wave is not a refusal', body: { data: null, errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] }, status: 1 },
+]) {
+  test(`the CLI close: ${name}`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wave-epic-gh-'));
+    try {
+      const out = join(dir, 'out.json');
+      writeFileSync(out, graphqlFailure(body).stdout);
+      writeFileSync(join(dir, 'gh'), `#!/bin/sh\ncat ${out}\nexit 1\n`);
+      chmodSync(join(dir, 'gh'), 0o755);
+      const res = spawnSync(process.execPath, [CLI, 'close', '--repo', R, '--epic', '1', '--wave-epic', '7'], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+      assert.equal(res.status, status, res.stderr);
+      if (stderr) assert.match(res.stderr, stderr);
+      else assert.doesNotMatch(res.stderr, /could not be read/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 }
