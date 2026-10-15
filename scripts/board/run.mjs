@@ -30,9 +30,9 @@ export function resolveRun({ stateDir, runId, env = process.env, envFallback = f
   return { runId: id, runDir: join(defaultBaseDir(env), id) };
 }
 
-/** Wave ids are strings; the letter of `14b` is kept. */
-const DIR_SUFFIX = /-w(\d+[a-z]?)$/i;
-const FILE_ID = /^config[-.]?(?:wave|w)?(\d+[a-z]?)\.json$/i;
+/** Wave ids are strings; every letter after the number is kept (`14b`, `37aa`). */
+const DIR_SUFFIX = /-w(\d+[a-z]*)$/i;
+const FILE_ID = /^config[-.]?(?:wave|w)?(\d+[a-z]*)\.json$/i;
 
 /**
  * Every wave of the run's family, oldest config first (by modification time, then path), as
