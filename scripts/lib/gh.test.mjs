@@ -1,7 +1,7 @@
 // gh.test.mjs — ghFailure classifies a failed gh call from its structured output, not by reading its wording.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ghErrorBody, ghFailure, ghJson, withBackoff } from './gh.mjs';
+import { ghErrorBody, ghFailure, ghJson, ghNotFound, withBackoff } from './gh.mjs';
 import { ghExecError, ghMissing, graphqlAnswer, graphqlFailure, issueViewNotFound, notFoundBody, restFailure } from './gh-fixture.mjs';
 
 const args = ['api', 'x'];
@@ -35,6 +35,19 @@ test('ghErrorBody: a failed call\'s stdout parsed as JSON, or null', () => {
     ['no error', undefined, null],
   ];
   for (const [name, err, want] of table) assert.deepEqual(ghErrorBody(err), want, name);
+});
+
+test('ghNotFound: true only when every GraphQL error is NOT_FOUND', () => {
+  const mixed = { data: null, errors: [{ type: 'NOT_FOUND', message: 'gone' }, { type: 'FORBIDDEN', message: 'no access' }] };
+  const table = [
+    ['every error NOT_FOUND', graphqlFailure(notFoundBody(9)), true],
+    ['NOT_FOUND mixed with FORBIDDEN', graphqlFailure(mixed), false],
+    ['a REST 404 body with no errors', restFailure(404, 'Not Found'), false],
+    ['stdout that is not JSON', ghExecError(args, { stdout: '<html>Bad Gateway</html>' }), false],
+    ['no stdout', ghMissing(args), false],
+    ['an empty errors list', ghExecError(args, { stdout: JSON.stringify({ errors: [] }) }), false],
+  ];
+  for (const [name, err, want] of table) assert.equal(ghNotFound(err), want, name);
 });
 
 test('the gh-fixture builders are read by ghFailure and ghErrorBody as real gh failures are', () => {

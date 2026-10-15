@@ -4,7 +4,7 @@
 // needs an epic's direct children. `runGh` is injected, so tests drive it with a
 // fake and no network; `realRunGh` (gh.mjs) is the one that shells out.
 
-import { ghErrorBody } from './gh.mjs';
+import { ghErrorBody, ghNotFound } from './gh.mjs';
 
 // One page of an epic's sub-issues. `subIssuesSummary.total` rides along on each
 // child so the walk can tell a container from a leaf without a round trip of its
@@ -83,13 +83,11 @@ function unreadableNodes(connection, errors, offset) {
 function failureOf(err, { ref, first, offset }) {
   const body = ghErrorBody(err);
   if (!body) return err;
-  const errors = Array.isArray(body.errors) ? body.errors : [];
   const connection = connectionOf(body);
   if (!connection) {
-    const notFound = first && errors.length > 0 && errors.every((e) => e && e.type === 'NOT_FOUND');
-    return notFound ? unavailable(JSON.stringify(errors)) : err;
+    return first && ghNotFound(err) ? unavailable(JSON.stringify(body.errors)) : err;
   }
-  const { named, rest } = unreadableNodes(connection, errors, offset);
+  const { named, rest } = unreadableNodes(connection, Array.isArray(body.errors) ? body.errors : [], offset);
   const count = named.length + rest;
   if (!count) return err;
   const list = named.length ? `: ${named.join(', ')}${rest ? `, and ${rest} more` : ''}` : '';

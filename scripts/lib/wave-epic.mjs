@@ -24,6 +24,7 @@
 //
 // `runGh` is injected, as in plan-waves.mjs, so tests drive a fake `gh`.
 
+import { ghNotFound } from './gh.mjs';
 import { listSubIssues, hasWaveLabel, hasSubIssues, subIssueRepo, WAVE_LABEL } from './sub-issues.mjs';
 import { parseRef, formatRef, refKey, sameRepo } from './ref.mjs';
 
@@ -184,8 +185,15 @@ const WAVE_VIEW_QUERY =
 export function closeWaveEpic({ repo, epic, waveEpic, outcomes = {} }, runGh) {
   const known = new Map(Object.entries(outcomes).map(([r, o]) => [refKey(qualifyRef(r, repo)), o || {}]));
   const [owner, name] = repo.split('/');
-  const resp = JSON.parse(runGh(['api', 'graphql', '-f', `query=${WAVE_VIEW_QUERY}`,
-    '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${waveEpic}`]));
+  let out;
+  try {
+    out = runGh(['api', 'graphql', '-f', `query=${WAVE_VIEW_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${waveEpic}`]);
+  } catch (err) {
+    // gh exits 1 on a NOT_FOUND body, so a wrong or deleted wave epic arrives as a throw; running again can't help.
+    if (ghNotFound(err)) throw new WaveEpicRefusal(`#${waveEpic} in ${repo} could not be read`);
+    throw err;
+  }
+  const resp = JSON.parse(out);
   const view = resp && resp.data && resp.data.repository && resp.data.repository.issue;
   if (!view) throw new WaveEpicRefusal(`#${waveEpic} in ${repo} could not be read`);
   if (!hasWaveLabel(view)) throw new WaveEpicRefusal(`#${waveEpic} in ${repo} is not labelled ${WAVE_LABEL}; refusing to touch it`);
