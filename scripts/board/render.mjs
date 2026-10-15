@@ -154,8 +154,12 @@ function roadAhead(v, byRef, link, gates) {
     const yours = row.some((r) => wave(r).label === null) ? ' + yours' : '';
     return labels.length ? waveSpan(labels) + yours : 'yours';
   };
+  // Every open ticket, the unorderable ones too, so the count agrees with the callout above.
   const count = g.steps.flat().length;
-  h.push(`<p class="road-sum"><b>${plural(count, 'ticket')} left, in ${plural(rows.length, 'step')}.</b> A step is the earliest a ticket can start: once every ticket it points up to has shipped. Tickets in the same step can be built at the same time.</p>`);
+  const left = g.unorderable.size
+    ? `${plural(count + g.unorderable.size, 'ticket')} left: ${count} in ${plural(rows.length, 'step')}, ${g.unorderable.size} can't be ordered.`
+    : `${plural(count, 'ticket')} left, in ${plural(rows.length, 'step')}.`;
+  h.push(`<p class="road-sum"><b>${left}</b> A step is the earliest a ticket can start: once every ticket it points up to has shipped. Tickets in the same step can be built at the same time.</p>`);
   h.push(`<p class="howto"><b>Waves</b> continue the run's count.${v.current ? ` Wave ${esc(v.current.id)} is building now;` : ''} the later numbers are a projection that assumes each wave ships before the next starts. `
     + 'A ticket moves to a later wave if review sends it back, or if a wave launches without it. A ticket of yours, such as a release you cut, takes no wave: what waits on it goes in the next wave after you finish it.</p>');
   h.push(`<div class="path"><span class="meta" style="margin:0">Longest chain:</span>${g.chain.map((r) => link(r)).join('<span class="arr">→</span>')}`
