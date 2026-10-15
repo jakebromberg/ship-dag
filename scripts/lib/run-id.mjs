@@ -55,8 +55,13 @@ export function canonicalRunId(runId) {
   return out || runId.trim().toLowerCase();
 }
 
-/** `canonicalRunId` plus a single-letter retry suffix (`-b`, `-c`); never a longer label. */
-function runFamily(runId) {
+/**
+ * The run family a run id names: `canonicalRunId` with a single-letter retry suffix (`-b`, `-c`) also folded away,
+ * never a longer label. What `sameRun` compares; null for blank.
+ * @param {string|null|undefined} runId
+ * @returns {string|null}
+ */
+export function runFamily(runId) {
   const canon = canonicalRunId(runId);
   return canon && canonicalRunId(canon.replace(/-[a-z]$/, ''));
 }

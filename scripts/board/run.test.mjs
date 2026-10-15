@@ -108,6 +108,17 @@ for (const [name, specs, named, want] of precedence) {
   });
 }
 
+// The base dir is 1 however the run is spelled, even when its config is not the family's oldest.
+for (const spelling of [RUN, `ship-dag-${RUN}`, `${RUN}-w2-b`, `${RUN}-r2`, RUN.toUpperCase()]) {
+  test(`display id: the base dir is 1 when the run is named ${spelling}`, () => {
+    const { dirs } = fixture({
+      [`${RUN}-b`]: { configs: { 'config.json': stamped(at(1), config([1])) } },
+      [RUN]: { configs: { 'config.json': stamped(at(2), config([2])) } },
+    });
+    assert.deepEqual(ids(runWaves({ runId: spelling, runDir: dirs[`${RUN}-b`] })), ['1', '1']);
+  });
+}
+
 test('a torn sidecar line warns once per dir, however many configs the dir holds', () => {
   const lines = [entry([1], 1), entry([2], 2)].map((e) => JSON.stringify(e)).join('\n');
   const { dirs } = fixture({
