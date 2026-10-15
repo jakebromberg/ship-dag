@@ -95,6 +95,10 @@ test('resolveRun({runId}) finds the run under $XDG_STATE_HOME/ship-dag/engine, a
 const precedence = [
   ['the sidecar\'s wave beats a -w suffix', { [`${RUN}-w2`]: { sidecar: [entry([1], 5)], configs: { 'config.json': config([1]) } } }, `${RUN}-w2`, ['5']],
   ['a -w suffix beats the filename', { [`${RUN}-w3`]: { configs: { 'config-wave7.json': config([1]) } } }, `${RUN}-w3`, ['3']],
+  ['a -w suffix keeps every letter', { [`${RUN}-w37aa`]: { configs: { 'config.json': config([1]) } } }, `${RUN}-w37aa`, ['37aa']],
+  ['a filename id keeps every letter, in the base dir too', {
+    [RUN]: { configs: { 'config-wave37aa.json': stamped(at(1), config([1])), 'config-wave38bs.json': stamped(at(2), config([2])) } },
+  }, RUN, ['37aa', '38bs']],
   ['naming the -b dir leaves the base dir 1 and the retry 1′', {
     [RUN]: { configs: { 'config.json': stamped(at(1), config([1])) } },
     [`${RUN}-b`]: { configs: { 'config.json': stamped(at(2), config([2])) } },
