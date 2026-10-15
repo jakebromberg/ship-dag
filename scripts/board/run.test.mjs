@@ -92,18 +92,19 @@ test('resolveRun({runId}) finds the run under $XDG_STATE_HOME/ship-dag/engine, a
 });
 
 test('a ref set re-emitted under a new wave labels each config with its own entry, not the later one', () => {
-  // emit-config writes the config, then appends its entry, so an entry's emittedAt trails its config's mtime.
-  const after = (n) => ({ emittedAt: new Date(Date.parse(at(n)) + 500).toISOString() });
-  const { dirs } = fixture({
-    [RUN]: {
-      sidecar: [{ ...entry([3], '3'), ...after(1) }, { ...entry([3], '3b'), ...after(2) }],
-      configs: {
-        'config-a.json': stamped(at(1), config([3])),
-        'config-b.json': stamped(at(2), config([3])),
-      },
-    },
-  });
-  assert.deepEqual(ids(runWaves({ runId: RUN, runDir: dirs[RUN] })), ['3', '3b']);
+  // Emit as emit-config does: write the config, then stamp and append its entry (emittedAt at millisecond
+  // precision, so it can read earlier than its own config's fractional mtime).
+  const { dirs } = fixture({ [RUN]: {} });
+  const dir = dirs[RUN];
+  const lines = [];
+  for (const [name, wave] of [['config-a.json', '3'], ['config-b.json', '3b']]) {
+    const since = Date.now();
+    while (Date.now() < since + 2); // configs a real emit apart are at least a millisecond apart
+    writeFileSync(join(dir, name), JSON.stringify(config([3])));
+    lines.push(JSON.stringify(entry([3], wave)));
+  }
+  writeFileSync(join(dir, SIDECAR_NAME), lines.join('\n') + '\n');
+  assert.deepEqual(ids(runWaves({ runId: RUN, runDir: dir })), ['3', '3b']);
 });
 
 // Each row: the family's dirs (name → configs, sidecar), the dir --state-dir names, and the ids expected oldest first.
