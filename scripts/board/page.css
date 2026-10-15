@@ -40,7 +40,7 @@ details summary{cursor:pointer;color:var(--ink2);margin:8px 0}footer{margin-top:
 .dag{position:relative;display:grid;gap:30px;padding:6px 0 4px}
 .dag svg{position:absolute;left:0;top:0;pointer-events:none;overflow:visible;z-index:0}
 .dag path{fill:none;stroke:var(--muted);stroke-opacity:.5;stroke-width:1.4}
-.dag path[data-a]{transition:opacity .15s}
+.dag path[data-a]{transition:opacity .15s,stroke-opacity .15s,stroke-width .15s}
 .dag path.crit{stroke:var(--accent);stroke-opacity:.85;stroke-width:2.2}
 .dag.focusing path[data-a]{opacity:.08}.dag.focusing path[data-a].lit{stroke:var(--accent);stroke-opacity:1;stroke-width:2.2;opacity:1}
 .row{position:relative;z-index:1;display:grid;gap:6px}
