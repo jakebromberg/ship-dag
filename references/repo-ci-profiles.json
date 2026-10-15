@@ -231,6 +231,13 @@
         "uv run --no-sync pytest -m 'not slow and not external_api' -q"
       ],
       "_note": "Mirrors .github/workflows/ci.yml from the scaffold (WXYC/media-worker 6e7290c); verified green locally 2026-10-14 (ruff check + format clean, mypy --strict clean, 1 test)."
+    },
+    "jakebromberg/hypercrank": {
+      "baseBranch": "main",
+      "commands": [
+        "make ci"
+      ],
+      "_note": "Playdate game in C. The repo has no GitHub Actions (Actions is disabled), so this profile and the repo's pre-push hook are the only automated checks; do not weaken it. `make ci` = make clean, then host unit tests (`make test`, clang with ASan/UBSan, no SDK needed), then the device (arm-none-eabi-gcc) and Simulator builds with -Werror. It needs the Playdate SDK via ~/.Playdate/config and Panic's toolchain in /usr/local/playdate. A Makefile target rather than a script so the lease hook's `make` pattern matches it. The target is created by the repo's first sub-issue (skeleton), whose post-session check runs in its own worktree; before that lands, the target does not exist."
     }
   }
 }
