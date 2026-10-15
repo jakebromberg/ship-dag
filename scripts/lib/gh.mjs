@@ -20,6 +20,12 @@ export function ghErrorBody(err) {
   try { return JSON.parse(err?.stdout); } catch { return null; }
 }
 
+/** Whether a failed `gh` call's GraphQL body holds errors and every one is NOT_FOUND: the issue is not there. */
+export function ghNotFound(err) {
+  const errors = ghErrorBody(err)?.errors;
+  return Array.isArray(errors) && errors.length > 0 && errors.every((e) => e?.type === 'NOT_FOUND');
+}
+
 /**
  * What a failed `gh` call means, `{status, rateLimited}`. `status` is the HTTP status: `err.stdout`'s JSON
  * `status` (what `gh api` prints on an HTTP error), else the `(HTTP NNN)` or `HTTP NNN:` gh writes to stderr
