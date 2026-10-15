@@ -4,11 +4,14 @@
 // 999999 (NOT_FOUND), `gh api repos/<repo>/issues/999999/dependencies/blocked_by` (REST 404) and
 // `gh issue view 999999 --repo jakebromberg/ship-dag --json state` (a missing issue), and from `execFileSync` of a
 // binary that is not on PATH (spawn ENOENT). Which GraphQL bodies make gh exit 1 comes from gh 2.102.0's source.
+// These are `realRunGh`'s shapes. `ghCli`'s promisified `execFile` throws the same message, stdout and stderr, but
+// carries the exit code as `code` (no `status`) and says `spawn gh ENOENT` when there is no gh.
 
 /**
  * An `execFileSync` failure: `status` (the exit code), `stdout`, `stderr`, and Node's `Command failed: gh <args>`
  * message, which adds `\n<stderr>` only when there is stderr. A `message` given replaces it, for a test of an
- * error whose text is not Node's (ghFailure reads the message only when there is no stderr).
+ * error whose text is not Node's; give it `stderr: null` too for ghFailure to read it, since ghFailure reads the
+ * message only when `stderr` is null or absent.
  */
 export function ghExecError(args, { stdout = '', stderr = '', status = 1, message } = {}) {
   const failed = `Command failed: gh ${args.join(' ')}`;
@@ -38,14 +41,35 @@ export function notFoundBody(number) {
 }
 
 /**
- * A GraphQL answer as `gh api graphql` gives it, per `parseErrorResponse` in gh 2.102.0's pkg/cmd/api/api.go: gh
- * joins the `errors`' messages, one per line (an error with no `message` repeats the one before it, because gh
- * decodes each into the same struct), and exits 1 with the body on stdout and `gh: <messages>` on stderr when that
- * text is not empty. Otherwise (no `errors`, an empty list, or no message at all) it prints the JSON and exits 0.
+ * The error text gh 2.102.0's `parseErrorResponse` (pkg/cmd/api/api.go) finds in a GraphQL body answered 200: a
+ * string `errors` (with a top-level `message` in parentheses), else a top-level `message` with `(HTTP 200)`, else
+ * each `errors` entry's message, one per line. A string entry is its own message, and an entry that is neither a
+ * string nor an object is skipped. gh decodes every object entry into the same struct, so one with no `message`
+ * repeats the message before it. gh exits 1 when this text is not empty.
  */
-export function graphqlAnswer(body, args = ['api', 'graphql']) {
+function serverError(body) {
+  const { message, errors } = body ?? {};
+  if (typeof errors === 'string' && errors) return message ? `${errors} (${message})` : errors;
+  if (message) return `${message} (HTTP 200)`;
+  if (!Array.isArray(errors)) return '';
+  const said = [];
   let last = '';
-  const said = (body?.errors ?? []).map((e) => (last = e?.message ?? last)).join('\n');
-  if (!said) return JSON.stringify(body);
-  throw ghExecError(args, { stdout: JSON.stringify(body), stderr: `gh: ${said}\n` });
+  for (const e of errors) {
+    if (typeof e === 'string') said.push(e);
+    else if (e && typeof e === 'object' && !Array.isArray(e)) said.push((last = e.message ?? last));
+  }
+  return said.join('\n');
+}
+
+/** What `gh api graphql` throws for a body it exits 1 on: the body on stdout and `gh: <error text>` on stderr. */
+export function graphqlFailure(body, args = ['api', 'graphql']) {
+  const said = serverError(body);
+  if (!said) throw new Error('gh exits 0 on this body: answer it with graphqlAnswer');
+  return ghExecError(args, { stdout: JSON.stringify(body), stderr: `gh: ${said}\n` });
+}
+
+/** A GraphQL answer as `gh api graphql` gives it: graphqlFailure's exit 1 when gh finds error text, else the JSON. */
+export function graphqlAnswer(body, args = ['api', 'graphql']) {
+  if (!serverError(body)) return JSON.stringify(body);
+  throw graphqlFailure(body, args);
 }

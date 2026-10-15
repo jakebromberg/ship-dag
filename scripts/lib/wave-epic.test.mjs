@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { planWaveEpic, openWaveEpic, closeWaveEpic, sweepWaveEpics, qualifyRef, WaveEpicRefusal } from './wave-epic.mjs';
 import { WAVE_LABEL } from './sub-issues.mjs';
 import { bodyEdges } from '../plan-waves.mjs';
-import { graphqlAnswer, issueViewNotFound, notFoundBody, restFailure } from './gh-fixture.mjs';
+import { graphqlAnswer, graphqlFailure, issueViewNotFound, notFoundBody, restFailure } from './gh-fixture.mjs';
 
 const R = 'o/r';
 const WAVE = [WAVE_LABEL];
@@ -46,7 +46,7 @@ function fakeGh(issues, { failMoves = [], failListings = [] } = {}) {
       const n = Number(field(argv, 'n'));
       if (field(argv, 'query').includes('subIssues')) {
         if (failListings.includes(n)) throw restFailure(502, `Bad Gateway listing #${n}`, argv);
-        if (!issues[n]) return graphqlAnswer(notFoundBody(n), argv);
+        if (!issues[n]) throw graphqlFailure(notFoundBody(n), argv);
         const kids = Object.keys(issues).map(Number).filter((k) => issues[k].parent === n);
         return JSON.stringify({ data: { repository: { issue: { subIssues: {
           nodes: kids.map(node), pageInfo: { hasNextPage: false, endCursor: null } } } } } });
@@ -309,10 +309,13 @@ for (const { name, waves, except, dryRun, failMoves, failListings, extra = {}, e
     }
     const gh = fakeGh(issues, { failMoves, failListings });
     const out = sweepWaveEpics({ repo: R, epic: 1, except, dryRun }, gh);
-    // An error's message is gh's whole failure, the full query included, so a row's `message` is a RegExp to match.
+    // An error's message is gh's whole failure, the full query included, so a row's `message` may be a RegExp.
     const byWave = (r) => ({ ...r, errors: r.errors.map((e) => e.wave) });
     assert.deepEqual(byWave(out), byWave(expect));
-    for (const [i, { message }] of expect.errors.entries()) assert.match(out.errors[i].message, message);
+    for (const [i, { message }] of expect.errors.entries()) {
+      if (message instanceof RegExp) assert.match(out.errors[i].message, message);
+      else assert.equal(out.errors[i].message, message);
+    }
     for (const [n, v] of Object.entries(after)) {
       if (typeof v === 'number') assert.equal(issues[n].parent, v, `#${n}'s parent`);
       else assert.equal(issues[n].state || 'OPEN', v, `#${n}'s state`);
