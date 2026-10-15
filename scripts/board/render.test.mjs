@@ -98,7 +98,7 @@ test('renderBoard names the command that rebuilds it and says nothing is committ
 test('renderBoard with nothing open says so', () => {
   const v = view();
   const tickets = v.tickets.filter((t) => t.status === 'shipped');
-  const graph = buildGraph([], []);
+  const graph = buildGraph([], [], []);
   const html = renderBoard({ ...v, tickets, graph, waves: new Map(), current: null });
   assert.match(html, /Nothing left open\./);
   assert.match(html, /No PR open right now\./);
@@ -107,7 +107,7 @@ test('renderBoard with nothing open says so', () => {
 test('renderBoard with tickets left but none orderable says so, not that nothing is open', () => {
   const v = view();
   const tickets = v.tickets.filter((t) => [6, 7].includes(Number(t.ref.split('#')[1])));
-  const graph = buildGraph([R(6), R(7)], [{ blockedBy: R(6), blocked: R(7) }, { blockedBy: R(7), blocked: R(6) }]);
+  const graph = buildGraph([R(6), R(7)], [{ blockedBy: R(6), blocked: R(7) }, { blockedBy: R(7), blocked: R(6) }], []);
   const html = renderBoard({ ...v, tickets, graph, waves: new Map(), current: null });
   assert.match(html, /Nothing can be ordered\./);
   assert.doesNotMatch(html, /Nothing left open/);
@@ -126,7 +126,7 @@ test('renderBoard counts one ticket and one step in the singular', () => {
 test('renderBoard sorts refs numerically within a repo: #9 before #10', () => {
   const v = view();
   const tickets = [ticket(10, 'flight'), ticket(9, 'flight'), ticket(20, 'blocked'), ticket(19, 'blocked')];
-  const graph = buildGraph([R(10), R(9), R(20), R(19)], [{ blockedBy: R(19), blocked: R(20) }, { blockedBy: R(20), blocked: R(19) }]);
+  const graph = buildGraph([R(10), R(9), R(20), R(19)], [{ blockedBy: R(19), blocked: R(20) }, { blockedBy: R(20), blocked: R(19) }], []);
   const html = renderBoard({ ...v, tickets, graph, waves: new Map(), current: null });
   const cards = html.slice(html.indexOf('In flight'), html.indexOf('Road ahead'));
   assert.ok(cards.indexOf('r#9<') < cards.indexOf('r#10<'), 'in-flight cards');
@@ -138,7 +138,7 @@ test('renderBoard labels each repo bar as the refs label it, so same-named repos
   const v = view();
   const repos = ['a/web', 'b/web'];
   const tickets = [{ ...ticket(1, 'ready'), ref: 'a/web#1' }, { ...ticket(2, 'ready'), ref: 'b/web#2' }];
-  const graph = buildGraph(tickets.map((t) => t.ref), []);
+  const graph = buildGraph(tickets.map((t) => t.ref), [], []);
   const html = renderBoard({ ...v, tickets, graph, waves: new Map(), current: null,
     shortRef: makeShortRef(repos), repoLabel: makeRepoLabel(repos) });
   assert.match(html, /<b>a\/web<\/b> · /);
