@@ -1067,6 +1067,17 @@ for (const [argv, want] of [
   test(`parseFetchArgs ${argv.join(' ')}`, () => assert.deepEqual(parseFetchArgs(argv), want));
 }
 
+// A typo must not silently drop a flag, and a flag must not be read as another flag's value.
+for (const [argv, want] of [
+  [['--repo', 'o/r', '--label', 'ship', '--member'], /unknown argument: --member$/],
+  [['--repo', 'o/r', '--label', 'ship', '--members=true'], /unknown argument: --members=true/],
+  [['--repo', 'o/r', '--epic', '7', '8'], /unknown argument: 8/],
+  [['--repo', 'o/r', '--epic', '--members'], /--epic requires a value/],
+  [['--repo', 'o/r', '--label'], /--label requires a value/],
+]) {
+  test(`parseFetchArgs rejects ${argv.join(' ')}`, () => assert.throws(() => parseFetchArgs(argv), want));
+}
+
 test('planWaves ignores members', () => {
   const spec = { repo: 'o/r', nodes: [5, 6], edges: [{ blocked: 6, blockedBy: 5 }], done: [] };
   assert.deepEqual(planWaves({ ...spec, members: ['o/r#3', 'o/r#5', 'o/r#6'] }), planWaves(spec));
