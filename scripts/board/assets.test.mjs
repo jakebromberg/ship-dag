@@ -87,6 +87,9 @@ function fakeDag({ ro = true, edges = [['a', 'b', 0], ['b', 'c', 1]] } = {}) {
       if (n.focusVisible === null) throw new SyntaxError(`'${sel}' is not a valid selector`);
       return n.focusVisible;
     };
+    n.closest = (sel) => (sel === '.node' ? n : null);
+    // The ticket link inside the node: focusable on its own, and focusin/focusout bubble from it.
+    n.link = { dataset: {}, closest: (sel) => (sel === '.node' ? n : null), matches: (sel) => n.matches(sel) };
     nodes[ref] = n;
   }
   let paths = [];
@@ -156,14 +159,14 @@ test('keyboard focus survives a hover elsewhere', () => {
   const page = fakeDag();
   page.run();
   page.doc.activeElement = page.nodes.c;
-  page.nodes.c.h.focus();
+  page.nodes.c.h.focusin();
   page.nodes.d.h.mouseenter();
   page.nodes.d.h.mouseleave();
   assert.ok(page.dag.classList.has('focusing'));
   assert.ok(!page.nodes.c.classList.has('dim'));
   assert.ok(page.nodes.d.classList.has('dim'));
   page.doc.activeElement = null;
-  page.nodes.c.h.blur();
+  page.nodes.c.h.focusout();
   assert.ok(!page.dag.classList.has('focusing'));
 });
 
@@ -176,12 +179,47 @@ for (const [how, focusVisible, sticks] of [['keyboard focus', true, true], ['a m
     page.nodes.c.h.mouseenter();
     page.nodes.c.focusVisible = focusVisible;
     page.doc.activeElement = page.nodes.c;
-    page.nodes.c.h.focus();
+    page.nodes.c.h.focusin();
     page.nodes.c.h.mouseleave();
     assert.equal(page.dag.classList.has('focusing'), sticks);
     assert.equal(page.nodes.d.classList.has('dim'), sticks);
   });
 }
+
+test('tabbing from a node to its own ticket link keeps the node\'s trace', () => {
+  const page = fakeDag();
+  page.run();
+  page.doc.activeElement = page.nodes.c;
+  page.nodes.c.h.focusin();
+  page.doc.activeElement = null; // during focusout, focus has left c but not yet reached the link
+  page.nodes.c.h.focusout();
+  page.doc.activeElement = page.nodes.c.link;
+  page.nodes.c.h.focusin(); // bubbled up from the link
+  page.nodes.d.h.mouseenter();
+  page.nodes.d.h.mouseleave();
+  assert.ok(page.dag.classList.has('focusing'));
+  assert.ok(!page.nodes.c.classList.has('dim'));
+  assert.ok(page.nodes.d.classList.has('dim'));
+});
+
+test('focus leaving a node restores the trace of the node under the pointer', () => {
+  const page = fakeDag();
+  page.run();
+  page.doc.activeElement = page.nodes.c;
+  page.nodes.c.h.focusin();
+  page.nodes.d.h.mouseenter();
+  page.doc.activeElement = null;
+  page.nodes.c.h.focusout();
+  assert.ok(page.dag.classList.has('focusing'));
+  assert.ok(!page.nodes.d.classList.has('dim'));
+  assert.ok(page.nodes.c.classList.has('dim'));
+});
+
+test('a lit edge eases into its accent stroke as the others fade', () => {
+  const rule = RULES.find((r) => r.sels.includes('.dag path[data-a]') && /transition:/.test(r.body));
+  assert.ok(rule, 'the edges carry a transition');
+  for (const prop of ['opacity', 'stroke-opacity']) assert.match(rule.body, new RegExp(`(:|,)${prop} `));
+});
 
 test('edges dim with path opacity, which reaches the arrowhead', () => {
   assert.match(PAGE_CSS, /\.dag\.focusing path\[data-a\]\{opacity:/);

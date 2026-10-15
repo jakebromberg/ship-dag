@@ -16,9 +16,12 @@ function focus(r){active=r;const n=N[r],keep=new Set([r,...(n.dataset.anc||'').s
  dag.classList.add('focusing');for(const k in N)N[k].classList.toggle('dim',!keep.has(k));
  svg.querySelectorAll('path[data-a]').forEach(p=>{const on=keep.has(p.dataset.a)&&keep.has(p.dataset.b);p.classList.toggle('lit',on);arrow(p,on)})}
 function clear(){active=null;dag.classList.remove('focusing');for(const k in N)N[k].classList.remove('dim');svg.querySelectorAll('path[data-a]').forEach(p=>{p.classList.remove('lit');arrow(p,false)})}
-// A click focuses a node too; only keyboard focus (:focus-visible, which shows the ring) keeps
-// its trace once the pointer leaves. Engines without :focus-visible keep any focused node's trace.
+// Once the pointer leaves, the trace falls back to the node still under the pointer, else to the
+// node holding keyboard focus (on itself or its ticket link), else clears. A click focuses a node
+// too; only keyboard focus (:focus-visible, which shows the ring) keeps its trace. Engines without
+// :focus-visible keep any focused node's trace.
+let hover=null;
 const kbd=f=>{try{return f.matches(':focus-visible')}catch(e){return true}};
-function restore(){const f=document.activeElement;f&&f.dataset&&N[f.dataset.ref]===f&&kbd(f)?focus(f.dataset.ref):clear()}
-for(const k in N){const n=N[k];n.addEventListener('mouseenter',()=>focus(k));n.addEventListener('mouseleave',restore);n.addEventListener('focus',()=>focus(k));n.addEventListener('blur',restore)}
+function restore(){if(hover)return focus(hover);const f=document.activeElement,n=f&&f.closest&&f.closest('.node');n&&N[n.dataset.ref]===n&&kbd(f)?focus(n.dataset.ref):clear()}
+for(const k in N){const n=N[k];n.addEventListener('mouseenter',()=>{hover=k;focus(k)});n.addEventListener('mouseleave',()=>{hover=null;restore()});n.addEventListener('focusin',()=>focus(k));n.addEventListener('focusout',restore)}
 draw();if(window.ResizeObserver)new ResizeObserver(draw).observe(dag);else addEventListener('resize',draw);if(document.fonts)document.fonts.ready.then(draw)})();
