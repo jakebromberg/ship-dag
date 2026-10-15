@@ -29,6 +29,9 @@ export const STATUSES = [
 const SHOWN = STATUSES.filter((s) => s.legend);
 const CHIP = Object.fromEntries(STATUSES.map((s) => [s.status, s.chip]));
 
+/** A status chip: its class and default label from STATUSES, the ticket's stage label if it has one. */
+const chip = (status, stage) => `<span class="chip c-${esc(status)}">${esc(stage || CHIP[status] || status)}</span>`;
+
 /** `1 ticket`, `2 tickets`. */
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
@@ -88,7 +91,7 @@ export function renderBoard(v) {
   const defaultSubtitle = v.current ? `wave ${v.current.id}` : '';
   h.push(`<h2>In flight <small>${esc(notes.wave || defaultSubtitle)}</small></h2>`);
   h.push(flight.length
-    ? `<div class="cards">${flight.map((t) => `<div class="card"><div class="top">${link(t.ref)}<span class="chip c-flight">${esc(t.stage || 'PR open')}</span></div>`
+    ? `<div class="cards">${flight.map((t) => `<div class="card"><div class="top">${link(t.ref)}${chip('flight', t.stage)}</div>`
       + `<div class="t">${esc(t.title)}</div><div>${prLinks(t, ['open', 'merged'])}</div>`
       + (t.note ? `<div class="note">${esc(t.note)}</div>` : '') + '</div>').join('')}</div>`
     : '<p class="sub">No PR open right now.</p>');
@@ -176,7 +179,7 @@ function roadAhead(v, byRef, link, gates) {
       const desc = g.descendants.get(r);
       h.push(`<div class="node s-${esc(st)}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${esc(r)}" `
         + `data-anc="${esc(sorted(g.ancestors.get(r)).join(' '))}" data-desc="${esc(sorted(desc).join(' '))}">`
-        + `<div class="top">${link(r)}<span class="chip c-${esc(st)}">${esc(t.stage || CHIP[st] || st)}</span></div>`
+        + `<div class="top">${link(r)}${chip(st, t.stage)}</div>`
         + `<div class="t" title="${esc(t.title)}">${esc(t.title)}</div>`
         + `<div class="wn${wave(r).now ? ' now' : ''}">${esc(waveText(r))}</div>`
         + (gates[r] ? `<div class="gate">Needs: ${esc(gates[r])}</div>` : '')
