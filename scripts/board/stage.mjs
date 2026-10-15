@@ -41,12 +41,15 @@ export function readFamily(dir, opts) {
  * Derive a ticket's stage, or null when the files say nothing about it. First
  * match wins:
  *  - `running`: **Building**, unless the report that owns the ref started at or
- *    after `waveTs` and finished at or after the status file was last written —
- *    the engine writes a report only when a run finishes, so that means the
- *    session that wrote `running` died and the ticket is **Stalled**. A report
- *    that finished before `running` was written is an earlier session's (the
- *    wave's first run, before a retry in a `-b` dir or in place), so it never
- *    stalls the ticket.
+ *    after `waveTs` and finished (else started) at or after the session that
+ *    wrote `running` launched — the engine writes a report only when a run
+ *    finishes, so that means the session died and the ticket is **Stalled**.
+ *    The launch is `metadata.startedAt`, which the engine writes at each launch
+ *    right after `running`; only when it is missing or unparseable is the status
+ *    file's mtime used, since a copy or restore that loses mtimes moves it. A
+ *    report that finished before the launch is an earlier session's (the wave's
+ *    first run, before a retry in a `-b` dir or in place), so it never stalls
+ *    the ticket.
  *  - `failed`/`interrupted` with no PR (`routeFailure`): **Stalled**.
  *  - no open PR: null.
  *  - an open PR and no review round of its PR: **In review**. A round stamped
@@ -65,7 +68,9 @@ export function readFamily(dir, opts) {
  * @param {object} a
  * @param {string} a.dir  the dir holding this ticket's latest wave (its `state/`)
  * @param {string} a.ref  composite ref
- * @param {number} a.waveTs  the start (ms since epoch) of the engine run whose session wrote `dir`'s status file
+ * @param {number} a.waveTs  the launch time (ms since epoch) of the ticket's latest wave: a report that started
+ *   earlier is an earlier wave's and never stalls the ticket. Retries within the wave are told apart by
+ *   `metadata.startedAt`, not by this.
  * @param {ReturnType<typeof readFamily>} a.family  the run family, as `readFamily` reads it
  * @param {string[]} a.blockOn  the run's parsed `--block-on`
  * @param {boolean} a.prOpen  whether the ticket has an open PR
@@ -80,7 +85,10 @@ export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen }) {
     if (!owner || owner.startedAt < waveTs) return 'Building';
     const finishedAt = Date.parse(owner.report.finishedAt ?? '');
     const reportEnd = Number.isFinite(finishedAt) ? finishedAt : owner.startedAt;
-    return reportEnd < mtimeMs(statusPathForRef(dir, ref)) ? 'Building' : 'Stalled';
+    // The engine writes metadata.startedAt at each launch, right after `running`; the mtime is only a fallback.
+    const launched = Date.parse(metadata.startedAt ?? '');
+    const sessionStart = Number.isFinite(launched) ? launched : mtimeMs(statusPathForRef(dir, ref));
+    return reportEnd < sessionStart ? 'Building' : 'Stalled';
   }
   if ((status === 'failed' || status === 'interrupted') && routeFailure({ status, prNumber: metadata.prNumber }) !== 'review-gate') {
     return 'Stalled';
