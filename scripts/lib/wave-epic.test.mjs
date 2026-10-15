@@ -251,6 +251,19 @@ for (const { name, issues, outcomes, error } of [
   });
 }
 
+test('closeWaveEpic refuses a --wave-epic gh cannot find (gh exit 1, NOT_FOUND body), before any write', () => {
+  const issues = { 1: { title: 'Epic' }, 10: { title: '#10', parent: 7 } };
+  const gh = fakeGh(issues);
+  assert.throws(() => closeWaveEpic({ repo: R, epic: 1, waveEpic: 7 }, gh),
+    (err) => err instanceof WaveEpicRefusal && /#7 in o\/r could not be read/.test(err.message));
+  assert.deepEqual(gh.writes(), []);
+});
+
+test('closeWaveEpic lets any other failure reading the wave propagate as itself', () => {
+  const err = restFailure(502, 'Bad Gateway');
+  assert.throws(() => closeWaveEpic({ repo: R, epic: 1, waveEpic: 7 }, () => { throw err; }), (e) => e === err);
+});
+
 // ---- sweepWaveEpics ---------------------------------------------------
 
 for (const { name, waves, except, dryRun, failMoves, failListings, extra = {}, expect, after, writes, note } of [
