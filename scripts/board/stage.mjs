@@ -50,15 +50,19 @@ export function readFamily(dir, opts) {
  *    report that finished before the launch is an earlier session's (the wave's
  *    first run, before a retry in a `-b` dir or in place), so it never stalls
  *    the ticket.
- *  - `failed`/`interrupted` with no PR (`routeFailure`): **Stalled**.
+ *  - `failed`/`interrupted` with no PR (`routeFailure`), or whose PR is not
+ *    open (the engine never clears a stale `metadata.prNumber`): **Stalled**.
  *  - no open PR: null.
  *  - an open PR and no review round of its PR: **In review**. A round stamped
  *    (`meta.reportId`) with a report whose row for the ref has a PR other than
- *    the ticket's current one (`metadata.prNumber`) reviewed that older PR, so it
- *    is skipped. Every other round counts: an unstamped one, one whose stamp
- *    names no report listing the ref, and one stamped with a report whose row has
- *    no PR (a point-E continuation's or a resource resume's rounds carry the
- *    death report's id, even when a later report owns the ref).
+ *    the open PR's number (`openPr`, else `metadata.prNumber` when the caller
+ *    has none) reviewed that older PR, so it is skipped. A round with no stamp,
+ *    or whose stamp names no report listing the ref, is still being written: it
+ *    counts only when its mtime is at or after the owning report's `startedAt`
+ *    (telemetry's `waveWindow` rule), and every one counts when no report owns
+ *    the ref. A round stamped with a report whose row has no PR counts (a
+ *    point-E continuation's or a resource resume's rounds carry the death
+ *    report's id, even when a later report owns the ref).
  *  - the newest such round, as `reviewRoundFiles` orders them, scored with
  *    `gateReview` under the run's `--block-on`: blocking → **Fixing**; otherwise
  *    **Reviewed** (never "ready to merge": the board can't run the gate's
@@ -74,9 +78,11 @@ export function readFamily(dir, opts) {
  * @param {ReturnType<typeof readFamily>} a.family  the run family, as `readFamily` reads it
  * @param {string[]} a.blockOn  the run's parsed `--block-on`
  * @param {boolean} a.prOpen  whether the ticket has an open PR
+ * @param {number} [a.openPr]  that open PR's number, which a stamped round's report row is compared against;
+ *   `metadata.prNumber` stands in when the caller has none
  * @returns {'Building'|'Stalled'|'In review'|'Fixing'|'Reviewed'|'Review unreadable'|null}
  */
-export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen }) {
+export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen, openPr }) {
   const status = (readText(statusPathForRef(dir, ref)) || 'pending').trim();
   const metadata = readJson(metadataPathForRef(dir, ref)) || {};
   const { ownerOf, rowOf } = family.ownership;
@@ -90,19 +96,22 @@ export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen }) {
     const sessionStart = Number.isFinite(launched) ? launched : mtimeMs(statusPathForRef(dir, ref));
     return reportEnd < sessionStart ? 'Building' : 'Stalled';
   }
-  if ((status === 'failed' || status === 'interrupted') && routeFailure({ status, prNumber: metadata.prNumber }) !== 'review-gate') {
+  if ((status === 'failed' || status === 'interrupted') && (!prOpen || routeFailure({ status, prNumber: metadata.prNumber }) !== 'review-gate')) {
     return 'Stalled';
   }
   if (!prOpen) return null;
-  const olderPr = (stamp) => {
-    const pr = stamp ? rowOf(stamp, ref)?.prNumber : null;
-    return isPr(pr) && pr !== metadata.prNumber;
+  const current = openPr ?? metadata.prNumber;
+  const since = ownerOf(ref)?.startedAt ?? -Infinity;
+  const notThisPr = ({ mtimeMs }, stamp) => {
+    const row = stamp ? rowOf(stamp, ref) : null;
+    if (!row) return !(mtimeMs >= since);
+    return isPr(row.prNumber) && row.prNumber !== current;
   };
   // The newest round is the PR's current state; ingestion, not the board, takes the worst.
   const latest = reviewRoundFiles(family.dirs.map((d) => join(d, 'reviews')), ref)
-    .map(({ path }) => ({ path, review: readJson(path) }))
-    .findLast(({ review }) => !olderPr(review?.meta?.reportId));
-  return latest ? scoreReview(latest, blockOn) : 'In review';
+    .map((file) => ({ ...file, review: readJson(file.path) }))
+    .findLast((file) => !notThisPr(file, file.review?.meta?.reportId));
+  return latest ? scoreReview({ path: latest.path, review: latest.review }, blockOn) : 'In review';
 }
 
 function scoreReview({ path, review }, blockOn) {
