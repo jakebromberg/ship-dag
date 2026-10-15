@@ -31,16 +31,23 @@ test('the road-ahead script parses', () => {
 
 // A chip shows a status in the colours its legend swatch and node border use:
 // waiting on other tickets is grey, waiting on you is red.
-for (const [status, token] of [
+const CHIP_TOKENS = [
   ['shipped', 'ship'], ['flight', 'flight'], ['ready', 'ready'], ['you', 'block'], ['blocked', 'queued'], ['dropped', 'queued'],
-]) {
+];
+const RULES = [...PAGE_CSS.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, sel, body]) => ({ sels: sel.split(',').map((s) => s.trim()), body }));
+for (const [status, token] of CHIP_TOKENS) {
   test(`.c-${status} is coloured --${token}`, () => {
-    const rule = [...PAGE_CSS.matchAll(/([^{}]+)\{([^}]*)\}/g)]
-      .find(([, sel]) => sel.split(',').some((s) => s.trim() === `.c-${status}`));
-    assert.ok(rule, `.c-${status} has a rule`);
-    assert.equal(rule[2], `color:var(--${token});background:var(--${token}-bg)`);
+    // Every rule naming the class, not just the first: a later one would win in the browser.
+    const colouring = RULES.filter((r) => r.sels.includes(`.c-${status}`) && /(^|;)\s*(color|background)\s*:/.test(r.body));
+    assert.equal(colouring.length, 1, `exactly one rule colours .c-${status}`);
+    assert.equal(colouring[0].body, `color:var(--${token});background:var(--${token}-bg)`);
   });
 }
+
+test('every chip class the stylesheet styles is a status', () => {
+  const chips = new Set(RULES.flatMap((r) => r.sels).filter((s) => /^\.c-[\w-]+$/.test(s)));
+  assert.deepEqual([...chips].sort(), CHIP_TOKENS.map(([status]) => `.c-${status}`).sort());
+});
 
 // The script's view of the page: just what draw() reads and writes.
 function fakePage({ clientWidth, clientHeight, scrollWidth, scrollHeight }) {
