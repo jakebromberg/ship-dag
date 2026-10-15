@@ -50,6 +50,7 @@ import { coDistPath } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { SubIssuesUnavailable, listSubIssues, hasWaveLabel, hasSubIssues, subIssueRepo } from './lib/sub-issues.mjs';
 import { realRunGh } from './lib/gh.mjs';
+import { stringOption } from './lib/cli-args.mjs';
 
 const LIST_LIMIT = 1000; // gh issue list cap; we warn if we hit it rather than truncate silently.
 
@@ -648,14 +649,20 @@ function listLabel(repo, label, state, runGh, warn) {
   return list;
 }
 
-/** `fetch`'s flags: `--repo`, `--epic N` or `--label L`, and `--members` to list closed leaves too. */
+const FETCH_VALUE_FLAGS = ['--repo', '--epic', '--label'];
+
+/**
+ * `fetch`'s flags: `--repo`, `--epic N` or `--label L`, and `--members` to list closed leaves too.
+ * Throws on an unknown argument (so a typo such as `--member` is an error, not a silently
+ * dropped flag) and on a value flag whose value is missing or is itself a `--flag`.
+ */
 export function parseFetchArgs(argv) {
   const opts = {};
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === '--repo') opts.repo = argv[++i];
-    else if (argv[i] === '--epic') opts.epic = argv[++i];
-    else if (argv[i] === '--label') opts.label = argv[++i];
-    else if (argv[i] === '--members') opts.members = true;
+    const flag = argv[i];
+    if (flag === '--members') opts.members = true;
+    else if (FETCH_VALUE_FLAGS.includes(flag)) opts[flag.slice(2)] = stringOption([flag, argv[++i]], flag);
+    else throw new Error(`unknown argument: ${flag}`);
   }
   return opts;
 }
@@ -687,9 +694,16 @@ function main(argv) {
     return;
   }
   if (cmd === 'fetch') {
-    const opts = parseFetchArgs(rest);
+    const usage = 'usage: fetch --repo owner/repo (--epic N | --label L) [--members]\n';
+    let opts;
+    try {
+      opts = parseFetchArgs(rest);
+    } catch (err) {
+      process.stderr.write(`plan-waves: ${err.message}\n${usage}`);
+      process.exit(2);
+    }
     if (!opts.repo || (!opts.epic && !opts.label)) {
-      process.stderr.write('usage: fetch --repo owner/repo (--epic N | --label L) [--members]\n');
+      process.stderr.write(usage);
       process.exit(2);
     }
     process.stdout.write(JSON.stringify(fetchSpec(opts.repo, opts), null, 2) + '\n');
