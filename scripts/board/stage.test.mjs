@@ -86,6 +86,26 @@ for (const [name, files, over, want] of [
       rounds: { 'STEM.json': round([finding('correctness')], 'R1') } }, {}, 'Fixing'],
   ['a round stamped with no report of the run is read as an unstamped one',
     { status: 'succeeded', metadata: PR, reports: { 'R1.json': report(T0, PR) }, rounds: { 'STEM.json': round([finding('correctness')], 'no-such-report') } }, {}, 'Fixing'],
+  // An unstamped round (or one stamped with no report of the run) counts only from the owning report's startedAt.
+  ['an unstamped round older than the owner\'s startedAt is ignored, so the newer .json decides',
+    { status: 'succeeded', metadata: PR, reports: { 'R1.json': report(T0, PR) },
+      rounds: { 'STEM.json': CLEAN, 'STEM.r3.json': stamped(EARLIER, BLOCKING) } }, {}, 'Reviewed'],
+  ['an unstamped round older than the owner\'s startedAt alone leaves the ticket In review',
+    { status: 'succeeded', metadata: PR, reports: { 'R1.json': report(T0, PR) }, rounds: { 'STEM.json': stamped(EARLIER, BLOCKING) } }, {}, 'In review'],
+  ['a round stamped with no report of the run is windowed like an unstamped one',
+    { status: 'succeeded', metadata: PR, reports: { 'R1.json': report(T0, PR) }, rounds: { 'STEM.json': stamped(EARLIER, round([finding('correctness')], 'no-such-report')) } }, {}, 'In review'],
+  ['with no owning report every unstamped round counts',
+    { status: 'succeeded', metadata: PR, rounds: { 'STEM.json': stamped(EARLIER, BLOCKING) } }, {}, 'Fixing'],
+  // A dead ticket whose PR is no longer open is Stalled, whatever metadata.prNumber still says.
+  ['failed with a PR that is no longer open is Stalled', { status: 'failed', metadata: PR }, { prOpen: false }, 'Stalled'],
+  ['interrupted with a PR that is no longer open is Stalled', { status: 'interrupted', metadata: PR }, { prOpen: false }, 'Stalled'],
+  // The open PR's number, when the caller has it, replaces metadata.prNumber in the stamped-round comparison.
+  ['with no metadata.prNumber, a round stamped with a report whose row has the open PR counts',
+    { status: 'succeeded', reports: { 'R1.json': report(T0, PR) }, rounds: { 'STEM.json': round([finding('correctness')], 'R1') } }, { openPr: 99 }, 'Fixing'],
+  ['with no metadata.prNumber, a round stamped with a report whose row has another PR is skipped',
+    { status: 'succeeded', reports: { 'R1.json': report(T0, { prNumber: 50 }) }, rounds: { 'STEM.json': round([finding('correctness')], 'R1') } }, { openPr: 99 }, 'In review'],
+  ['the open PR\'s number wins over a stale metadata.prNumber',
+    { status: 'succeeded', metadata: { prNumber: 50 }, reports: { 'R1.json': report(T0, PR) }, rounds: { 'STEM.json': round([finding('correctness')], 'R1') } }, { openPr: 99 }, 'Fixing'],
 ]) {
   test(`deriveStage: ${name}`, () => {
     assert.equal(derive(family({ [RUN]: files }), over), want);
