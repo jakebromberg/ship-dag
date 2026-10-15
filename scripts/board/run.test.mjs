@@ -91,6 +91,21 @@ test('resolveRun({runId}) finds the run under $XDG_STATE_HOME/ship-dag/engine, a
   assert.deepEqual(ids(runWaves(run)), ['1', '2']);
 });
 
+test('a ref set re-emitted under a new wave labels each config with its own entry, not the later one', () => {
+  // emit-config writes the config, then appends its entry, so an entry's emittedAt trails its config's mtime.
+  const after = (n) => ({ emittedAt: new Date(Date.parse(at(n)) + 500).toISOString() });
+  const { dirs } = fixture({
+    [RUN]: {
+      sidecar: [{ ...entry([3], '3'), ...after(1) }, { ...entry([3], '3b'), ...after(2) }],
+      configs: {
+        'config-a.json': stamped(at(1), config([3])),
+        'config-b.json': stamped(at(2), config([3])),
+      },
+    },
+  });
+  assert.deepEqual(ids(runWaves({ runId: RUN, runDir: dirs[RUN] })), ['3', '3b']);
+});
+
 // Each row: the family's dirs (name → configs, sidecar), the dir --state-dir names, and the ids expected oldest first.
 const precedence = [
   ['the sidecar\'s wave beats a -w suffix', { [`${RUN}-w2`]: { sidecar: [entry([1], 5)], configs: { 'config.json': config([1]) } } }, `${RUN}-w2`, ['5']],

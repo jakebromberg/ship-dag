@@ -50,9 +50,15 @@ export function runWaves({ runId, runDir }, { warn } = {}) {
   const isBase = (dir) => runIdFromConfigName(basename(dir))?.toLowerCase() === family;
   const found = runFamilyStateDirs(runDir, { runId, warn }).flatMap((dir) => {
     const sidecar = readSidecar(join(dir, SIDECAR_NAME), { warn });
-    return configDirs(dir).flatMap(waveConfigs).filter((w) => typeof w.config.configDir === 'string').map((w) => {
-      const refs = w.config.issues.map((i) => formatRef(i?.repo, i?.number));
-      return { ...w, dir, refs, sidecarWave: sidecar.findLast((e) => waveContextMatches(e, refs))?.wave };
+    const waves = configDirs(dir).flatMap(waveConfigs).filter((w) => typeof w.config.configDir === 'string')
+      .map((w) => {
+        const refs = w.config.issues.map((i) => formatRef(i?.repo, i?.number));
+        return { ...w, dir, refs, refSet: [...new Set(refs)].sort().join(' ') };
+      });
+    return waves.map(({ refSet, ...w }) => {
+      // An entry emitted at or after the next config of the same ref set is that config's, not this one's.
+      const next = Math.min(...waves.filter((o) => o.refSet === refSet && o.mtimeMs > w.mtimeMs).map((o) => o.mtimeMs));
+      return { ...w, sidecarWave: sidecar.findLast((e) => waveContextMatches(e, w.refs) && !(Date.parse(e.emittedAt) >= next))?.wave };
     });
   });
   found.sort((a, b) => a.mtimeMs - b.mtimeMs || a.configFile.localeCompare(b.configFile));
