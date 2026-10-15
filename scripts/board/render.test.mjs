@@ -132,6 +132,14 @@ test('renderBoard counts unorderable tickets in the road-ahead summary', () => {
   assert.match(html, /<b>4 tickets left: 2 in 1 step, 2 can't be ordered\.<\/b>/);
 });
 
+test('renderBoard labels an in-flight card with no stage by its STATUSES chip', () => {
+  const v = view();
+  const tickets = [ticket(9, 'flight')];
+  const html = renderBoard({ ...v, tickets, graph: buildGraph([R(9)], [], []), waves: new Map(), current: null });
+  const { chip } = STATUSES.find((s) => s.status === 'flight');
+  assert.ok(html.slice(html.indexOf('In flight'), html.indexOf('Road ahead')).includes(`<span class="chip c-flight">${chip}</span>`));
+});
+
 test('renderBoard sorts refs numerically within a repo: #9 before #10', () => {
   const v = view();
   const tickets = [ticket(10, 'flight'), ticket(9, 'flight'), ticket(20, 'blocked'), ticket(19, 'blocked')];
