@@ -2,7 +2,7 @@
 // engine fixture; sidecars are written by waveSidecar from the config buildConfig makes, never by hand.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveRun, runWaves, readNotes, readBoard, readRetros } from './run.mjs';
@@ -92,17 +92,18 @@ test('resolveRun({runId}) finds the run under $XDG_STATE_HOME/ship-dag/engine, a
 });
 
 test('a ref set re-emitted under a new wave labels each config with its own entry, not the later one', () => {
-  // Emit as emit-config does: write the config, then stamp and append its entry (emittedAt at millisecond
-  // precision, so it can read earlier than its own config's fractional mtime).
+  // emit-config writes a config and then stamps its entry, but emittedAt has only millisecond precision, so an
+  // entry reads as the floor of its own config's fractional mtime. Set exactly that, rather than racing the clock:
+  // a file's mtime comes from a coarser clock than Date.now() on some systems.
   const { dirs } = fixture({ [RUN]: {} });
   const dir = dirs[RUN];
-  const lines = [];
-  for (const [name, wave] of [['config-a.json', '3'], ['config-b.json', '3b']]) {
-    const since = Date.now();
-    while (Date.now() < since + 2); // configs a real emit apart are at least a millisecond apart
+  const T = Date.parse(at(1));
+  const emits = [['config-a.json', '3', T], ['config-b.json', '3b', T + 10]];
+  for (const [name, , ms] of emits) {
     writeFileSync(join(dir, name), JSON.stringify(config([3])));
-    lines.push(JSON.stringify(entry([3], wave)));
+    utimesSync(join(dir, name), (ms + 0.4) / 1000, (ms + 0.4) / 1000);
   }
+  const lines = emits.map(([, wave, ms]) => JSON.stringify({ ...entry([3], wave), emittedAt: new Date(ms).toISOString() }));
   writeFileSync(join(dir, SIDECAR_NAME), lines.join('\n') + '\n');
   assert.deepEqual(ids(runWaves({ runId: RUN, runDir: dir })), ['3', '3b']);
 });
