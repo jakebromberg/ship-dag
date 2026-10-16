@@ -89,7 +89,7 @@ export function runWaves({ runId, runDir }, { warn } = {}) {
 }
 
 /** Parse `path` as JSON: null when absent, a thrown error naming the path when it cannot be read or is malformed. */
-function readJson(path) {
+export function readJson(path) {
   let text;
   try { text = readFileSync(path, 'utf-8'); } catch (err) {
     if (err.code === 'ENOENT') return null;
