@@ -217,3 +217,15 @@ test('runBaseDir falls back to the named dir when the family has no base dir, or
   const absent = join(base, 'nobody');
   assert.equal(runBaseDir({ runId: 'nobody', runDir: absent }), absent);
 });
+
+test('runWaves and runBaseDir read the dirs they are given instead of listing the family again', () => {
+  const { dirs } = fixture({
+    [`ship-dag/engine/${RUN}`]: { configs: { 'config.json': stamped(at(1), config([1])) } },
+    [`ship-dag/engine/${RUN}-b`]: { configs: { 'config.json': stamped(at(2), config([2])) } },
+  });
+  const named = { runId: RUN, runDir: dirs[`ship-dag/engine/${RUN}-b`] };
+  const only = [named.runDir];
+  assert.deepEqual(runWaves(named, { dirs: only }).map((w) => w.dir), only);
+  assert.equal(runBaseDir(named, { dirs: only }), named.runDir);
+  assert.equal(runBaseDir(named), dirs[`ship-dag/engine/${RUN}`]);
+});
