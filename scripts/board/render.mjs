@@ -2,16 +2,14 @@
 //
 // Pure: the caller hands in every fact (tickets, the graph from model.mjs, the
 // projected waves, the notes) and the current time, and gets a page back. Every
-// interpolated string goes through `esc`, notes included; every time is Pacific
+// interpolated string is escaped by the `html` template, notes included; every time is Pacific
 // with its zone label. The stylesheet and road-ahead script are inlined from
 // assets.mjs so the page needs nothing beside it.
 
 import { orderSteps, formatPacific, compareRefs, leadingWaveNumber } from './model.mjs';
 import { parseRef } from '../lib/ref.mjs';
 import { PAGE_CSS, ROAD_JS } from './assets.mjs';
-
-const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
+import { html, raw, list } from './html.mjs';
 
 /**
  * Every status `classify` returns, in legend order: the CSS token its bar
@@ -30,7 +28,7 @@ const SHOWN = STATUSES.filter((s) => s.legend);
 const CHIP = Object.fromEntries(STATUSES.map((s) => [s.status, s.chip]));
 
 /** A status chip: its class and default label from STATUSES, the ticket's stage label if it has one. */
-const chip = (status, stage) => `<span class="chip c-${esc(status)}">${esc(stage || CHIP[status] || status)}</span>`;
+const chip = (status, stage) => html`<span class="chip c-${status}">${stage || CHIP[status] || status}</span>`;
 
 /** `1 ticket`, `2 tickets`. */
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -61,66 +59,61 @@ export function waveSpan(labels) {
  */
 export function renderBoard(v) {
   const byRef = new Map(v.tickets.map((t) => [t.ref, t]));
-  const link = (ref, label) => `<a href="${esc(byRef.get(ref)?.url || '')}">${esc(label || v.shortRef(ref))}</a>`;
+  const link = (ref, label) => html`<a href="${byRef.get(ref)?.url || ''}">${label || v.shortRef(ref)}</a>`;
   const prLinks = (t, only) => t.prs.filter((p) => only.includes(p.state))
-    .map((p) => `<a class="pr pr-${esc(p.state)}" href="${esc(p.url)}" title="${esc(p.state)}">#${esc(p.number)}</a>`).join(' ');
+    .map((p) => html`<a class="pr pr-${p.state}" href="${p.url}" title="${p.state}">#${p.number}</a>`);
   const counts = {};
   for (const t of v.tickets) counts[t.status] = (counts[t.status] || 0) + 1;
   const total = v.tickets.length - (counts.dropped || 0);
   const notes = v.notes || {};
 
-  const h = [`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`
-    + `<meta http-equiv="refresh" content="120"><title>${esc(v.title)}</title><style>${PAGE_CSS}</style></head><body><main>`];
-  h.push(`<h1>${esc(v.title)}</h1>`
-    + (v.scope ? `<p class="sub"><a href="${esc(v.scope.url)}">${esc(v.scope.label)}</a> — ${esc(v.scope.title)}</p>` : '')
-    + `<p class="meta">Updated ${esc(formatPacific(v.now, 'long'))} · run ${esc(v.runId)} · reloads every 2 minutes</p>`);
-  h.push(`<div class="tiles">${SHOWN.map(({ status, tile }) => {
+  const h = [html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`
+    + html`<meta http-equiv="refresh" content="120"><title>${v.title}</title><style>${raw(PAGE_CSS)}</style></head><body><main>`];
+  h.push(html`<h1>${v.title}</h1>${v.scope && html`<p class="sub"><a href="${v.scope.url}">${v.scope.label}</a> — ${v.scope.title}</p>`}`
+    + html`<p class="meta">Updated ${formatPacific(v.now, 'long')} · run ${v.runId} · reloads every 2 minutes</p>`);
+  h.push(html`<div class="tiles">${SHOWN.map(({ status, tile }) => {
     const n = status === 'shipped' ? `${counts.shipped || 0}/${total}` : counts[status] || 0;
-    return `<div class="tile"><b>${esc(n)}</b><span>${tile}</span></div>`;
-  }).join('')}</div>`);
+    return html`<div class="tile"><b>${n}</b><span>${tile}</span></div>`;
+  })}</div>`);
   h.push(bar(counts, total));
-  h.push(`<div class="legend">${SHOWN.map(({ token, legend }) => `<span><i style="background:var(--${token})"></i>${legend}</span>`).join('')}</div>`);
+  h.push(html`<div class="legend">${SHOWN.map(({ token, legend }) => html`<span><i style="background:var(--${token})"></i>${legend}</span>`)}</div>`);
   h.push(repoBars(v.tickets, v.repoLabel));
 
   if (notes.callouts?.length) {
-    h.push(`<h2>Needs attention</h2><div class="callouts">${notes.callouts.map((c) => `<div class="callout${c.owner === 'you' ? ' you' : ''}">`
-      + `<b>${esc(c.title)}</b>${esc(c.text)}</div>`).join('')}</div>`);
+    h.push(html`<h2>Needs attention</h2><div class="callouts">${notes.callouts.map((c) => html`<div class="callout${c.owner === 'you' ? ' you' : ''}"><b>${c.title}</b>${c.text}</div>`)}</div>`);
   }
 
   const flight = v.tickets.filter((t) => t.status === 'flight').sort((a, b) => compareRefs(a.ref, b.ref));
   const defaultSubtitle = v.current ? `wave ${v.current.id}` : '';
-  h.push(`<h2>In flight <small>${esc(notes.wave || defaultSubtitle)}</small></h2>`);
+  h.push(html`<h2>In flight <small>${notes.wave || defaultSubtitle}</small></h2>`);
   h.push(flight.length
-    ? `<div class="cards">${flight.map((t) => `<div class="card"><div class="top">${link(t.ref)}${chip('flight', t.stage)}</div>`
-      + `<div class="t">${esc(t.title)}</div><div>${prLinks(t, ['open', 'merged'])}</div>`
-      + (t.note ? `<div class="note">${esc(t.note)}</div>` : '') + '</div>').join('')}</div>`
-    : '<p class="sub">No PR open right now.</p>');
+    ? html`<div class="cards">${flight.map((t) => html`<div class="card"><div class="top">${link(t.ref)}${chip('flight', t.stage)}</div><div class="t">${t.title}</div><div>${list(prLinks(t, ['open', 'merged']), ' ')}</div>${t.note && html`<div class="note">${t.note}</div>`}</div>`)}</div>`
+    : html`<p class="sub">No PR open right now.</p>`);
   const just = v.current ? v.tickets.filter((t) => t.status === 'shipped' && v.current.refs.has(t.ref)) : [];
   if (just.length) {
-    h.push(`<p class="meta gap">Shipped this wave: ${just.map((t) => `${link(t.ref)} ${prLinks(t, ['merged'])}`).join(', ')}</p>`);
+    h.push(html`<p class="meta gap">Shipped this wave: ${list(just.map((t) => html`${link(t.ref)} ${list(prLinks(t, ['merged']), ' ')}`), ', ')}</p>`);
   }
 
-  h.push('<h2>Road ahead <small>every open ticket, in dependency order</small></h2>');
+  h.push(html`<h2>Road ahead <small>every open ticket, in dependency order</small></h2>`);
   h.push(roadAhead(v, byRef, link, notes.gates || {}));
 
   const shipped = v.tickets.filter((t) => t.status === 'shipped').sort((a, b) => (b.closedAt || '').localeCompare(a.closedAt || ''));
-  h.push(`<h2>Shipped <small>${plural(shipped.length, 'ticket')}, newest first</small></h2><details><summary>Show all ${shipped.length}</summary>`
-    + '<div class="tw"><table><thead><tr><th>Ticket</th><th>Title</th><th>PR</th><th>Wave</th><th>Closed</th></tr></thead><tbody>'
-    + shipped.map((t) => `<tr><td class="n">${link(t.ref)}</td><td>${esc(t.title)}</td><td class="n">${prLinks(t, ['merged']) || '<span class="meta">—</span>'}</td>`
-      + `<td class="n">${esc(t.shippedWave || '')}</td><td class="n">${esc(formatPacific(t.closedAt))}</td></tr>`).join('')
-    + '</tbody></table></div></details>');
+  h.push(html`<h2>Shipped <small>${plural(shipped.length, 'ticket')}, newest first</small></h2><details><summary>Show all ${shipped.length}</summary>`
+    + html`<div class="tw"><table><thead><tr><th>Ticket</th><th>Title</th><th>PR</th><th>Wave</th><th>Closed</th></tr></thead><tbody>${shipped.map((t) => {
+      const merged = prLinks(t, ['merged']);
+      return html`<tr><td class="n">${link(t.ref)}</td><td>${t.title}</td><td class="n">${merged.length ? list(merged, ' ') : html`<span class="meta">—</span>`}</td><td class="n">${t.shippedWave || ''}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`;
+    })}</tbody></table></div></details>`);
   const dropped = v.tickets.filter((t) => t.status === 'dropped');
   if (dropped.length) {
-    h.push(`<details><summary>Closed as not planned (${dropped.length})</summary><div class="items">${dropped.map((t) => `<span class="item">${link(t.ref)} <span class="x">${esc(t.title)}</span></span>`).join('')}</div></details>`);
+    h.push(html`<details><summary>Closed as not planned (${dropped.length})</summary><div class="items">${dropped.map((t) => html`<span class="item">${link(t.ref)} <span class="x">${t.title}</span></span>`)}</div></details>`);
   }
-  h.push(`<footer>Times are Pacific. Rebuild with <code>${esc(v.rebuild)}</code>. Built from GitHub, the run's engine state, its review files and telemetry, and its board notes. Local file, not committed.</footer></main>`
-    + `<script>${ROAD_JS}</script></body></html>`);
+  h.push(html`<footer>Times are Pacific. Rebuild with <code>${v.rebuild}</code>. Built from GitHub, the run's engine state, its review files and telemetry, and its board notes. Local file, not committed.</footer></main><script>${raw(ROAD_JS)}</script></body></html>`);
   return h.join('\n');
 }
 
 function bar(counts, total) {
-  const segs = SHOWN.filter(({ status }) => counts[status]).map(({ status, token }) => `<i style="flex:${counts[status]};background:var(--${token})"></i>`).join('');
-  return `<div class="bar" role="img" aria-label="${counts.shipped || 0} of ${total} shipped">${segs}</div>`;
+  const segs = SHOWN.filter(({ status }) => counts[status]).map(({ status, token }) => html`<i style="flex:${counts[status]};background:var(--${token})"></i>`);
+  return html`<div class="bar" role="img" aria-label="${counts.shipped || 0} of ${total} shipped">${segs}</div>`;
 }
 
 function repoBars(tickets, repoLabel) {
@@ -133,8 +126,7 @@ function repoBars(tickets, repoLabel) {
     repos.set(repo, c);
   }
   const size = (c) => Object.values(c).reduce((a, b) => a + b, 0);
-  return `<div class="repos">${[...repos].sort((a, b) => size(b[1]) - size(a[1])).map(([repo, c]) => `<div class="repo"><b>${esc(repoLabel(repo))}</b> · `
-    + `${c.shipped || 0}/${size(c)} shipped${bar(c, size(c))}</div>`).join('')}</div>`;
+  return html`<div class="repos">${[...repos].sort((a, b) => size(b[1]) - size(a[1])).map(([repo, c]) => html`<div class="repo"><b>${repoLabel(repo)}</b> · ${c.shipped || 0}/${size(c)} shipped${bar(c, size(c))}</div>`)}</div>`;
 }
 
 function roadAhead(v, byRef, link, gates) {
@@ -142,10 +134,9 @@ function roadAhead(v, byRef, link, gates) {
   const h = [];
   const sorted = (refs) => [...refs].sort(compareRefs);
   if (g.unorderable.size) {
-    h.push(`<div class="callouts"><div class="callout you"><b>Can't be ordered</b>These tickets are in a dependency cycle, or wait behind one or behind an open ticket outside this board, so no step can start them: `
-      + `${sorted(g.unorderable).map((r) => link(r)).join(', ')}.</div></div>`);
+    h.push(html`<div class="callouts"><div class="callout you"><b>Can't be ordered</b>These tickets are in a dependency cycle, or wait behind one or behind an open ticket outside this board, so no step can start them: ${list(sorted(g.unorderable).map((r) => link(r)), ', ')}.</div></div>`);
   }
-  if (!g.steps.length) return [...h, `<p class="sub">${g.unorderable.size ? 'Nothing can be ordered.' : 'Nothing left open.'}</p>`].join('\n');
+  if (!g.steps.length) return [...h, html`<p class="sub">${g.unorderable.size ? 'Nothing can be ordered.' : 'Nothing left open.'}</p>`].join('\n');
   const rows = orderSteps(g);
   const chain = new Set(g.chain);
   const chainEdges = new Set(g.chain.slice(1).map((r, i) => `${g.chain[i]}>${r}`));
@@ -160,31 +151,22 @@ function roadAhead(v, byRef, link, gates) {
   // Every open ticket, the unorderable ones too, so the count agrees with the callout above.
   const count = g.steps.flat().length;
   const left = g.unorderable.size
-    ? `${plural(count + g.unorderable.size, 'ticket')} left: ${count} in ${plural(rows.length, 'step')}, ${g.unorderable.size} can't be ordered.`
-    : `${plural(count, 'ticket')} left, in ${plural(rows.length, 'step')}.`;
-  h.push(`<p class="road-sum"><b>${left}</b> A step is the earliest a ticket can start: once every ticket it points up to has shipped. Tickets in the same step can be built at the same time.</p>`);
-  h.push(`<p class="howto"><b>Waves</b> continue the run's count.${v.current ? ` Wave ${esc(v.current.id)} is building now;` : ''} the later numbers are a projection that assumes each wave ships before the next starts. `
-    + 'A ticket moves to a later wave if review sends it back, or if a wave launches without it. A ticket of yours, such as a release you cut, takes no wave: what waits on it goes in the next wave after you finish it.</p>');
-  h.push(`<div class="path"><span class="meta tight">Longest chain:</span>${g.chain.map((r) => link(r)).join('<span class="arr">→</span>')}`
-    + `<span class="meta tight">(${plural(g.chain.length, 'ticket')}, one after another)</span></div>`);
+    ? html`${plural(count + g.unorderable.size, 'ticket')} left: ${count} in ${plural(rows.length, 'step')}, ${g.unorderable.size} can't be ordered.`
+    : html`${plural(count, 'ticket')} left, in ${plural(rows.length, 'step')}.`;
+  h.push(html`<p class="road-sum"><b>${left}</b> A step is the earliest a ticket can start: once every ticket it points up to has shipped. Tickets in the same step can be built at the same time.</p>`);
+  h.push(html`<p class="howto"><b>Waves</b> continue the run's count.${v.current && html` Wave ${v.current.id} is building now;`} the later numbers are a projection that assumes each wave ships before the next starts. A ticket moves to a later wave if review sends it back, or if a wave launches without it. A ticket of yours, such as a release you cut, takes no wave: what waits on it goes in the next wave after you finish it.</p>`);
+  h.push(html`<div class="path"><span class="meta tight">Longest chain:</span>${list(g.chain.map((r) => link(r)), '<span class="arr">→</span>')}<span class="meta tight">(${plural(g.chain.length, 'ticket')}, one after another)</span></div>`);
   h.push('<p class="howto">Lines show direct dependencies only; one implied by a longer chain is left out. The blue chain is the longest one: nothing finishes before it does. Hover or tab to a ticket to trace everything it waits on and everything waiting on it.</p>');
   const edges = rows.flat().flatMap((r) => sorted(g.direct.get(r)).map((p) => [p, r, chainEdges.has(`${p}>${r}`)]));
-  h.push(`<div class="dag" id="dag" data-edges="${esc(JSON.stringify(edges))}"><svg aria-hidden="true"></svg>`);
+  h.push(html`<div class="dag" id="dag" data-edges="${JSON.stringify(edges)}"><svg aria-hidden="true"></svg>`);
   rows.forEach((row, i) => {
-    h.push(`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${esc(rowWaves(row))}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}</div><div class="ns">`);
+    h.push(html`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${rowWaves(row)}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}</div><div class="ns">`);
     for (const r of row) {
       const t = byRef.get(r) || { title: '' };
       const st = status(r);
       const after = [...g.direct.get(r)].sort((a, b) => g.stepOf.get(a) - g.stepOf.get(b) || compareRefs(a, b)).map((p) => v.shortRef(p)).join(', ');
       const desc = g.descendants.get(r);
-      h.push(`<div class="node s-${esc(st)}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${esc(r)}" `
-        + `data-anc="${esc(sorted(g.ancestors.get(r)).join(' '))}" data-desc="${esc(sorted(desc).join(' '))}">`
-        + `<div class="top">${link(r)}${chip(st, t.stage)}</div>`
-        + `<div class="t" title="${esc(t.title)}">${esc(t.title)}</div>`
-        + `<div class="wn${wave(r).now ? ' now' : ''}">${esc(waveText(r))}</div>`
-        + (gates[r] ? `<div class="gate">Needs: ${esc(gates[r])}</div>` : '')
-        + `<div class="dep">${after ? `after ${esc(after)}` : 'nothing open before it'}</div>`
-        + `<div class="dep">${desc.size ? `unblocks ${desc.size}` : 'nothing waits on it'}</div></div>`);
+      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${r}"><div class="top">${link(r)}${chip(st, t.stage)}</div><div class="t" title="${t.title}">${t.title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${desc.size ? `unblocks ${desc.size}` : 'nothing waits on it'}</div></div>`);
     }
     h.push('</div></div>');
   });
@@ -192,8 +174,8 @@ function roadAhead(v, byRef, link, gates) {
   h.push('<details><summary>Order of work as a table</summary><div class="tw"><table><thead><tr><th>Step</th><th>Wave</th><th>Ticket</th><th>Title</th><th>Waits on</th><th>Unblocks</th></tr></thead><tbody>');
   rows.forEach((row, i) => {
     for (const r of row) {
-      h.push(`<tr><td class="n">${i + 1}</td><td class="n">${esc(wave(r).label ?? 'yours')}</td><td class="n">${link(r)}</td><td>${esc(byRef.get(r)?.title)}</td>`
-        + `<td>${sorted(g.direct.get(r)).map((p) => link(p)).join(', ') || '—'}</td><td class="n">${g.descendants.get(r).size}</td></tr>`);
+      const waits = sorted(g.direct.get(r)).map((p) => link(p));
+      h.push(html`<tr><td class="n">${i + 1}</td><td class="n">${wave(r).label ?? 'yours'}</td><td class="n">${link(r)}</td><td>${byRef.get(r)?.title}</td><td>${waits.length ? list(waits, ', ') : '—'}</td><td class="n">${g.descendants.get(r).size}</td></tr>`);
     }
   });
   h.push('</tbody></table></div></details>');

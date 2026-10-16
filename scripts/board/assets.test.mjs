@@ -76,8 +76,8 @@ function fakeDag({ ro = true, edges = [['a', 'b', 0], ['b', 'c', 1]] } = {}) {
   const classes = () => { const s = new Set(); return { add: (c) => s.add(c), remove: (c) => s.delete(c), has: (c) => s.has(c), contains: (c) => s.has(c), toggle: (c, on) => (on ? s.add(c) : s.delete(c)), s }; };
   const handlers = {};
   const nodes = {};
-  for (const [ref, anc, desc] of [['a', '', 'b c'], ['b', 'a', 'c'], ['c', 'a b', ''], ['d', '', '']]) {
-    const n = { dataset: { ref, anc, desc }, classList: classes(), measured: 0, h: {} };
+  for (const ref of ['a', 'b', 'c', 'd']) {
+    const n = { dataset: { ref }, classList: classes(), measured: 0, h: {} };
     n.getBoundingClientRect = () => { n.measured++; return { left: 0, top: 0, width: 10, bottom: 10 }; };
     n.addEventListener = (ev, fn) => { n.h[ev] = fn; };
     // focusVisible: true after keyboard focus, false after a mouse click, null in an engine without :focus-visible.
@@ -153,6 +153,16 @@ test('focus survives a redraw', () => {
   assert.ok(page.dag.classList.has('focusing'));
   assert.deepEqual(page.paths().map((p) => p.classList.has('lit')), [true, true]);
   assert.ok(page.nodes.d.classList.has('dim'));
+});
+
+test('hovering the end of a two-hop chain traces both edges, from data-edges alone', () => {
+  const page = fakeDag();
+  page.run();
+  page.nodes.c.h.mouseenter();
+  assert.deepEqual(page.paths().map((p) => p.classList.has('lit')), [true, true]);
+  assert.deepEqual(Object.keys(page.nodes).filter((k) => page.nodes[k].classList.has('dim')), ['d']);
+  page.nodes.a.h.mouseenter();
+  assert.deepEqual(page.paths().map((p) => p.classList.has('lit')), [true, true]);
 });
 
 test('keyboard focus survives a hover elsewhere', () => {
