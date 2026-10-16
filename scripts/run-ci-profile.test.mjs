@@ -10,12 +10,16 @@ import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { coHome, coDistPath } from './lib/co-home.mjs';
-import { ghStubBin, restFailure } from './lib/gh-fixture.mjs';
+import { ghStubBin, graphqlFailure, restFailure } from './lib/gh-fixture.mjs';
 import { composeCiLine, cliArgs, commandsFor, exitCodeFor, runCiProfile, setupProblem, spawnFailure } from './run-ci-profile.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROFILES = JSON.parse(readFileSync(join(HERE, '..', 'references', 'repo-ci-profiles.json'), 'utf8')).profiles;
 const CO_HOME = coHome();
+// GraphQL answers for scripts/ci on the default branch, as recorded (see lib/ci-profile.test.mjs).
+const onMain = (file) => ({ data: { repository: { defaultBranchRef: { name: 'main', target: { file } } } } });
+const DECLARED = { stdout: JSON.stringify(onMain({ mode: 0o100755, type: 'blob' })) };
+const UNDECLARED = graphqlFailure({ ...onMain(null), errors: [{ type: 'NOT_FOUND', path: ['repository', 'defaultBranchRef', 'target', 'file'], message: "Could not resolve file for path 'scripts/ci'." }] });
 const hasCli = existsSync(coDistPath(process.env, 'cli-lease.js'));
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'run-ci-profile-'));
@@ -103,7 +107,7 @@ test('the script exits 64 with a named stderr line on each setup failure, and on
     const noCli = cli(['--repo', 'jakebromberg/code-audit-pipeline', '--worktree', dir], { CO_HOME: fakeCoHome(dir, { withCli: false }) });
     assert.equal(noCli.status, 64);
     assert.match(noCli.stderr, /cli-lease\.js.*CO_HOME/);
-    const noProfile = cli(['--repo', 'o/none', '--worktree', dir], { CO_HOME: home, PATH: `${ghStubBin(dir, restFailure(404, 'Not Found'))}:${process.env.PATH}` });
+    const noProfile = cli(['--repo', 'o/none', '--worktree', dir], { CO_HOME: home, PATH: `${ghStubBin(dir, UNDECLARED)}:${process.env.PATH}` });
     assert.equal(noProfile.status, 64);
     assert.match(noProfile.stderr, /^run-ci-profile: no CI profile for o\/none$/m);
     assert.equal(cli([]).status, 64);
@@ -118,8 +122,9 @@ test('a repo with no registry entry and a scripts/ci on its base branch runs scr
     const argvFile = join(dir, 'lease-argv.json');
     writeFileSync(join(home, 'dist', 'src', 'cli-lease.js'), `require('node:fs').writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)));\n`);
     writeFileSync(join(home, 'package.json'), '{"type":"commonjs"}');
-    const bin = ghStubBin(dir, { stdout: JSON.stringify({ type: 'file', name: 'ci', path: 'scripts/ci' }) });
-    const r = cli(['--repo', 'o/declared', '--worktree', dir], { CO_HOME: home, PATH: `${bin}:${process.env.PATH}` });
+    mkdirSync(join(dir, 'scripts'));
+    writeFileSync(join(dir, 'scripts', 'ci'), '#!/bin/sh\n', { mode: 0o755 });
+    const r = cli(['--repo', 'o/declared', '--worktree', dir], { CO_HOME: home, PATH: `${ghStubBin(dir, DECLARED)}:${process.env.PATH}` });
     assert.equal(r.status, 0, r.stderr);
     const argv = JSON.parse(readFileSync(argvFile, 'utf8'));
     assert.equal(argv[argv.indexOf('--shell') + 1], composeCiLine(['scripts/ci']));
@@ -127,13 +132,31 @@ test('a repo with no registry entry and a scripts/ci on its base branch runs scr
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('a scripts/ci merged after the worktree was cut is not run there: exit 64 with no CI profile, unverified as step 4 left it', () => {
+  const dir = scratch();
+  try {
+    const r = cli(['--repo', 'o/declared', '--worktree', dir], { CO_HOME: fakeCoHome(dir, { withCli: true }), PATH: `${ghStubBin(dir, DECLARED)}:${process.env.PATH}` });
+    assert.equal(r.status, 64);
+    assert.match(r.stderr, /^run-ci-profile: no CI profile for o\/declared$/m);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an issue ref passed as --repo is a usage error, not an unverified repo', () => {
+  const dir = scratch();
+  try {
+    const r = cli(['--repo', 'o/r#123', '--worktree', dir], { CO_HOME: fakeCoHome(dir, { withCli: true }) });
+    assert.equal(r.status, 64);
+    assert.match(r.stderr, /usage: run-ci-profile\.mjs --repo <owner\/repo>/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a scripts/ci lookup that fails exits 64 naming it, never a test failure', () => {
   const dir = scratch();
   try {
-    const bin = ghStubBin(dir, restFailure(500, 'Server Error'));
+    const bin = ghStubBin(dir, restFailure(500, 'Server Error', ['api', 'graphql']));
     const r = cli(['--repo', 'o/flaky', '--worktree', dir], { CO_HOME: fakeCoHome(dir, { withCli: true }), PATH: `${bin}:${process.env.PATH}` });
     assert.equal(r.status, 64);
-    assert.match(r.stderr, /^run-ci-profile: o\/flaky: could not read scripts\/ci on main: Server Error \(HTTP 500\)$/m);
+    assert.match(r.stderr, /^run-ci-profile: o\/flaky: could not look up scripts\/ci: Server Error \(HTTP 500\)$/m);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

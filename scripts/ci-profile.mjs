@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 // ci-profile.mjs — SKILL.md step 4's per-repo CI lookup. Prints the wave's `repos` map for the emit-config spec,
 // `{ "<owner/repo>": { baseBranch, commands, source } }`, resolved by lib/ci-profile.mjs: the registry entry's
-// commands, else the repo's own `scripts/ci` on its base branch, else none (`source: "none"`, `commands: []`, which
-// emit-config warns about). Exit codes: 0 = printed; 1 = a lookup failed (stderr names the repo; nothing on stdout,
-// so a partial map never reaches a spec); 64 = usage.
+// commands, else the repo's own executable `scripts/ci` on its base branch (the entry's, else the repo's default
+// branch), else none (`source: "none"`, `commands: []`, which emit-config warns about). Exit codes: 0 = printed;
+// 1 = a lookup failed (stderr names the repo; nothing on stdout, so a partial map never reaches a spec); 64 = usage.
 //
 // Usage: node ci-profile.mjs <owner/repo>...
 
-import { ciProfileFor } from './lib/ci-profile.mjs';
+import { ciProfileFor, loadProfiles } from './lib/ci-profile.mjs';
 import { isMain } from './lib/is-main.mjs';
+import { REPO_RE } from './lib/ref.mjs';
 
 const EX_USAGE = 64;
-const REPO = /^[\w.-]+\/[\w.-]+$/;
 
-/** The `repos` map for `repos`, each entry `{ baseBranch, commands, source }`, looked up in parallel. */
-export async function reposMap(repos, opts = {}) {
-  const profiles = await Promise.all(repos.map((repo) => ciProfileFor(repo, opts)));
-  return Object.fromEntries(profiles.map(({ repo, ...profile }) => [repo, profile]));
+/** The `repos` map for `repos`, each entry `{ baseBranch, commands, source }`, looked up in parallel over one read of the registry. */
+export async function reposMap(repos, { profiles = loadProfiles(), ...opts } = {}) {
+  const resolved = await Promise.all(repos.map((repo) => ciProfileFor(repo, { profiles, ...opts })));
+  return Object.fromEntries(resolved.map(({ repo, ...profile }) => [repo, profile]));
 }
 
 async function main(argv) {
-  if (argv.length === 0 || !argv.every((a) => REPO.test(a))) {
+  if (argv.length === 0 || !argv.every((a) => REPO_RE.test(a))) {
     process.stderr.write('usage: ci-profile.mjs <owner/repo>...\n');
     process.exit(EX_USAGE);
   }
