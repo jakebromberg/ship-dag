@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
-import { reviewRoundFiles, isUnreadableEmpty } from './review-rounds.mjs';
+import { reviewRoundFiles, isUnreadableEmpty, classifyRound } from './review-rounds.mjs';
 
 const REF = 'o/r#12';
 const STEM = 'o%2Fr%2312';
@@ -67,5 +67,20 @@ for (const [name, review, rawSibling, want] of [
   test(`isUnreadableEmpty: ${name} → ${want}`, () => {
     const dir = reviewsDir(rawSibling ? [`${STEM}.json.raw`] : []);
     assert.equal(isUnreadableEmpty(join(dir, `${STEM}.json`), review), want);
+  });
+}
+
+// One classifier for the board's stage and wave ingestion, so their "unreadable" rules cannot drift.
+for (const [name, review, rawSibling, want] of [
+  ['empty findings beside a .raw sibling', { findings: [] }, true, { unreadable: 'empty beside .raw', verdict: 'blocking', blocking: [] }],
+  ['no findings array', {}, false, { unreadable: 'review has no findings array — refusing to treat an unreadable review as clean', verdict: 'blocking', blocking: [] }],
+  ['an unparseable file', null, false, { unreadable: 'review has no findings array — refusing to treat an unreadable review as clean', verdict: 'blocking', blocking: [] }],
+  ['empty findings, no sibling', { findings: [] }, false, { unreadable: null, verdict: 'clean' }],
+  ['a blocking finding', { findings: [{ category: 'correctness', verdict: 'CONFIRMED', file: 'a.js', line: 3, summary: 's' }] }, false, { unreadable: null, verdict: 'blocking' }],
+]) {
+  test(`classifyRound: ${name}`, () => {
+    const dir = reviewsDir(rawSibling ? [`${STEM}.json.raw`] : []);
+    const got = classifyRound({ path: join(dir, `${STEM}.json`), review }, ['correctness']);
+    assert.deepEqual({ unreadable: got.unreadable, verdict: got.verdict, ...(want.blocking && { blocking: got.blocking }) }, want);
   });
 }

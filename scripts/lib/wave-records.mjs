@@ -9,7 +9,7 @@
 // `pressureOverride` (point F's "start anyway"; on a resumed rate-limit death it lands on the death record, the
 // invocation that ran under the override, not on the continuation).
 //
-// Beyond its arguments it touches two things: `isUnreadableEmpty` checks each
+// Beyond its arguments it touches two things: `classifyRound` checks each
 // round's path for a `.raw` sibling (one rule for the #2587 signature, kept in
 // review-rounds.mjs), and `references/tuning.json` is loaded once, only when
 // neither the entry nor `opts.tuningVersion` gives a tuning version.
@@ -19,10 +19,10 @@
 // the ingest that sees them finish, and any other status is warned about and skipped.
 // The exception is a `pending` row the engine stopped at launch (a `RESOURCE_STOPS` failureReason): it is
 // recorded only once `--outcomes` gives it a `finalState`, because the user deferred it or stopped the run.
-import { DEFAULT_BLOCK_ON, gateReview } from '../review-gate.mjs';
+import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
 import { INFRA_REASONS, RESOURCE_STOPS, ranOf, routeFailure } from './failure.mjs';
 import { isPr, parsePr, parseRef, sameRepo } from './ref.mjs';
-import { isUnreadableEmpty } from './review-rounds.mjs';
+import { classifyRound } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
@@ -47,16 +47,11 @@ const supplied = (row, outcome) => isPr(row.prNumber) || isPr(outcome?.pr) || NO
 /** A gate `blocking` entry as one string, the shape `--outcomes` takes and hand-written records carry; a field the gate left null is left out. */
 const findingLine = ({ category, file, line, summary }) => [category ?? '(blank)', file && (line == null ? file : `${file}:${line}`), summary].filter(Boolean).join(' ');
 
-/** One round's `{verdict, blocking}`: unparseable, or empty beside its `.raw` (`isUnreadableEmpty`), is `blocking` with nothing to list, and is warned about. */
-function roundVerdict({ path, review }, blockOn, warn) {
-  if (isUnreadableEmpty(path, review)) {
-    warn(`${path}: empty beside .raw; read as blocking`);
-    return { verdict: 'blocking', blocking: [] };
-  }
-  try { return gateReview(review, blockOn); } catch (err) {
-    warn(`${path}: ${err.message}; read as blocking`);
-    return { verdict: 'blocking', blocking: [] };
-  }
+/** One round's `{verdict, blocking}` (`classifyRound`): an unreadable round is `blocking` with nothing to list, and is warned about. */
+function roundVerdict(round, blockOn, warn) {
+  const gated = classifyRound(round, blockOn);
+  if (gated.unreadable) warn(`${round.path}: ${gated.unreadable}; read as blocking`);
+  return gated;
 }
 
 /** The `finalState` that identifies an event: a rate-limited `error` is the legacy hand-written spelling of the `deferred` death ingest derives (PR #105). */
