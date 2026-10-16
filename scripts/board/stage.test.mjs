@@ -98,6 +98,10 @@ for (const [name, files, over, want] of [
     { status: 'succeeded', metadata: PR, rounds: { 'STEM.json': stamped(EARLIER, BLOCKING) } }, {}, 'Fixing'],
   // A dead ticket whose PR is no longer open is Stalled, whatever metadata.prNumber still says.
   ['failed with a PR that is no longer open is Stalled', { status: 'failed', metadata: PR }, { prOpen: false }, 'Stalled'],
+  // The caller's open PR number stands in for a missing metadata.prNumber in routing a dead ticket, too.
+  ['failed with an open PR and no metadata.prNumber, whose latest round blocks, is Fixing, not Stalled',
+    { status: 'failed', rounds: { 'STEM.json': BLOCKING } }, { openPr: 99 }, 'Fixing'],
+  ['interrupted with an open PR and no metadata.prNumber is In review, not Stalled', { status: 'interrupted' }, { openPr: 99 }, 'In review'],
   ['interrupted with a PR that is no longer open is Stalled', { status: 'interrupted', metadata: PR }, { prOpen: false }, 'Stalled'],
   // The open PR's number, when the caller has it, replaces metadata.prNumber in the stamped-round comparison.
   ['with no metadata.prNumber, a round stamped with a report whose row has the open PR counts',
@@ -167,4 +171,13 @@ test('deriveStage scores a round in the base dir stamped with the owner in the w
     [`${RUN}-board`]: { rounds: { 'STEM.r2.json': CLEAN } },
   });
   assert.equal(derive(dirs, { dir: dirs[`${RUN}-w2`] }), 'Fixing');
+});
+
+test('readFamily reads the dirs it is given instead of listing the family again', () => {
+  const dirs = family({ [RUN]: { reports: { 'R1.json': report(T0) } }, [`${RUN}-b`]: {} });
+  const only = [dirs[`${RUN}-b`]];
+  const fam = readFamily(dirs[RUN], { warn: () => {}, dirs: only });
+  assert.deepEqual(fam.dirs, only);
+  assert.equal(fam.ownership.ownerOf(REF), null);
+  assert.ok(readFamily(dirs[RUN], { warn: () => {} }).ownership.ownerOf(REF), 'listed, the family holds the report');
 });

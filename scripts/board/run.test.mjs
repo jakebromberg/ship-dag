@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveRun, runWaves, readNotes, readBoard, readRetros } from './run.mjs';
+import { resolveRun, runBaseDir, runWaves, readNotes, readBoard, readRetros } from './run.mjs';
 import { RUN, engineFixture, stamped } from '../lib/engine-fixture.mjs';
 import { SIDECAR_NAME, waveSidecar } from '../lib/wave-sidecar.mjs';
 import { appendRecord } from '../telemetry.mjs';
@@ -194,4 +194,38 @@ test('retro records are the run family\'s, deduplicated, with engine and agent r
   const retro = (runId, extra = {}) => appendRecord({ kind: 'retro', runId, wave: 1, mergedPrs: [], ...extra }, { path, now });
   [retro(`ship-dag-${RUN}`), retro(`ship-dag-${RUN}`), retro(`${RUN}-b`, { wave: 2 }), retro('sd-other')];
   assert.deepEqual(readRetros(RUN, { path }).map((r) => r.wave), [1, 2]);
+});
+
+// The board's files live in the run family's base dir, however the run is named; with no base dir the named dir stands.
+for (const [name, named, run, want] of [
+  ['--state-dir naming a -b sibling', `${RUN}-b`, (dirs) => resolveRun({ stateDir: dirs[`${RUN}-b`] }), RUN],
+  ['--state-dir naming a -w2 sibling', `${RUN}-w2`, (dirs) => resolveRun({ stateDir: dirs[`${RUN}-w2`] }), RUN],
+  ['--run-id spelled ship-dag-<run>', RUN, (dirs, base) => resolveRun({ runId: `ship-dag-${RUN}`, env: { XDG_STATE_HOME: base, HOME: '/nope' } }), RUN],
+  ['--state-dir naming the base dir', RUN, (dirs) => resolveRun({ stateDir: dirs[RUN] }), RUN],
+]) {
+  test(`runBaseDir: ${name} finds the base dir`, () => {
+    const { base, dirs } = fixture({ [`ship-dag/engine/${RUN}`]: {}, [`ship-dag/engine/${RUN}-b`]: {}, [`ship-dag/engine/${RUN}-w2`]: {} });
+    const engine = join(base, 'ship-dag/engine');
+    const named = run(Object.fromEntries(Object.keys(dirs).map((k) => [k.split('/').pop(), dirs[k]])), base);
+    assert.equal(runBaseDir(named), join(engine, want));
+  });
+}
+
+test('runBaseDir falls back to the named dir when the family has no base dir, or no dir exists', () => {
+  const { dirs, base } = fixture({ [`${RUN}-b`]: {} });
+  assert.equal(runBaseDir({ runId: `${RUN}-b`, runDir: dirs[`${RUN}-b`] }), dirs[`${RUN}-b`]);
+  const absent = join(base, 'nobody');
+  assert.equal(runBaseDir({ runId: 'nobody', runDir: absent }), absent);
+});
+
+test('runWaves and runBaseDir read the dirs they are given instead of listing the family again', () => {
+  const { dirs } = fixture({
+    [`ship-dag/engine/${RUN}`]: { configs: { 'config.json': stamped(at(1), config([1])) } },
+    [`ship-dag/engine/${RUN}-b`]: { configs: { 'config.json': stamped(at(2), config([2])) } },
+  });
+  const named = { runId: RUN, runDir: dirs[`ship-dag/engine/${RUN}-b`] };
+  const only = [named.runDir];
+  assert.deepEqual(runWaves(named, { dirs: only }).map((w) => w.dir), only);
+  assert.equal(runBaseDir(named, { dirs: only }), named.runDir);
+  assert.equal(runBaseDir(named), dirs[`ship-dag/engine/${RUN}`]);
 });
