@@ -4,63 +4,106 @@
 // repo declares its own CI by committing an executable `scripts/ci`, and the commands are that one command. Otherwise
 // there are none, and the wave lands unverified (emit-config warns).
 //
-// Presence is read from the repo's base branch on GitHub, never from the PR branch, so an implementer cannot add or
-// remove its own check, and every step sees what step 4 saw however stale a local `origin/<base>` is.
-import { readFileSync } from 'node:fs';
+// Whether `scripts/ci` exists is read from the repo's base branch on GitHub (the registry's `baseBranch`, else the
+// repo's default branch), never from the PR branch, so a branch cannot switch the check on or off. What runs is the
+// worktree's copy, as `npm run lint` runs the branch's package.json: a branch that weakens its own `scripts/ci` is the
+// review gate's to catch. Steps 5 and 6.2 look again when they run, and run `scripts/ci` only when the worktree has it
+// (`inWorktree`), so a script merged after step 4 never runs in a worktree that predates it.
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ghCli, ghErrorBody, ghFailure, withBackoff } from './gh.mjs';
 
 /** The command a repo-declared CI runs: an executable `scripts/ci`, run from the worktree root. */
 export const REPO_CI_COMMAND = 'scripts/ci';
 
 const PROFILES = new URL('../../references/repo-ci-profiles.json', import.meta.url);
+const EXECUTABLE = 0o100755;
 
 /** The registry's `profiles` map, keyed by `owner/repo`. */
 export function loadProfiles(path = PROFILES) {
   return JSON.parse(readFileSync(path, 'utf8')).profiles;
 }
 
+const registryCommands = (entry) => (Array.isArray(entry?.commands) && entry.commands.length > 0 ? entry.commands : null);
+
 /**
  * `{ repo, baseBranch, commands, source }` for `repo`: the registry entry's commands (`source: 'registry'`), else
- * `[REPO_CI_COMMAND]` when `hasScript` (`'repo'`), else `[]` (`'none'`). `baseBranch` is the entry's, else `main`.
+ * `[REPO_CI_COMMAND]` when `hasScript` (`'repo'`), else `[]` (`'none'`). `baseBranch` is the entry's, else
+ * `defaultBranch` (the repo's, from `repoCiScript`), else `main`.
  */
-export function resolveCiProfile(repo, profiles, { hasScript = false } = {}) {
+export function resolveCiProfile(repo, profiles, { hasScript = false, defaultBranch } = {}) {
   const entry = profiles[repo];
-  const baseBranch = entry?.baseBranch || 'main';
-  if (Array.isArray(entry?.commands) && entry.commands.length > 0) return { repo, baseBranch, commands: entry.commands, source: 'registry' };
+  const baseBranch = entry?.baseBranch || defaultBranch || 'main';
+  const registry = registryCommands(entry);
+  if (registry) return { repo, baseBranch, commands: registry, source: 'registry' };
   if (hasScript) return { repo, baseBranch, commands: [REPO_CI_COMMAND], source: 'repo' };
   return { repo, baseBranch, commands: [], source: 'none' };
 }
 
+// One query reads the default branch, the named base (when there is one) and `scripts/ci`'s mode on it. A missing
+// file is `file: null` plus a NOT_FOUND error at a path ending in `file`, which makes gh exit 1 with the body on stdout.
+const QUERY = `query($owner: String!, $name: String!, $path: String!, $qualified: String!, $hasBase: Boolean!) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef { name target { ... on Commit { file(path: $path) { mode type } } } }
+    ref(qualifiedName: $qualified) @include(if: $hasBase) { name target { ... on Commit { file(path: $path) { mode type } } } }
+  }
+}`;
+
+/** The answer's body: stdout, or a failed call's body when its only errors are the missing file. */
+function answerBody(out, err) {
+  if (!err) return JSON.parse(out);
+  const body = ghErrorBody(err);
+  const errors = body?.errors;
+  const fileMissing = Array.isArray(errors) && errors.length > 0 && errors.every((e) => e?.type === 'NOT_FOUND' && e.path?.at(-1) === 'file');
+  return fileMissing || body?.data?.repository === null ? body : null;
+}
+
 /**
- * Whether `repo` has a `scripts/ci` file on `base`, asked of the contents API with rate-limit backoff. A REST 404 is
- * absent, and so is a directory of that name. A 404 for the ref itself, and any other failure, throws naming the repo:
- * reading either as absent would land a wave unverified without saying why.
+ * `{ defaultBranch, hasScript }`: whether `repo` has an executable `scripts/ci` on `base` (or, with no `base`, on its
+ * default branch), asked of GitHub's GraphQL API with rate-limit backoff. A missing file, or a directory of that name,
+ * is absent. A file that is not executable, a missing or unreadable repo, a missing base branch, and any other failure
+ * throw, naming the repo: reading any of them as absent would land a wave unverified without saying why.
  */
-export async function repoHasCiScript(repo, base, { gh = ghCli, sleep } = {}) {
-  const args = ['api', `repos/${repo}/contents/${REPO_CI_COMMAND}?ref=${encodeURIComponent(base)}`];
-  let out;
+export async function repoCiScript(repo, base, { gh = ghCli, sleep } = {}) {
+  const [owner, name] = repo.split('/');
+  const args = ['api', 'graphql', '-f', `query=${QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `path=${REPO_CI_COMMAND}`,
+    '-f', `qualified=${base ? `refs/heads/${base}` : ''}`, '-F', `hasBase=${Boolean(base)}`];
+  let body;
   try {
-    out = await withBackoff(() => gh(args), { repo, sleep });
+    body = answerBody(await withBackoff(() => gh(args), { repo, sleep }));
   } catch (err) {
-    const { status } = ghFailure(err);
-    const said = ghErrorBody(err)?.message;
-    if (status === 404) {
-      if (!/^No commit found for the ref/.test(said ?? '')) return false;
-      throw new Error(`${repo}: base branch ${base} not found; set its baseBranch in references/repo-ci-profiles.json`);
+    body = answerBody(null, err);
+    if (!body) {
+      if (err.message.startsWith(`${repo}: `)) throw err; // withBackoff's exhausted rate limit already names the repo
+      const said = ghErrorBody(err)?.message;
+      throw new Error(`${repo}: could not look up ${REPO_CI_COMMAND}: ${said ? `${said} (HTTP ${ghFailure(err).status})` : err.message}`);
     }
-    throw new Error(`${repo}: could not read ${REPO_CI_COMMAND} on ${base}: ${said ? `${said} (HTTP ${status})` : err.message}`);
   }
-  try {
-    const body = JSON.parse(out);
-    return !Array.isArray(body) && body?.type === 'file';
-  } catch (err) {
-    throw new Error(`${repo}: could not read ${REPO_CI_COMMAND} on ${base}: ${err.message}`);
+  const repository = body.data?.repository;
+  if (!repository) throw new Error(`${repo}: repository not found, or this token cannot read it`);
+  const defaultBranch = repository.defaultBranchRef?.name;
+  if (!defaultBranch) throw new Error(`${repo}: has no default branch; set its baseBranch in references/repo-ci-profiles.json`);
+  const branch = base ? repository.ref : repository.defaultBranchRef;
+  if (!branch) throw new Error(`${repo}: base branch ${base} not found; set its baseBranch in references/repo-ci-profiles.json`);
+  const file = branch.target?.file;
+  if (file?.type !== 'blob') return { defaultBranch, hasScript: false };
+  if (file.mode !== EXECUTABLE) {
+    throw new Error(`${repo}: ${REPO_CI_COMMAND} on ${branch.name} is not executable (mode ${file.mode.toString(8)}); commit it with chmod +x`);
   }
+  return { defaultBranch, hasScript: true };
 }
 
 /** `resolveCiProfile` for `repo`, asking GitHub for `scripts/ci` only when the registry has no commands for it. */
 export async function ciProfileFor(repo, { profiles = loadProfiles(), gh, sleep } = {}) {
-  const resolved = resolveCiProfile(repo, profiles);
-  if (resolved.source === 'registry') return resolved;
-  return resolveCiProfile(repo, profiles, { hasScript: await repoHasCiScript(repo, resolved.baseBranch, { gh, sleep }) });
+  if (registryCommands(profiles[repo])) return resolveCiProfile(repo, profiles);
+  return resolveCiProfile(repo, profiles, await repoCiScript(repo, profiles[repo]?.baseBranch, { gh, sleep }));
+}
+
+/**
+ * `profile` as it applies to `worktree`: a repo-declared profile whose worktree has no `scripts/ci` (a branch cut
+ * before the script merged) has no commands, as step 4 configured none for it. Any other profile is returned as is.
+ */
+export function inWorktree(profile, worktree) {
+  if (profile.source !== 'repo' || existsSync(join(worktree, REPO_CI_COMMAND))) return profile;
+  return { ...profile, commands: [], source: 'none' };
 }

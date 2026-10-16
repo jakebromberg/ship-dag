@@ -18,10 +18,11 @@
 import { existsSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { ciProfileFor } from './lib/ci-profile.mjs';
+import { ciProfileFor, inWorktree } from './lib/ci-profile.mjs';
 import { stringOption } from './lib/cli-args.mjs';
 import { coDistPathIn, coHome as locateCoHome } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
+import { REPO_RE } from './lib/ref.mjs';
 
 /** One `/bin/sh` line running each command in its own subshell, short-circuiting on the first failure. Newlines inside the parens keep a trailing comment from eating the `)`. */
 export function composeCiLine(commands) {
@@ -82,7 +83,7 @@ async function main(argv) {
     process.stderr.write(`run-ci-profile: ${err.message}\n`);
     process.exit(EX_USAGE);
   }
-  if (!repo || !worktree) {
+  if (!repo || !worktree || !REPO_RE.test(repo)) {
     process.stderr.write('usage: run-ci-profile.mjs --repo <owner/repo> --worktree <path>\n');
     process.exit(EX_USAGE);
   }
@@ -93,7 +94,7 @@ async function main(argv) {
   }
   let profile;
   try {
-    profile = await ciProfileFor(repo);
+    profile = inWorktree(await ciProfileFor(repo), worktree);
     commandsFor(profile);
   } catch (err) {
     process.stderr.write(`run-ci-profile: ${err.message}\n`);

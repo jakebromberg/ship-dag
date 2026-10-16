@@ -4,6 +4,9 @@
 /** A composite issue ref: group 1 is `owner/repo` (one slash, no whitespace), group 2 the number. */
 export const REF_RE = /^([^/#\s]+\/[^/#\s]+)#(\d+)$/;
 
+/** A bare `owner/repo`: one slash, no whitespace and no `#`, so a ref passed where a repo belongs is refused. */
+export const REPO_RE = /^[^/#\s]+\/[^/#\s]+$/;
+
 /** `{repo, number}` for an `owner/repo#N` string, or null for anything else (a non-string, a missing owner, a second slash, whitespace, a `#` in the repo, trailing text). */
 export function parseRef(ref) {
   const m = typeof ref === 'string' ? REF_RE.exec(ref) : null;

@@ -7,11 +7,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ghStubBin, restFailure } from './lib/gh-fixture.mjs';
+import { ghStubBin, graphqlFailure, restFailure } from './lib/gh-fixture.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-profile.mjs', import.meta.url));
 const REGISTERED = 'jakebromberg/code-audit-pipeline';
-const FILE = JSON.stringify({ type: 'file', name: 'ci', path: 'scripts/ci' });
+// GraphQL answers as recorded (see lib/ci-profile.test.mjs): an executable scripts/ci on the default branch, and a
+// missing one, which gh exits 1 on.
+const branch = (file) => ({ data: { repository: { defaultBranchRef: { name: 'main', target: { file } } } } });
+const FILE = JSON.stringify(branch({ mode: 0o100755, type: 'blob' }));
+const MISSING = graphqlFailure({ ...branch(null), errors: [{ type: 'NOT_FOUND', path: ['repository', 'defaultBranchRef', 'target', 'file'], message: "Could not resolve file for path 'scripts/ci'." }] });
 
 /** Runs the CLI with a stub gh answering every call with `answer` (stdout, or a failure's stdout/stderr/status). */
 function cli(args, answer = {}) {
@@ -33,19 +37,19 @@ test("prints a repos map ready for the spec's repos, one entry per repo argument
 });
 
 test('a repo with neither an entry nor scripts/ci prints no commands and exits 0 (emit-config warns)', () => {
-  const r = cli(['o/bare'], restFailure(404, 'Not Found'));
+  const r = cli(['o/bare'], MISSING);
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(JSON.parse(r.stdout), { 'o/bare': { baseBranch: 'main', commands: [], source: 'none' } });
 });
 
 test('a lookup failure exits 1 naming the repo, and prints nothing on stdout', () => {
-  const r = cli(['o/flaky'], restFailure(500, 'Server Error'));
+  const r = cli(['o/flaky'], restFailure(500, 'Server Error', ['api', 'graphql']));
   assert.equal(r.status, 1);
   assert.equal(r.stdout, '');
-  assert.match(r.stderr, /^ci-profile: o\/flaky: could not read scripts\/ci on main: Server Error \(HTTP 500\)/);
+  assert.match(r.stderr, /^ci-profile: o\/flaky: could not look up scripts\/ci: Server Error \(HTTP 500\)$/m);
 });
 
-for (const [name, args] of [['no repo', []], ['a repo that is not owner/repo', ['just-a-name']]]) {
+for (const [name, args] of [['no repo', []], ['a repo that is not owner/repo', ['just-a-name']], ['an issue ref', ['o/r#12']]]) {
   test(`usage: ${name} exits 64`, () => {
     const r = cli(args);
     assert.equal(r.status, 64);
