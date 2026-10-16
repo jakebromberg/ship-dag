@@ -38,11 +38,11 @@ const isBaseDir = (dir, runId) => runIdFromConfigName(basename(dir))?.toLowerCas
  * existing base dir, however the run was named (`--state-dir` a `-b` sibling, `--run-id` spelled `ship-dag-<run>`),
  * else the named dir, which `init` creates for a new run.
  * @param {{runId: string, runDir: string}} run
- * @param {{warn?: (m: string) => void}} [opts]
+ * @param {{warn?: (m: string) => void, dirs?: string[]}} [opts]  `dirs`: the family, already listed (`runFamilyStateDirs`)
  * @returns {string}
  */
-export function runBaseDir({ runId, runDir }, { warn } = {}) {
-  return runFamilyStateDirs(runDir, { runId, warn }).find((dir) => isBaseDir(dir, runId) && existsSync(dir)) ?? runDir;
+export function runBaseDir({ runId, runDir }, { warn, dirs = runFamilyStateDirs(runDir, { runId, warn }) } = {}) {
+  return dirs.find((dir) => isBaseDir(dir, runId) && existsSync(dir)) ?? runDir;
 }
 
 /** Wave ids are strings; every letter after the number is kept (`14b`, `37aa`). */
@@ -58,10 +58,10 @@ const FILE_ID = /^config[-.]?(?:wave|w)?(\d+[a-z]*)\.json$/i;
  * its `ship-dag-` prefix and in any case, is the run's `runFamily`, however `runId` is spelled), `1` for the first
  * wave when none came before it (a family with no base dir), else the previous wave's id plus `′`.
  * @param {{runId: string, runDir: string}} run
- * @param {{warn?: (m: string) => void}} [opts]
+ * @param {{warn?: (m: string) => void, dirs?: string[]}} [opts]  `dirs`: the family, already listed (`runFamilyStateDirs`)
  */
-export function runWaves({ runId, runDir }, { warn } = {}) {
-  const found = runFamilyStateDirs(runDir, { runId, warn }).flatMap((dir) => {
+export function runWaves({ runId, runDir }, { warn, dirs = runFamilyStateDirs(runDir, { runId, warn }) } = {}) {
+  const found = dirs.flatMap((dir) => {
     const sidecar = readSidecar(join(dir, SIDECAR_NAME), { warn });
     const waves = configDirs(dir).flatMap(waveConfigs).filter((w) => typeof w.config.configDir === 'string')
       .map((w) => {

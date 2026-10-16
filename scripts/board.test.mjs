@@ -2,9 +2,10 @@
 // the CLI's batched GraphQL queries from a table of issues and records every query it is asked.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { main } from './board.mjs';
+import { graphqlAnswer } from './lib/gh-fixture.mjs';
 import { RUN, T0, engineConfig, engineFixture, stamped } from './lib/engine-fixture.mjs';
 import { parseRef } from './lib/ref.mjs';
 import { artifactStem } from './lib/failure.mjs';
@@ -37,8 +38,10 @@ function setUp({ files = {}, siblings = {}, reviews = [] } = {}) {
 const WIRE = /repository\(owner:"([^"]+)",name:"([^"]+)"\)\{issue\(number:(\d+)\)/g;
 
 /**
- * A fake `gh api graphql` over `table` (ref → `{state, stateReason, closedAt, prs, blockers}`, a blocker being a ref):
- * answers each aliased lookup, throws on a ref the table lacks, and records each query's refs in `calls`.
+ * A fake `gh api graphql` over `table` (ref → `{state, stateReason, closedAt, prs, blockers}`, a blocker being a ref,
+ * or `{missing: true}` for an issue GitHub does not have): answers each aliased lookup as gh 2.102.0 does
+ * (`graphqlAnswer`: a NOT_FOUND alias makes gh exit 1 with the body on stdout), throws on a ref the table lacks,
+ * and records each query's refs in `calls`.
  */
 function fakeGh(table) {
   const calls = [];
@@ -47,10 +50,15 @@ function fakeGh(table) {
     assert.deepEqual(args.slice(0, 2), ['api', 'graphql']);
     const refs = [...args.find((a) => a.startsWith('query=')).matchAll(WIRE)].map(([, owner, name, n]) => `${owner}/${name}#${n}`);
     calls.push(refs);
+    const errors = [];
     const data = Object.fromEntries(refs.map((ref, i) => {
       const row = table[ref];
       if (!row) throw new Error(`unexpected lookup of ${ref}`);
       const { number, repo } = parseRef(ref);
+      if (row.missing) {
+        errors.push({ type: 'NOT_FOUND', path: [`r${i}`, 'issue'], message: `Could not resolve to an Issue with the number of ${number}.` });
+        return [`r${i}`, { issue: null }];
+      }
       return [`r${i}`, { issue: {
         number, title: `Title ${number}`, url: `https://github.com/${repo}/issues/${number}`, state: row.state ?? 'OPEN',
         stateReason: row.stateReason ?? null, closedAt: row.closedAt ?? null,
@@ -58,7 +66,7 @@ function fakeGh(table) {
         blockedBy: { nodes: (row.blockers ?? []).map((b) => ({ number: parseRef(b).number, state: stateOf(b), repository: { nameWithOwner: parseRef(b).repo } })) },
       } }];
     }));
-    return JSON.stringify({ data });
+    return graphqlAnswer(errors.length ? { data, errors } : { data });
   };
   return { runGh, calls };
 }
@@ -164,6 +172,46 @@ test('a failure leaves the old board.html byte-identical and no temp file behind
   assert.deepEqual(readdirSync(s.dir).filter((f) => f.includes('.tmp')), []);
 });
 
+test('a rename that fails leaves the target untouched and no temp file behind', async () => {
+  const s = setUp();
+  const out = join(s.base, 'taken');
+  mkdirSync(out);
+  writeFileSync(join(out, 'keep'), 'old page');
+  const { code } = await run(['render', '--run-id', RUN, '--out', out], { ...s, runGh: fakeGh(TABLE).runGh });
+  assert.equal(code, 1);
+  assert.equal(readFileSync(join(out, 'keep'), 'utf8'), 'old page');
+  assert.deepEqual(readdirSync(out), ['keep']);
+  assert.deepEqual(readdirSync(s.base).filter((f) => f.includes('.tmp')), []);
+});
+
+for (const [name, missing, want] of [
+  ['one issue', [R(2)], `${R(2)}: GitHub has no such issue`],
+  ['two issues, named together', [R(1), R(2)], `${R(1)}, ${R(2)}: GitHub has no such issue`],
+]) {
+  test(`render names a ref GitHub answers NOT_FOUND for, not gh's message: ${name}`, async () => {
+    const s = setUp();
+    const table = { ...TABLE, ...Object.fromEntries(missing.map((ref) => [ref, { missing: true }])) };
+    const { code, err, html } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh(table).runGh });
+    assert.equal(code, 1);
+    assert.ok(err.includes(`[board] ${want}`), err.join('\n'));
+    assert.doesNotMatch(err.join('\n'), /Could not resolve/);
+    assert.equal(html, null);
+  });
+}
+
+test('the page names the command it was built with: the script\'s absolute path and the flags given, or the run read from the environment', async () => {
+  const s = setUp();
+  const spec = join(s.base, 'spec live.json');
+  writeFileSync(spec, JSON.stringify(SPEC));
+  const out = join(s.base, 'page.html');
+  const script = resolve(import.meta.dirname, 'board.mjs');
+  assert.equal((await run(['render', '--run-id', RUN, '--spec', spec, '--out', out], { ...s, runGh: fakeGh(TABLE).runGh })).code, 0);
+  assert.ok(readFileSync(out, 'utf8').includes(`node ${script} render --run-id ${RUN} --spec &#39;${spec}&#39; --out ${out}<`));
+  const { code, html } = await run(['render'], { ...s, env: { ...s.env, SHIP_DAG_RUN_ID: RUN }, runGh: fakeGh(TABLE).runGh });
+  assert.equal(code, 0);
+  assert.ok(html.includes(`node ${script} render --run-id ${RUN}<`));
+});
+
 // The board's files live in the family's base dir, however the run is named.
 for (const [name, argv] of [
   ['--state-dir naming a -b sibling', (s) => ['--state-dir', s.dirs[`ship-dag/engine/${RUN}-b`]]],
@@ -214,7 +262,7 @@ test('a retro-filed ref and an extraRefs ref join the board', async () => {
   assert.ok(html.includes('o/r#3') && html.includes('o/r#4'));
 });
 
-test('init stores the parsed blockOn and stamps startedAt; a second init leaves the first alone', async () => {
+test('init stores the parsed blockOn and stamps startedAt; a second init says board.json exists and leaves the first alone', async () => {
   const s = setUp({ files: { 'board.json': undefined } });
   const argv = ['init', '--run-id', RUN, '--title', 'T', '--block-on', ' Correctness ', '--epic', R(50)];
   assert.equal((await run(argv, s)).code, 0);
@@ -222,18 +270,32 @@ test('init stores the parsed blockOn and stamps startedAt; a second init leaves 
   assert.deepEqual(board, { runId: RUN, title: 'T', issueSet: { epic: R(50) }, blockOn: ['correctness'], startedAt: NOW.toISOString() });
   const again = await run([...argv, '--title', 'Other'], s);
   assert.equal(again.code, 1);
+  assert.deepEqual(again.err, [`[board] board.json already exists at ${join(s.dir, 'board.json')}`]);
   assert.equal(JSON.parse(readFileSync(join(s.dir, 'board.json'), 'utf8')).title, 'T');
 });
 
-test('init for a new run creates its dir, and an unknown --block-on category exits 1', async () => {
+test('init for a new run creates its dir', async () => {
   const s = setUp();
   const fresh = join(s.base, 'ship-dag/engine/sd-fresh');
   assert.equal((await run(['init', '--run-id', 'sd-fresh'], { ...s, dir: fresh })).code, 0);
   assert.ok(existsSync(join(fresh, 'board.json')));
-  const bad = await run(['init', '--run-id', 'sd-other', '--block-on', 'nonsense'], { ...s, dir: fresh });
-  assert.equal(bad.code, 1);
-  assert.match(bad.err.join('\n'), /nonsense/);
 });
+
+for (const [name, argv, want] of [
+  ['an unknown --block-on category', ['init', '--run-id', 'sd-other', '--block-on', 'nonsense'], /nonsense/],
+  ['--label without --repo', ['init', '--run-id', 'sd-other', '--label', 'wave'], /--label needs --repo/],
+  ['a flag with no value', ['render', '--run-id'], /--run-id requires a value/],
+  ['a flag followed by another flag', ['render', '--spec', '--run-id', RUN], /--spec requires a value/],
+  ['no run named', ['init'], /no run named/],
+]) {
+  test(`a usage error exits 64 and writes nothing: ${name}`, async () => {
+    const s = setUp();
+    const { code, err } = await run(argv, s);
+    assert.equal(code, 64);
+    assert.match(err.join('\n'), want);
+    assert.equal(existsSync(join(s.base, 'ship-dag/engine/sd-other')), false);
+  });
+}
 
 test('an unknown subcommand is a usage error', async () => {
   const { code, err } = await run(['frobnicate'], setUp());

@@ -172,3 +172,12 @@ test('deriveStage scores a round in the base dir stamped with the owner in the w
   });
   assert.equal(derive(dirs, { dir: dirs[`${RUN}-w2`] }), 'Fixing');
 });
+
+test('readFamily reads the dirs it is given instead of listing the family again', () => {
+  const dirs = family({ [RUN]: { reports: { 'R1.json': report(T0) } }, [`${RUN}-b`]: {} });
+  const only = [dirs[`${RUN}-b`]];
+  const fam = readFamily(dirs[RUN], { warn: () => {}, dirs: only });
+  assert.deepEqual(fam.dirs, only);
+  assert.equal(fam.ownership.ownerOf(REF), null);
+  assert.ok(readFamily(dirs[RUN], { warn: () => {} }).ownership.ownerOf(REF), 'listed, the family holds the report');
+});

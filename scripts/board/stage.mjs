@@ -29,11 +29,12 @@ const mtimeMs = (path) => { try { return statSync(path).mtimeMs; } catch { retur
  * (`runFamilyStateDirs`) and which of its reports owns each ref
  * (`reportOwnership` over every family dir's `readWaveReports`).
  * @param {string} dir  any dir of the run family
- * @param {{warn?: (m: string) => void}} [opts]  where an unreadable report or family listing is warned about
+ * @param {{warn?: (m: string) => void, dirs?: string[]}} [opts]  where an unreadable report or family listing is
+ *   warned about; `dirs`, the family already listed (`runFamilyStateDirs`)
  * @returns {{dirs: string[], ownership: ReturnType<typeof reportOwnership>}}
  */
-export function readFamily(dir, opts) {
-  const dirs = runFamilyStateDirs(dir, opts);
+export function readFamily(dir, { dirs, ...opts } = {}) {
+  dirs ??= runFamilyStateDirs(dir, opts);
   return { dirs, ownership: reportOwnership(dirs.flatMap((d) => readWaveReports(d, opts))) };
 }
 

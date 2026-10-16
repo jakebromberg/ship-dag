@@ -10,16 +10,18 @@
 
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { renderBoard } from './board/render.mjs';
 import { buildGraph, classify, makeRepoLabel, makeShortRef, projectWaves } from './board/model.mjs';
 import { readBoard, readJson, readNotes, readRetros, resolveRun, runBaseDir, runWaves } from './board/run.mjs';
 import { deriveStage, readFamily } from './board/stage.mjs';
 import { stringOption } from './lib/cli-args.mjs';
-import { ghCli, withBackoff } from './lib/gh.mjs';
+import { ghCli, ghErrorBody, ghNotFound, withBackoff } from './lib/gh.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { readArg } from './lib/read-arg.mjs';
 import { REPO_RE, parseRef } from './lib/ref.mjs';
 import { parseBlockOn } from './review-gate.mjs';
+import { runFamilyStateDirs } from './lib/wave-reports.mjs';
 import { telemetryPath } from './telemetry.mjs';
 
 const EX_USAGE = 64;
@@ -28,11 +30,27 @@ const CLOSURE_ROUNDS = 5; // extra rounds that look up open blockers outside the
 const FIELDS = 'number title url state stateReason closedAt closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
   + 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
 
+const SCRIPT = fileURLToPath(import.meta.url);
+
+/** A bad argument: `main` exits 64 for it. */
+class UsageError extends Error {}
+const usage = (fn) => { try { return fn(); } catch (err) { throw new UsageError(err.message); } };
+const shellWord = (w) => (/^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replaceAll("'", "'\\''")}'`);
+
 const asRef = (ref) => parseRef(ref) ?? (() => { throw new Error(`not an owner/repo#N ref: ${JSON.stringify(ref)}`); })();
 
-/** Look `refs` up, `BATCH` to a query. Returns `[ref, issue]` pairs; a ref GitHub does not answer for throws. */
-async function lookup(refs, { runGh, sleep }) {
+/** One GraphQL answer. gh exits 1 when any alias is NOT_FOUND; that body's `data` still answers every other alias. */
+async function answer(query, { runGh, sleep }) {
+  try { return JSON.parse(await withBackoff(() => runGh(['api', 'graphql', '-f', `query=${query}`]), { repo: 'GitHub', sleep })); } catch (err) {
+    if (ghNotFound(err) && ghErrorBody(err).data) return ghErrorBody(err);
+    throw err;
+  }
+}
+
+/** Look `refs` up, `BATCH` to a query. Returns `[ref, issue]` pairs; refs GitHub has no issue for throw, named together. */
+async function lookup(refs, deps) {
   const found = [];
+  const missing = [];
   for (let i = 0; i < refs.length; i += BATCH) {
     const batch = refs.slice(i, i + BATCH);
     const query = `query{${batch.map((ref, j) => {
@@ -40,18 +58,16 @@ async function lookup(refs, { runGh, sleep }) {
       const [owner, name] = repo.split('/');
       return `r${j}:repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}){issue(number:${number}){${FIELDS}}}`;
     }).join(' ')}}`;
-    const { data } = JSON.parse(await withBackoff(() => runGh(['api', 'graphql', '-f', `query=${query}`]), { repo: 'GitHub', sleep }));
-    batch.forEach((ref, j) => {
-      if (!data?.[`r${j}`]?.issue) throw new Error(`${ref}: GitHub has no such issue`);
-      found.push([ref, data[`r${j}`].issue]);
-    });
+    const { data } = await answer(query, deps);
+    batch.forEach((ref, j) => (data?.[`r${j}`]?.issue ? found.push([ref, data[`r${j}`].issue]) : missing.push(ref)));
   }
+  if (missing.length) throw new Error(`${missing.join(', ')}: GitHub has no such issue`);
   return found;
 }
 
 /** Everything `render` reads, the tickets' GitHub state included, turned into `renderBoard`'s input. */
-async function gather({ run, dir, flag, deps, warn }) {
-  const waves = runWaves({ runId: run.runId, runDir: dir }, { warn });
+async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
+  const waves = runWaves({ runId: run.runId, runDir: dir }, { warn, dirs });
   if (!waves.length) throw new Error(`no run ${run.runId} under ${dir}`);
   const board = readBoard(dir, { path: flag('--board-config') });
   if (!board) throw new Error(`${join(dir, 'board.json')} absent: run \`board.mjs init\` first`);
@@ -91,7 +107,7 @@ async function gather({ run, dir, flag, deps, warn }) {
   const dropped = (ref) => board.issueSet?.label && info.get(ref).state === 'CLOSED' && Date.parse(info.get(ref).closedAt) < startedAt;
   const refs = [...new Set([...members.filter((r) => !dropped(r)), ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? [])])];
   const allEdges = [...edges, ...native];
-  const family = readFamily(dir, { runId: run.runId, warn });
+  const family = readFamily(dir, { runId: run.runId, warn, dirs });
   const latest = new Map(waves.flatMap((w) => w.refs.map((ref) => [ref, w]))); // oldest first, so the newest wave wins
   const tickets = refs.map((ref) => {
     const issue = info.get(ref);
@@ -119,7 +135,7 @@ async function gather({ run, dir, flag, deps, warn }) {
     title: board.title, runId: board.runId ?? run.runId, scope, now: deps.now().toISOString(), tickets, graph, current,
     out: flag('--out') ?? board.out ?? join(dir, 'board.html'),
     waves: projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), current), shortRef,
-    repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild: `node scripts/board.mjs render --run-id ${run.runId}`,
+    repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild,
   };
 }
 
@@ -148,32 +164,39 @@ export async function main(argv, { runGh = ghCli, now = () => new Date(), env = 
   }
   const seen = new Set();
   const warn = (m) => { if (!seen.has(m)) { seen.add(m); log(`[board] ${m}`); } };
-  const flag = (name) => stringOption(rest, name);
+  const flag = (name) => usage(() => stringOption(rest, name));
   try {
-    const run = resolveRun({ stateDir: flag('--state-dir'), runId: flag('--run-id'), env, envFallback: cmd === 'render' });
-    const dir = runBaseDir(run, { warn });
+    const run = usage(() => resolveRun({ stateDir: flag('--state-dir'), runId: flag('--run-id'), env, envFallback: cmd === 'render' }));
+    const dirs = runFamilyStateDirs(run.runDir, { runId: run.runId, warn }); // listed once, for every reader
+    const dir = runBaseDir(run, { warn, dirs });
     if (cmd === 'init') {
       const [epic, label, repo, abbreviations] = [flag('--epic'), flag('--label'), flag('--repo'), flag('--abbreviations')];
-      if (epic) asRef(epic);
-      if (label && !REPO_RE.test(repo ?? '')) throw new Error('--label needs --repo owner/repo');
+      if (epic) usage(() => asRef(epic));
+      if (label && !REPO_RE.test(repo ?? '')) throw new UsageError('--label needs --repo owner/repo');
       const out = flag('--out');
       const board = {
         runId: run.runId, title: flag('--title') ?? `Run ${run.runId}`, issueSet: epic ? { epic } : label ? { repo, label } : {},
-        blockOn: parseBlockOn(flag('--block-on')), startedAt: now().toISOString(), ...(out && { out }),
+        blockOn: usage(() => parseBlockOn(flag('--block-on'))), startedAt: now().toISOString(), ...(out && { out }),
         ...(abbreviations && { abbreviations: JSON.parse(readArg(abbreviations)) }),
       };
+      const path = join(dir, 'board.json');
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'board.json'), `${JSON.stringify(board, null, 2)}\n`, { flag: 'wx' }); // written once
-      warn(`wrote ${join(dir, 'board.json')}`);
+      try { writeFileSync(path, `${JSON.stringify(board, null, 2)}\n`, { flag: 'wx' }); } catch (err) { // written once
+        throw err.code === 'EEXIST' ? new Error(`board.json already exists at ${path}`) : err;
+      }
+      warn(`wrote ${path}`);
       return 0;
     }
-    const view = await gather({ run, dir, flag, deps: { runGh, now, env, sleep }, warn });
+    // The command this page was built with, naming the run when it came from $SHIP_DAG_RUN_ID.
+    const named = rest.includes('--state-dir') || rest.includes('--run-id');
+    const rebuild = ['node', SCRIPT, cmd, ...rest, ...(named ? [] : ['--run-id', run.runId])].map(shellWord).join(' ');
+    const view = await gather({ run, dir, dirs, flag, rebuild, deps: { runGh, now, env, sleep }, warn });
     writeAtomic(view.out, renderBoard(view));
     warn(`wrote ${view.out} (${view.tickets.length} tickets)`);
     return 0;
   } catch (err) {
     log(`[board] ${err.message}`);
-    return 1;
+    return err instanceof UsageError ? EX_USAGE : 1;
   }
 }
 
