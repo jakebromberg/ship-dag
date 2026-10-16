@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import readline from 'node:readline';
 import path from 'node:path';
-import { artifactStem, createTranscriptScan, buildDiagnosis } from '../lib/failure.mjs';
+import { artifactStem, metadataPathForRef, createTranscriptScan, buildDiagnosis } from '../lib/failure.mjs';
 import { readRunFamilyReports, reportOwnership } from '../lib/wave-reports.mjs';
 
 /**
@@ -106,7 +106,7 @@ export async function writeFailureDigests({ configDir, report, reportId }) {
     const own = owns(self, row);
     if (fs.existsSync(digestPath) && !own) continue;
     const { terminal, rateLimited } = await scanTranscript(path.join(configDir, 'logs', `issue-${stem}.log`));
-    const exitCode = readExitCode(path.join(configDir, 'metadata', `issue-${stem}.json`));
+    const exitCode = readExitCode(metadataPathForRef(path.dirname(configDir), row.ref));
     const stamp = own ? reportId : (ownerOf(row.ref)?.id ?? reportId);
     const diagnosis = { ...buildDiagnosis({ row, terminal, rateLimited, exitCode }), ...(stamp && { reportId: stamp }) };
     fs.writeFileSync(digestPath, `${JSON.stringify(diagnosis, null, 2)}\n`);
