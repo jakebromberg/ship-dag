@@ -1,7 +1,7 @@
 // Tests for ref.mjs. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REF_RE, parseRef, formatRef, isPr, refKey, sameRepo, parsePr } from './ref.mjs';
+import { REF_RE, REPO_RE, parseRef, formatRef, isPr, refKey, sameRepo, parsePr } from './ref.mjs';
 
 test('parseRef reads owner/repo#N and nothing else', () => {
   for (const [input, want] of [
@@ -63,4 +63,9 @@ test('parsePr reads a PR value as {repo, pr} and nothing else as null', () => {
     [-1, null],
     [null, null],
   ]) assert.deepEqual(parsePr(input, 'o/r'), want, String(input));
+});
+
+test('REPO_RE: a bare owner/repo, refusing a ref, a second slash, whitespace or a missing half', () => {
+  for (const ok of ['o/r', 'WXYC/dj-site', 'jakebromberg/ship-dag', 'a.b/c_d-e']) assert.equal(REPO_RE.test(ok), true, ok);
+  for (const bad of ['o/r#1', 'o/r/x', 'o /r', 'r', '/r', 'o/', '']) assert.equal(REPO_RE.test(bad), false, bad);
 });
