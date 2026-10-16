@@ -25,6 +25,7 @@
 // ./rate-limit.mjs, which answers "was this a rate-limit death?" from the same
 // transcript and feeds `failureReason` here.
 
+import { join } from 'node:path';
 import { isRateLimitDeathLine } from './rate-limit.mjs';
 import { isPr } from './ref.mjs';
 
@@ -52,6 +53,26 @@ export const MAX_REASON_CHARS = 500;
  */
 export function artifactStem(ref) {
   return String(ref).replace(/%/g, '%25').replace(/\//g, '%2F').replace(/#/g, '%23');
+}
+
+/**
+ * The engine's status file for a composite ref (`pending`/`running`/`succeeded`/
+ * `failed`/`interrupted`; absent until the engine first touches the issue).
+ * @param {string} stateDir
+ * @param {string} ref
+ */
+export function statusPathForRef(stateDir, ref) {
+  return join(stateDir, 'state', 'status', `issue-${artifactStem(ref)}.status`);
+}
+
+/**
+ * The engine's metadata file for a composite ref — `prNumber`/`prUrl` once a PR
+ * opens, plus start/finish times and the exit code.
+ * @param {string} stateDir
+ * @param {string} ref
+ */
+export function metadataPathForRef(stateDir, ref) {
+  return join(stateDir, 'state', 'metadata', `issue-${artifactStem(ref)}.json`);
 }
 
 /**
