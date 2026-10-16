@@ -7,6 +7,9 @@
 // These are `realRunGh`'s shapes. `ghCli`'s promisified `execFile` throws the same message, stdout and stderr, but
 // carries the exit code as `code` (no `status`) and says `spawn gh ENOENT` when there is no gh.
 
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 /**
  * An `execFileSync` failure: `status` (the exit code), `stdout`, `stderr`, and Node's `Command failed: gh <args>`
  * message, which adds `\n<stderr>` only when there is stderr. A `message` given replaces it, for a test of an
@@ -72,4 +75,19 @@ export function graphqlFailure(body, args = ['api', 'graphql']) {
 export function graphqlAnswer(body, args = ['api', 'graphql']) {
   if (!serverError(body)) return JSON.stringify(body);
   throw graphqlFailure(body, args);
+}
+
+/**
+ * A stub `gh` for a CLI run as a subprocess: writes `<dir>/bin/gh`, which prints `stdout` and `stderr` and exits
+ * `status` (a failure's are `ghExecError`'s fields, e.g. `restFailure(...)`), and returns `<dir>/bin` to put first
+ * on PATH. Every call gets the same answer.
+ */
+export function ghStubBin(dir, { stdout = '', stderr = '', status = 0 } = {}) {
+  const bin = join(dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'gh.stdout'), stdout);
+  writeFileSync(join(bin, 'gh.stderr'), stderr);
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncat '${join(bin, 'gh.stdout')}'\ncat '${join(bin, 'gh.stderr')}' >&2\nexit ${Number(status)}\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  return bin;
 }
