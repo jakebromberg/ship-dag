@@ -4,7 +4,7 @@
 //
 // Nothing here is new bookkeeping: the engine's status and metadata files, its
 // wave reports, and the review files step 4d writes. Paths come from the same
-// helpers diagnose-failure.mjs uses. The run family, which report owns a ref
+// helpers diagnose-failure.mjs uses (lib/failure.mjs). The run family, which report owns a ref
 // and which files are its review rounds, in which order, come from the shared
 // readers in lib/ (`runFamilyStateDirs`, `reportOwnership`, `reviewRoundFiles`),
 // so the board, ingest and diagnose-failure read them one way. A review is
@@ -13,8 +13,7 @@
 
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { statusPathForRef, metadataPathForRef } from '../diagnose-failure.mjs';
-import { routeFailure } from '../lib/failure.mjs';
+import { routeFailure, statusPathForRef, metadataPathForRef } from '../lib/failure.mjs';
 import { reviewRoundFiles, isUnreadableEmpty } from '../lib/review-rounds.mjs';
 import { readWaveReports, reportOwnership, runFamilyStateDirs } from '../lib/wave-reports.mjs';
 import { isPr } from '../lib/ref.mjs';

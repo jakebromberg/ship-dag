@@ -39,11 +39,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
-import { artifactStem, createTranscriptScan, buildDiagnosis, MAX_REASON_CHARS } from './lib/failure.mjs';
+import { artifactStem, statusPathForRef, metadataPathForRef, createTranscriptScan, buildDiagnosis, MAX_REASON_CHARS } from './lib/failure.mjs';
 import { readRunFamilyReports, reportOwnership } from './lib/wave-reports.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 
-export { MAX_REASON_CHARS };
+export { MAX_REASON_CHARS, statusPathForRef, metadataPathForRef };
 
 /**
  * The engine's transcript path for a composite ref — `owner/repo#N` becomes
@@ -53,26 +53,6 @@ export { MAX_REASON_CHARS };
  */
 export function logPathForRef(stateDir, ref) {
   return join(stateDir, 'state', 'logs', `issue-${artifactStem(ref)}.log`);
-}
-
-/**
- * The engine's status file for a composite ref (`pending`/`running`/`succeeded`/
- * `failed`/`interrupted`; absent until the engine first touches the issue).
- * @param {string} stateDir
- * @param {string} ref
- */
-export function statusPathForRef(stateDir, ref) {
-  return join(stateDir, 'state', 'status', `issue-${artifactStem(ref)}.status`);
-}
-
-/**
- * The engine's metadata file for a composite ref — `prNumber`/`prUrl` once a PR
- * opens, plus start/finish times and the exit code.
- * @param {string} stateDir
- * @param {string} ref
- */
-export function metadataPathForRef(stateDir, ref) {
-  return join(stateDir, 'state', 'metadata', `issue-${artifactStem(ref)}.json`);
 }
 
 /**
