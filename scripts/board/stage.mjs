@@ -8,16 +8,15 @@
 // and which files are its review rounds, in which order, come from the shared
 // readers in lib/ (`runFamilyStateDirs`, `reportOwnership`, `reviewRoundFiles`),
 // so the board, ingest and diagnose-failure read them one way. A review is
-// scored by the gate's own `gateReview`, so the board and the merge gate cannot
+// scored by the gate's own `gateReview` (through `classifyRound`), so the board and the merge gate cannot
 // disagree about what blocks.
 
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { routeFailure, statusPathForRef, metadataPathForRef } from '../lib/failure.mjs';
-import { reviewRoundFiles, isUnreadableEmpty } from '../lib/review-rounds.mjs';
+import { reviewRoundFiles, classifyRound } from '../lib/review-rounds.mjs';
 import { readWaveReports, reportOwnership, runFamilyStateDirs } from '../lib/wave-reports.mjs';
 import { isPr } from '../lib/ref.mjs';
-import { gateReview } from '../review-gate.mjs';
 
 const readText = (path) => { try { return readFileSync(path, 'utf8'); } catch { return null; } };
 const readJson = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
@@ -113,11 +112,7 @@ export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen, openPr 
   return latest ? scoreReview({ path: latest.path, review: latest.review }, blockOn) : 'In review';
 }
 
-function scoreReview({ path, review }, blockOn) {
-  if (isUnreadableEmpty(path, review)) return 'Review unreadable';
-  try {
-    return gateReview(review, blockOn).verdict === 'blocking' ? 'Fixing' : 'Reviewed';
-  } catch {
-    return 'Review unreadable';
-  }
+function scoreReview(round, blockOn) {
+  const { unreadable, verdict } = classifyRound(round, blockOn);
+  return unreadable ? 'Review unreadable' : verdict === 'blocking' ? 'Fixing' : 'Reviewed';
 }
