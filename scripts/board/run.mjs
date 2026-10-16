@@ -6,7 +6,7 @@
 // `readSidecar`, `waveConfigs`) so the board and ingest agree on which dirs and which
 // waves are a run's.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { readRecords, telemetryPath } from '../telemetry.mjs';
@@ -30,6 +30,21 @@ export function resolveRun({ stateDir, runId, env = process.env, envFallback = f
   return { runId: id, runDir: join(defaultBaseDir(env), id) };
 }
 
+/** Whether `dir` is the run's base dir: the family member whose name, without its `ship-dag-` prefix and in any case, is `runFamily(runId)`. */
+const isBaseDir = (dir, runId) => runIdFromConfigName(basename(dir))?.toLowerCase() === runFamily(runId);
+
+/**
+ * The dir the board's files (`dag.json`, `board.json`, `board-notes.json`, `board.html`) live in: the run family's
+ * existing base dir, however the run was named (`--state-dir` a `-b` sibling, `--run-id` spelled `ship-dag-<run>`),
+ * else the named dir, which `init` creates for a new run.
+ * @param {{runId: string, runDir: string}} run
+ * @param {{warn?: (m: string) => void}} [opts]
+ * @returns {string}
+ */
+export function runBaseDir({ runId, runDir }, { warn } = {}) {
+  return runFamilyStateDirs(runDir, { runId, warn }).find((dir) => isBaseDir(dir, runId) && existsSync(dir)) ?? runDir;
+}
+
 /** Wave ids are strings; every letter after the number is kept (`14b`, `37aa`). */
 const DIR_SUFFIX = /-w(\d+[a-z]*)$/i;
 const FILE_ID = /^config[-.]?(?:wave|w)?(\d+[a-z]*)\.json$/i;
@@ -46,8 +61,6 @@ const FILE_ID = /^config[-.]?(?:wave|w)?(\d+[a-z]*)\.json$/i;
  * @param {{warn?: (m: string) => void}} [opts]
  */
 export function runWaves({ runId, runDir }, { warn } = {}) {
-  const family = runFamily(runId);
-  const isBase = (dir) => runIdFromConfigName(basename(dir))?.toLowerCase() === family;
   const found = runFamilyStateDirs(runDir, { runId, warn }).flatMap((dir) => {
     const sidecar = readSidecar(join(dir, SIDECAR_NAME), { warn });
     const waves = configDirs(dir).flatMap(waveConfigs).filter((w) => typeof w.config.configDir === 'string')
@@ -69,7 +82,7 @@ export function runWaves({ runId, runDir }, { warn } = {}) {
     const id = (sidecarWave != null ? String(sidecarWave) : null)
       ?? basename(w.dir).match(DIR_SUFFIX)?.[1]
       ?? basename(w.configFile).match(FILE_ID)?.[1]
-      ?? (isBase(w.dir) || prev === null ? '1' : `${prev}′`);
+      ?? (isBaseDir(w.dir, runId) || prev === null ? '1' : `${prev}′`);
     prev = id;
     return { ...w, id };
   });
