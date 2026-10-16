@@ -386,3 +386,23 @@ test('the config-level defaultEffort follows tuning.implement.normal', () => {
   assert.equal(c.defaultEffort, 'xhigh');
   assert.ok(!('effort' in c.issues[0]), 'the issue itself still carries no effort');
 });
+
+// ci-profile.mjs prints each repo as { baseBranch, commands, source }; the spec takes that map as its `repos`.
+test("a repo whose CI is its own scripts/ci gets that post-session check, and ci-profile's source stays out of the config", () => {
+  const repo = 'o/declared';
+  const s = spec({ repo, repos: { [repo]: { baseBranch: 'main', commands: ['scripts/ci'], source: 'repo' } }, issues: [{ number: 1, repo, digest: 'x' }] });
+  assert.deepEqual(unknownCiRepos(s), []);
+  assert.deepEqual(buildConfig(s).repos[repo], { baseBranch: 'main', postSessionCheck: { commands: ['scripts/ci'] } });
+});
+
+test('the unverified-repo warning names both remedies: the repo declaring scripts/ci, or a registry entry', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'emit-config-'));
+  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+  const repo = 'o/bare';
+  const bare = spec({ stateDir, repo, repos: { [repo]: { baseBranch: 'main', commands: [], source: 'none' } }, issues: [{ number: 1, repo, digest: 'x' }] });
+  const r = spawnSync(process.execPath, [cli, '-'], { input: JSON.stringify(bare), encoding: 'utf-8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /WARNING — no CI profile for 1 repo\(s\): o\/bare\./);
+  assert.match(r.stderr, /executable scripts\/ci/);
+  assert.match(r.stderr, /references\/repo-ci-profiles\.json/);
+});

@@ -32,7 +32,7 @@
 //     "runId":          "sd-20261008-153059",       // optional; the run id (default: parsed from `name`) — recorded in the wave sidecar
 //     "wave":           "14b",                       // optional; the wave counter W (a number or a string such as "14b") — recorded in the wave sidecar
 //     "blockOn":        "correctness,security",      // optional; the run's --block-on, as that comma string or an array — recorded (parsed) in the wave sidecar; an unknown category exits 2
-//     "repos": {                                    // per-repo base branch + CI profile
+//     "repos": {                                    // per-repo base branch + CI profile: ci-profile.mjs prints this map (its `source` is ignored)
 //       "owner/repo": { "baseBranch": "main", "commands": ["ruff check .", "pytest -q"] }
 //     },
 //     "issues": [
@@ -239,7 +239,7 @@ if (isMain(import.meta.url)) {
   if (missingCi.length > 0) {
     console.error(
       `emit-config: WARNING — no CI profile for ${missingCi.length} repo(s): ${missingCi.join(', ')}. ` +
-        `Those sessions will run with no post-session check. Add them to references/repo-ci-profiles.json.`,
+        `Those sessions will run with no post-session check. Commit an executable scripts/ci to each repo, or add it to references/repo-ci-profiles.json.`,
     );
   }
 

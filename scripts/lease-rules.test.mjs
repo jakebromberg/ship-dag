@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { importCo } from './lib/co-home.mjs';
+import { REPO_CI_COMMAND } from './lib/ci-profile.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(root, p), 'utf8');
@@ -112,3 +113,17 @@ test("claude-orchestrator's heavy-command matcher matches every heavy command in
   }
   assert.deepEqual(missed, []);
 });
+
+test("claude-orchestrator's heavy-command matcher matches a repo's declared scripts/ci", async () => {
+  const { isHeavyCommand } = await importCo(process.env, ['isHeavyCommand']);
+  assert.equal(isHeavyCommand(REPO_CI_COMMAND), true);
+});
+
+// Implementers run local CI themselves before pushing, so each implement copy points them at a repo's declared
+// scripts/ci, run directly (the matcher reads `sh scripts/ci` as `sh` and would not lease it).
+const declaredCi = /When the repo has an executable `scripts\/ci`, run it as `scripts\/ci` \(not `sh scripts\/ci`\): it is the repo's declared local CI\./;
+for (const name of ['prompt.md step 4', "SKILL.md's Implement block", "workflow.js's implementPrompt"]) {
+  test(`${name} points implementers at a repo's declared scripts/ci`, () => {
+    assert.match(copies[name], declaredCi);
+  });
+}
