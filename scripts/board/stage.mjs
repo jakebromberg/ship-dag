@@ -48,7 +48,7 @@ export function readFamily(dir, opts) {
  *    report that finished before the launch is an earlier session's (the wave's
  *    first run, before a retry in a `-b` dir or in place), so it never stalls
  *    the ticket.
- *  - `failed`/`interrupted` with no PR (`routeFailure`), or whose PR is not
+ *  - `failed`/`interrupted` with no PR (`routeFailure`, given the open PR's number, else `metadata.prNumber`), or whose PR is not
  *    open (the engine never clears a stale `metadata.prNumber`): **Stalled**.
  *  - no open PR: null.
  *  - an open PR and no review round of its PR: **In review**. A round stamped
@@ -94,11 +94,11 @@ export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen, openPr 
     const sessionStart = Number.isFinite(launched) ? launched : mtimeMs(statusPathForRef(dir, ref));
     return reportEnd < sessionStart ? 'Building' : 'Stalled';
   }
-  if ((status === 'failed' || status === 'interrupted') && (!prOpen || routeFailure({ status, prNumber: metadata.prNumber }) !== 'review-gate')) {
+  const current = openPr ?? metadata.prNumber;
+  if ((status === 'failed' || status === 'interrupted') && (!prOpen || routeFailure({ status, prNumber: current }) !== 'review-gate')) {
     return 'Stalled';
   }
   if (!prOpen) return null;
-  const current = openPr ?? metadata.prNumber;
   const since = ownerOf(ref)?.startedAt ?? -Infinity;
   const notThisPr = ({ mtimeMs }, stamp) => {
     const row = stamp ? rowOf(stamp, ref) : null;
