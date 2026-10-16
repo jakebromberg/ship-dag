@@ -62,7 +62,14 @@ test('renderBoard shows counts, the in-flight stage and note, and the wave build
   assert.match(html, /Reviewed<\/span>/);
   assert.match(html, /One nit left\./);
   assert.match(html, /Wave 4b · building now/);
-  assert.match(html, /Wave 5/, 'the ticket waiting on wave 4b projects to wave 5');
+  // Ticket #4 is ready and also projects to wave 5, so the match is bounded to #3's own node.
+  assert.match(html, /data-ref="o\/r#3"(?:(?!data-ref)[\s\S])*?Wave 5</, 'the ticket waiting on wave 4b projects to wave 5');
+});
+
+test('renderBoard ships each edge once and no per-node ancestor or descendant sets', () => {
+  const html = renderBoard(view());
+  assert.match(html, /id="dag" data-edges="\[\[&quot;o\/r#2&quot;,&quot;o\/r#3&quot;,(?:true|false)\]/);
+  assert.doesNotMatch(html, /data-anc|data-desc/);
 });
 
 test('renderBoard lists cyclic tickets in the callout, not in the road ahead', () => {
