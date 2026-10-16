@@ -1,36 +1,38 @@
 #!/usr/bin/env node
 // run-ci-profile.mjs — SKILL.md step 6.2's local-CI re-run, taken under
 // claude-orchestrator's machine-wide lease so the main session's suite does not
-// run unleased beside engine sessions. Reads the repo's `commands` from
-// references/repo-ci-profiles.json and runs them as one `cli-lease.js --shell`
+// run unleased beside engine sessions. Resolves the repo's commands through
+// lib/ci-profile.mjs (the registry entry in references/repo-ci-profiles.json,
+// else the repo's own `scripts/ci` on its base branch, exactly as step 4 did)
+// and runs them as one `cli-lease.js --shell`
 // line, each command in its own subshell (a `cd <subdir>` must not leak into
 // the next command, and an `|| { …; }` tail must not mask an earlier failure),
 // first failure short-circuiting, from the worktree. Exit codes: 75 = no lease
 // slot (rerun); 64 = setup error (missing worktree, missing lease CLI, no CI
-// profile, bad usage, spawn failure: never a test failure); 128 + n = the
-// lease CLI was killed by signal n; anything else is the suite's own status.
+// profile, a failed scripts/ci lookup, bad usage, spawn failure: never a test
+// failure); 128 + n = the lease CLI was killed by signal n; anything else is
+// the suite's own status.
 //
 // Usage: node run-ci-profile.mjs --repo <owner/repo> --worktree <path>
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { ciProfileFor } from './lib/ci-profile.mjs';
 import { stringOption } from './lib/cli-args.mjs';
 import { coDistPathIn, coHome as locateCoHome } from './lib/co-home.mjs';
 import { isMain } from './lib/is-main.mjs';
-
-const PROFILES = join(dirname(fileURLToPath(import.meta.url)), '..', 'references', 'repo-ci-profiles.json');
 
 /** One `/bin/sh` line running each command in its own subshell, short-circuiting on the first failure. Newlines inside the parens keep a trailing comment from eating the `)`. */
 export function composeCiLine(commands) {
   return commands.map((c) => `(\n${c}\n)`).join(' && ');
 }
 
-/** The repo's CI commands from a profiles map; throws when it has none. */
-export function commandsFor(repo, profiles) {
-  const commands = profiles[repo]?.commands;
+/**
+ * A resolved profile's commands (lib/ci-profile.mjs's `{ repo, commands }`); throws `no CI profile for <repo>` when
+ * it has none. failure.mjs's `ciStatusAfterProfile` callers and SKILL.md step 5 match that text, so it must not change.
+ */
+export function commandsFor({ repo, commands }) {
   if (!Array.isArray(commands) || commands.length === 0) throw new Error(`no CI profile for ${repo}`);
   return commands;
 }
@@ -40,10 +42,9 @@ export function cliArgs({ repo, line, coHome, maxWait }) {
   return [coDistPathIn(coHome, 'cli-lease.js'), '--max-wait', String(maxWait), '--label', `run-ci-profile ${repo}`, '--shell', line];
 }
 
-/** Runs the repo's profile under the lease from `worktree`; returns the spawnSync result. */
-export function runCiProfile({ repo, worktree, profilesPath = PROFILES, env = process.env, maxWait = 100, stdio = 'inherit' }) {
-  const commands = commandsFor(repo, JSON.parse(readFileSync(profilesPath, 'utf8')).profiles);
-  const args = cliArgs({ repo, line: composeCiLine(commands), coHome: locateCoHome(env), maxWait });
+/** Runs a resolved profile under the lease from `worktree`; returns the spawnSync result. */
+export function runCiProfile({ profile, worktree, env = process.env, maxWait = 100, stdio = 'inherit' }) {
+  const args = cliArgs({ repo: profile.repo, line: composeCiLine(commandsFor(profile)), coHome: locateCoHome(env), maxWait });
   return spawnSync(process.execPath, args, { cwd: worktree, env, stdio });
 }
 
@@ -63,20 +64,15 @@ export function exitCodeFor(result) {
   return EX_USAGE;
 }
 
-/** One line naming the first setup problem (missing worktree, missing lease CLI, repo without a CI profile), or null when the run can start. */
-export function setupProblem({ repo, worktree, profilesPath = PROFILES, coHome = locateCoHome() }) {
+/** One line naming the first local setup problem (missing worktree, missing lease CLI), or null. Checked before the profile lookup, which may ask GitHub. */
+export function setupProblem({ worktree, coHome = locateCoHome() }) {
   if (!existsSync(worktree)) return `worktree ${worktree} does not exist`;
   const cliPath = coDistPathIn(coHome, 'cli-lease.js');
   if (!existsSync(cliPath)) return `${cliPath} not found: build or point CO_HOME at a claude-orchestrator checkout`;
-  try {
-    commandsFor(repo, JSON.parse(readFileSync(profilesPath, 'utf8')).profiles);
-  } catch (err) {
-    return err.message;
-  }
   return null;
 }
 
-function main(argv) {
+async function main(argv) {
   let repo;
   let worktree;
   try {
@@ -90,13 +86,21 @@ function main(argv) {
     process.stderr.write('usage: run-ci-profile.mjs --repo <owner/repo> --worktree <path>\n');
     process.exit(EX_USAGE);
   }
-  const problem = setupProblem({ repo, worktree });
+  const problem = setupProblem({ worktree });
   if (problem) {
     process.stderr.write(`run-ci-profile: ${problem}\n`);
     process.exit(EX_USAGE);
   }
+  let profile;
   try {
-    const result = runCiProfile({ repo, worktree });
+    profile = await ciProfileFor(repo);
+    commandsFor(profile);
+  } catch (err) {
+    process.stderr.write(`run-ci-profile: ${err.message}\n`);
+    process.exit(EX_USAGE);
+  }
+  try {
+    const result = runCiProfile({ profile, worktree });
     const failure = spawnFailure(result);
     if (failure) process.stderr.write(`run-ci-profile: ${failure}\n`);
     process.exit(exitCodeFor(result));
