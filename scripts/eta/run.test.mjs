@@ -18,7 +18,10 @@ function put(path, value) {
   writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value));
 }
 
-/** A state base holding one run with two family dirs: o/r#1 merged, o/r#2 and o/r#3 open, o/r#4 blocked. */
+/**
+ * A state base holding one run with two family dirs: o/r#1 merged, o/r#2 and o/r#3 open, o/r#4 blocked. Each of
+ * #1-#3 has a latest engine start and a passing review round, 20, 30 and 40 minutes after it.
+ */
 function fixture() {
   const base = mkdtempSync(join(tmpdir(), 'eta-run-'));
   bases.push(base);
@@ -31,6 +34,14 @@ function fixture() {
   put(join(dir, 'plan.new.json'), { waves: [['o/r#2', 'o/r#3']], blocked: [{ ref: 'o/r#4', reason: 'external', missing: ['x/y#1'] }], cyclic: [] });
   put(metadataPathForRef(dir, 'o/r#1'), { startedAt: '2026-10-17T16:00:00.000Z' });
   put(metadataPathForRef(`${dir}-w1b`, 'o/r#1'), { startedAt: '2026-10-17T17:00:00.000Z' });
+  put(metadataPathForRef(`${dir}-w1b`, 'o/r#2'), { startedAt: '2026-10-17T17:00:00.000Z' });
+  put(metadataPathForRef(`${dir}-w1b`, 'o/r#3'), { startedAt: '2026-10-17T17:10:00.000Z' });
+  for (const [ref, passed] of [['o/r#1', '17:20'], ['o/r#2', '17:30'], ['o/r#3', '17:50']]) {
+    const round = join(dir, 'reviews', `${encodeURIComponent(ref)}.json`);
+    put(round, { issue: 1, findings: [] });
+    const when = new Date(`2026-10-17T${passed}:00Z`);
+    utimesSync(round, when, when);
+  }
   put(join(`${dir}-w1b`, 'state/reports/r.json'), { startedAt: '2026-10-17T17:00:00.000Z', issues: [{ ref: 'o/r#1', number: 1, status: 'succeeded', prNumber: 11 }] });
   // An older run, and a family dir of the newer one, must not be picked as the newest run.
   mkdirSync(join(base, 'sd-20261001-090000'));
@@ -49,7 +60,7 @@ const answer = {
   },
 };
 
-async function run(argv, { gh = async () => JSON.stringify(answer) } = {}) {
+async function run(argv, { gh = async () => JSON.stringify(answer), reviews } = {}) {
   const out = [];
   const err = [];
   const calls = [];
@@ -57,6 +68,7 @@ async function run(argv, { gh = async () => JSON.stringify(answer) } = {}) {
     env: { XDG_STATE_HOME: '/nope', HOME: '/nope' },
     now: Date.parse('2026-10-17T18:00:00Z'),
     gh: async (args) => { calls.push(args); return gh(args); },
+    ...(reviews ? { reviews } : {}),
     stdout: (s) => out.push(s), stderr: (s) => err.push(s),
   });
   return { code, out: out.join('\n'), err: err.join('\n'), calls };
@@ -108,6 +120,8 @@ test('main prints the estimate for the newest run, from one gh call, with the re
   assert.equal(json.runId, RUN);
   assert.deepEqual(json.blocked, ['o/r#4']);
   assert.deepEqual(json.queues.map((q) => [q.repo, q.merged, q.remaining]), [['o/r', 1, 2]]);
+  assert.equal(json.depth.samples, 3);
+  assert.deepEqual(json.depth.latency, { lo: 25 * 60_000, mid: 30 * 60_000, hi: 35 * 60_000 }, 'from the latest engine start across the family dirs to the review pass');
   assert.equal(json.runStart, Math.min(Date.parse('2026-10-17T16:00:00Z'), new Date(2026, 9, 17, 8).getTime()), 'the run starts at its first engine start or its id, whichever is earlier');
   assert.match(json.etaPacific.mid, /P[DS]T$/);
 });
@@ -147,13 +161,22 @@ test('main reads the newer of dag.json and dag.new.json', async () => {
   assert.match(got.calls[0].join(' '), /i9: issue/);
 });
 
+test('main without readable review rounds falls back to the default depth latency and says so', async () => {
+  const { base } = fixture();
+  const { code, out } = await run(['--state-base', base, '--json'], { reviews: async () => { throw new Error('no review gate here'); } });
+  assert.equal(code, 0);
+  const json = JSON.parse(out);
+  assert.equal(json.depth.source, 'default');
+  assert.match(json.notes.join('\n'), /review rounds unreadable \(no review gate here\)/);
+});
+
 test('main reads a hand-rebuilt report, whose rows are under `rows`, for the PR that merged', async () => {
   const { base, dir } = fixture();
   rmSync(join(`${dir}-w1b`, 'state/reports/r.json'));
   put(join(`${dir}-w1b`, 'state/reports/rebuilt.json'), { synthesized: 'by hand', rows: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }] });
   const got = await run(['--state-base', base, '--json']);
   assert.match(got.calls[0].join(' '), /p11: pullRequest/);
-  assert.equal(JSON.parse(got.out).queues[0].merged, 1);
+  assert.equal(JSON.parse(got.out).depth.samples, 3);
 });
 
 test('main keeps the data of a GraphQL answer that also holds errors, and names the refs it could not resolve', async () => {
