@@ -27,8 +27,28 @@ export const STATUSES = [
 const SHOWN = STATUSES.filter((s) => s.legend);
 const CHIP = Object.fromEntries(STATUSES.map((s) => [s.status, s.chip]));
 
-/** A status chip: its class and default label from STATUSES, the ticket's stage label if it has one. */
-const chip = (status, stage) => html`<span class="chip c-${status}">${stage || CHIP[status] || status}</span>`;
+/**
+ * The STATUSES entry whose chip colour each engine stage label (`deriveStage`, stage.mjs) wears. A chip's colour
+ * follows its word: Stalled is red in the in-flight cards and the road ahead alike, never the yellow of a Ready
+ * ticket that happens to be listed beside it. Building, In review, Reviewed and Fixing are work in progress, so
+ * blue; Stalled and Review unreadable need a person, so red, like Yours. A label not listed here (a hand-written
+ * stage from the board notes) keeps the ticket's status colour. Tiles, legend, bar and node borders count by
+ * status and do not read this table.
+ */
+export const STAGE_STATUS = {
+  Building: 'flight',
+  'In review': 'flight',
+  Reviewed: 'flight',
+  Fixing: 'flight',
+  Stalled: 'you',
+  'Review unreadable': 'you',
+};
+
+/** A status chip: its label is the ticket's stage if it has one, else the status's own; its class follows the label, or the status when the stage is not in STAGE_STATUS. */
+const chip = (status, stage) => {
+  const wears = stage && Object.hasOwn(STAGE_STATUS, stage) ? STAGE_STATUS[stage] : status;
+  return html`<span class="chip c-${wears}">${stage || CHIP[status] || status}</span>`;
+};
 
 /** `1 ticket`, `2 tickets`. */
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;

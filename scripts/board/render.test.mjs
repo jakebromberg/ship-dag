@@ -147,6 +147,29 @@ test('renderBoard labels an in-flight card with no stage by its STATUSES chip', 
   assert.ok(html.slice(html.indexOf('In flight'), html.indexOf('Road ahead')).includes(`<span class="chip c-flight">${chip}</span>`));
 });
 
+// A chip's colour follows its word: a stage reads the same in the in-flight cards and the road ahead, whatever
+// the ticket's status, so a Stalled ticket is never the colour of a Ready one.
+for (const [stage, status] of [
+  ['Building', 'flight'], ['In review', 'flight'], ['Reviewed', 'flight'], ['Fixing', 'flight'],
+  ['Stalled', 'you'], ['Review unreadable', 'you'],
+]) {
+  test(`a ${stage} chip wears the ${status} colour in every section`, () => {
+    const v = view();
+    const tickets = [ticket(9, 'flight', { stage }), ticket(10, 'ready', { stage })];
+    const html = renderBoard({ ...v, tickets, graph: buildGraph([R(9), R(10)], [], []), waves: new Map(), current: null });
+    const classes = [...html.matchAll(new RegExp(`<span class="chip (c-[a-z]+)">${stage}</span>`, 'g'))].map((m) => m[1]);
+    assert.equal(classes.length, 3, 'the in-flight card and both road-ahead nodes');
+    assert.deepEqual([...new Set(classes)], [`c-${status}`]);
+  });
+}
+
+test('a stage the board does not know keeps the ticket\'s status colour', () => {
+  const v = view();
+  const tickets = [ticket(10, 'ready', { stage: 'Merged' })];
+  const html = renderBoard({ ...v, tickets, graph: buildGraph([R(10)], [], []), waves: new Map(), current: null });
+  assert.ok(html.includes('<span class="chip c-ready">Merged</span>'));
+});
+
 test('renderBoard sorts refs numerically within a repo: #9 before #10', () => {
   const v = view();
   const tickets = [ticket(10, 'flight'), ticket(9, 'flight'), ticket(20, 'blocked'), ticket(19, 'blocked')];
