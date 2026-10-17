@@ -36,6 +36,22 @@ git clone git@github.com:jakebromberg/ship-dag.git ~/Developer/ship-dag
 ln -s ~/Developer/ship-dag ~/.claude/skills/ship-dag
 ```
 
+## ETA of a run
+
+```bash
+node scripts/eta/run.mjs [--run <runId>] [--state-base <dir>] [--json]
+```
+
+Estimates when a run will land its last ticket. With no `--run` it takes the newest run under `${XDG_STATE_HOME:-~/.local/state}/ship-dag/engine` (by the start its id encodes) that holds a fetched DAG. That DAG is step 1's `fetch --members` output saved in the run's dir as `dag.json` (or `dag.new.json`, a refetch), beside step 2's `plan` output as `plan.json` (or `plan.new.json`); a run that kept its spec only in a temp file has no ETA. It reads the run's state dirs read-only (whichever of `dag.json`/`dag.new.json` is newer, likewise the plan, each ticket's first engine start under `state/metadata/`, and the PR each report row names, across the run's `-w<N>` wave dirs) and asks GitHub for every ticket's state and merge time in **one** batched GraphQL query. It prints the ETA as a range in Pacific time with the zone label, the binding constraint, a per-repo table (merged, left, service time, finish), throughput, remaining waves, the blocked tickets it left out, and the as-of time; `--json` prints the same as data. Progress goes to stderr. Exit 0 printed, 1 no run or no fetched DAG, 64 usage.
+
+The model (`scripts/eta/model.mjs`, pure) takes the latest of three limits:
+
+- **Per-repo merge queue.** A repo merges one PR at a time, and each merge makes the next PR in that repo rebase, re-check and re-run CI. Its service time is the gap between consecutive merges of the run's PRs in that repo, over the last 6 merges; with fewer than 2 merges it falls back to 15 minutes. Finish = now + tickets left in the repo × service time.
+- **Throughput.** The gap between consecutive merges anywhere in the run, over the last 12, × tickets left.
+- **DAG depth.** The plan's waves that still hold an open ticket × one ticket's latency, measured as the time from its first engine start to its merge (2 hours before anything has merged). That latency counts every stall a ticket met on the way, a queue wait or an engine that died overnight, so depth errs pessimistic early in a run.
+
+Each limit is a range: the 25th, 50th and 75th percentiles of its samples give the optimistic, likely and pessimistic finish, and the binding constraint is the limit with the latest likely finish. Only merges since the run started count (the run id's local time, or the first engine start if that is earlier). A merge time is the merged PR's `mergedAt`: the PR a report row names, else a PR that closed the issue, else the issue's `closedAt`; an issue closed as not planned has none. Tickets the plan lists as `blocked` or `cyclic` (an external blocker or a human decision) are listed and not counted. Without `gh` the estimate falls back to the fetched DAG's open set with no merge times, and says so.
+
 ## Tests
 
 ```bash
@@ -49,6 +65,8 @@ The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [cl
 | Path | What |
 |------|------|
 | `SKILL.md` | The skill definition — arguments, the wave loop, HITL gates. |
+| `scripts/eta/` | The ETA of a run (see *ETA of a run*): `run.mjs`, the CLI, and `model.mjs`/`state.mjs`, which re-export the copies in `plugins/ship-dag-eta/lib/`. |
+| `plugins/ship-dag-eta/lib/` | `model.mjs` (pure: per-repo queues, throughput, depth, the range and its binding constraint, Pacific formatting) and `state.mjs` (gathers the inputs through an injected `io` and `gh`, with no Node imports; one GraphQL query per estimate). They live in a plugin's folder so a plugin can ship them self-contained. |
 | `scripts/plan-waves.mjs` | DAG fetch + wave planning (imports claude-orchestrator's topo-sort core). `fetch --members` also emits `members[]`, every leaf in scope with closed ones included, for the status board. |
 | `scripts/run-ci-profile.mjs` | Runs a repo's local-CI profile, resolved as step 4 resolved it, under claude-orchestrator's lease CLI (SKILL.md step 6.2): each command in its own subshell, exit code passed through, 75 on no slot, 64 on a setup error. |
 | `scripts/ci-profile.mjs` | Prints the step-4 `repos` map for the given repos: exit 0 printed, 1 a lookup failed, 64 usage. |
