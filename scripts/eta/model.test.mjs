@@ -94,16 +94,16 @@ test('throughputFinish has no rate when every merge landed at the same instant',
 
 for (const [name, input, want] of [
   ['counts only waves with an open node and uses the measured latency',
-    { waves: [['a', 'b'], ['c'], ['d']], open: new Set(['b', 'd']), latencies: [HOUR, 2 * HOUR, 3 * HOUR], now: 0, defaultMs: 9 * HOUR, minSamples: 3 },
+    { waves: [['a', 'b'], ['c'], ['d']], open: new Set(['b', 'd']), latencies: [HOUR, 2 * HOUR, 3 * HOUR], now: 0, window: 8, defaultMs: 9 * HOUR, minSamples: 3 },
     { waves: 2, source: 'measured', samples: 3, finish: { lo: 3 * HOUR, mid: 4 * HOUR, hi: 5 * HOUR } }],
   ['falls back to the default latency with nothing measured',
-    { waves: [['a']], open: new Set(['a']), latencies: [], now: HOUR, defaultMs: 2 * HOUR, minSamples: 3 },
+    { waves: [['a']], open: new Set(['a']), latencies: [], now: HOUR, window: 8, defaultMs: 2 * HOUR, minSamples: 3 },
     { waves: 1, source: 'default', samples: 0, finish: { lo: 3 * HOUR, mid: 3 * HOUR, hi: 3 * HOUR } }],
   ['falls back to the default latency with fewer samples than the minimum, and still counts them',
-    { waves: [['a']], open: new Set(['a']), latencies: [HOUR, 5 * HOUR], now: 0, defaultMs: 2 * HOUR, minSamples: 3 },
+    { waves: [['a']], open: new Set(['a']), latencies: [HOUR, 5 * HOUR], now: 0, window: 8, defaultMs: 2 * HOUR, minSamples: 3 },
     { waves: 1, source: 'default', samples: 2, finish: { lo: 2 * HOUR, mid: 2 * HOUR, hi: 2 * HOUR } }],
   ['no open wave finishes now',
-    { waves: [['a']], open: new Set(), latencies: [HOUR, HOUR, HOUR], now: HOUR, defaultMs: 2 * HOUR, minSamples: 3 },
+    { waves: [['a']], open: new Set(), latencies: [HOUR, HOUR, HOUR], now: HOUR, window: 8, defaultMs: 2 * HOUR, minSamples: 3 },
     { waves: 0, source: 'measured', samples: 3, finish: { lo: HOUR, mid: HOUR, hi: HOUR } }],
 ]) {
   test(`depthFinish ${name}`, () => {
@@ -112,6 +112,22 @@ for (const [name, input, want] of [
     assert.equal(got.source, want.source);
     assert.equal(got.samples, want.samples);
     assert.deepEqual(got.finish, want.finish);
+  });
+}
+
+// Latencies arrive oldest review pass first; only the last `window` of them set the spread.
+const hours = (...xs) => xs.map((x) => x * HOUR);
+for (const [name, latencies, want] of [
+  ['uses only the latest window of samples, so older slow ones drop out',
+    hours(20, 20, 1, 2, 3, 4, 5, 6, 7, 8), { samples: 10, used: 8, latency: { lo: 2.75 * HOUR, mid: 4.5 * HOUR, hi: 6.25 * HOUR } }],
+  ['uses every sample when there are no more than the window',
+    hours(20, 2, 3, 4, 5, 6, 7, 8), { samples: 8, used: 8, latency: { lo: 3.75 * HOUR, mid: 5.5 * HOUR, hi: 7.25 * HOUR } }],
+]) {
+  test(`depthFinish ${name}`, () => {
+    const got = depthFinish({ waves: [['a']], open: new Set(['a']), latencies, now: 0, window: 8, defaultMs: HOUR, minSamples: 3 });
+    assert.equal(got.samples, want.samples);
+    assert.equal(got.used, want.used);
+    assert.deepEqual(got.latency, want.latency);
   });
 }
 
@@ -185,6 +201,29 @@ for (const [name, nodes, want] of [
   });
 }
 
+// Two overnight tickets (10h) passed review first, then eight 30-minute ones; the overnight ones sit last in `nodes`,
+// so only ordering by `reviewedAt` (not by node order or start time) leaves them out.
+const quick = (i) => node(`o/r#${i}`, { open: false, mergedAt: m(900 + i), startedAt: m(100 + 10 * i), reviewedAt: m(130 + 10 * i) });
+const overnight = (i) => node(`o/r#${i}`, { open: false, mergedAt: m(900 + i), startedAt: m(-600 + i), reviewedAt: m(i) });
+for (const [name, nodes, opts, want] of [
+  ['takes the latest 8 review passes by default',
+    [...[1, 2, 3, 4, 5, 6, 7, 8].map(quick), overnight(20), overnight(21)], {},
+    { samples: 10, used: 8, latency: { lo: m(30), mid: m(30), hi: m(30) } }],
+  ['takes every review pass when there are 8 or fewer',
+    [...[1, 2, 3, 4, 5, 6].map(quick), overnight(20), overnight(21)], {},
+    { samples: 8, used: 8, latency: { lo: m(30), mid: m(30), hi: m(172.5) } }],
+  ['takes its window from latencyWindow',
+    [...[1, 2, 3, 4, 5, 6].map(quick), overnight(20), overnight(21)], { latencyWindow: 3 },
+    { samples: 8, used: 3, latency: { lo: m(30), mid: m(30), hi: m(30) } }],
+]) {
+  test(`estimate's depth window ${name}`, () => {
+    const got = estimate({ now: m(1000), runStart: m(-1000), nodes: [...nodes, node('o/r#99')], blocked: [], waves: [['o/r#99']], opts });
+    assert.equal(got.depth.samples, want.samples);
+    assert.equal(got.depth.used, want.used);
+    assert.deepEqual(got.depth.latency, want.latency);
+  });
+}
+
 test('estimate with nothing left is done now', () => {
   const got = estimate({ now: m(5), runStart: 0, nodes: [node('o/r#1', { open: false, mergedAt: m(1) })], blocked: [], waves: [] });
   assert.equal(got.binding, 'done');
@@ -241,3 +280,14 @@ test('renderText keeps a gap between a wide service range and the finish column'
   const got = estimate({ now: Date.parse('2026-10-17T11:00:00Z'), runStart: 0, nodes, blocked: [], waves: [['o/r#3']] });
   assert.match(renderText({ ...got, runId: 'sd-1' }), /11h 00m \/ 11h 00m \/ 11h 00m +Sat, Oct 17/);
 });
+
+for (const [count, want] of [
+  [10, /\(median of the latest 8 of 10 tickets, latest engine start to review pass\)/],
+  [8, /\(median of 8 tickets, latest engine start to review pass\)/],
+]) {
+  test(`renderText names depth's window with ${count} review passes`, () => {
+    const nodes = Array.from({ length: count }, (_, i) => node(`o/r#${i}`, { startedAt: m(10 * i), reviewedAt: m(10 * i + 30) }));
+    const got = estimate({ now: m(600), runStart: 0, nodes, blocked: [], waves: [['o/r#0']] });
+    assert.match(renderText({ ...got, runId: 'sd-1' }), want);
+  });
+}
