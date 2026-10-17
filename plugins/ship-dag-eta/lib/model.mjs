@@ -3,7 +3,8 @@
 // Three limits converge, and the ETA is the latest of them:
 //   1. each repo's merge queue (merges are serial per repo: remaining × the typical gap between its merges),
 //   2. run-wide throughput (remaining × the typical gap between any two of the run's merges),
-//   3. DAG depth (waves with an open ticket × the typical implement-to-merge latency of one ticket).
+//   3. DAG depth (waves with an open ticket × the typical latency of one ticket, from its latest engine start to the
+//      review pass of its PR; the merge-queue wait is left out, since limit 1 already counts it).
 // Every limit is a range: the 25th, 50th and 75th percentile of its samples give the optimistic, likely and
 // pessimistic finish. No I/O here; state.mjs gathers the inputs.
 
@@ -11,7 +12,8 @@ export const DEFAULTS = Object.freeze({
   window: 6, // trailing merges per repo that set its service time
   runWindow: 12, // trailing run-wide merges that set throughput
   serviceFallbackMs: 15 * 60_000, // a repo's service time before it has two merges (its CI duration)
-  waveLatencyMs: 2 * 3_600_000, // one wave's latency before any ticket has gone from implement to merge
+  waveLatencyMs: 2 * 3_600_000, // one wave's latency while fewer than minLatencySamples tickets have passed review
+  minLatencySamples: 3, // review-passed tickets needed before depth trusts its own measurement
 });
 
 /** The `q` quantile of `xs` by linear interpolation, or null when `xs` is empty. */
@@ -67,14 +69,15 @@ export function throughputFinish({ merges, remaining, now, window }) {
 }
 
 /**
- * DAG depth: the planned waves that still hold an open ticket, times one ticket's implement-to-merge latency.
- * @param {{waves: string[][], open: Set<string>, latencies: number[], now: number, defaultMs: number}} input
+ * DAG depth: the planned waves that still hold an open ticket, times one ticket's latency (latest engine start to
+ * review pass). With fewer than `minSamples` latencies it uses `defaultMs`; `samples` says how many there were.
+ * @param {{waves: string[][], open: Set<string>, latencies: number[], now: number, defaultMs: number, minSamples: number}} input
  */
-export function depthFinish({ waves, open, latencies, now, defaultMs }) {
+export function depthFinish({ waves, open, latencies, now, defaultMs, minSamples }) {
   const left = waves.filter((w) => w.some((ref) => open.has(ref))).length;
-  const measured = spread(latencies);
+  const measured = latencies.length >= minSamples ? spread(latencies) : null;
   const latency = measured ?? flat(defaultMs);
-  return { waves: left, latency, samples: latencies.length, source: measured ? 'measured' : 'default', finish: finishAfter(now, left, latency) };
+  return { waves: left, latency, samples: latencies.length, minSamples, source: measured ? 'measured' : 'default', finish: finishAfter(now, left, latency) };
 }
 
 /**
@@ -82,8 +85,8 @@ export function depthFinish({ waves, open, latencies, now, defaultMs }) {
  * @param {object} input
  * @param {number} input.now
  * @param {number} input.runStart  merges before it are not the run's
- * @param {Array<{ref: string, repo: string, open: boolean, mergedAt: number|null, startedAt: number|null}>} input.nodes
- *   every ticket in scope; `startedAt` is its first engine activity
+ * @param {Array<{ref: string, repo: string, open: boolean, mergedAt: number|null, startedAt: number|null, reviewedAt: number|null}>} input.nodes
+ *   every ticket in scope; `startedAt` is its latest engine start, `reviewedAt` when its PR last passed review
  * @param {string[]} input.blocked  refs waiting on a human or an external blocker: listed, never counted
  * @param {string[][]} input.waves  the plan's waves
  * @param {Partial<typeof DEFAULTS> & {serviceFallbackMs?: number|Record<string, number>}} [input.opts]
@@ -105,8 +108,8 @@ export function estimate({ now, runStart, nodes, blocked, waves, opts = {} }) {
     }),
   }));
   const throughput = throughputFinish({ merges: merged.map((n) => n.mergedAt), remaining: open.size, now, window: o.runWindow });
-  const latencies = merged.filter((n) => n.startedAt != null && n.mergedAt > n.startedAt).map((n) => n.mergedAt - n.startedAt);
-  const depth = depthFinish({ waves, open, latencies, now, defaultMs: o.waveLatencyMs });
+  const latencies = nodes.filter((n) => n.startedAt != null && n.reviewedAt != null && n.reviewedAt > n.startedAt).map((n) => n.reviewedAt - n.startedAt);
+  const depth = depthFinish({ waves, open, latencies, now, defaultMs: o.waveLatencyMs, minSamples: o.minLatencySamples });
 
   const limits = [
     ...queues.filter((q) => q.remaining > 0).map((q) => ({ name: `queue ${q.repo}`, finish: q.finish })),
@@ -159,7 +162,7 @@ export function renderText({ runId, now, eta, binding, queues, throughput, depth
     throughput.finish
       ? `Throughput: ${throughput.perHour.toFixed(1)} merges/h over the last merges; ${throughput.remaining} left, likely done ${formatPacific(throughput.finish.mid)}`
       : `Throughput: not measured (${throughput.merges} merge(s) so far); ${throughput.remaining} left`,
-    `Depth: ${depth.waves} wave(s) left x ${span(depth.latency)} per wave (${depth.source === 'measured' ? `median of ${depth.samples} implement-to-merge` : 'default'}), likely done ${formatPacific(depth.finish.mid)}`,
+    `Depth: ${depth.waves} wave(s) left x ${span(depth.latency)} per wave (${depth.source === 'measured' ? `median of ${depth.samples} tickets` : `default: ${depth.samples} of ${depth.minSamples} samples`}, latest engine start to review pass), likely done ${formatPacific(depth.finish.mid)}`,
     `${blocked.length} blocked, not counted${blocked.length ? `: ${blocked.join(', ')}` : ''}`,
   ];
   if (queues.some((q) => q.source === 'fallback')) {

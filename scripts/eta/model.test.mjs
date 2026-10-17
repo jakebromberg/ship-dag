@@ -84,36 +84,41 @@ test('throughputFinish has no rate and no finish with fewer than two merges', ()
 
 for (const [name, input, want] of [
   ['counts only waves with an open node and uses the measured latency',
-    { waves: [['a', 'b'], ['c'], ['d']], open: new Set(['b', 'd']), latencies: [HOUR, 2 * HOUR, 3 * HOUR], now: 0, defaultMs: 9 * HOUR },
-    { waves: 2, source: 'measured', finish: { lo: 3 * HOUR, mid: 4 * HOUR, hi: 5 * HOUR } }],
+    { waves: [['a', 'b'], ['c'], ['d']], open: new Set(['b', 'd']), latencies: [HOUR, 2 * HOUR, 3 * HOUR], now: 0, defaultMs: 9 * HOUR, minSamples: 3 },
+    { waves: 2, source: 'measured', samples: 3, finish: { lo: 3 * HOUR, mid: 4 * HOUR, hi: 5 * HOUR } }],
   ['falls back to the default latency with nothing measured',
-    { waves: [['a']], open: new Set(['a']), latencies: [], now: HOUR, defaultMs: 2 * HOUR },
-    { waves: 1, source: 'default', finish: { lo: 3 * HOUR, mid: 3 * HOUR, hi: 3 * HOUR } }],
+    { waves: [['a']], open: new Set(['a']), latencies: [], now: HOUR, defaultMs: 2 * HOUR, minSamples: 3 },
+    { waves: 1, source: 'default', samples: 0, finish: { lo: 3 * HOUR, mid: 3 * HOUR, hi: 3 * HOUR } }],
+  ['falls back to the default latency with fewer samples than the minimum, and still counts them',
+    { waves: [['a']], open: new Set(['a']), latencies: [HOUR, 5 * HOUR], now: 0, defaultMs: 2 * HOUR, minSamples: 3 },
+    { waves: 1, source: 'default', samples: 2, finish: { lo: 2 * HOUR, mid: 2 * HOUR, hi: 2 * HOUR } }],
   ['no open wave finishes now',
-    { waves: [['a']], open: new Set(), latencies: [HOUR], now: HOUR, defaultMs: 2 * HOUR },
-    { waves: 0, source: 'measured', finish: { lo: HOUR, mid: HOUR, hi: HOUR } }],
+    { waves: [['a']], open: new Set(), latencies: [HOUR, HOUR, HOUR], now: HOUR, defaultMs: 2 * HOUR, minSamples: 3 },
+    { waves: 0, source: 'measured', samples: 3, finish: { lo: HOUR, mid: HOUR, hi: HOUR } }],
 ]) {
   test(`depthFinish ${name}`, () => {
     const got = depthFinish(input);
     assert.equal(got.waves, want.waves);
     assert.equal(got.source, want.source);
+    assert.equal(got.samples, want.samples);
     assert.deepEqual(got.finish, want.finish);
   });
 }
 
 // ---- estimate -------------------------------------------------------------
 
-const node = (ref, { open = true, mergedAt = null, startedAt = null } = {}) => ({ ref, repo: ref.split('#')[0], open, mergedAt, startedAt });
+// `startedAt` is the ticket's latest engine start and `reviewedAt` when its PR last passed review.
+const node = (ref, { open = true, mergedAt = null, startedAt = null, reviewedAt = null } = {}) => ({ ref, repo: ref.split('#')[0], open, mergedAt, startedAt, reviewedAt });
 
 test('estimate takes the latest of the three limits and names the binding one', () => {
   const nodes = [
     // o/slow: two merges 30 min apart, three left: finishes at +90 min.
-    node('o/slow#1', { open: false, mergedAt: m(0), startedAt: m(-20) }),
-    node('o/slow#2', { open: false, mergedAt: m(30), startedAt: m(10) }),
+    node('o/slow#1', { open: false, mergedAt: m(0), startedAt: m(-20), reviewedAt: m(0) }),
+    node('o/slow#2', { open: false, mergedAt: m(30), startedAt: m(10), reviewedAt: m(30) }),
     node('o/slow#3'), node('o/slow#4'), node('o/slow#5'),
     // o/fast: two merges 5 min apart, one left.
-    node('o/fast#1', { open: false, mergedAt: m(20), startedAt: m(0) }),
-    node('o/fast#2', { open: false, mergedAt: m(25), startedAt: m(5) }),
+    node('o/fast#1', { open: false, mergedAt: m(20), startedAt: m(0), reviewedAt: m(20) }),
+    node('o/fast#2', { open: false, mergedAt: m(25), startedAt: m(5), reviewedAt: m(25) }),
     node('o/fast#3'),
     // Blocked: never counted.
     node('o/slow#9'),
@@ -143,14 +148,32 @@ test('estimate ignores merges from before the run started', () => {
 
 test('estimate binds on depth when one ticket sits behind a long chain', () => {
   const nodes = [
-    node('o/r#1', { open: false, mergedAt: m(10), startedAt: m(-50) }),
-    node('o/r#2', { open: false, mergedAt: m(20), startedAt: m(-40) }),
+    node('o/r#1', { open: false, mergedAt: m(10), startedAt: m(-50), reviewedAt: m(10) }),
+    node('o/r#2', { open: false, mergedAt: m(20), startedAt: m(-40), reviewedAt: m(20) }),
+    node('o/r#5', { startedAt: m(-60), reviewedAt: m(0) }), // passed review, waiting in the queue
     node('o/r#3'), node('o/r#4'),
   ];
-  const got = estimate({ now: m(20), runStart: m(-60), nodes, blocked: [], waves: [['o/r#3'], ['o/r#4']] });
+  const got = estimate({ now: m(20), runStart: m(-60), nodes, blocked: [], waves: [['o/r#3', 'o/r#5'], ['o/r#4']] });
   assert.equal(got.binding, 'depth');
+  assert.equal(got.depth.samples, 3);
   assert.deepEqual(got.eta, { lo: m(140), mid: m(140), hi: m(140) });
 });
+
+for (const [name, nodes, want] of [
+  ['runs from the latest engine start to the review pass, leaving out the merge wait',
+    [0, 1, 2].map((i) => node(`o/r#${i}`, { open: false, mergedAt: m(500 + i), startedAt: m(10 * i), reviewedAt: m(10 * i + 30) })),
+    { samples: 3, source: 'measured', mid: m(30) }],
+  ['skips a ticket with no review pass yet, or one restarted after its pass',
+    [node('o/r#1', { startedAt: m(0) }), node('o/r#2', { startedAt: m(50), reviewedAt: m(40) }), node('o/r#3', { startedAt: m(0), reviewedAt: m(30) })],
+    { samples: 1, source: 'default', mid: 2 * HOUR }],
+]) {
+  test(`estimate's depth latency ${name}`, () => {
+    const got = estimate({ now: m(600), runStart: 0, nodes: [...nodes, node('o/r#9')], blocked: [], waves: [['o/r#9']] });
+    assert.equal(got.depth.samples, want.samples);
+    assert.equal(got.depth.source, want.source);
+    assert.equal(got.depth.latency.mid, want.mid);
+  });
+}
 
 test('estimate with nothing left is done now', () => {
   const got = estimate({ now: m(5), runStart: 0, nodes: [node('o/r#1', { open: false, mergedAt: m(1) })], blocked: [], waves: [] });
@@ -187,6 +210,7 @@ test('renderText shows the range in Pacific, the binding constraint, the per-rep
   assert.match(text, /sd-1/);
   assert.match(text, /as of Sat, Oct 17, 10:10 AM PDT/);
   assert.match(text, /Binding: depth/);
+  assert.match(text, /Depth: 1 wave\(s\) left x 2h 00m .*\(default: 0 of 3 samples, latest engine start to review pass\)/);
   assert.match(text, /o\/r +2 +1 +10m/);
   assert.match(text, /1 blocked, not counted: o\/r#4/);
   assert.match(text, /Note: gh unavailable/);
