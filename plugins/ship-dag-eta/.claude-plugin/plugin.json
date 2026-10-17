@@ -1,9 +1,10 @@
 {
   "name": "ship-dag-eta",
   "version": "0.1.0",
-  "description": "Shows the ETA of the active ship-dag run on the status line, refreshed on its own, and prints the full estimate with /ship-dag-eta.",
+  "description": "Shows the ETA of the active ship-dag run as a progress bar on the status line, refreshed on its own; /ship-dag-eta-bar opens a pane with the bar's points of interest, /ship-dag-eta prints the full estimate.",
   "author": {
     "name": "ship-dag"
   },
-  "repository": "https://github.com/jakebromberg/ship-dag"
+  "repository": "https://github.com/jakebromberg/ship-dag",
+  "types": "./types/index.d.ts"
 }
