@@ -5,6 +5,8 @@
 //
 //   io = { list(dir) → [{name, isDir}] ([] when absent), read(path) → text|null, mtime(path) → ms|null }
 //   gh = async (args) → stdout; throws when gh is missing or the call fails
+//   reviews = async ({base, runId, refs}) → Map(ref → when its PR last passed review, epoch ms); optional, and the
+//     host's to supply, since the verdict is the review gate's (the CLI reads it in process, the mod through node)
 
 import { estimate } from './model.mjs';
 
@@ -81,7 +83,10 @@ async function newer(io, dir, stem) {
   return null;
 }
 
-/** What the run's state dirs hold: scope, plan, blocked refs, each ref's first engine activity and its report PR. */
+/**
+ * What the run's state dirs hold: scope, plan, blocked refs, each ref's first and latest engine start (the engine's
+ * own per-session `state/metadata/issue-<ref>.json` `startedAt`, across the run's wave dirs) and its report PR.
+ */
 export async function readRun(io, base, runId) {
   const runDir = `${base}/${runId}`;
   const spec = await newer(io, runDir, 'dag');
@@ -91,6 +96,7 @@ export async function readRun(io, base, runId) {
   const plan = (await newer(io, runDir, 'plan')) ?? { waves: [], blocked: [], cyclic: [] };
   const openAtFetch = new Set((spec.nodes ?? []).map((n) => n.ref));
   const scope = spec.members ?? [...openAtFetch];
+  const firstStart = new Map();
   const startedAt = new Map();
   const reports = [];
   for (const dir of await familyDirs(io, base, runId)) {
@@ -98,7 +104,10 @@ export async function readRun(io, base, runId) {
     const written = new Set((await io.list(`${dir}/state/metadata`)).map((e) => e.name));
     for (const ref of scope.filter((r) => written.has(`issue-${stem(r)}.json`))) {
       const at = Date.parse((await readJson(io, `${dir}/state/metadata/issue-${stem(ref)}.json`))?.startedAt);
-      if (!Number.isNaN(at) && !(startedAt.get(ref) <= at)) {
+      if (!Number.isNaN(at) && !(firstStart.get(ref) <= at)) {
+        firstStart.set(ref, at);
+      }
+      if (!Number.isNaN(at) && !(startedAt.get(ref) >= at)) {
         startedAt.set(ref, at);
       }
     }
@@ -122,7 +131,7 @@ export async function readRun(io, base, runId) {
     }
   }
   const blocked = [...(plan.blocked ?? []).map((b) => b.ref), ...(plan.cyclic ?? [])].filter((r) => scope.includes(r));
-  return { scope, openAtFetch, waves: plan.waves ?? [], blocked, startedAt, prByRef };
+  return { scope, openAtFetch, waves: plan.waves ?? [], blocked, firstStart, startedAt, prByRef };
 }
 
 /** One GraphQL query for every ref's issue state and every PR's merge time, aliased per repo as `r<i>` (`aliasOf`). */
@@ -194,7 +203,7 @@ export async function fetchLive(refs, prByRef, gh, { onErrors = () => {} } = {})
  * gh, open tickets are the fetched DAG's and no merge times are read; a note says so.
  * @param {{io: object, gh: Function, base: string, runId?: string, now: number, warn?: (m: string) => void}} args
  */
-export async function computeEta({ io, gh, base, runId, now, warn = () => {} }) {
+export async function computeEta({ io, gh, reviews, base, runId, now, warn = () => {} }) {
   const id = runId ?? (await latestRun(io, base));
   if (!id) {
     return { error: `no ship-dag run under ${base}` };
@@ -221,13 +230,20 @@ export async function computeEta({ io, gh, base, runId, now, warn = () => {} }) 
     const why = err.code === 'ENOENT' ? 'gh is not installed' : String(err.stderr || err.message).trim().split('\n')[0];
     note(`gh unavailable (${why}): open tickets are the fetched DAG's, and no merge times were read`);
   }
+  let reviewed = new Map();
+  try {
+    reviewed = reviews ? await reviews({ base, runId: id, refs: run.scope }) : reviewed;
+  } catch (err) {
+    notes.push(`review rounds unreadable (${String(err.message).split('\n')[0]}): depth uses its default latency`);
+    warn(notes.at(-1));
+  }
   const nodes = run.scope.map((ref) => ({
-    ref, repo: parseRef(ref)?.repo ?? ref, startedAt: run.startedAt.get(ref) ?? null,
+    ref, repo: parseRef(ref)?.repo ?? ref, startedAt: run.startedAt.get(ref) ?? null, reviewedAt: reviewed.get(ref) ?? null,
     ...(live.get(ref) ?? { open: run.openAtFetch.has(ref), mergedAt: null }),
   }));
   // The plan's blocked list is as old as the plan: a ticket it blocked that has since closed is no longer blocked.
   const stillOpen = new Set(nodes.filter((n) => n.open).map((n) => n.ref));
   const blocked = run.blocked.filter((ref) => stillOpen.has(ref));
-  const runStart = Math.min(runStartFromId(id) ?? Infinity, ...run.startedAt.values());
+  const runStart = Math.min(runStartFromId(id) ?? Infinity, ...run.firstStart.values());
   return { runId: id, runStart, ...estimate({ now, runStart, nodes, blocked, waves: run.waves }), notes };
 }
