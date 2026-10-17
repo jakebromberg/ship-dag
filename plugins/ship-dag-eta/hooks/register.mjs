@@ -5,6 +5,9 @@
 // finish and its range in Pacific time, the binding constraint and the as-of time. With no active run the line is
 // cleared. GitHub's answer (one GraphQL query) is kept in the plugin's store for five minutes, so every session
 // running the mod shares one fetch. The model and the state reader are ../lib, the same files the repo's CLI runs.
+// When each ticket passed review is the review gate's to say, and the gate is Node code in the ship-dag skill, so
+// the mod asks the skill's scripts/eta/review-passes.mjs through `node` (cached the same way); without the skill,
+// depth falls back to its default and the estimate says why.
 
 import { formatPacific, renderText } from '../lib/model.mjs';
 import { computeEta, latestRun } from '../lib/state.mjs';
@@ -27,19 +30,29 @@ const fsIo = ($) => ({
   mtime: (path) => $.fs.stat(path).then((s) => s.mtimeMs, () => null),
 });
 
-/** `gh` through `$.process.run`, its answer kept in the store for GH_TTL_MS per query. @param {import('claude-code').EngineInterface} $ */
-const cachedGh = ($, now) => async (args) => {
-  const key = args.join('\n');
-  const hit = /** @type {{key: string, at: number, stdout: string} | undefined} */ (await $.store.get('gh'));
+/** `argv` through `$.process.run`, its stdout kept in the store under `slot` for GH_TTL_MS per argv. @param {import('claude-code').EngineInterface} $ */
+async function cachedRun($, now, slot, argv) {
+  const key = argv.join('\n');
+  const hit = /** @type {{key: string, at: number, stdout: string} | undefined} */ (await $.store.get(slot));
   if (hit && hit.key === key && now - hit.at < GH_TTL_MS) {
     return hit.stdout;
   }
-  const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], { timeoutMs: 60_000 });
+  const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 60_000 });
   if (exitCode !== 0) {
-    throw new Error(stderr.trim() || `gh exited ${exitCode}`);
+    throw new Error(stderr.trim().split('\n')[0] || `${argv[0]} exited ${exitCode}`);
   }
-  await $.store.set('gh', { key, at: now, stdout });
+  await $.store.set(slot, { key, at: now, stdout });
   return stdout;
+}
+
+/** The skill's review-passes CLI, run through `node`: each ref's review pass as a Map. @param {import('claude-code').EngineInterface} $ */
+const skillReviews = ($, now) => async ({ base, runId, refs }) => {
+  const script = `${await $.env.get('HOME')}/.claude/skills/ship-dag/scripts/eta/review-passes.mjs`;
+  if (!(await $.fs.exists(script))) {
+    throw new Error(`no ship-dag skill at ${script}`);
+  }
+  const argv = ['node', script, '--state-base', base, '--run', runId, '--refs', refs.join(',')];
+  return new Map(Object.entries(JSON.parse(await cachedRun($, now, 'reviews', argv))));
 };
 
 /** When any dir of the run's family last changed: the dirs, their reviews, reports and per-ticket metadata. */
@@ -59,7 +72,8 @@ async function estimateFor($, runId) {
   if (!id || (!runId && now - (await lastActivity($, base, id)) > ACTIVE_MS)) {
     return null;
   }
-  return computeEta({ io, gh: cachedGh($, now), base, runId: id, now, warn: (m) => $.ui.log(`ship-dag-eta: ${m}`, { to: 'debug' }) });
+  const gh = (args) => cachedRun($, now, 'gh', ['gh', ...args]);
+  return computeEta({ io, gh, reviews: skillReviews($, now), base, runId: id, now, warn: (m) => $.ui.log(`ship-dag-eta: ${m}`, { to: 'debug' }) });
 }
 
 /** The status line: likely finish, its range, the binding constraint and the as-of time, all in Pacific time. */
