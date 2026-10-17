@@ -52,11 +52,25 @@ The model (`scripts/eta/model.mjs`, pure) takes the latest of three limits:
 
 Each limit is a range: the 25th, 50th and 75th percentiles of its samples give the optimistic, likely and pessimistic finish, and the binding constraint is the limit with the latest likely finish. Only merges since the run started count (the run id's local time, or the first engine start if that is earlier). A merge time is the merged PR's `mergedAt`: the PR a report row names, else a PR that closed the issue, else the issue's `closedAt`; an issue closed as not planned has none. Tickets the plan lists as `blocked` or `cyclic` (an external blocker or a human decision) are listed and not counted. Without `gh` the estimate falls back to the fetched DAG's open set with no merge times, and says so.
 
+### On the status line: the `ship-dag-eta` mod
+
+This repo is also a plugin marketplace (`ship-dag`, in [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json)) that lists one Claude Code mod, `ship-dag-eta`, in [`plugins/ship-dag-eta/`](./plugins/ship-dag-eta). Install it from a terminal session:
+
+```text
+/plugin install ship-dag-eta --marketplace jakebromberg/ship-dag
+```
+
+Answer `y` to add the marketplace, then pick a scope. From a local clone instead: `/plugin marketplace add ~/Developer/ship-dag`, then `/plugin install ship-dag-eta@ship-dag`.
+
+At session start and every two minutes after, the mod finds the newest run under the state base and, when that run's dirs changed in the last six hours, pins one status line: `ship-dag ETA <likely> (<optimistic> to <pessimistic>), bound by <constraint>, as of <time>`, every time in Pacific with its zone label. With no active run the line is cleared. `/ship-dag-eta [runId]` prints the CLI's full block for the active run, or for the run named whatever its age. Each refresh recomputes from the run's local state; GitHub's answer is kept in the plugin's store for five minutes, so the sessions running the mod share one GraphQL query per five minutes. Depth's review passes are the review gate's verdicts, and the gate is Node code in the ship-dag skill, so the mod runs the installed skill's `scripts/eta/review-passes.mjs` through `node` (from `~/.claude/skills/ship-dag`, cached the same way); without the skill, depth uses its default and the estimate says why. The model and the state reader live in `plugins/ship-dag-eta/lib/`, because an installed plugin cannot reach outside its own folder; `scripts/eta/model.mjs` and `scripts/eta/state.mjs` re-export them, so the CLI, the mod and the `node --test` suite share one copy.
+
 ## Tests
 
 ```bash
 node --test 'scripts/**/*.test.mjs' 'eval/**/*.test.mjs'
 ```
+
+The mod's own tests run under the engine's test kit: `claude plugin test plugins/ship-dag-eta`, and `claude plugin validate .` checks the marketplace, the manifest and the hooks module.
 
 The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [claude-orchestrator](https://github.com/jakebromberg/claude-orchestrator) with its deps installed (`npm ci` there — `dist/` is committed, no build). CI ([`.github/workflows/tests.yml`](./.github/workflows/tests.yml)) does exactly this on every push and PR, across Node 22 and 24.
 
@@ -66,7 +80,8 @@ The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [cl
 |------|------|
 | `SKILL.md` | The skill definition — arguments, the wave loop, HITL gates. |
 | `scripts/eta/` | The ETA of a run (see *ETA of a run*): `run.mjs`, the CLI; `review-passes.mjs`, when each ticket's PR last passed review, read through the shared round matcher and the review gate (also a CLI printing JSON, for a host with no Node of its own); and `model.mjs`/`state.mjs`, which re-export the copies in `plugins/ship-dag-eta/lib/`. |
-| `plugins/ship-dag-eta/lib/` | `model.mjs` (pure: per-repo queues, throughput, depth, the range and its binding constraint, Pacific formatting) and `state.mjs` (gathers the inputs through an injected `io` and `gh`, with no Node imports; one GraphQL query per estimate). They live in a plugin's folder so a plugin can ship them self-contained. |
+| `plugins/ship-dag-eta/` | The `ship-dag-eta` mod: `lib/model.mjs` (pure: per-repo queues, throughput, depth, the range and its binding constraint, Pacific formatting), `lib/state.mjs` (gathers the inputs through an injected `io` and `gh`, with no Node imports; one GraphQL query per estimate), `hooks/register.mjs` (the status line, its two-minute refresh, the five-minute GitHub cache and `/ship-dag-eta`) and `tests/` (run by `claude plugin test`). |
+| `.claude-plugin/marketplace.json` | Makes this repo the `ship-dag` plugin marketplace, listing `ship-dag-eta`. |
 | `scripts/plan-waves.mjs` | DAG fetch + wave planning (imports claude-orchestrator's topo-sort core). `fetch --members` also emits `members[]`, every leaf in scope with closed ones included, for the status board. |
 | `scripts/run-ci-profile.mjs` | Runs a repo's local-CI profile, resolved as step 4 resolved it, under claude-orchestrator's lease CLI (SKILL.md step 6.2): each command in its own subshell, exit code passed through, 75 on no slot, 64 on a setup error. |
 | `scripts/ci-profile.mjs` | Prints the step-4 `repos` map for the given repos: exit 0 printed, 1 a lookup failed, 64 usage. |
