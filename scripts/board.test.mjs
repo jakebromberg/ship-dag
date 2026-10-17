@@ -274,6 +274,12 @@ test('init stores the parsed blockOn and stamps startedAt; a second init says bo
   assert.equal(JSON.parse(readFileSync(join(s.dir, 'board.json'), 'utf8')).title, 'T');
 });
 
+test('init --predecessors stores the refs', async () => {
+  const s = setUp({ files: { 'board.json': undefined } });
+  assert.equal((await run(['init', '--run-id', RUN, '--predecessors', `${R(50)},${R(51)}`], s)).code, 0);
+  assert.deepEqual(JSON.parse(readFileSync(join(s.dir, 'board.json'), 'utf8')).predecessors, [R(50), R(51)]);
+});
+
 test('init for a new run creates its dir', async () => {
   const s = setUp();
   const fresh = join(s.base, 'ship-dag/engine/sd-fresh');
@@ -283,6 +289,7 @@ test('init for a new run creates its dir', async () => {
 
 for (const [name, argv, want] of [
   ['an unknown --block-on category', ['init', '--run-id', 'sd-other', '--block-on', 'nonsense'], /nonsense/],
+  ['a --predecessors entry that is not a ref', ['init', '--run-id', 'sd-other', '--predecessors', `${R(50)},nope`], /nope/],
   ['--label without --repo', ['init', '--run-id', 'sd-other', '--label', 'wave'], /--label needs --repo/],
   ['a flag with no value', ['render', '--run-id'], /--run-id requires a value/],
   ['a flag followed by another flag', ['render', '--spec', '--run-id', RUN], /--spec requires a value/],
@@ -301,4 +308,51 @@ test('an unknown subcommand is a usage error', async () => {
   const { code, err } = await run(['frobnicate'], setUp());
   assert.equal(code, 64);
   assert.match(err.join('\n'), /usage/);
+});
+
+// Predecessor epics: the board's own lookups answer from `fakeGh`; a query for sub-issues (the ones with a
+// `subIssues(` selection) answers from `kids`, ref of epic → its closed leaves, as the epic's one page.
+function withPredecessors(table, kids) {
+  const gh = fakeGh(table);
+  const asked = [];
+  const runGh = async (args) => {
+    const query = args.find((a) => a.startsWith('query='));
+    if (!query.includes('subIssues(')) { return gh.runGh(args); }
+    assert.ok(args.includes('GraphQL-Features: sub_issues'));
+    asked.push(query);
+    const data = Object.fromEntries([...query.matchAll(/(e\d+):repository\(owner:"([^"]+)",name:"([^"]+)"\)\{issue\(number:(\d+)\)/g)].map(([, key, owner, name, n]) => {
+      const nodes = (kids[`${owner}/${name}#${n}`] ?? []).map(({ number, ...rest }) => ({ number, title: `Old ${number}`, url: `https://github.com/o/r/issues/${number}`,
+        state: 'CLOSED', stateReason: 'COMPLETED', closedAt: '2026-09-02T19:00:00Z', repository: { nameWithOwner: 'o/r' }, subIssuesSummary: { total: 0 }, ...rest }));
+      return [key, { issue: { title: 'First epic', url: `https://github.com/${owner}/${name}/issues/${n}`, subIssues: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } }];
+    }));
+    return JSON.stringify({ data });
+  };
+  return { runGh, asked };
+}
+
+test('render reads board.json\'s predecessors: their closed leaves join the headline and a collapsed section, the run\'s own tickets do not count twice', async () => {
+  const s = setUp({ files: { 'board.json': { ...BOARD, predecessors: [R(50)] } } });
+  const kids = { [R(50)]: [{ number: 60 }, { number: 61 }, { number: 62, stateReason: 'NOT_PLANNED' }, { number: 63, state: 'OPEN', stateReason: null }, { number: 1 }] };
+  const gh = withPredecessors(TABLE, kids);
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.equal(gh.asked.length, 1, 'one extra query');
+  assert.match(html, /<b>3\/5<\/b><span>shipped \(2 before this run\)<\/span>/, 'the run\'s 1 of 3, plus 2 earlier; #1 is the run\'s, #62 dropped, #63 open');
+  assert.match(html, /<summary>Shipped before this run: <a href="https:\/\/github.com\/o\/r\/issues\/50">r#50<\/a> — First epic \(2, plus 1 closed as not planned\)<\/summary>/);
+});
+
+test('render with a predecessor GitHub does not have exits 1 and names it', async () => {
+  const s = setUp({ files: { 'board.json': { ...BOARD, predecessors: [R(50)] } } });
+  const runGh = async (args) => (args.find((a) => a.startsWith('query=')).includes('subIssues(') ? graphqlAnswer({ data: { e0: { issue: null } }, errors: [{ type: 'NOT_FOUND', path: ['e0', 'issue'], message: 'x' }] }) : fakeGh(TABLE).runGh(args));
+  const { code, err, html } = await run(['render', '--run-id', RUN], { ...s, runGh });
+  assert.equal(code, 1);
+  assert.ok(err.includes(`[board] ${R(50)}: GitHub has no such issue`), err.join('\n'));
+  assert.equal(html, null);
+});
+
+test('render with a malformed predecessor ref exits 1 before reading GitHub for it', async () => {
+  const s = setUp({ files: { 'board.json': { ...BOARD, predecessors: ['nope'] } } });
+  const { code, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh(TABLE).runGh });
+  assert.equal(code, 1);
+  assert.match(err.join('\n'), /not an owner\/repo#N ref: "nope"/);
 });
