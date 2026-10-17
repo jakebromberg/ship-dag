@@ -39,6 +39,7 @@ const answer = JSON.stringify({
 function world(on: On, tree: Tree, passes: Record<string, number> = {}, { dirMtimeMs, hangGh = false }: { dirMtimeMs?: number; hangGh?: boolean } = {}) {
   const gh: string[][] = []
   const nodeRuns: string[][] = []
+  const opened: Record<string, unknown>[] = []
   const statuses: (string | undefined)[] = []
   const children = (dir: string) => {
     const names = new Map<string, 'file' | 'dir'>()
@@ -80,7 +81,11 @@ function world(on: On, tree: Tree, passes: Record<string, number> = {}, { dirMti
   on('ui.log', () => ({ value: undefined }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  return { gh, statuses, nodeRuns }
+  on('ui.open', ($, e) => {
+    opened.push({ ...e })
+    return { value: { isPlaced: true } }
+  })
+  return { gh, statuses, nodeRuns, opened }
 }
 
 const start = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
@@ -91,7 +96,7 @@ test('an active run shows its ETA in Pacific time, its binding constraint and th
   await $.session.start(start)
   await clock.settle()
   const line = seen.statuses.at(-1)
-  expect(line).toMatch(/^ship-dag ETA .* P[DS]T/)
+  expect(line).toMatch(/^ship-dag \[[█▓░·\S]{20}\] 1\/3 merged, ETA .* P[DS]T/)
   expect(line).toMatch(/bound by (depth|queue o\/r|throughput)/)
   expect(line).toMatch(/as of Sat, Oct 17, 11:00 AM PDT/)
 })
@@ -166,7 +171,7 @@ test('a run whose files were rewritten in place within six hours is active, thou
   const seen = world(on, tree, {}, { dirMtimeMs: NOW - 7 * 60 * MIN })
   await $.session.start(start)
   await clock.settle()
-  expect(seen.statuses.at(-1)).toMatch(/^ship-dag ETA /)
+  expect(seen.statuses.at(-1)).toMatch(/^ship-dag \[.{20}\] 1\/3 merged, ETA /)
 })
 
 test('session start does not wait for the first estimate', async ($, on) => {
@@ -175,4 +180,46 @@ test('session start does not wait for the first estimate', async ($, on) => {
   const { cwd } = await $.session.start(start)
   expect(cwd).toBe('/tmp')
   expect(seen.statuses).toHaveLength(0)
+})
+
+const PANE = { component: 'Pane', requestId: 'ship-dag-eta' } as const
+
+test('the pane never opens on its own, and /ship-dag-eta-bar opens it without taking focus', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const seen = world(on, runTree(NOW - 10 * MIN))
+  await $.session.start(start)
+  await clock.settle()
+  await clock.advance(10 * MIN)
+  expect(seen.opened).toHaveLength(0)
+  await $.command.run({ command: 'ship-dag-eta-bar', args: '' })
+  expect(seen.opened).toHaveLength(1)
+  expect(seen.opened[0]).toMatchObject({ id: 'ship-dag-eta' })
+  expect(seen.opened[0]!.focus).toBeUndefined()
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`the pane draws the full bar with its legend when wide, and the compact bar when narrow (${surface})`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on, runTree(NOW - 10 * MIN))
+    await $.session.start(start)
+    await clock.settle()
+    const wide = await $.ui.mount({ plugin: 'ship-dag-eta', surface, ...PANE, props: { title: 'ship-dag ETA', isFocused: false, bodyColumns: 80 } })
+    expect(await wide.find({ type: 'Text', text: /1\/3 merged/ })).toBeDefined()
+    expect(await wide.find({ type: 'Text', text: /now +Sat, Oct 17, 11:00 AM PDT/ })).toBeDefined()
+    expect(await wide.find({ type: 'Text', text: /\(binding\)/ })).toBeDefined()
+    await wide.unmount()
+    const narrow = await $.ui.mount({ plugin: 'ship-dag-eta', surface, ...PANE, props: { title: 'ship-dag ETA', isFocused: false, bodyColumns: 40 } })
+    expect(await narrow.find({ type: 'Text', text: /^\[.{20}\] 1\/3 merged$/ })).toBeDefined()
+    expect(await narrow.find({ type: 'Text', text: /^bound by / })).toBeDefined()
+    await narrow.unmount()
+  })
+}
+
+test('with no active run the pane says so', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  world(on, runTree(NOW - 7 * 60 * MIN))
+  await $.session.start(start)
+  await clock.settle()
+  const pane = await $.ui.mount({ plugin: 'ship-dag-eta', surface: 'terminal', ...PANE, props: { title: 'ship-dag ETA', isFocused: false, bodyColumns: 80 } })
+  expect(await pane.find({ type: 'Text', text: /no active ship-dag run/i })).toBeDefined()
 })

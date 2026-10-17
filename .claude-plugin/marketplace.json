@@ -1,12 +1,14 @@
 {
   "name": "ship-dag",
-  "owner": { "name": "ship-dag" },
+  "owner": {
+    "name": "ship-dag"
+  },
   "description": "Companions to the ship-dag skill.",
   "plugins": [
     {
       "name": "ship-dag-eta",
       "source": "./plugins/ship-dag-eta",
-      "description": "Shows the ETA of the active ship-dag run on the status line, refreshed on its own, and prints the full estimate with /ship-dag-eta."
+      "description": "Shows the ETA of the active ship-dag run as a progress bar on the status line, refreshed on its own; /ship-dag-eta-bar opens a pane with the bar's points of interest, /ship-dag-eta prints the full estimate."
     }
   ]
 }

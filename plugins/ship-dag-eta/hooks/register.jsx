@@ -1,20 +1,26 @@
-// register.mjs — the ship-dag-eta mod: the ETA of the active ship-dag run on the status line, and /ship-dag-eta.
+// register.jsx — the ship-dag-eta mod: the ETA of the active ship-dag run as a progress bar on the status line, a pane
+// with the bar's points of interest (/ship-dag-eta-bar), and the full estimate (/ship-dag-eta).
 //
 // Every two minutes (and at session start) it finds the newest run under the ship-dag state base, and when that run's
-// dirs changed in the last six hours, recomputes its ETA from the local state and pins one status line: the likely
-// finish and its range in Pacific time, the binding constraint and the as-of time. With no active run the line is
-// cleared. GitHub's answer (one GraphQL query) is kept in the plugin's store for five minutes, so every session
-// running the mod shares one fetch. The model and the state reader are ../lib, the same files the repo's CLI runs.
-// When each ticket passed review is the review gate's to say, and the gate is Node code in the ship-dag skill, so
-// the mod asks the skill's scripts/eta/review-passes.mjs through `node` (cached the same way); without the skill,
-// depth falls back to its default and the estimate says why.
+// dirs changed in the last six hours, recomputes its ETA from the local state, pins one status line (a compact bar,
+// the merged count, the likely finish and its range in Pacific time, the binding constraint, the as-of time) and
+// keeps the bar's model in `$.state`, which redraws the pane when it is open. With no active run the line is cleared.
+// The pane opens only when the person runs the command, and never asks for focus. GitHub's answer (one GraphQL
+// query) is kept in the plugin's store for five minutes, so every session running the mod shares one fetch. The
+// model, the state reader and the bar layout are ../lib, the same files the repo's CLI and tests run. When each
+// ticket passed review is the review gate's to say, and the gate is Node code in the ship-dag skill, so the mod asks
+// the skill's scripts/eta/review-passes.mjs through `node` (cached the same way); without the skill, depth falls
+// back to its default and the estimate says why.
 
 import { formatPacific, renderText } from '../lib/model.mjs';
 import { computeEta, familyDirs, latestRun } from '../lib/state.mjs';
+import { barModel, compactBar, renderBar } from '../lib/bar.mjs';
 
 const REFRESH_MS = 2 * 60_000;
 const GH_TTL_MS = 5 * 60_000;
 const ACTIVE_MS = 6 * 3_600_000;
+const BAR = { plugin: 'ship-dag-eta', key: 'bar' };
+const NO_RUN = 'There is no active ship-dag run (none changed in the last six hours).';
 
 /** @param {import('claude-code').EngineInterface} $ */
 async function stateBase($) {
@@ -94,19 +100,21 @@ async function estimateFor($, runId) {
   return computeEta({ io, gh, reviews: skillReviews($, now), base, runId: id, now, warn: (m) => $.ui.log(`ship-dag-eta: ${m}`, { to: 'debug' }) });
 }
 
-/** The status line: likely finish, its range, the binding constraint and the as-of time, all in Pacific time. */
-export function statusLine(r) {
+/** The status line: the compact bar, the merged count, likely finish, its range, the binding constraint and the as-of time. */
+export function statusLine(r, b) {
   if (r.binding === 'done') {
     return `ship-dag ${r.runId}: nothing left to merge, as of ${formatPacific(r.now)}`;
   }
-  return `ship-dag ETA ${formatPacific(r.eta.mid)} (${formatPacific(r.eta.lo)} to ${formatPacific(r.eta.hi)}), bound by ${r.binding}, as of ${formatPacific(r.now)}`;
+  return `ship-dag ${compactBar(b)} ${b.merged}/${b.total} merged, ETA ${formatPacific(r.eta.mid)} (${formatPacific(r.eta.lo)} to ${formatPacific(r.eta.hi)}), bound by ${r.binding}, as of ${formatPacific(r.now)}`;
 }
 
 /** @param {import('claude-code').EngineInterface} $ */
 async function refresh($) {
   try {
     const r = await estimateFor($);
-    $.ui.status(r && !r.error ? statusLine(r) : undefined);
+    const b = r && !r.error ? barModel(r) : null;
+    $.ui.status(b ? statusLine(r, b) : undefined);
+    await $.state.set(BAR, b);
   } catch (err) {
     $.ui.log(`ship-dag-eta: refresh failed: ${err?.message ?? err}`, { to: 'debug' });
   }
@@ -116,6 +124,7 @@ async function refresh($) {
 export const register = (on) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'ship-dag-eta', description: 'ETA of the active ship-dag run (or of the run named)', argumentHint: '[runId]' });
+    await $.command.register({ name: 'ship-dag-eta-bar', description: 'Open a pane with the active ship-dag run as a progress bar over time' });
     $.clock.every(REFRESH_MS, () => refresh($));
     // Not awaited: the first estimate waits on gh and node (up to a minute each), and session start must not.
     refresh($);
@@ -126,11 +135,29 @@ export const register = (on) => {
     try {
       const r = await estimateFor($, e.args.trim());
       if (!r) {
-        return { text: 'There is no active ship-dag run (none changed in the last six hours). Name one: /ship-dag-eta <runId>' };
+        return { text: `${NO_RUN} Name one: /ship-dag-eta <runId>` };
       }
       return { text: r.error ? `ship-dag-eta: ${r.error}` : renderText(r) };
     } catch (err) {
       return { text: `ship-dag-eta: ${err?.message ?? err}` };
     }
+  });
+
+  on('command.run', { command: 'ship-dag-eta-bar' }, async ($) => {
+    await $.ui.open({ id: 'ship-dag-eta', title: 'ship-dag ETA' });
+    return { text: 'Opened the ship-dag ETA pane.' };
+  });
+
+  on('ui.render', { component: 'Pane', requestId: 'ship-dag-eta' }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e);
+    const { value } = await $.state.get(BAR);
+    const lines = value ? renderBar(value, e.props.bodyColumns) : [NO_RUN];
+    return (
+      <Box flexDirection="column">
+        {lines.map((line) => (
+          <Text wrap="truncate">{line}</Text>
+        ))}
+      </Box>
+    );
   });
 };
