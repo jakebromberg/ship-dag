@@ -7,12 +7,14 @@
 // fetched DAG's open set and says so. Progress goes to stderr. Exit 0 printed, 1 no run or no DAG, 64 usage.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { isMain } from '../lib/is-main.mjs';
 import { ghCli } from '../lib/gh.mjs';
 import { formatPacific, renderText } from './model.mjs';
 import { computeEta } from './state.mjs';
+import { reviewPasses } from './review-passes.mjs';
 
 /** The `io` state.mjs reads through, over the local file system. */
 export const fsIo = {
@@ -45,7 +47,7 @@ const USAGE = 'usage: node scripts/eta/run.mjs [--run <runId>] [--state-base <di
  * The CLI. Every effect is injected, so tests run it without GitHub or a real state dir.
  * @returns {Promise<number>} the exit code
  */
-export async function main(argv, { env = process.env, now = Date.now(), gh = ghCli, io = fsIo, stdout = console.log, stderr = console.error } = {}) {
+export async function main(argv, { env = process.env, now = Date.now(), gh = ghCli, io = fsIo, reviews, stdout = console.log, stderr = console.error } = {}) {
   let args;
   try {
     args = parseArgs({ args: argv, options: { run: { type: 'string' }, 'state-base': { type: 'string' }, json: { type: 'boolean' } } }).values;
@@ -54,7 +56,9 @@ export async function main(argv, { env = process.env, now = Date.now(), gh = ghC
     return 64;
   }
   const base = args['state-base'] ?? defaultBaseDir(env);
-  const result = await computeEta({ io, gh, base, runId: args.run, now, warn: (m) => stderr(`eta: ${m}`) });
+  const warn = (m) => stderr(`eta: ${m}`);
+  const passes = reviews ?? (async ({ runId, refs }) => reviewPasses({ runDir: join(base, runId), refs, warn }));
+  const result = await computeEta({ io, gh, reviews: passes, base, runId: args.run, now, warn });
   if (result.error) {
     stderr(`eta: ${result.error}; pass --run <runId> or --state-base <dir>`);
     return 1;
