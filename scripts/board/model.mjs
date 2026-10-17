@@ -126,6 +126,28 @@ export function orderSteps(g) {
   });
 }
 
+/**
+ * What each predecessor epic shipped before this run, for the "Shipped before this run" section. A leaf counts when
+ * `classify` calls it shipped (closed, not as not planned), newest first; one closed as not planned is only counted in
+ * `dropped`; an open one is neither. A leaf in `exclude` (the run's own tickets) is left out, and one under several
+ * epics counts once, under the first that lists it. An epic with no such leaf is kept, with an empty list.
+ *
+ * @param {Array<{ref:string,url:string,title:string,leaves:Array<{ref:string,title:string,url:string,state:string,stateReason?:string|null,closedAt?:string|null}>}>} groups
+ *   `fetchPredecessors`' result
+ * @param {Iterable<string>} [exclude]
+ * @returns {Array<{ref:string,url:string,title:string,shipped:Array<object>,dropped:number}>}
+ */
+export function shippedBefore(groups, exclude = []) {
+  const seen = new Set(exclude);
+  return groups.map(({ leaves, ...epic }) => {
+    const kind = (l) => classify({ state: l.state, stateReason: l.stateReason, hasOpenPr: false, owned: false, openBlockers: 0 });
+    const mine = leaves.filter((l) => l.state === 'CLOSED' && !seen.has(l.ref) && seen.add(l.ref));
+    const shipped = mine.filter((l) => kind(l) === 'shipped')
+      .sort((a, b) => (b.closedAt || '').localeCompare(a.closedAt || '') || compareRefs(a.ref, b.ref));
+    return { ...epic, shipped, dropped: mine.length - shipped.length };
+  });
+}
+
 /** The number a wave id starts with: `"31b"` → 31, `"1′"` → 1, none → 0. */
 export function leadingWaveNumber(id) {
   const m = /^(\d+)/.exec(String(id ?? ''));

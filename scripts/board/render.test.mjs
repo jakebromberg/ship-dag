@@ -191,3 +191,39 @@ for (const { status, token } of STATUSES) {
     assert.equal(rule?.[2], `color:var(--${token});background:var(--${token}-bg)`);
   });
 }
+
+// ---- predecessor epics ---------------------------------------------------
+
+const before = (epicRef, leaves, dropped = 0) => ({ ref: epicRef, url: 'https://github.com/o/r/issues/50', title: 'The first epic', dropped,
+  shipped: leaves.map((n) => ({ ref: R(n), title: `Earlier ${n}`, url: `https://github.com/o/r/issues/${n}`, closedAt: '2026-09-02T19:00:00Z' })) });
+
+test('renderBoard adds a collapsed "Shipped before this run" section below Shipped, with the epic link, count, and each leaf\'s Pacific close time', () => {
+  const html = renderBoard(view({ before: [before(R(50), [60, 61, 62], 2)] }));
+  assert.ok(html.indexOf('Shipped before this run') > html.indexOf('Show all 1'), 'below the run\'s own Shipped section');
+  const section = html.slice(html.indexOf('<details><summary>Shipped before this run'));
+  assert.match(section, /^<details><summary>Shipped before this run: <a href="https:\/\/github.com\/o\/r\/issues\/50">r#50<\/a> — The first epic \(3, plus 2 closed as not planned\)<\/summary>/);
+  assert.ok(!section.slice(0, 40).includes('open'), 'collapsed: no open attribute');
+  for (const n of [60, 61, 62]) { assert.ok(section.includes(`<a href="https://github.com/o/r/issues/${n}">r#${n}</a>`) && section.includes(`Earlier ${n}`)); }
+  assert.match(section, /Sep 2, 12:00 PM PDT/);
+});
+
+test('renderBoard\'s headline counts both: the tile, its label and the bar', () => {
+  const html = renderBoard(view({ before: [before(R(50), [60, 61]), before(R(51), [62])] }));
+  assert.match(html, /<b>4\/9<\/b><span>shipped \(3 before this run\)<\/span>/, 'the run\'s 1 + 3 earlier, of 6 + 3');
+  assert.match(html, /aria-label="4 of 9 shipped"/);
+  assert.match(html, /Shipped <small>1 ticket, newest first/, 'the run\'s own Shipped section is unchanged');
+});
+
+test('renderBoard without predecessors is unchanged: no section, the plain tile', () => {
+  for (const html of [renderBoard(view()), renderBoard(view({ before: [] }))]) {
+    assert.ok(!html.includes('before this run'));
+    assert.match(html, /<b>1\/6<\/b><span>shipped<\/span>/);
+  }
+});
+
+test('renderBoard escapes a predecessor\'s title', () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const b = before(R(50), [60]);
+  const html = renderBoard(view({ before: [{ ...b, title: evil, shipped: [{ ...b.shipped[0], title: evil }] }] }));
+  assert.ok(!html.includes(evil));
+});
