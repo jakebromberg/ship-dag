@@ -32,9 +32,10 @@ const answer = JSON.stringify({
   },
 })
 
-/** Answers the mod's file system and gh from `tree`; returns the gh calls and the status lines it set. */
-function world(on: On, tree: Tree) {
+/** Answers the mod's file system and gh from `tree`, and the skill's review-passes CLI with `passes`; returns what it ran and the status lines it set. */
+function world(on: On, tree: Tree, passes: Record<string, number> = {}) {
   const gh: string[][] = []
+  const nodeRuns: string[][] = []
   const statuses: (string | undefined)[] = []
   const children = (dir: string) => {
     const names = new Map<string, 'file' | 'dir'>()
@@ -60,9 +61,15 @@ function world(on: On, tree: Tree) {
     return kind ? { value: { kind, size: 0, mtimeMs: f?.mtimeMs ?? newest(e.path), isLink: false } } : { deny: `ENOENT: ${e.path}` }
   })
   on('process.run', ($, e) => {
+    const ran = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    if (e.argv[0] === 'node') {
+      nodeRuns.push([...e.argv])
+      return ran(JSON.stringify(passes))
+    }
     gh.push([...e.argv])
-    return { value: { exitCode: 0, stdout: answer, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return ran(answer)
   })
+  on('fs.exists', ($, e) => ({ value: e.path in tree }))
   on('ui.status', ($, e) => {
     statuses.push(e.text)
     return { value: undefined }
@@ -70,7 +77,7 @@ function world(on: On, tree: Tree) {
   on('ui.log', () => ({ value: undefined }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  return { gh, statuses }
+  return { gh, statuses, nodeRuns }
 }
 
 const start = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
@@ -119,4 +126,32 @@ test('the command prints the whole estimate, for a named run whatever its age', 
   expect(text).toMatch(`ship-dag ETA for ${RUN}`)
   expect(text).toMatch(/o\/r +1 +2/)
   expect(text).toMatch(/0 blocked, not counted/)
+})
+
+const GATE = '/home/dj/.claude/skills/ship-dag/scripts/eta/review-passes.mjs'
+
+test('depth runs from each ticket\'s latest engine start to its review pass, read through the ship-dag skill\'s review gate', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const tree = runTree(NOW - 10 * MIN)
+  const meta = (ref: string, startedAt: string) => ({ [`${BASE}/${RUN}-w1b/state/metadata/issue-${encodeURIComponent(ref)}.json`]: { text: JSON.stringify({ startedAt }), mtimeMs: NOW - 10 * MIN } })
+  Object.assign(tree, meta('o/r#1', '2026-10-17T17:00:00Z'), meta('o/r#2', '2026-10-17T17:00:00Z'), meta('o/r#3', '2026-10-17T17:10:00Z'), { [GATE]: { text: '', mtimeMs: 0 } })
+  const passes = { 'o/r#1': Date.parse('2026-10-17T17:20:00Z'), 'o/r#2': Date.parse('2026-10-17T17:30:00Z'), 'o/r#3': Date.parse('2026-10-17T17:50:00Z') }
+  const seen = world(on, tree, passes)
+  await $.session.start(start)
+  await clock.settle()
+  const { text } = await $.command.run({ command: 'ship-dag-eta', args: RUN })
+  expect(text).toMatch(/25m \/ 30m \/ 35m per wave \(median of 3 tickets, latest engine start to review pass\)/)
+  expect(seen.nodeRuns[0]!.slice(0, 2)).toEqual(['node', GATE])
+  expect(seen.nodeRuns[0]).toContain(RUN)
+})
+
+test('without the ship-dag skill the depth falls back to its default and the estimate says why', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const seen = world(on, runTree(NOW - 10 * MIN))
+  await $.session.start(start)
+  await clock.settle()
+  const { text } = await $.command.run({ command: 'ship-dag-eta', args: RUN })
+  expect(text).toMatch(/Note: review rounds unreadable \(no ship-dag skill at .*review-passes\.mjs\)/)
+  expect(text).toMatch(/default: 0 of 3 samples/)
+  expect(seen.nodeRuns).toHaveLength(0)
 })
