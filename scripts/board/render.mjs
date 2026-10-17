@@ -74,6 +74,8 @@ export function waveSpan(labels) {
  * @param {(repo:string) => string} v.repoLabel  `makeRepoLabel`'s labeller, over the same repos as `shortRef`
  * @param {{callouts?:Array<{owner?:string,title:string,text?:string}>, wave?:string, gates?:Record<string,string>}} v.notes
  *   a callout's `text` is plain text, escaped like everything else
+ * @param {Array<{ref:string,url:string,title:string,dropped:number,shipped:Array<{ref:string,title:string,url:string,closedAt?:string}>}>} [v.before]
+ *   `shippedBefore`'s result: what the predecessor epics shipped before this run. Counted in the headline, listed in a collapsed section.
  * @param {string} v.rebuild  the command that rebuilds this page
  * @returns {string}
  */
@@ -84,7 +86,9 @@ export function renderBoard(v) {
     .map((p) => html`<a class="pr pr-${p.state}" href="${p.url}" title="${p.state}">#${p.number}</a>`);
   const counts = {};
   for (const t of v.tickets) counts[t.status] = (counts[t.status] || 0) + 1;
-  const total = v.tickets.length - (counts.dropped || 0);
+  const earlier = (v.before || []).reduce((n, g) => n + g.shipped.length, 0);
+  counts.shipped = (counts.shipped || 0) + earlier; // the headline and the bar count the whole project
+  const total = v.tickets.length - (counts.dropped || 0) + earlier;
   const notes = v.notes || {};
 
   const h = [html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`
@@ -93,7 +97,7 @@ export function renderBoard(v) {
     + html`<p class="meta">Updated ${formatPacific(v.now, 'long')} · run ${v.runId} · reloads every 2 minutes</p>`);
   h.push(html`<div class="tiles">${SHOWN.map(({ status, tile }) => {
     const n = status === 'shipped' ? `${counts.shipped || 0}/${total}` : counts[status] || 0;
-    return html`<div class="tile"><b>${n}</b><span>${tile}</span></div>`;
+    return html`<div class="tile"><b>${n}</b><span>${tile}${status === 'shipped' && earlier ? ` (${earlier} before this run)` : ''}</span></div>`;
   })}</div>`);
   h.push(bar(counts, total));
   h.push(html`<div class="legend">${SHOWN.map(({ token, legend }) => html`<span><i style="background:var(--${token})"></i>${legend}</span>`)}</div>`);
@@ -123,6 +127,11 @@ export function renderBoard(v) {
       const merged = prLinks(t, ['merged']);
       return html`<tr><td class="n">${link(t.ref)}</td><td>${t.title}</td><td class="n">${merged.length ? list(merged, ' ') : html`<span class="meta">—</span>`}</td><td class="n">${t.shippedWave || ''}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`;
     })}</tbody></table></div></details>`);
+  for (const g of v.before || []) {
+    h.push(html`<details><summary>Shipped before this run: <a href="${g.url}">${v.shortRef(g.ref)}</a> — ${g.title} `
+      + html`(${g.shipped.length}${g.dropped ? `, plus ${g.dropped} closed as not planned` : ''})</summary>`
+      + html`<div class="tw"><table><thead><tr><th>Ticket</th><th>Title</th><th>Closed</th></tr></thead><tbody>${g.shipped.map((t) => html`<tr><td class="n"><a href="${t.url}">${v.shortRef(t.ref)}</a></td><td>${t.title}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`)}</tbody></table></div></details>`);
+  }
   const dropped = v.tickets.filter((t) => t.status === 'dropped');
   if (dropped.length) {
     h.push(html`<details><summary>Closed as not planned (${dropped.length})</summary><div class="items">${dropped.map((t) => html`<span class="item">${link(t.ref)} <span class="x">${t.title}</span></span>`)}</div></details>`);

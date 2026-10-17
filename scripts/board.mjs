@@ -2,17 +2,20 @@
 // board.mjs — the status board CLI. `init` writes the run's board.json; `render` builds board.html from the graph
 // spec (`dag.json`, never fetched here), one batched GraphQL read of the tickets' GitHub state, and the files the
 // engine already leaves in the run family. The board's four files live in the family's base dir (`runBaseDir`).
+// board.json's optional `predecessors: ["owner/repo#N", ...]` names epics whose work came before this run: render reads their
+// leaf sub-issues (recursively, paged) in extra batched queries and shows the closed ones as "Shipped before this run".
 // Exit codes: 0 = done; 1 = failed (stderr says why; the old board.html is untouched); 64 = usage.
 //
 // Usage: board.mjs init   (--state-dir <dir> | --run-id <id>) [--title T] [--epic owner/repo#N | --label L --repo owner/repo]
-//                         [--block-on a,b] [--out path] [--abbreviations <json|@file|->]
+//                         [--block-on a,b] [--out path] [--abbreviations <json|@file|->] [--predecessors a,b]
 //        board.mjs render [--state-dir <dir> | --run-id <id>] [--spec path] [--board-config path] [--out path]
 
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderBoard } from './board/render.mjs';
-import { buildGraph, classify, makeRepoLabel, makeShortRef, projectWaves } from './board/model.mjs';
+import { buildGraph, classify, makeRepoLabel, makeShortRef, projectWaves, shippedBefore } from './board/model.mjs';
+import { fetchPredecessors } from './board/predecessors.mjs';
 import { readBoard, readJson, readNotes, readRetros, resolveRun, runBaseDir, runWaves } from './board/run.mjs';
 import { deriveStage, readFamily } from './board/stage.mjs';
 import { stringOption } from './lib/cli-args.mjs';
@@ -40,8 +43,8 @@ const shellWord = (w) => (/^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replaceAll("'",
 const asRef = (ref) => parseRef(ref) ?? (() => { throw new Error(`not an owner/repo#N ref: ${JSON.stringify(ref)}`); })();
 
 /** One GraphQL answer. gh exits 1 when any alias is NOT_FOUND; that body's `data` still answers every other alias. */
-async function answer(query, { runGh, sleep }) {
-  try { return JSON.parse(await withBackoff(() => runGh(['api', 'graphql', '-f', `query=${query}`]), { repo: 'GitHub', sleep })); } catch (err) {
+async function answer(query, { runGh, sleep }, extra = []) {
+  try { return JSON.parse(await withBackoff(() => runGh(['api', 'graphql', ...extra, '-f', `query=${query}`]), { repo: 'GitHub', sleep })); } catch (err) {
     if (ghNotFound(err) && ghErrorBody(err).data) return ghErrorBody(err);
     throw err;
   }
@@ -82,6 +85,8 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const members = spec.members ?? [...nodes, ...(spec.done ?? [])];
   const retro = readRetros(run.runId, { path: telemetryPath(deps.env) }).flatMap((r) => r.filed ?? []);
   const epic = board.issueSet?.epic;
+  const predecessors = board.predecessors ?? [];
+  predecessors.forEach((ref) => asRef(ref));
   const wanted = [...new Set([...members, ...nodes, ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? []),
     ...edges.flatMap((e) => [e.blocked, e.blockedBy]), ...(epic ? [epic] : [])])];
 
@@ -127,7 +132,8 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const graph = buildGraph(openRefs, allEdges, [...state].filter(([, s]) => s === 'CLOSED').map(([ref]) => ref));
   const newest = waves[waves.length - 1];
   const current = { id: newest.id, refs: new Set(newest.refs) };
-  const repos = refs.map((ref) => asRef(ref).repo);
+  const before = shippedBefore(await fetchPredecessors(predecessors, (q) => answer(q, deps, ['-H', 'GraphQL-Features: sub_issues'])), info.keys());
+  const repos = [...refs, ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
   const shortRef = makeShortRef(repos, board.abbreviations);
   const scope = epic ? { url: info.get(epic).url, label: shortRef(epic), title: info.get(epic).title }
     : board.issueSet?.label ? { url: `https://github.com/${board.issueSet.repo}/issues?q=label%3A${encodeURIComponent(board.issueSet.label)}`, label: board.issueSet.label, title: board.issueSet.repo } : null;
@@ -135,7 +141,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     title: board.title, runId: board.runId ?? run.runId, scope, now: deps.now().toISOString(), tickets, graph, current,
     out: flag('--out') ?? board.out ?? join(dir, 'board.html'),
     waves: projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), current), shortRef,
-    repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild,
+    repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild, before,
   };
 }
 
@@ -171,13 +177,15 @@ export async function main(argv, { runGh = ghCli, now = () => new Date(), env = 
     const dir = runBaseDir(run, { warn, dirs });
     if (cmd === 'init') {
       const [epic, label, repo, abbreviations] = [flag('--epic'), flag('--label'), flag('--repo'), flag('--abbreviations')];
+      const predecessors = flag('--predecessors')?.split(',');
       if (epic) usage(() => asRef(epic));
+      predecessors?.forEach((ref) => usage(() => asRef(ref)));
       if (label && !REPO_RE.test(repo ?? '')) throw new UsageError('--label needs --repo owner/repo');
       const out = flag('--out');
       const board = {
         runId: run.runId, title: flag('--title') ?? `Run ${run.runId}`, issueSet: epic ? { epic } : label ? { repo, label } : {},
         blockOn: usage(() => parseBlockOn(flag('--block-on'))), startedAt: now().toISOString(), ...(out && { out }),
-        ...(abbreviations && { abbreviations: JSON.parse(readArg(abbreviations)) }),
+        ...(abbreviations && { abbreviations: JSON.parse(readArg(abbreviations)) }), ...(predecessors && { predecessors }),
       };
       const path = join(dir, 'board.json');
       mkdirSync(dir, { recursive: true });
