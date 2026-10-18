@@ -55,7 +55,7 @@ export async function latestRun(io, base) {
 const FAMILY_SUFFIX_RE = /^(?:-w\d+[a-z]*|-(?:wave|resume|r)\d*[a-z]?|-[a-z])+$/i;
 
 /** The run's dir and every dir of its family (wave dirs and retry dirs), the run's first. */
-async function familyDirs(io, base, runId) {
+export async function familyDirs(io, base, runId) {
   const names = (await io.list(base)).filter((e) => e.isDir && e.name.startsWith(`${runId}-`) && FAMILY_SUFFIX_RE.test(e.name.slice(runId.length))).map((e) => e.name);
   return [runId, ...names.sort()].map((n) => `${base}/${n}`);
 }
