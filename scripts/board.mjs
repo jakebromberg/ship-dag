@@ -85,8 +85,13 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const members = spec.members ?? [...nodes, ...(spec.done ?? [])];
   const retro = readRetros(run.runId, { path: telemetryPath(deps.env) }).flatMap((r) => r.filed ?? []);
   const epic = board.issueSet?.epic;
-  const predecessors = board.predecessors ?? [];
+  if (board.predecessors !== undefined && !Array.isArray(board.predecessors)) throw new Error('board.json predecessors must be an array of owner/repo#N refs');
+  const predecessors = [...new Set(board.predecessors ?? [])];
   predecessors.forEach((ref) => asRef(ref));
+  // The walk needs nothing the lookups below return, so it runs beside them; a no-op catch keeps an early failure of
+  // theirs from leaving its rejection unhandled, and the await below still throws it.
+  const walk = fetchPredecessors(predecessors, (q) => answer(q, deps, ['-H', 'GraphQL-Features: sub_issues']));
+  walk.catch(() => {});
   const wanted = [...new Set([...members, ...nodes, ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? []),
     ...edges.flatMap((e) => [e.blocked, e.blockedBy]), ...(epic ? [epic] : [])])];
 
@@ -132,7 +137,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const graph = buildGraph(openRefs, allEdges, [...state].filter(([, s]) => s === 'CLOSED').map(([ref]) => ref));
   const newest = waves[waves.length - 1];
   const current = { id: newest.id, refs: new Set(newest.refs) };
-  const before = shippedBefore(await fetchPredecessors(predecessors, (q) => answer(q, deps, ['-H', 'GraphQL-Features: sub_issues'])), info.keys());
+  const before = shippedBefore(await walk, refs); // only the run's own tickets: a closed blocker outside them still shipped before
   const repos = [...refs, ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
   const shortRef = makeShortRef(repos, board.abbreviations);
   const scope = epic ? { url: info.get(epic).url, label: shortRef(epic), title: info.get(epic).title }
@@ -177,7 +182,7 @@ export async function main(argv, { runGh = ghCli, now = () => new Date(), env = 
     const dir = runBaseDir(run, { warn, dirs });
     if (cmd === 'init') {
       const [epic, label, repo, abbreviations] = [flag('--epic'), flag('--label'), flag('--repo'), flag('--abbreviations')];
-      const predecessors = flag('--predecessors')?.split(',');
+      const predecessors = flag('--predecessors')?.split(',').map((ref) => ref.trim());
       if (epic) usage(() => asRef(epic));
       predecessors?.forEach((ref) => usage(() => asRef(ref)));
       if (label && !REPO_RE.test(repo ?? '')) throw new UsageError('--label needs --repo owner/repo');

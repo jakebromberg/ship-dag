@@ -19,6 +19,7 @@ function fakeAsk(tree, { pageSize = 100 } = {}) {
       const start = Number(after ?? 0);
       const kids = epic.kids.slice(start, start + pageSize);
       const nodes = kids.map((kid) => {
+        if (kid === null) { return null; } // a sub-issue the token cannot read
         const child = typeof kid === 'string' ? { ref: kid, ...tree[kid] } : kid;
         const [repo, number] = child.ref.split('#');
         return { number: Number(number), title: `T${number}`, url: `https://github.com/${repo}/issues/${number}`, state: child.state ?? 'CLOSED',
@@ -84,4 +85,15 @@ test('an epic GitHub has no issue for throws, naming it', async () => {
 test('a cross-repo sub-issue keeps its own repo in its ref', async () => {
   const { ask } = fakeAsk({ [R(1)]: { kids: [{ ref: 'x/y#7' }] } });
   assert.deepEqual(leafRefs((await fetchPredecessors([R(1)], ask))[0]), ['x/y#7']);
+});
+
+test('a listing with a sub-issue the token cannot read throws, naming the epic, instead of crashing or dropping it', async () => {
+  const { ask } = fakeAsk({ [R(1)]: { kids: [R(2), null] }, [R(2)]: { kids: [] } });
+  await assert.rejects(fetchPredecessors([R(1)], ask), new RegExp(`^Error: ${R(1)}: 1 sub-issue could not be read$`));
+});
+
+test('a leaf under two epics belongs to the one whose walk reaches it first, breadth first', async () => {
+  const { ask } = fakeAsk({ [R(1)]: { kids: [R(3)] }, [R(3)]: { kids: [R(9)] }, [R(2)]: { kids: [R(9)] }, [R(9)]: { kids: [] } });
+  const [a, b] = await fetchPredecessors([R(1), R(2)], ask);
+  assert.deepEqual([leafRefs(a), leafRefs(b)], [[], [R(9)]]);
 });
