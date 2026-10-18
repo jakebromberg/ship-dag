@@ -154,8 +154,8 @@ export const register = (on) => {
     const lines = value ? renderBar(value, e.props.bodyColumns) : [NO_RUN];
     return (
       <Box flexDirection="column">
-        {lines.map((line) => (
-          <Text wrap="truncate">{line}</Text>
+        {lines.map((line, i) => (
+          <Text key={i} wrap="truncate">{line}</Text>
         ))}
       </Box>
     );
