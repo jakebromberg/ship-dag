@@ -5,8 +5,8 @@
 // A pass is the latest review round for the ref, across the run family's `reviews/` dirs, that the gate does not
 // read as blocking; its time is the round file's mtime (a review file carries no timestamp of its own). Rounds come
 // from the shared matcher (`reviewRoundFiles`) and each verdict from the gate itself (`classifyRound` over
-// `gateReview`), under the run's own `blockOn` from its wave sidecar, so the ETA can never disagree with the merge
-// gate about what passed. The CLI prints `{ref: epochMs}` as JSON for a host that cannot import this module (the
+// `gateReview`), under the `blockOn` of the ref's own wave from the run's sidecar, so the ETA can never disagree
+// with the merge gate about what passed. The CLI prints `{ref: epochMs}` as JSON for a host that cannot import this module (the
 // mod, which runs it through node). Exit 0 printed, 1 state it could not read, 64 usage.
 
 import { readFileSync } from 'node:fs';
@@ -28,14 +28,18 @@ const readJson = (path) => {
 };
 
 /**
- * The run's `blockOn`: the newest wave sidecar entry by `emittedAt` across the family that names one (dir names do
- * not sort by time: `-w10` sorts before `-w2`), else the gate's default. An entry with no parseable `emittedAt` is
- * the oldest.
+ * Each ref's `blockOn`: that of the newest wave sidecar entry across the family that lists the ref and names one, as
+ * the gate judged that ref's wave; for a ref no entry lists, the newest entry's that names one; else the gate's
+ * default. Newest is by `emittedAt` (dir names do not sort by time: `-w10` sorts before `-w2`); an entry with no
+ * parseable `emittedAt` is the oldest.
+ * @returns {(ref: string) => string[]}
  */
-function runBlockOn(dirs, warn) {
+function blockOnByRef(dirs, warn) {
   const when = (e) => Date.parse(e.emittedAt) || 0;
   const entries = dirs.flatMap((d) => readSidecar(join(d, SIDECAR_NAME), { warn })).filter((e) => Array.isArray(e.blockOn));
-  return entries.sort((a, b) => when(a) - when(b)).at(-1)?.blockOn ?? DEFAULT_BLOCK_ON;
+  entries.sort((a, b) => when(a) - when(b));
+  const runWide = entries.at(-1)?.blockOn ?? DEFAULT_BLOCK_ON;
+  return (ref) => entries.findLast((e) => (e.issues ?? []).some((i) => i?.ref === ref))?.blockOn ?? runWide;
 }
 
 /**
@@ -45,10 +49,11 @@ function runBlockOn(dirs, warn) {
  */
 export function reviewPasses({ runDir, refs, warn = () => {} }) {
   const dirs = runFamilyStateDirs(runDir, { warn });
-  const blockOn = runBlockOn(dirs, warn);
+  const blockOnFor = blockOnByRef(dirs, warn);
   const reviewDirs = dirs.map((d) => join(d, 'reviews'));
   const passes = new Map();
   for (const ref of refs) {
+    const blockOn = blockOnFor(ref);
     const pass = reviewRoundFiles(reviewDirs, ref)
       .findLast(({ path }) => classifyRound({ path, review: readJson(path) }, blockOn).verdict !== 'blocking');
     if (pass) {
