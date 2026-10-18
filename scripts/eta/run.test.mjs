@@ -154,3 +154,48 @@ test('main reads a hand-rebuilt report, whose rows are under `rows`, for the PR 
   assert.match(got.calls[0].join(' '), /p11: pullRequest/);
   assert.equal(JSON.parse(got.out).queues[0].merged, 1);
 });
+
+test('main keeps the data of a GraphQL answer that also holds errors, and names the refs it could not resolve', async () => {
+  const { base } = fixture();
+  const partial = { ...answer, errors: [{ type: 'NOT_FOUND', path: ['r0', 'i3'], message: 'Could not resolve to an Issue with the number of 3.' }] };
+  const gh = async () => { throw Object.assign(new Error('Command failed: gh api graphql -f query=query { ... }\ngh: Could not resolve'), { code: 1, stdout: JSON.stringify(partial), stderr: 'gh: Could not resolve to an Issue with the number of 3.\n' }); };
+  const got = await run(['--state-base', base, '--json'], { gh });
+  assert.equal(got.code, 0, got.err);
+  const json = JSON.parse(got.out);
+  assert.equal(json.queues[0].merged, 1, 'the merge GitHub did answer still counts');
+  assert.ok(!json.notes.some((n) => /gh unavailable/.test(n)), json.notes.join('; '));
+  assert.ok(json.notes.some((n) => /r0\.i3/.test(n)), json.notes.join('; '));
+});
+
+test('main names gh\'s own error, not the command line with the whole query, when the call fails', async () => {
+  const { base } = fixture();
+  const gh = async () => { throw Object.assign(new Error('Command failed: gh api graphql -f query=query { r0: repository(owner: "o") }\ngh: HTTP 401'), { code: 1, stdout: '', stderr: 'gh: HTTP 401: Bad credentials\n' }); };
+  const got = await run(['--state-base', base], { gh });
+  assert.match(got.out, /Note: gh unavailable \(gh: HTTP 401: Bad credentials\)/);
+  assert.doesNotMatch(got.out, /query=/);
+});
+
+test('main lists a ticket the plan blocked only while it is still open', async () => {
+  const { base } = fixture();
+  const closed = structuredClone(answer);
+  closed.data.r0.i4 = { state: 'CLOSED', stateReason: 'COMPLETED', closedAt: '2026-10-17T17:45:00Z', closedByPullRequestsReferences: { nodes: [] } };
+  const got = await run(['--state-base', base, '--json'], { gh: async () => JSON.stringify(closed) });
+  assert.deepEqual(JSON.parse(got.out).blocked, []);
+});
+
+test('main takes a ticket\'s PR from its newest report, across retry dirs and wave dirs past -w9', async () => {
+  const { base, dir } = fixture();
+  rmSync(join(`${dir}-w1b`, 'state/reports/r.json'));
+  const report = (startedAt, prNumber) => ({ startedAt, issues: [{ ref: 'o/r#1', status: 'succeeded', prNumber }] });
+  put(join(`${dir}-w2`, 'state/reports/a.json'), report('2026-10-17T16:10:00.000Z', 12));
+  put(join(`${dir}-w10`, 'state/reports/a.json'), report('2026-10-17T16:50:00.000Z', 13));
+  put(join(`${dir}-b`, 'state/reports/a.json'), report('2026-10-17T17:00:00.000Z', 11));
+  const got = await run(['--state-base', base, '--json']);
+  const query = got.calls[0].join(' ');
+  assert.match(query, /p11: pullRequest/);
+  assert.doesNotMatch(query, /p1[23]: pullRequest/);
+});
+
+test('liveQuery quotes repo names as GraphQL strings', () => {
+  assert.match(liveQuery(['o/r"x#1'], []).text, /owner: "o", name: "r\\"x"/);
+});

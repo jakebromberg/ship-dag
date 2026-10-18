@@ -10,7 +10,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { isMain } from '../lib/is-main.mjs';
-import { ghCli } from '../lib/gh.mjs';
+import { ghCli, withBackoff } from '../lib/gh.mjs';
 import { formatPacific, renderText } from './model.mjs';
 import { computeEta } from './state.mjs';
 
@@ -39,13 +39,16 @@ export const fsIo = {
   },
 };
 
+/** The default `gh`: the CLI, retrying a rate-limited answer with backoff rather than reading it as gh unavailable. */
+const ghRetrying = (args) => withBackoff(() => ghCli(args), { repo: 'the ETA query' });
+
 const USAGE = 'usage: node scripts/eta/run.mjs [--run <runId>] [--state-base <dir>] [--json]';
 
 /**
  * The CLI. Every effect is injected, so tests run it without GitHub or a real state dir.
  * @returns {Promise<number>} the exit code
  */
-export async function main(argv, { env = process.env, now = Date.now(), gh = ghCli, io = fsIo, stdout = console.log, stderr = console.error } = {}) {
+export async function main(argv, { env = process.env, now = Date.now(), gh = ghRetrying, io = fsIo, stdout = console.log, stderr = console.error } = {}) {
   let args;
   try {
     args = parseArgs({ args: argv, options: { run: { type: 'string' }, 'state-base': { type: 'string' }, json: { type: 'boolean' } } }).values;
