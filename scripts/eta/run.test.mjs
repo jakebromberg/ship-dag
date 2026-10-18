@@ -68,7 +68,7 @@ async function run(argv, { gh = async () => JSON.stringify(answer), reviews } = 
     env: { XDG_STATE_HOME: '/nope', HOME: '/nope' },
     now: Date.parse('2026-10-17T18:00:00Z'),
     gh: async (args) => { calls.push(args); return gh(args); },
-    ...(reviews ? { reviews } : {}),
+    reviews,
     stdout: (s) => out.push(s), stderr: (s) => err.push(s),
   });
   return { code, out: out.join('\n'), err: err.join('\n'), calls };

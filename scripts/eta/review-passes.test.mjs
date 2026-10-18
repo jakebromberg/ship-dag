@@ -72,6 +72,15 @@ test('reviewPasses takes the blockOn of the newest sidecar entry by emittedAt, n
   assert.deepEqual(Object.fromEntries(reviewPasses({ runDir: join(base, RUN), refs: ['o/r#1'] })), { 'o/r#1': at(10).getTime() });
 });
 
+test('reviewPasses gates each ref by its own wave\'s blockOn, not by a later wave\'s', () => {
+  const base = fixture([['o/r#1', '', CONVENTION, 10]]);
+  const entry = (blockOn, emittedAt, refs) => JSON.stringify({ runId: RUN, blockOn, emittedAt, issues: refs.map((ref) => ({ ref })) });
+  mkdirSync(join(base, `${RUN}-w2`));
+  writeFileSync(join(base, RUN, 'ship-dag-wave.jsonl'), `${entry(['correctness'], at(8).toISOString(), ['o/r#1'])}\n`);
+  writeFileSync(join(base, `${RUN}-w2`, 'ship-dag-wave.jsonl'), `${entry(['convention'], at(11).toISOString(), ['o/r#2'])}\n`);
+  assert.deepEqual(Object.fromEntries(reviewPasses({ runDir: join(base, RUN), refs: ['o/r#1'] })), { 'o/r#1': at(10).getTime() });
+});
+
 test('the CLI exits 1, with no JSON, when the run\'s state cannot be read', () => {
   const base = fixture([['o/r#1', '', CLEAN, 10]]);
   mkdirSync(join(base, RUN, 'ship-dag-wave.jsonl'));
