@@ -15,6 +15,9 @@ import { parseRef, refKey } from '../lib/ref.mjs';
 /** Ref order for anything the board sorts: the topo core's, repo then number (`#9` before `#10`). */
 export const compareRefs = compareRefString;
 
+/** A closed ticket's board status: `dropped` when closed as not planned, else `shipped`. */
+export const closedKind = (stateReason) => (stateReason === 'NOT_PLANNED' ? 'dropped' : 'shipped');
+
 /**
  * A ticket's board status, first match wins: closed as not planned → `dropped`;
  * closed → `shipped`; an open closing PR → `flight`; owned by the operator (a
@@ -24,7 +27,7 @@ export const compareRefs = compareRefString;
  * @returns {'dropped'|'shipped'|'flight'|'you'|'blocked'|'ready'}
  */
 export function classify({ state, stateReason, hasOpenPr, owned, openBlockers }) {
-  if (state === 'CLOSED') return stateReason === 'NOT_PLANNED' ? 'dropped' : 'shipped';
+  if (state === 'CLOSED') return closedKind(stateReason);
   if (hasOpenPr) return 'flight';
   if (owned) return 'you';
   return openBlockers > 0 ? 'blocked' : 'ready';
@@ -140,9 +143,8 @@ export function orderSteps(g) {
 export function shippedBefore(groups, exclude = []) {
   const seen = new Set(exclude);
   return groups.map(({ leaves, ...epic }) => {
-    const kind = (l) => classify({ state: l.state, stateReason: l.stateReason, hasOpenPr: false, owned: false, openBlockers: 0 });
     const mine = leaves.filter((l) => l.state === 'CLOSED' && !seen.has(l.ref) && seen.add(l.ref));
-    const shipped = mine.filter((l) => kind(l) === 'shipped')
+    const shipped = mine.filter((l) => closedKind(l.stateReason) === 'shipped')
       .sort((a, b) => (b.closedAt || '').localeCompare(a.closedAt || '') || compareRefs(a.ref, b.ref));
     return { ...epic, shipped, dropped: mine.length - shipped.length };
   });
