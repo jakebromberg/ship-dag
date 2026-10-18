@@ -49,6 +49,12 @@ for (const [name, input, want] of [
   ['fewer than two merges fall back to the CI duration',
     { merges: [m(5)], remaining: 2, now: m(10), window: 6, fallbackMs: m(12) },
     { source: 'fallback', service: { lo: m(12), mid: m(12), hi: m(12) }, finish: { lo: m(34), mid: m(34), hi: m(34) } }],
+  ['merges that landed together (one PR closing several tickets) add no zero-length gap',
+    { merges: [m(0), m(10), m(10), m(20)], remaining: 1, now: m(20), window: 6, fallbackMs: m(99) },
+    { source: 'merges', service: { lo: m(10), mid: m(10), hi: m(10) }, finish: { lo: m(30), mid: m(30), hi: m(30) } }],
+  ['merges that all landed together fall back to the CI duration',
+    { merges: [m(5), m(5)], remaining: 1, now: m(10), window: 6, fallbackMs: m(12) },
+    { source: 'fallback', service: { lo: m(12), mid: m(12), hi: m(12) }, finish: { lo: m(22), mid: m(22), hi: m(22) } }],
   ['a drained queue finishes now',
     { merges: [m(0), m(10)], remaining: 0, now: m(50), window: 6, fallbackMs: m(12) },
     { source: 'merges', service: { lo: m(10), mid: m(10), hi: m(10) }, finish: { lo: m(50), mid: m(50), hi: m(50) } }],
@@ -78,6 +84,10 @@ test('throughputFinish turns the run-wide merge gaps into a rate and a finish', 
 
 test('throughputFinish has no rate and no finish with fewer than two merges', () => {
   assert.deepEqual(throughputFinish({ merges: [m(1)], remaining: 4, now: m(9), window: 12 }), { perHour: null, remaining: 4, merges: 1, finish: null });
+});
+
+test('throughputFinish has no rate when every merge landed at the same instant', () => {
+  assert.deepEqual(throughputFinish({ merges: [m(3), m(3)], remaining: 2, now: m(9), window: 12 }), { perHour: null, remaining: 2, merges: 2, finish: null });
 });
 
 // ---- depthFinish ----------------------------------------------------------
@@ -192,6 +202,11 @@ for (const [iso, want] of [
   });
 }
 
+test('formatPacific is empty for an invalid instant rather than throwing', () => {
+  assert.equal(formatPacific(NaN), '');
+  assert.equal(formatPacific(Infinity), '');
+});
+
 for (const [ms, want] of [[m(12), '12m'], [m(65), '1h 05m'], [m(0.4), '0m'], [26 * HOUR, '26h 00m']]) {
   test(`formatDuration(${ms}) is ${want}`, () => {
     assert.equal(formatDuration(ms), want);
@@ -215,4 +230,14 @@ test('renderText shows the range in Pacific, the binding constraint, the per-rep
   assert.match(text, /1 blocked, not counted: o\/r#4/);
   assert.match(text, /Note: gh unavailable/);
   assert.doesNotMatch(text, /UTC|Z\b/);
+});
+
+test('renderText keeps a gap between a wide service range and the finish column', () => {
+  const nodes = [
+    node('o/r#1', { open: false, mergedAt: Date.parse('2026-10-17T00:00:00Z') }),
+    node('o/r#2', { open: false, mergedAt: Date.parse('2026-10-17T11:00:00Z') }),
+    node('o/r#3'),
+  ];
+  const got = estimate({ now: Date.parse('2026-10-17T11:00:00Z'), runStart: 0, nodes, blocked: [], waves: [['o/r#3']] });
+  assert.match(renderText({ ...got, runId: 'sd-1' }), /11h 00m \/ 11h 00m \/ 11h 00m +Sat, Oct 17/);
 });
