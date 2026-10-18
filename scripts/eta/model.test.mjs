@@ -122,9 +122,11 @@ for (const [name, latencies, want] of [
     hours(20, 20, 1, 2, 3, 4, 5, 6, 7, 8), { samples: 10, used: 8, latency: { lo: 2.75 * HOUR, mid: 4.5 * HOUR, hi: 6.25 * HOUR } }],
   ['uses every sample when there are no more than the window',
     hours(20, 2, 3, 4, 5, 6, 7, 8), { samples: 8, used: 8, latency: { lo: 3.75 * HOUR, mid: 5.5 * HOUR, hi: 7.25 * HOUR } }],
+  ['uses no sample with a window of 0, so it falls back to the default',
+    hours(1, 2, 3), { window: 0, samples: 3, used: 0, latency: { lo: HOUR, mid: HOUR, hi: HOUR } }],
 ]) {
   test(`depthFinish ${name}`, () => {
-    const got = depthFinish({ waves: [['a']], open: new Set(['a']), latencies, now: 0, window: 8, defaultMs: HOUR, minSamples: 3 });
+    const got = depthFinish({ waves: [['a']], open: new Set(['a']), latencies, now: 0, window: want.window ?? 8, defaultMs: HOUR, minSamples: 3 });
     assert.equal(got.samples, want.samples);
     assert.equal(got.used, want.used);
     assert.deepEqual(got.latency, want.latency);
@@ -202,13 +204,18 @@ for (const [name, nodes, want] of [
 }
 
 // Two overnight tickets (10h) passed review first, then eight 30-minute ones; the overnight ones sit last in `nodes`,
-// so only ordering by `reviewedAt` (not by node order or start time) leaves them out.
+// so ordering by node order would keep them. `slow` tickets start first but pass review last, so ordering by start
+// time would drop them; only ordering by `reviewedAt` gets both cases right.
 const quick = (i) => node(`o/r#${i}`, { open: false, mergedAt: m(900 + i), startedAt: m(100 + 10 * i), reviewedAt: m(130 + 10 * i) });
 const overnight = (i) => node(`o/r#${i}`, { open: false, mergedAt: m(900 + i), startedAt: m(-600 + i), reviewedAt: m(i) });
+const slow = (i) => node(`o/r#${i}`, { open: false, mergedAt: m(900 + i), startedAt: m(-600 + i), reviewedAt: m(400 + i) });
 for (const [name, nodes, opts, want] of [
   ['takes the latest 8 review passes by default',
     [...[1, 2, 3, 4, 5, 6, 7, 8].map(quick), overnight(20), overnight(21)], {},
     { samples: 10, used: 8, latency: { lo: m(30), mid: m(30), hi: m(30) } }],
+  ['keeps tickets that started first but passed review last',
+    [slow(20), slow(21), ...[1, 2, 3, 4, 5, 6, 7, 8].map(quick)], {},
+    { samples: 10, used: 8, latency: { lo: m(30), mid: m(30), hi: m(272.5) } }],
   ['takes every review pass when there are 8 or fewer',
     [...[1, 2, 3, 4, 5, 6].map(quick), overnight(20), overnight(21)], {},
     { samples: 8, used: 8, latency: { lo: m(30), mid: m(30), hi: m(172.5) } }],
@@ -281,13 +288,14 @@ test('renderText keeps a gap between a wide service range and the finish column'
   assert.match(renderText({ ...got, runId: 'sd-1' }), /11h 00m \/ 11h 00m \/ 11h 00m +Sat, Oct 17/);
 });
 
-for (const [count, want] of [
-  [10, /\(median of the latest 8 of 10 tickets, latest engine start to review pass\)/],
-  [8, /\(median of 8 tickets, latest engine start to review pass\)/],
+for (const [count, opts, want] of [
+  [10, {}, /\(median of the latest 8 of 10 tickets, latest engine start to review pass\)/],
+  [8, {}, /\(median of 8 tickets, latest engine start to review pass\)/],
+  [10, { latencyWindow: 2 }, /\(default: 2 of 3 samples, latest engine start to review pass\)/],
 ]) {
-  test(`renderText names depth's window with ${count} review passes`, () => {
+  test(`renderText names depth's window with ${count} review passes and ${JSON.stringify(opts)}`, () => {
     const nodes = Array.from({ length: count }, (_, i) => node(`o/r#${i}`, { startedAt: m(10 * i), reviewedAt: m(10 * i + 30) }));
-    const got = estimate({ now: m(600), runStart: 0, nodes, blocked: [], waves: [['o/r#0']] });
+    const got = estimate({ now: m(600), runStart: 0, nodes, blocked: [], waves: [['o/r#0']], opts });
     assert.match(renderText({ ...got, runId: 'sd-1' }), want);
   });
 }
