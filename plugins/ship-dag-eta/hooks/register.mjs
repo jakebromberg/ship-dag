@@ -23,11 +23,17 @@ async function stateBase($) {
   return `${xdg || `${home}/.local/state`}/ship-dag/engine`;
 }
 
-/** The `io` state.mjs reads through, over `$.fs`. @param {import('claude-code').EngineInterface} $ */
+/** Memoizes `fn` by its one argument, so a path is read at most once per estimate. */
+const once = (fn) => {
+  const seen = new Map();
+  return (key) => (seen.has(key) ? seen.get(key) : seen.set(key, fn(key)).get(key));
+};
+
+/** The `io` state.mjs reads through, over `$.fs`, each path read once; entries carry their mtime. @param {import('claude-code').EngineInterface} $ */
 const fsIo = ($) => ({
-  list: async (dir) => (await $.fs.list(dir).catch(() => [])).map((e) => ({ name: e.name, isDir: e.kind === 'dir' })),
-  read: (path) => $.fs.read(path).then((t) => (typeof t === 'string' ? t : null), () => null),
-  mtime: (path) => $.fs.stat(path).then((s) => s.mtimeMs, () => null),
+  list: once(async (dir) => (await $.fs.list(dir).catch(() => [])).map((e) => ({ name: e.name, isDir: e.kind === 'dir', mtimeMs: e.mtimeMs }))),
+  read: once((path) => $.fs.read(path).then((t) => (typeof t === 'string' ? t : null), () => null)),
+  mtime: once((path) => $.fs.stat(path).then((s) => s.mtimeMs, () => null)),
 });
 
 /**
@@ -66,11 +72,11 @@ const skillReviews = ($, now) => async ({ base, runId, refs }) => {
  * When the run's family (state.mjs's `familyDirs`) last changed: each dir, its reviews, reports and per-ticket
  * metadata, and every file directly in them, since a file rewritten in place leaves its dir's mtime alone.
  */
-async function lastActivity($, io, base, runId) {
+async function lastActivity(io, base, runId) {
   const paths = (await familyDirs(io, base, runId)).flatMap((dir) => ['', '/reviews', '/state/reports', '/state/metadata'].map((sub) => `${dir}${sub}`));
   const times = await Promise.all(paths.map(async (p) => {
-    const [own, entries] = await Promise.all([$.fs.stat(p).then((s) => s.mtimeMs, () => 0), $.fs.list(p).catch(() => [])]);
-    return Math.max(own, ...entries.map((e) => e.mtimeMs));
+    const [own, entries] = await Promise.all([io.mtime(p), io.list(p)]);
+    return Math.max(own ?? 0, ...entries.map((e) => e.mtimeMs));
   }));
   return Math.max(0, ...times);
 }
@@ -81,7 +87,7 @@ async function estimateFor($, runId) {
   const base = await stateBase($);
   const io = fsIo($);
   const id = runId || (await latestRun(io, base));
-  if (!id || (!runId && now - (await lastActivity($, io, base, id)) > ACTIVE_MS)) {
+  if (!id || (!runId && now - (await lastActivity(io, base, id)) > ACTIVE_MS)) {
     return null;
   }
   const gh = (args) => cachedRun($, now, 'gh', ['gh', ...args]);
@@ -117,15 +123,14 @@ export const register = (on) => {
   });
 
   on('command.run', { command: 'ship-dag-eta' }, async ($, e) => {
-    let r;
     try {
-      r = await estimateFor($, e.args.trim());
+      const r = await estimateFor($, e.args.trim());
+      if (!r) {
+        return { text: 'There is no active ship-dag run (none changed in the last six hours). Name one: /ship-dag-eta <runId>' };
+      }
+      return { text: r.error ? `ship-dag-eta: ${r.error}` : renderText(r) };
     } catch (err) {
       return { text: `ship-dag-eta: ${err?.message ?? err}` };
     }
-    if (!r) {
-      return { text: 'There is no active ship-dag run (none changed in the last six hours). Name one: /ship-dag-eta <runId>' };
-    }
-    return { text: r.error ? `ship-dag-eta: ${r.error}` : renderText(r) };
   });
 };
