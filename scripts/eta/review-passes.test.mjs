@@ -61,7 +61,28 @@ for (const [blockOn, want] of [[undefined, {}], [['correctness', 'security'], { 
   });
 }
 
-test('the CLI prints each ref\'s pass time as JSON, for a host with no Node of its own', () => {
+test('reviewPasses takes the blockOn of the newest sidecar entry by emittedAt, not by dir name (-w10 sorts before -w2)', () => {
+  const base = fixture([['o/r#1', '', CONVENTION, 10]]);
+  const sidecar = (name, blockOn, emittedAt) => {
+    mkdirSync(join(base, name), { recursive: true });
+    writeFileSync(join(base, name, 'ship-dag-wave.jsonl'), `${JSON.stringify({ runId: RUN, blockOn, emittedAt, issues: [] })}\n`);
+  };
+  sidecar(`${RUN}-w10`, ['correctness'], at(12).toISOString());
+  sidecar(`${RUN}-w2`, ['convention'], at(9).toISOString());
+  assert.deepEqual(Object.fromEntries(reviewPasses({ runDir: join(base, RUN), refs: ['o/r#1'] })), { 'o/r#1': at(10).getTime() });
+});
+
+test('the CLI exits 1, with no JSON, when the run\'s state cannot be read', () => {
+  const base = fixture([['o/r#1', '', CLEAN, 10]]);
+  mkdirSync(join(base, RUN, 'ship-dag-wave.jsonl'));
+  const out = [];
+  const err = [];
+  assert.equal(main(['--state-base', base, '--run', RUN, '--refs', 'o/r#1'], { stdout: (s) => out.push(s), stderr: (s) => err.push(s) }), 1);
+  assert.deepEqual(out, []);
+  assert.match(err.join(''), /cannot read .*review rounds/);
+});
+
+test('the CLI prints each ref\'s pass time as JSON, for a host that runs it through node', () => {
   const base = fixture([['o/r#1', '', CLEAN, 10]]);
   const out = [];
   const code = main(['--state-base', base, '--run', RUN, '--refs', 'o/r#1,o/r#2'], { stdout: (s) => out.push(s), stderr: () => {} });

@@ -6,8 +6,8 @@
 // read as blocking; its time is the round file's mtime (a review file carries no timestamp of its own). Rounds come
 // from the shared matcher (`reviewRoundFiles`) and each verdict from the gate itself (`classifyRound` over
 // `gateReview`), under the run's own `blockOn` from its wave sidecar, so the ETA can never disagree with the merge
-// gate about what passed. The CLI prints `{ref: epochMs}` as JSON for a host with no Node of its own (the mod).
-// Exit 0 printed, 64 usage.
+// gate about what passed. The CLI prints `{ref: epochMs}` as JSON for a host that cannot import this module (the
+// mod, which runs it through node). Exit 0 printed, 1 state it could not read, 64 usage.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,10 +27,15 @@ const readJson = (path) => {
   }
 };
 
-/** The run's `blockOn`: the newest wave sidecar entry across the family that names one, else the gate's default. */
+/**
+ * The run's `blockOn`: the newest wave sidecar entry by `emittedAt` across the family that names one (dir names do
+ * not sort by time: `-w10` sorts before `-w2`), else the gate's default. An entry with no parseable `emittedAt` is
+ * the oldest.
+ */
 function runBlockOn(dirs, warn) {
-  const entries = dirs.flatMap((d) => readSidecar(join(d, SIDECAR_NAME), { warn }));
-  return entries.filter((e) => Array.isArray(e.blockOn)).at(-1)?.blockOn ?? DEFAULT_BLOCK_ON;
+  const when = (e) => Date.parse(e.emittedAt) || 0;
+  const entries = dirs.flatMap((d) => readSidecar(join(d, SIDECAR_NAME), { warn })).filter((e) => Array.isArray(e.blockOn));
+  return entries.sort((a, b) => when(a) - when(b)).at(-1)?.blockOn ?? DEFAULT_BLOCK_ON;
 }
 
 /**
@@ -45,8 +50,7 @@ export function reviewPasses({ runDir, refs, warn = () => {} }) {
   const passes = new Map();
   for (const ref of refs) {
     const pass = reviewRoundFiles(reviewDirs, ref)
-      .filter(({ path }) => classifyRound({ path, review: readJson(path) }, blockOn).verdict !== 'blocking')
-      .at(-1);
+      .findLast(({ path }) => classifyRound({ path, review: readJson(path) }, blockOn).verdict !== 'blocking');
     if (pass) {
       passes.set(ref, pass.mtimeMs);
     }
@@ -71,7 +75,14 @@ export function main(argv, { env = process.env, stdout = console.log, stderr = c
   }
   const runDir = join(args['state-base'] ?? defaultBaseDir(env), args.run);
   const refs = args.refs.split(',').filter(Boolean);
-  stdout(JSON.stringify(Object.fromEntries(reviewPasses({ runDir, refs, warn: (m) => stderr(`review-passes: ${m}`) }))));
+  let passes;
+  try {
+    passes = reviewPasses({ runDir, refs, warn: (m) => stderr(`review-passes: ${m}`) });
+  } catch (err) {
+    stderr(`review-passes: cannot read ${runDir}'s review rounds (${err.message})`);
+    return 1;
+  }
+  stdout(JSON.stringify(Object.fromEntries(passes)));
   return 0;
 }
 
