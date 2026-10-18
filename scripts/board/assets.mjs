@@ -13,3 +13,6 @@ export const PAGE_CSS = load('./page.css');
 
 /** The road-ahead script: draws dependency edges and traces a ticket's chain on hover or focus. */
 export const ROAD_JS = load('./road.js');
+
+/** The burn-up script: the arrow keys, Home and End move focus between the chart's steps. */
+export const BURN_JS = load('./burn.js');

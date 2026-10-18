@@ -8,8 +8,9 @@
 
 import { orderSteps, formatPacific, compareRefs, leadingWaveNumber } from './model.mjs';
 import { parseRef } from '../lib/ref.mjs';
-import { PAGE_CSS, ROAD_JS } from './assets.mjs';
+import { PAGE_CSS, ROAD_JS, BURN_JS } from './assets.mjs';
 import { html, raw, list } from './html.mjs';
+import { burnupSeries, bucketPoints, pacificTicks, yScale } from './burnup.mjs';
 
 /**
  * Every status `classify` returns, in legend order: the CSS token its bar
@@ -77,6 +78,8 @@ export function waveSpan(labels) {
  * @param {Array<{ref:string,url:string,title:string,dropped:number,shipped:Array<{ref:string,title:string,url:string,closedAt?:string}>}>} [v.before]
  *   `shippedBefore`'s result: what the predecessor epics shipped before this run. Counted in the headline, listed in a collapsed section.
  * @param {string} v.rebuild  the command that rebuilds this page
+ * @param {string} [v.startedAt]  ISO instant the run started (board.json); with it, the page draws the burn-up, which
+ *   reads each ticket's `createdAt` (absent: it was in scope from the start)
  * @returns {string}
  */
 export function renderBoard(v) {
@@ -102,6 +105,7 @@ export function renderBoard(v) {
   h.push(bar(counts, total));
   h.push(html`<div class="legend">${SHOWN.map(({ token, legend }) => html`<span><i style="background:var(--${token})"></i>${legend}</span>`)}</div>`);
   h.push(repoBars(v.tickets, v.repoLabel));
+  if (v.startedAt) { h.push(burnup(v, link)); }
 
   if (notes.callouts?.length) {
     h.push(html`<h2>Needs attention</h2><div class="callouts">${notes.callouts.map((c) => html`<div class="callout${c.owner === 'you' ? ' you' : ''}"><b>${c.title}</b>${c.text}</div>`)}</div>`);
@@ -136,7 +140,8 @@ export function renderBoard(v) {
   if (dropped.length) {
     h.push(html`<details><summary>Closed as not planned (${dropped.length})</summary><div class="items">${dropped.map((t) => html`<span class="item">${link(t.ref)} <span class="x">${t.title}</span></span>`)}</div></details>`);
   }
-  h.push(html`<footer>Times are Pacific. Rebuild with <code>${v.rebuild}</code>. Built from GitHub, the run's engine state, its review files and telemetry, and its board notes. Local file, not committed.</footer></main><script>${raw(ROAD_JS)}</script></body></html>`);
+  h.push(html`<footer>Times are Pacific. Rebuild with <code>${v.rebuild}</code>. Built from GitHub, the run's engine state, its review files and telemetry, and its board notes. Local file, not committed.</footer></main>`
+    + html`<script>${raw(ROAD_JS)}</script>${v.startedAt ? html`<script>${raw(BURN_JS)}</script>` : ''}</body></html>`);
   return h.join('\n');
 }
 
@@ -209,4 +214,81 @@ function roadAhead(v, byRef, link, gates) {
   });
   h.push('</tbody></table></div></details>');
   return h.join('\n');
+}
+
+const VERB = { filed: 'Filed', done: 'Shipped', dropped: 'Closed as not planned' };
+const TIP_ITEMS = 6; // a tooltip lists this many changes, then counts the rest
+const BUCKET_GAP = 0.005; // steps closer than this share of the run's span are one hover target
+const pct = (n) => `${Number(n.toFixed(2))}%`;
+
+/**
+ * The burn-up: scope and shipped over the run as an inline SVG step chart. The SVG holds only the lines (in a
+ * 0–100 viewBox stretched to the plot, strokes kept at their pixel width); every label is HTML placed by percent, so
+ * text stays readable at any width. Each hover target is a column from the midpoint before its step to the midpoint
+ * after, so pointing anywhere snaps to the nearest step; its tooltip is the next sibling, shown by CSS on hover or
+ * focus. One column is in the tab order and the arrow keys move between them (burn.js). A table repeats the data.
+ */
+function burnup(v, link) {
+  const points = burnupSeries({ tickets: v.tickets, startedAt: v.startedAt, now: v.now });
+  const t0 = points[0].t;
+  const t1 = points[points.length - 1].t;
+  const span = Math.max(1, t1 - t0);
+  const first = points[0];
+  const last = points[points.length - 1];
+  const { step, top } = yScale(Math.max(...points.map((p) => p.scope)));
+  const X = (t) => ((t - t0) / span) * 100;
+  const Y = (n) => 100 - (n / top) * 100;
+  const when = (t) => formatPacific(new Date(t).toISOString());
+  const path = (key) => `M${X(t0)},${Y(first[key])}${points.slice(1).map((p) => ` H${X(p.t)} V${Y(p[key])}`).join('')} H100`;
+  const ys = [];
+  for (let n = 0; n <= top; n += step) { ys.push(n); }
+  const ticks = pacificTicks(t0, t1, 7);
+  // The table links each ref; the tooltip can't be clicked (and its links would be stray tab stops), so it names them.
+  const change = (it, ref = link(it.ref)) => html`${VERB[it.kind]} ${ref} <em>${it.title}</em>`;
+
+  const grid = [...ys.map((n) => html`<line class="grid" x1="0" x2="100" y1="${Y(n)}" y2="${Y(n)}"/>`),
+    ...ticks.map((k) => html`<line class="grid v" x1="${X(k.t)}" x2="${X(k.t)}" y1="0" y2="100"/>`)];
+  const svg = html`<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${grid}<path class="area" d="${path('done')} V100 H0 Z"/><path class="scope" d="${path('scope')}"/><path class="done" d="${path('done')}"/></svg>`;
+  const labels = html`${ys.map((n) => html`<span class="yl" style="top:${pct(Y(n))}">${n}</span>`)}${ticks.map((k, i) => {
+    const x = X(k.t);
+    const edge = x < 6 ? ' first' : x > 94 ? ' last' : '';
+    return html`<span class="xl${i % 2 ? ' odd' : ''}${edge}" style="left:${pct(x)}">${k.label}</span>`;
+  })}`;
+  // End labels sit beside the last step; when the two lines end close together, they part around the middle.
+  let [sy, dy] = [Y(last.scope), Y(last.done)];
+  if (dy - sy < 9) { const mid = (sy + dy) / 2; [sy, dy] = [mid - 4.5, mid + 4.5]; }
+  const ends = html`<span class="end s" style="top:${pct(sy)}">Scope ${last.scope}</span><span class="end d" style="top:${pct(dy)}">Shipped ${last.done}</span>`;
+
+  const buckets = bucketPoints(points, t0, t1, BUCKET_GAP);
+  const xs = buckets.map((b) => X(b.to.t));
+  const cols = buckets.map((b, i) => {
+    const left = i ? (xs[i - 1] + xs[i]) / 2 : 0;
+    const right = i < buckets.length - 1 ? (xs[i] + xs[i + 1]) / 2 : 100;
+    const width = Math.max(right - left, 0.01);
+    const at = `left:${pct(((xs[i] - left) / width) * 100)}`;
+    const p = b.to;
+    const from = when(b.from);
+    const to = when(p.t);
+    const head = b.from === p.t ? to : from.split(', ')[0] === to.split(', ')[0] ? `${from} to ${to.split(', ')[1]}` : `${from} to ${to}`;
+    const status = `${p.done} of ${p.scope} shipped, ${p.scope - p.done} to go`;
+    const shown = b.items.slice(0, TIP_ITEMS).map((it) => html`<li>${change(it, html`<span class="r">${v.shortRef(it.ref)}</span>`)}</li>`);
+    if (b.items.length > TIP_ITEMS) { shown.push(html`<li>and ${b.items.length - TIP_ITEMS} more</li>`); }
+    const place = xs[i] > 50 ? `right:calc(${pct(100 - xs[i])} + 10px)` : `left:calc(${pct(xs[i])} + 10px)`;
+    const dots = html`<i class="rule" style="${at}"></i><i class="dot s" style="${at};top:${pct(Y(p.scope))}"></i><i class="dot d" style="${at};top:${pct(Y(p.done))}"></i>`;
+    const tip = html`<div class="tip" id="burn-tip-${i}" style="${place}"><b>${head}</b>${status}${shown.length ? html`<ul>${shown}</ul>` : ''}</div>`;
+    return html`<div class="pt" role="img" tabindex="${i === buckets.length - 1 ? 0 : -1}" aria-label="${`${head}: ${status}`}" aria-describedby="burn-tip-${i}" style="left:${pct(left)};width:${pct(width)}">${dots}</div>${tip}`;
+  });
+
+  const summary = `Burn-up: ${last.done} of ${last.scope} shipped as of ${when(t1)}; ${first.scope} in scope when the run started, ${when(t0)}.`;
+  const rows = [...points].reverse().map((p) => {
+    const changed = p.items.length ? list(p.items.map((it) => change(it)), '; ') : html`<span class="meta">—</span>`;
+    return html`<tr><td class="n">${when(p.t)}</td><td class="n">${p.scope}</td><td class="n">${p.done}</td><td class="n">${p.scope - p.done}</td><td>${changed}</td></tr>`;
+  });
+  return html`<section class="burn"><h2>Burn-up <small>tickets shipped against scope since the run started</small></h2>`
+    + html`<div class="chart" role="group" aria-label="${summary}"><div class="bl"><span><i class="ks"></i>Scope</span><span><i class="kd"></i>Shipped</span></div>`
+    + html`<div class="plot">${svg}${labels}${ends}${cols}</div>`
+    + '<p class="note">Each step is a ticket filed, shipped or closed as not planned. Point at one, or tab to the chart and use the arrow keys, to see which. '
+    + 'Tickets filed before the run count from its start; one closed as not planned leaves the scope. Times are Pacific.</p></div>'
+    + '<details><summary>The burn-up as a table</summary><div class="tw"><table><thead><tr><th>When</th><th>Scope</th><th>Shipped</th><th>To go</th><th>What changed</th></tr></thead>'
+    + html`<tbody>${rows}</tbody></table></div></details></section>`;
 }

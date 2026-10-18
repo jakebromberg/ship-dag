@@ -246,3 +246,31 @@ test('the render module carries no inline layout styles, only data-driven ones',
   assert.doesNotMatch(src, /style="margin/);
   for (const cls of ['gap', 'tight']) assert.match(PAGE_CSS, new RegExp(`\\.meta\\.${cls}\\{margin`));
 });
+
+// ---- burn-up script --------------------------------------------------------
+
+test('the burn-up script parses', async () => {
+  const { BURN_JS } = await import('./assets.mjs');
+  assert.doesNotThrow(() => new Function(BURN_JS));
+});
+
+test('the burn-up script moves the one tab stop with the arrow keys, Home and End, and stops at either end', async () => {
+  const { BURN_JS } = await import('./assets.mjs');
+  const doc = { activeElement: null };
+  const pts = [0, 1, 2].map((i) => ({ i, tabIndex: i === 2 ? 0 : -1, focus() { doc.activeElement = this; } }));
+  let onKey;
+  const plot = { querySelectorAll: () => pts, addEventListener: (type, fn) => { if (type === 'keydown') { onKey = fn; } } };
+  doc.querySelectorAll = (sel) => (sel === '.burn .plot' ? [plot] : []);
+  new Function('document', BURN_JS)(doc);
+  const press = (key) => { let prevented = false; onKey({ key, preventDefault: () => { prevented = true; } }); return prevented; };
+  pts[2].focus();
+  assert.equal(press('ArrowRight'), false, 'nothing after the last step');
+  assert.equal(press('ArrowLeft'), true);
+  assert.equal(doc.activeElement, pts[1]);
+  assert.deepEqual(pts.map((p) => p.tabIndex), [-1, 0, -1]);
+  press('Home');
+  assert.equal(doc.activeElement, pts[0]);
+  press('End');
+  assert.deepEqual(pts.map((p) => p.tabIndex), [-1, -1, 0]);
+  assert.equal(press('a'), false, 'other keys pass through');
+});

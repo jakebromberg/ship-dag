@@ -257,3 +257,64 @@ test('renderBoard escapes a predecessor\'s title', () => {
   const html = renderBoard(view({ before: [{ ...b, title: evil, shipped: [{ ...b.shipped[0], title: evil }] }] }));
   assert.ok(!html.includes(evil));
 });
+
+// ---- burn-up chart ---------------------------------------------------------
+
+const STARTED = '2026-10-08T12:00:00Z'; // 5 AM PDT; the view's now is 1:30 PM PDT
+const chart = (html) => html.slice(html.indexOf('<section class="burn"'), html.indexOf('</section>') + 10);
+
+test('renderBoard puts the burn-up under the headline counts, above Needs attention and In flight', () => {
+  const html = renderBoard(view({ startedAt: STARTED }));
+  const at = html.indexOf('<section class="burn"');
+  assert.ok(at > html.indexOf('class="repos"'), 'below the repo bars');
+  assert.ok(at < html.indexOf('Needs attention') && at < html.indexOf('In flight'));
+  assert.match(html, /<h2>Burn-up <small>/);
+});
+
+test('renderBoard without the run\'s startedAt draws no burn-up', () => {
+  assert.ok(!renderBoard(view()).includes('class="burn"'));
+});
+
+test('the burn-up\'s legend and end labels give the current counts; a ticket dropped before the run is not in scope', () => {
+  const c = chart(renderBoard(view({ startedAt: STARTED })));
+  assert.match(c, /<span class="end s"[^>]*>Scope 6<\/span>/);
+  assert.match(c, /<span class="end d"[^>]*>Shipped 1<\/span>/);
+  assert.match(c, /Scope<\/span>/);
+  assert.match(c, /Shipped<\/span>/);
+  assert.match(c, /aria-label="Burn-up: 1 of 6 shipped as of Oct 8, 1:30 PM PDT; 6 in scope when the run started, Oct 8, 5:00 AM PDT\."/);
+});
+
+test('the burn-up\'s axis and tooltips are Pacific with their zone, never UTC', () => {
+  const c = chart(renderBoard(view({ startedAt: STARTED })));
+  for (const tick of ['6 AM PDT', '8 AM PDT', '10 AM PDT', '12 PM PDT']) { assert.ok(c.includes(`>${tick}</span>`), tick); }
+  assert.match(c, /<b>Oct 8, 1:02 PM PDT<\/b>1 of 6 shipped, 5 to go<ul><li>Shipped <span class="r">r#1<\/span> <em>Ticket 1<\/em><\/li><\/ul>/);
+  assert.doesNotMatch(c, /UTC|GMT|\dZ/);
+});
+
+test('the burn-up\'s steps are keyboard-reachable: one in the tab order, each with a tooltip it describes', () => {
+  const c = chart(renderBoard(view({ startedAt: STARTED })));
+  const pts = [...c.matchAll(/<div class="pt"[^>]*tabindex="(-?\d)"[^>]*aria-describedby="(burn-tip-\d+)"/g)];
+  assert.equal(pts.length, 3, 'start, the shipped ticket, now');
+  assert.deepEqual(pts.map((m) => m[1]), ['-1', '-1', '0'], 'the latest step takes the tab stop');
+  for (const [, , id] of pts) { assert.ok(c.includes(`id="${id}"`), id); }
+});
+
+test('the burn-up table lists every point, newest first', () => {
+  const c = chart(renderBoard(view({ startedAt: STARTED })));
+  const table = c.slice(c.indexOf('<details>'));
+  const rows = [...table.matchAll(/<tr><td class="n">([^<]+)<\/td><td class="n">(\d+)<\/td><td class="n">(\d+)<\/td><td class="n">(\d+)<\/td>/g)].map((m) => m.slice(1));
+  assert.deepEqual(rows, [
+    ['Oct 8, 1:30 PM PDT', '6', '1', '5'],
+    ['Oct 8, 1:02 PM PDT', '6', '1', '5'],
+    ['Oct 8, 5:00 AM PDT', '6', '0', '6'],
+  ]);
+});
+
+test('the burn-up escapes a ticket title in its tooltip and its table', () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const v = view({ startedAt: STARTED });
+  v.tickets[3] = { ...v.tickets[3], title: evil, createdAt: '2026-10-08T15:00:00Z' };
+  const c = chart(renderBoard(v));
+  assert.ok(!c.includes(evil));
+  assert.equal(c.split('&lt;img src=x onerror=alert(1)&gt;').length - 1, 2, 'once in the tooltip, once in the table');
+});
