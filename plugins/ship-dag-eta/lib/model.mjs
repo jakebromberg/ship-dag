@@ -88,7 +88,7 @@ export function throughputFinish({ merges, remaining, now, window }) {
  */
 export function depthFinish({ waves, open, latencies, now, window, defaultMs, minSamples }) {
   const left = waves.filter((w) => w.some((ref) => open.has(ref))).length;
-  const recent = latencies.slice(-window);
+  const recent = latencies.slice(Math.max(0, latencies.length - window)); // not slice(-window): slice(-0) keeps all
   const measured = recent.length >= minSamples ? spread(recent) : null;
   const latency = measured ?? flat(defaultMs);
   return {
@@ -171,7 +171,7 @@ const span = (r) => `${formatDuration(r.lo)} / ${formatDuration(r.mid)} / ${form
 /** What depth's latency rests on: `median of 5 tickets`, `median of the latest 8 of 27 tickets`, or the default. */
 const depthBasis = (d) => {
   if (d.source !== 'measured') {
-    return `default: ${d.samples} of ${d.minSamples} samples`;
+    return `default: ${d.used} of ${d.minSamples} samples`;
   }
   return d.used < d.samples ? `median of the latest ${d.used} of ${d.samples} tickets` : `median of ${d.samples} tickets`;
 };
