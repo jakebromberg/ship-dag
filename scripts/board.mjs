@@ -30,7 +30,7 @@ import { telemetryPath } from './telemetry.mjs';
 const EX_USAGE = 64;
 const BATCH = 40; // refs per GraphQL query
 const CLOSURE_ROUNDS = 5; // extra rounds that look up open blockers outside the set
-const FIELDS = 'number title url state stateReason closedAt closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
+const FIELDS = 'number title url state stateReason createdAt closedAt closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
   + 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
 
 const SCRIPT = fileURLToPath(import.meta.url);
@@ -130,7 +130,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     });
     const wave = issue.state === 'OPEN' && latest.get(ref);
     const derived = wave && deriveStage({ dir: wave.dir, ref, waveTs: wave.mtimeMs, family, blockOn: board.blockOn, prOpen: !!open, openPr: open?.number });
-    return { ref, title: issue.title, url: issue.url, status, stage: derived || item.stage, note: item.note, prs, closedAt: issue.closedAt, shippedWave: latest.get(ref)?.id };
+    return { ref, title: issue.title, url: issue.url, status, stage: derived || item.stage, note: item.note, prs, createdAt: issue.createdAt, closedAt: issue.closedAt, shippedWave: latest.get(ref)?.id };
   });
 
   const openRefs = tickets.filter((t) => t.status !== 'shipped' && t.status !== 'dropped').map((t) => t.ref);
@@ -146,7 +146,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     title: board.title, runId: board.runId ?? run.runId, scope, now: deps.now().toISOString(), tickets, graph, current,
     out: flag('--out') ?? board.out ?? join(dir, 'board.html'),
     waves: projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), current), shortRef,
-    repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild, before,
+    repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild, before, startedAt: board.startedAt,
   };
 }
 
