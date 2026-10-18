@@ -32,8 +32,11 @@ const answer = JSON.stringify({
   },
 })
 
-/** Answers the mod's file system and gh from `tree`, and the skill's review-passes CLI with `passes`; returns what it ran and the status lines it set. */
-function world(on: On, tree: Tree, passes: Record<string, number> = {}) {
+/**
+ * Answers the mod's file system and gh from `tree`, and the skill's review-passes CLI with `passes`; returns what it
+ * ran and the status lines it set. A dir's mtime is its newest file's, unless `dirMtimeMs` pins every dir's.
+ */
+function world(on: On, tree: Tree, passes: Record<string, number> = {}, { dirMtimeMs, hangGh = false }: { dirMtimeMs?: number; hangGh?: boolean } = {}) {
   const gh: string[][] = []
   const nodeRuns: string[][] = []
   const statuses: (string | undefined)[] = []
@@ -50,7 +53,7 @@ function world(on: On, tree: Tree, passes: Record<string, number> = {}) {
   const newest = (dir: string) => Math.max(0, ...Object.entries(tree).filter(([p]) => p.startsWith(`${dir}/`)).map(([, f]) => f.mtimeMs))
   mock.env(on, { HOME: '/home/dj' })
   mock.store(on)
-  on('fs.list', ($, e) => ({ value: children(e.path).map(([name, kind]) => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })) }))
+  on('fs.list', ($, e) => ({ value: children(e.path).map(([name, kind]) => ({ name, kind, size: 0, mtimeMs: kind === 'file' ? tree[`${e.path}/${name}`]!.mtimeMs : 0, isLink: false })) }))
   on('fs.read', ($, e) => {
     const f = tree[e.path]
     return f?.text === undefined ? { deny: `ENOENT: ${e.path}` } : { value: f.text }
@@ -58,7 +61,7 @@ function world(on: On, tree: Tree, passes: Record<string, number> = {}) {
   on('fs.stat', ($, e) => {
     const f = tree[e.path]
     const kind = f ? 'file' : children(e.path).length ? 'dir' : undefined
-    return kind ? { value: { kind, size: 0, mtimeMs: f?.mtimeMs ?? newest(e.path), isLink: false } } : { deny: `ENOENT: ${e.path}` }
+    return kind ? { value: { kind, size: 0, mtimeMs: f?.mtimeMs ?? dirMtimeMs ?? newest(e.path), isLink: false } } : { deny: `ENOENT: ${e.path}` }
   })
   on('process.run', ($, e) => {
     const ran = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -67,7 +70,7 @@ function world(on: On, tree: Tree, passes: Record<string, number> = {}) {
       return ran(JSON.stringify(passes))
     }
     gh.push([...e.argv])
-    return ran(answer)
+    return hangGh ? new Promise<never>(() => {}) : ran(answer)
   })
   on('fs.exists', ($, e) => ({ value: e.path in tree }))
   on('ui.status', ($, e) => {
@@ -154,4 +157,22 @@ test('without the ship-dag skill the depth falls back to its default and the est
   expect(text).toMatch(/Note: review rounds unreadable \(no ship-dag skill at .*review-passes\.mjs\)/)
   expect(text).toMatch(/default: 0 of 3 samples/)
   expect(seen.nodeRuns).toHaveLength(0)
+})
+
+test('a run whose files were rewritten in place within six hours is active, though its dirs are older', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const tree = runTree(NOW - 7 * 60 * MIN)
+  tree[`${BASE}/${RUN}/state/metadata/issue-${encodeURIComponent('o/r#1')}.json`]!.mtimeMs = NOW - 10 * MIN
+  const seen = world(on, tree, {}, { dirMtimeMs: NOW - 7 * 60 * MIN })
+  await $.session.start(start)
+  await clock.settle()
+  expect(seen.statuses.at(-1)).toMatch(/^ship-dag ETA /)
+})
+
+test('session start does not wait for the first estimate', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const seen = world(on, runTree(NOW - 10 * MIN), {}, { hangGh: true })
+  const { cwd } = await $.session.start(start)
+  expect(cwd).toBe('/tmp')
+  expect(seen.statuses).toHaveLength(0)
 })
