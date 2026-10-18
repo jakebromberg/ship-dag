@@ -176,6 +176,7 @@ test('main reads a hand-rebuilt report, whose rows are under `rows`, for the PR 
   put(join(`${dir}-w1b`, 'state/reports/rebuilt.json'), { synthesized: 'by hand', rows: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }] });
   const got = await run(['--state-base', base, '--json']);
   assert.match(got.calls[0].join(' '), /p11: pullRequest/);
+  assert.equal(JSON.parse(got.out).queues[0].merged, 1);
   assert.equal(JSON.parse(got.out).depth.samples, 3);
 });
 

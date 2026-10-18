@@ -104,12 +104,11 @@ export async function readRun(io, base, runId) {
     const written = new Set((await io.list(`${dir}/state/metadata`)).map((e) => e.name));
     for (const ref of scope.filter((r) => written.has(`issue-${stem(r)}.json`))) {
       const at = Date.parse((await readJson(io, `${dir}/state/metadata/issue-${stem(ref)}.json`))?.startedAt);
-      if (!Number.isNaN(at) && !(firstStart.get(ref) <= at)) {
-        firstStart.set(ref, at);
+      if (Number.isNaN(at)) {
+        continue;
       }
-      if (!Number.isNaN(at) && !(startedAt.get(ref) >= at)) {
-        startedAt.set(ref, at);
-      }
+      firstStart.set(ref, Math.min(firstStart.get(ref) ?? at, at));
+      startedAt.set(ref, Math.max(startedAt.get(ref) ?? at, at));
     }
     for (const e of (await io.list(`${dir}/state/reports`)).filter((x) => x.name.endsWith('.json'))) {
       const report = await readJson(io, `${dir}/state/reports/${e.name}`);
@@ -200,8 +199,10 @@ export async function fetchLive(refs, prByRef, gh, { onErrors = () => {} } = {})
 
 /**
  * The ETA of `runId` (default: the newest run under `base`), or `{error}` when there is no run or no DAG. Without
- * gh, open tickets are the fetched DAG's and no merge times are read; a note says so.
- * @param {{io: object, gh: Function, base: string, runId?: string, now: number, warn?: (m: string) => void}} args
+ * gh, open tickets are the fetched DAG's and no merge times are read; when `reviews` throws, no ticket has a review
+ * pass and depth uses its default latency. A note says which. With no `reviews`, no ticket has a review pass. GitHub
+ * and the review rounds are read concurrently.
+ * @param {{io: object, gh: Function, reviews?: Function, base: string, runId?: string, now: number, warn?: (m: string) => void}} args
  */
 export async function computeEta({ io, gh, reviews, base, runId, now, warn = () => {} }) {
   const id = runId ?? (await latestRun(io, base));
@@ -220,23 +221,23 @@ export async function computeEta({ io, gh, reviews, base, runId, now, warn = () 
     notes.push(m);
     warn(m);
   };
-  let live = new Map();
-  try {
-    live = await fetchLive(run.scope, run.prByRef, gh, {
+  const [liveRead, reviewRead] = await Promise.allSettled([
+    fetchLive(run.scope, run.prByRef, gh, {
       onErrors: (paths) => note(`GitHub could not resolve ${paths.join(', ')}: those tickets read as the fetched DAG left them`),
-    });
-  } catch (err) {
+    }),
+    (async () => (reviews ? reviews({ base, runId: id, refs: run.scope }) : new Map()))(),
+  ]);
+  if (liveRead.status === 'rejected') {
+    const err = liveRead.reason;
     // gh's own stderr line, not execFile's message, whose first line is the command with the whole query in it.
-    const why = err.code === 'ENOENT' ? 'gh is not installed' : String(err.stderr || err.message).trim().split('\n')[0];
+    const why = err?.code === 'ENOENT' ? 'gh is not installed' : String(err?.stderr || err?.message).trim().split('\n')[0];
     note(`gh unavailable (${why}): open tickets are the fetched DAG's, and no merge times were read`);
   }
-  let reviewed = new Map();
-  try {
-    reviewed = reviews ? await reviews({ base, runId: id, refs: run.scope }) : reviewed;
-  } catch (err) {
-    notes.push(`review rounds unreadable (${String(err.message).split('\n')[0]}): depth uses its default latency`);
-    warn(notes.at(-1));
+  if (reviewRead.status === 'rejected') {
+    note(`review rounds unreadable (${String(reviewRead.reason?.message).split('\n')[0]}): depth uses its default latency`);
   }
+  const live = liveRead.value ?? new Map();
+  const reviewed = reviewRead.value ?? new Map();
   const nodes = run.scope.map((ref) => ({
     ref, repo: parseRef(ref)?.repo ?? ref, startedAt: run.startedAt.get(ref) ?? null, reviewedAt: reviewed.get(ref) ?? null,
     ...(live.get(ref) ?? { open: run.openAtFetch.has(ref), mergedAt: null }),
