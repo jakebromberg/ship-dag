@@ -274,3 +274,10 @@ test('the burn-up script moves the one tab stop with the arrow keys, Home and En
   assert.deepEqual(pts.map((p) => p.tabIndex), [-1, -1, 0]);
   assert.equal(press('a'), false, 'other keys pass through');
 });
+
+test('a burn-up tooltip shows on hover or keyboard focus, not after a click leaves a step focused', () => {
+  // A click focuses the step it lands on (steps carry tabindex), so a :focus rule would pin that tooltip open beside the one being hovered.
+  const tipRule = RULES.find((r) => r.sels.some((s) => s.endsWith('+.tip')));
+  assert.deepEqual(tipRule.sels, ['.burn .pt:hover+.tip', '.burn .pt:focus-visible+.tip']);
+  assert.ok(!RULES.some((r) => r.sels.some((s) => /\.pt:focus(?!-)/.test(s))), 'no plain :focus rule on a step');
+});

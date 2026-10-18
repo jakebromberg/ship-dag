@@ -26,13 +26,13 @@ const KIND_ORDER = { filed: 0, done: 1, dropped: 2 };
 export function burnupSeries({ tickets, startedAt, now }) {
   const t0 = Date.parse(startedAt);
   const end = Math.max(t0, Date.parse(now));
-  const clamp = (iso, floor) => Math.min(end, Math.max(floor, Date.parse(iso ?? '') || floor));
+  const clamp = (iso) => Math.min(end, Math.max(t0, Date.parse(iso ?? '') || t0));
   const events = [];
   for (const { ref, title, status, createdAt, closedAt } of tickets) {
     const closed = status === 'shipped' || status === 'dropped';
-    const close = closed ? clamp(closedAt, t0) : null;
+    const close = closed ? clamp(closedAt) : null;
     if (status === 'dropped' && close <= t0) { continue; } // gone before the run began
-    const enter = Math.min(clamp(createdAt, t0), close ?? end);
+    const enter = Math.min(clamp(createdAt), close ?? end);
     events.push({ t: enter, kind: 'filed', ref, title });
     if (closed) { events.push({ t: close, kind: status === 'shipped' ? 'done' : 'dropped', ref, title }); }
   }
@@ -50,15 +50,15 @@ export function burnupSeries({ tickets, startedAt, now }) {
 }
 
 /**
- * Fold points closer together than `gap` (a fraction of the span `t0`..`t1`) into one hover target, chaining: each
+ * Fold points closer together than `gap` (a fraction of the points' span, first to last) into one hover target, chaining: each
  * point joins the bucket of the point before it when that one is near enough. A bucket starts at its first point's
  * time (`from`), shows its last point's counts (`to`), and lists every item in it.
  *
  * @param {ReturnType<typeof burnupSeries>} points
  * @returns {Array<{from:number, to:ReturnType<typeof burnupSeries>[number], items:Array<object>}>}
  */
-export function bucketPoints(points, t0, t1, gap) {
-  const span = Math.max(1, t1 - t0);
+export function bucketPoints(points, gap) {
+  const span = Math.max(1, points[points.length - 1].t - points[0].t);
   const buckets = [];
   points.forEach((p, i) => {
     const last = buckets[buckets.length - 1];
@@ -114,20 +114,22 @@ const INTERVALS = [15, 30, 60, 120, 180, 360, 720, DAY, 2 * DAY, 7 * DAY]; // mi
 export function pacificTicks(t0, t1, max) {
   if (!(t1 > t0)) { return []; }
   const minutes = (t1 - t0) / MINUTE;
-  const every = INTERVALS.find((m) => minutes / m <= max) ?? Math.ceil(minutes / max / DAY) * DAY;
+  // A range of n intervals can hold n + 1 boundaries, so fewer than `max` intervals keeps the ticks to `max`.
+  const every = INTERVALS.find((m) => minutes / m < max) ?? Math.ceil(minutes / max / DAY) * DAY;
   const start = wall(t0);
-  const midnight = Date.UTC(1970, 0, 1) + Math.floor(start.ms / (DAY * MINUTE)) * DAY * MINUTE;
+  const midnight = Math.floor(start.ms / (DAY * MINUTE)) * DAY * MINUTE;
   // Sub-day ticks fall on multiples of the interval since midnight; day ticks start at the first midnight in range.
   let w = every < DAY ? midnight + Math.ceil((start.ms - midnight) / (every * MINUTE)) * every * MINUTE
     : midnight + (start.ms > midnight ? DAY * MINUTE : 0);
   const spansDates = start.date !== wall(t1).date;
   const ticks = [];
   let prevDate = spansDates ? null : start.date;
-  for (; ticks.length <= max + 1; w += every * MINUTE) {
+  for (; ticks.length < max; w += every * MINUTE) {
     const t = instantOf(w);
     if (t > t1) { break; }
-    if (t < t0) { continue; }
     const p = wall(t);
+    // Skip a wall time the spring-forward change never shows (2 AM): instantOf lands it on an hour already ticked.
+    if (t < t0 || p.ms !== w) { continue; }
     let label;
     if (every >= DAY) {
       label = p.date;
