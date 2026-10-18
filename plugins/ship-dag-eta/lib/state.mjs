@@ -197,6 +197,10 @@ export async function fetchLive(refs, prByRef, gh, { onErrors = () => {} } = {})
   return live;
 }
 
+// A failed command's own stderr line, not execFile's message, whose first line is the command (for gh, with the whole
+// query in it).
+const firstLine = (err) => String(err?.stderr || err?.message).trim().split('\n')[0];
+
 /**
  * The ETA of `runId` (default: the newest run under `base`), or `{error}` when there is no run or no DAG. Without
  * gh, open tickets are the fetched DAG's and no merge times are read; when `reviews` throws, no ticket has a review
@@ -225,16 +229,14 @@ export async function computeEta({ io, gh, reviews, base, runId, now, warn = () 
     fetchLive(run.scope, run.prByRef, gh, {
       onErrors: (paths) => note(`GitHub could not resolve ${paths.join(', ')}: those tickets read as the fetched DAG left them`),
     }),
-    (async () => (reviews ? reviews({ base, runId: id, refs: run.scope }) : new Map()))(),
+    (async () => (await reviews?.({ base, runId: id, refs: run.scope })) ?? new Map())(),
   ]);
   if (liveRead.status === 'rejected') {
-    const err = liveRead.reason;
-    // gh's own stderr line, not execFile's message, whose first line is the command with the whole query in it.
-    const why = err?.code === 'ENOENT' ? 'gh is not installed' : String(err?.stderr || err?.message).trim().split('\n')[0];
+    const why = liveRead.reason?.code === 'ENOENT' ? 'gh is not installed' : firstLine(liveRead.reason);
     note(`gh unavailable (${why}): open tickets are the fetched DAG's, and no merge times were read`);
   }
   if (reviewRead.status === 'rejected') {
-    note(`review rounds unreadable (${String(reviewRead.reason?.message).split('\n')[0]}): depth uses its default latency`);
+    note(`review rounds unreadable (${firstLine(reviewRead.reason)}): depth uses its default latency`);
   }
   const live = liveRead.value ?? new Map();
   const reviewed = reviewRead.value ?? new Map();
