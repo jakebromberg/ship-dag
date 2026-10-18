@@ -18,14 +18,18 @@ export const DEFAULTS = Object.freeze({
 
 /** The `q` quantile of `xs` by linear interpolation, or null when `xs` is empty. */
 export function quantile(xs, q) {
-  if (xs.length === 0) {
-    return null;
-  }
-  const s = [...xs].sort((a, b) => a - b);
+  return xs.length === 0 ? null : quantileSorted([...xs].sort((a, b) => a - b), q);
+}
+
+const quantileSorted = (s, q) => {
   const pos = (s.length - 1) * q;
   const i = Math.floor(pos);
   return i + 1 < s.length ? s[i] + (s[i + 1] - s[i]) * (pos - i) : s[i];
-}
+};
+
+/** `{lo, mid, hi}` with each band's value from `f(band)`. */
+const range = (f) => ({ lo: f('lo'), mid: f('mid'), hi: f('hi') });
+const BAND_Q = { lo: 0.25, mid: 0.5, hi: 0.75 };
 
 /** The differences between consecutive times, after sorting them. */
 export function gaps(times) {
@@ -38,19 +42,25 @@ export function spread(samples) {
   if (samples.length === 0) {
     return null;
   }
-  return { lo: quantile(samples, 0.25), mid: quantile(samples, 0.5), hi: quantile(samples, 0.75) };
+  const s = [...samples].sort((a, b) => a - b);
+  return range((k) => quantileSorted(s, BAND_Q[k]));
 }
 
-const finishAfter = (now, count, per) => ({ lo: now + count * per.lo, mid: now + count * per.mid, hi: now + count * per.hi });
-const flat = (ms) => ({ lo: ms, mid: ms, hi: ms });
+/**
+ * The spread of the gaps between the last `window` + 1 merges, or null with no gap. Merges at the same instant (one
+ * PR closing several tickets) count once, so they add no zero-length gap that would read as an instant service time.
+ */
+const recentGaps = (merges, window) => spread(gaps([...new Set(merges)]).slice(-window));
+
+const finishAfter = (now, count, per) => range((k) => now + count * per[k]);
+const flat = (ms) => range(() => ms);
 
 /**
  * One repo's merge queue: its service time from the gaps between its last `window` + 1 merges, else `fallbackMs`.
  * @param {{merges: number[], remaining: number, now: number, window: number, fallbackMs: number}} input
  */
 export function queueFinish({ merges, remaining, now, window, fallbackMs }) {
-  const recent = [...merges].sort((a, b) => a - b).slice(-(window + 1));
-  const measured = spread(gaps(recent));
+  const measured = recentGaps(merges, window);
   const service = measured ?? flat(fallbackMs);
   return { merged: merges.length, remaining, service, source: measured ? 'merges' : 'fallback', finish: finishAfter(now, remaining, service) };
 }
@@ -61,7 +71,7 @@ export function queueFinish({ merges, remaining, now, window, fallbackMs }) {
  * @param {{merges: number[], remaining: number, now: number, window: number}} input
  */
 export function throughputFinish({ merges, remaining, now, window }) {
-  const per = spread(gaps([...merges].sort((a, b) => a - b).slice(-(window + 1))));
+  const per = recentGaps(merges, window);
   if (!per) {
     return { perHour: null, remaining, merges: merges.length, finish: null };
   }
@@ -113,15 +123,15 @@ export function estimate({ now, runStart, nodes, blocked, waves, opts = {} }) {
 
   const limits = [
     ...queues.filter((q) => q.remaining > 0).map((q) => ({ name: `queue ${q.repo}`, finish: q.finish })),
-    ...(throughput.finish && open.size > 0 ? [{ name: 'throughput', finish: throughput.finish }] : []),
+    ...(throughput.finish && throughput.remaining > 0 ? [{ name: 'throughput', finish: throughput.finish }] : []),
     ...(depth.waves > 0 ? [{ name: 'depth', finish: depth.finish }] : []),
   ];
+  const rest = { queues, throughput, depth, blocked: [...parked] };
   if (limits.length === 0) {
-    return { now, eta: flat(now), binding: 'done', queues, throughput, depth, blocked: [...parked] };
+    return { now, eta: flat(now), binding: 'done', ...rest };
   }
-  const latest = (k) => Math.max(...limits.map((l) => l.finish[k]));
   const binding = limits.reduce((a, b) => (b.finish.mid > a.finish.mid ? b : a)).name;
-  return { now, eta: { lo: latest('lo'), mid: latest('mid'), hi: latest('hi') }, binding, queues, throughput, depth, blocked: [...parked] };
+  return { now, eta: range((k) => Math.max(...limits.map((l) => l.finish[k]))), binding, ...rest };
 }
 
 const PACIFIC = new Intl.DateTimeFormat('en-US', {
@@ -130,9 +140,13 @@ const PACIFIC = new Intl.DateTimeFormat('en-US', {
 
 /**
  * An instant in Pacific time with its zone label, e.g. `Sat, Oct 17, 10:52 AM PDT`. Built from the formatter's parts,
- * so the result is the same under every ICU version (they disagree on the separators between them).
+ * so the result is the same under every ICU version (they disagree on the separators between them). An invalid instant
+ * is '', as in the board's `formatPacific`, rather than a RangeError.
  */
 export function formatPacific(ms) {
+  if (!Number.isFinite(ms)) {
+    return '';
+  }
   const p = Object.fromEntries(PACIFIC.formatToParts(new Date(ms)).map(({ type, value }) => [type, value]));
   return `${p.weekday}, ${p.month} ${p.day}, ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
 }
@@ -150,14 +164,16 @@ const span = (r) => `${formatDuration(r.lo)} / ${formatDuration(r.mid)} / ${form
 export function renderText({ runId, now, eta, binding, queues, throughput, depth, blocked, notes = [] }) {
   const pad = (s, n) => String(s).padEnd(n);
   const width = Math.max(4, ...queues.map((q) => q.repo.length)) + 2;
+  const service = new Map(queues.map((q) => [q, span(q.service) + (q.source === 'fallback' ? '*' : '')]));
+  const serviceWidth = Math.max(24, ...[...service.values()].map((s) => s.length)) + 2;
   const lines = [
     `ship-dag ETA for ${runId} (as of ${formatPacific(now)})`,
     `ETA: ${formatPacific(eta.lo)} to ${formatPacific(eta.hi)}, likely ${formatPacific(eta.mid)}`,
     `Binding: ${binding}`,
     '',
-    `${pad('repo', width)}${pad('merged', 8)}${pad('left', 6)}${pad('service p25/p50/p75', 26)}finish (likely)`,
+    `${pad('repo', width)}${pad('merged', 8)}${pad('left', 6)}${pad('service p25/p50/p75', serviceWidth)}finish (likely)`,
     ...queues.map((q) => `${pad(q.repo, width)}${pad(q.merged, 8)}${pad(q.remaining, 6)}`
-      + `${pad(span(q.service) + (q.source === 'fallback' ? '*' : ''), 26)}${q.remaining ? formatPacific(q.finish.mid) : 'drained'}`),
+      + `${pad(service.get(q), serviceWidth)}${q.remaining ? formatPacific(q.finish.mid) : 'drained'}`),
     '',
     throughput.finish
       ? `Throughput: ${throughput.perHour.toFixed(1)} merges/h over the last merges; ${throughput.remaining} left, likely done ${formatPacific(throughput.finish.mid)}`
