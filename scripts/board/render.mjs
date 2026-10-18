@@ -81,7 +81,7 @@ export function waveSpan(labels) {
  */
 export function renderBoard(v) {
   const byRef = new Map(v.tickets.map((t) => [t.ref, t]));
-  const link = (ref, label) => html`<a href="${byRef.get(ref)?.url || ''}">${label || v.shortRef(ref)}</a>`;
+  const link = (ref, label, url = byRef.get(ref)?.url) => html`<a href="${url || ''}">${label || v.shortRef(ref)}</a>`;
   const prLinks = (t, only) => t.prs.filter((p) => only.includes(p.state))
     .map((p) => html`<a class="pr pr-${p.state}" href="${p.url}" title="${p.state}">#${p.number}</a>`);
   const counts = {};
@@ -128,9 +128,9 @@ export function renderBoard(v) {
       return html`<tr><td class="n">${link(t.ref)}</td><td>${t.title}</td><td class="n">${merged.length ? list(merged, ' ') : html`<span class="meta">—</span>`}</td><td class="n">${t.shippedWave || ''}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`;
     })}</tbody></table></div></details>`);
   for (const g of v.before || []) {
-    h.push(html`<details><summary>Shipped before this run: <a href="${g.url}">${v.shortRef(g.ref)}</a> — ${g.title} `
+    h.push(html`<details><summary>Shipped before this run: ${link(g.ref, null, g.url)} — ${g.title} `
       + html`(${g.shipped.length}${g.dropped ? `, plus ${g.dropped} closed as not planned` : ''})</summary>`
-      + html`<div class="tw"><table><thead><tr><th>Ticket</th><th>Title</th><th>Closed</th></tr></thead><tbody>${g.shipped.map((t) => html`<tr><td class="n"><a href="${t.url}">${v.shortRef(t.ref)}</a></td><td>${t.title}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`)}</tbody></table></div></details>`);
+      + html`<div class="tw"><table><thead><tr><th>Ticket</th><th>Title</th><th>Closed</th></tr></thead><tbody>${g.shipped.map((t) => html`<tr><td class="n">${link(t.ref, null, t.url)}</td><td>${t.title}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`)}</tbody></table></div></details>`);
   }
   const dropped = v.tickets.filter((t) => t.status === 'dropped');
   if (dropped.length) {
