@@ -14,6 +14,9 @@ const REF_RE = /^([^/\s#]+\/[^/\s#]+)#(\d+)$/;
 /** Close reasons that say the work was not done here, so the close is no merge. */
 const CLOSED_UNDONE = new Set(['NOT_PLANNED', 'DUPLICATE']);
 
+/** A ref's file stem as the engine writes it (`artifactStem` in scripts/lib/failure.mjs): only `%`, `/` and `#` escaped. */
+const stem = (ref) => String(ref).replace(/%/g, '%25').replace(/\//g, '%2F').replace(/#/g, '%23');
+
 /** `{repo, number}` of an `owner/repo#N` ref, or null. */
 export function parseRef(ref) {
   const m = REF_RE.exec(String(ref));
@@ -35,9 +38,9 @@ export function runStartFromId(runId) {
  * wave dirs (`-w1b`) and dirs with no DAG (a board's, a retry's) are passed over. Null when there is none.
  */
 export async function latestRun(io, base) {
-  const runs = (await io.list(base)).filter((e) => e.isDir && runStartFromId(e.name) !== null && !WAVE_DIR_RE.test(e.name)).map((e) => e.name);
-  runs.sort((a, b) => runStartFromId(b) - runStartFromId(a) || b.localeCompare(a));
-  for (const name of runs) {
+  const runs = (await io.list(base)).filter((e) => e.isDir && !WAVE_DIR_RE.test(e.name)).map((e) => [e.name, runStartFromId(e.name)]).filter(([, start]) => start !== null);
+  runs.sort(([a, sa], [b, sb]) => sb - sa || b.localeCompare(a));
+  for (const [name] of runs) {
     const times = await Promise.all(['dag.new.json', 'dag.json'].map((f) => io.mtime(`${base}/${name}/${f}`)));
     if (times.some((t) => t !== null)) {
       return name;
@@ -93,8 +96,8 @@ export async function readRun(io, base, runId) {
   for (const dir of await familyDirs(io, base, runId)) {
     // Probe only the metadata files the engine wrote in this dir, not every ref of the scope in every family dir.
     const written = new Set((await io.list(`${dir}/state/metadata`)).map((e) => e.name));
-    for (const ref of scope.filter((r) => written.has(`issue-${encodeURIComponent(r)}.json`))) {
-      const at = Date.parse((await readJson(io, `${dir}/state/metadata/issue-${encodeURIComponent(ref)}.json`))?.startedAt);
+    for (const ref of scope.filter((r) => written.has(`issue-${stem(r)}.json`))) {
+      const at = Date.parse((await readJson(io, `${dir}/state/metadata/issue-${stem(ref)}.json`))?.startedAt);
       if (!Number.isNaN(at) && !(startedAt.get(ref) <= at)) {
         startedAt.set(ref, at);
       }
@@ -122,22 +125,22 @@ export async function readRun(io, base, runId) {
   return { scope, openAtFetch, waves: plan.waves ?? [], blocked, startedAt, prByRef };
 }
 
-/** One GraphQL query for every ref's issue state and every PR's merge time, aliased per repo as `r<i>`. */
+/** One GraphQL query for every ref's issue state and every PR's merge time, aliased per repo as `r<i>` (`aliasOf`). */
 export function liveQuery(refs, prs) {
   const byRepo = new Map();
-  const add = (repo, field) => byRepo.set(repo, [...(byRepo.get(repo) ?? []), field]);
+  const add = (repo, field) => byRepo.set(repo, (byRepo.get(repo) ?? new Set()).add(field));
   for (const { repo, number } of refs.map(parseRef).filter(Boolean)) {
     add(repo, `i${number}: issue(number: ${number}) { state stateReason closedAt closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { mergedAt } } }`);
   }
   for (const { repo, number } of prs) {
     add(repo, `p${number}: pullRequest(number: ${number}) { mergedAt }`);
   }
-  const repos = [...byRepo.keys()];
-  const parts = repos.map((repo, i) => {
+  const aliasOf = new Map([...byRepo.keys()].map((repo, i) => [repo, `r${i}`]));
+  const parts = [...byRepo].map(([repo, fields]) => {
     const [owner, name] = repo.split('/');
-    return `r${i}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${[...new Set(byRepo.get(repo))].join(' ')} }`;
+    return `${aliasOf.get(repo)}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${[...fields].join(' ')} }`;
   });
-  return { text: `query { ${parts.join(' ')} }`, repos };
+  return { text: `query { ${parts.join(' ')} }`, aliasOf };
 }
 
 /** The GraphQL body a failed `gh api graphql` printed on stdout (its partial `data` beside `errors`), or null. */
@@ -157,7 +160,7 @@ function failedBody(err) {
  */
 export async function fetchLive(refs, prByRef, gh, { onErrors = () => {} } = {}) {
   const prs = [...prByRef].map(([ref, number]) => ({ repo: parseRef(ref).repo, number }));
-  const { text, repos } = liveQuery(refs, prs);
+  const { text, aliasOf } = liveQuery(refs, prs);
   let body;
   try {
     body = JSON.parse(await gh(['api', 'graphql', '-f', `query=${text}`]));
@@ -174,7 +177,7 @@ export async function fetchLive(refs, prByRef, gh, { onErrors = () => {} } = {})
   const live = new Map();
   for (const ref of refs) {
     const { repo, number } = parseRef(ref) ?? {};
-    const node = data[`r${repos.indexOf(repo)}`] ?? {};
+    const node = data[aliasOf.get(repo)] ?? {};
     const issue = node[`i${number}`];
     if (!issue) {
       continue;
@@ -204,19 +207,19 @@ export async function computeEta({ io, gh, base, runId, now, warn = () => {} }) 
   }
   warn(`run ${id}: ${run.scope.length} tickets in scope, ${run.blocked.length} blocked, ${run.prByRef.size} report PRs`);
   const notes = [];
+  const note = (m) => {
+    notes.push(m);
+    warn(m);
+  };
   let live = new Map();
   try {
     live = await fetchLive(run.scope, run.prByRef, gh, {
-      onErrors: (paths) => {
-        notes.push(`GitHub could not resolve ${paths.join(', ')}: those tickets read as the fetched DAG left them`);
-        warn(notes.at(-1));
-      },
+      onErrors: (paths) => note(`GitHub could not resolve ${paths.join(', ')}: those tickets read as the fetched DAG left them`),
     });
   } catch (err) {
     // gh's own stderr line, not execFile's message, whose first line is the command with the whole query in it.
     const why = err.code === 'ENOENT' ? 'gh is not installed' : String(err.stderr || err.message).trim().split('\n')[0];
-    notes.push(`gh unavailable (${why}): open tickets are the fetched DAG's, and no merge times were read`);
-    warn(notes.at(-1));
+    note(`gh unavailable (${why}): open tickets are the fetched DAG's, and no merge times were read`);
   }
   const nodes = run.scope.map((ref) => ({
     ref, repo: parseRef(ref)?.repo ?? ref, startedAt: run.startedAt.get(ref) ?? null,
