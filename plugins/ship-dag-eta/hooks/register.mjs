@@ -10,7 +10,7 @@
 // depth falls back to its default and the estimate says why.
 
 import { formatPacific, renderText } from '../lib/model.mjs';
-import { computeEta, latestRun } from '../lib/state.mjs';
+import { computeEta, familyDirs, latestRun } from '../lib/state.mjs';
 
 const REFRESH_MS = 2 * 60_000;
 const GH_TTL_MS = 5 * 60_000;
@@ -30,24 +30,31 @@ const fsIo = ($) => ({
   mtime: (path) => $.fs.stat(path).then((s) => s.mtimeMs, () => null),
 });
 
-/** `argv` through `$.process.run`, its stdout kept in the store under `slot` for GH_TTL_MS per argv. @param {import('claude-code').EngineInterface} $ */
+/**
+ * `argv` through `$.process.run`, its stdout kept in the store under `slot` for GH_TTL_MS per argv. The slot holds
+ * every argv still fresh, so a named run's query does not evict the active run's; expired entries are dropped on write.
+ * @param {import('claude-code').EngineInterface} $
+ */
 async function cachedRun($, now, slot, argv) {
   const key = argv.join('\n');
-  const hit = /** @type {{key: string, at: number, stdout: string} | undefined} */ (await $.store.get(slot));
-  if (hit && hit.key === key && now - hit.at < GH_TTL_MS) {
+  const held = /** @type {Record<string, {at: number, stdout: string}> | undefined} */ (await $.store.get(slot)) ?? {};
+  const hit = held[key];
+  if (hit && now - hit.at < GH_TTL_MS) {
     return hit.stdout;
   }
   const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 60_000 });
   if (exitCode !== 0) {
     throw new Error(stderr.trim().split('\n')[0] || `${argv[0]} exited ${exitCode}`);
   }
-  await $.store.set(slot, { key, at: now, stdout });
+  const fresh = Object.fromEntries(Object.entries(held).filter(([, v]) => now - v?.at < GH_TTL_MS));
+  await $.store.set(slot, { ...fresh, [key]: { at: now, stdout } });
   return stdout;
 }
 
 /** The skill's review-passes CLI, run through `node`: each ref's review pass as a Map. @param {import('claude-code').EngineInterface} $ */
 const skillReviews = ($, now) => async ({ base, runId, refs }) => {
-  const script = `${await $.env.get('HOME')}/.claude/skills/ship-dag/scripts/eta/review-passes.mjs`;
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`;
+  const script = `${config}/skills/ship-dag/scripts/eta/review-passes.mjs`;
   if (!(await $.fs.exists(script))) {
     throw new Error(`no ship-dag skill at ${script}`);
   }
@@ -55,11 +62,16 @@ const skillReviews = ($, now) => async ({ base, runId, refs }) => {
   return new Map(Object.entries(JSON.parse(await cachedRun($, now, 'reviews', argv))));
 };
 
-/** When any dir of the run's family last changed: the dirs, their reviews, reports and per-ticket metadata. */
-async function lastActivity($, base, runId) {
-  const names = (await $.fs.list(base).catch(() => [])).filter((e) => e.kind === 'dir' && (e.name === runId || e.name.startsWith(`${runId}-w`)));
-  const paths = names.flatMap(({ name }) => ['', '/reviews', '/state/reports', '/state/metadata'].map((sub) => `${base}/${name}${sub}`));
-  const times = await Promise.all(paths.map((p) => $.fs.stat(p).then((s) => s.mtimeMs, () => 0)));
+/**
+ * When the run's family (state.mjs's `familyDirs`) last changed: each dir, its reviews, reports and per-ticket
+ * metadata, and every file directly in them, since a file rewritten in place leaves its dir's mtime alone.
+ */
+async function lastActivity($, io, base, runId) {
+  const paths = (await familyDirs(io, base, runId)).flatMap((dir) => ['', '/reviews', '/state/reports', '/state/metadata'].map((sub) => `${dir}${sub}`));
+  const times = await Promise.all(paths.map(async (p) => {
+    const [own, entries] = await Promise.all([$.fs.stat(p).then((s) => s.mtimeMs, () => 0), $.fs.list(p).catch(() => [])]);
+    return Math.max(own, ...entries.map((e) => e.mtimeMs));
+  }));
   return Math.max(0, ...times);
 }
 
@@ -69,7 +81,7 @@ async function estimateFor($, runId) {
   const base = await stateBase($);
   const io = fsIo($);
   const id = runId || (await latestRun(io, base));
-  if (!id || (!runId && now - (await lastActivity($, base, id)) > ACTIVE_MS)) {
+  if (!id || (!runId && now - (await lastActivity($, io, base, id)) > ACTIVE_MS)) {
     return null;
   }
   const gh = (args) => cachedRun($, now, 'gh', ['gh', ...args]);
@@ -98,13 +110,19 @@ async function refresh($) {
 export const register = (on) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'ship-dag-eta', description: 'ETA of the active ship-dag run (or of the run named)', argumentHint: '[runId]' });
-    await refresh($);
     $.clock.every(REFRESH_MS, () => refresh($));
+    // Not awaited: the first estimate waits on gh and node (up to a minute each), and session start must not.
+    refresh($);
     return next(e);
   });
 
   on('command.run', { command: 'ship-dag-eta' }, async ($, e) => {
-    const r = await estimateFor($, e.args.trim());
+    let r;
+    try {
+      r = await estimateFor($, e.args.trim());
+    } catch (err) {
+      return { text: `ship-dag-eta: ${err?.message ?? err}` };
+    }
     if (!r) {
       return { text: 'There is no active ship-dag run (none changed in the last six hours). Name one: /ship-dag-eta <runId>' };
     }
