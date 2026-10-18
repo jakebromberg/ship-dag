@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { metadataPathForRef } from '../lib/failure.mjs';
 import { fsIo, main } from './run.mjs';
 import { latestRun, runStartFromId, liveQuery } from './state.mjs';
 
@@ -28,8 +29,8 @@ function fixture() {
     members: ['o/r#1', 'o/r#2', 'o/r#3', 'o/r#4'],
   });
   put(join(dir, 'plan.new.json'), { waves: [['o/r#2', 'o/r#3']], blocked: [{ ref: 'o/r#4', reason: 'external', missing: ['x/y#1'] }], cyclic: [] });
-  put(join(dir, 'state/metadata', `issue-${encodeURIComponent('o/r#1')}.json`), { startedAt: '2026-10-17T16:00:00.000Z' });
-  put(join(`${dir}-w1b`, 'state/metadata', `issue-${encodeURIComponent('o/r#1')}.json`), { startedAt: '2026-10-17T17:00:00.000Z' });
+  put(metadataPathForRef(dir, 'o/r#1'), { startedAt: '2026-10-17T16:00:00.000Z' });
+  put(metadataPathForRef(`${dir}-w1b`, 'o/r#1'), { startedAt: '2026-10-17T17:00:00.000Z' });
   put(join(`${dir}-w1b`, 'state/reports/r.json'), { startedAt: '2026-10-17T17:00:00.000Z', issues: [{ ref: 'o/r#1', number: 1, status: 'succeeded', prNumber: 11 }] });
   // An older run, and a family dir of the newer one, must not be picked as the newest run.
   mkdirSync(join(base, 'sd-20261001-090000'));
@@ -48,7 +49,7 @@ const answer = {
   },
 };
 
-async function run(argv, { gh = async () => JSON.stringify(answer), base } = {}) {
+async function run(argv, { gh = async () => JSON.stringify(answer) } = {}) {
   const out = [];
   const err = [];
   const calls = [];
@@ -58,7 +59,7 @@ async function run(argv, { gh = async () => JSON.stringify(answer), base } = {})
     gh: async (args) => { calls.push(args); return gh(args); },
     stdout: (s) => out.push(s), stderr: (s) => err.push(s),
   });
-  return { code, out: out.join('\n'), err: err.join('\n'), calls, base };
+  return { code, out: out.join('\n'), err: err.join('\n'), calls };
 }
 
 test('latestRun picks the newest run by the start its id encodes, skipping wave dirs', async () => {
@@ -90,8 +91,8 @@ for (const [id, want] of [
 }
 
 test('liveQuery batches every issue and PR into one query, grouped per repo', () => {
-  const { text: q, repos } = liveQuery(['o/r#1', 'o/r#2', 'p/q#7'], [{ repo: 'o/r', number: 11 }]);
-  assert.deepEqual(repos, ['o/r', 'p/q']);
+  const { text: q, aliasOf } = liveQuery(['o/r#1', 'o/r#2', 'p/q#7'], [{ repo: 'o/r', number: 11 }]);
+  assert.deepEqual([...aliasOf], [['o/r', 'r0'], ['p/q', 'r1']]);
   assert.match(q, /r0: repository\(owner: "o", name: "r"\) \{ i1: issue\(number: 1\)/);
   assert.match(q, /i2: issue\(number: 2\)/);
   assert.match(q, /p11: pullRequest\(number: 11\)/);

@@ -6,7 +6,7 @@
 // GraphQL query, and prints model.mjs's estimate (state.mjs gathers the inputs). Without gh it falls back to the
 // fetched DAG's open set and says so. Progress goes to stderr. Exit 0 printed, 1 no run or no DAG, 64 usage.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { isMain } from '../lib/is-main.mjs';
@@ -16,27 +16,9 @@ import { computeEta } from './state.mjs';
 
 /** The `io` state.mjs reads through, over the local file system. */
 export const fsIo = {
-  list: async (dir) => {
-    try {
-      return readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
-    } catch {
-      return [];
-    }
-  },
-  read: async (path) => {
-    try {
-      return readFileSync(path, 'utf8');
-    } catch {
-      return null;
-    }
-  },
-  mtime: async (path) => {
-    try {
-      return statSync(path).mtimeMs;
-    } catch {
-      return null;
-    }
-  },
+  list: (dir) => readdir(dir, { withFileTypes: true }).then((es) => es.map((e) => ({ name: e.name, isDir: e.isDirectory() })), () => []),
+  read: (path) => readFile(path, 'utf8').catch(() => null),
+  mtime: (path) => stat(path).then((s) => s.mtimeMs, () => null),
 };
 
 /** The default `gh`: the CLI, retrying a rate-limited answer with backoff rather than reading it as gh unavailable. */
