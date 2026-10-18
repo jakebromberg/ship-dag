@@ -271,8 +271,12 @@ test('renderBoard puts the burn-up under the headline counts, above Needs attent
   assert.match(html, /<h2>Burn-up <small>/);
 });
 
-test('renderBoard without the run\'s startedAt draws no burn-up', () => {
-  assert.ok(!renderBoard(view()).includes('class="burn"'));
+test('renderBoard without the run\'s startedAt, or with one that is not a date, draws no burn-up', () => {
+  for (const startedAt of [undefined, 'not a date']) {
+    const html = renderBoard(view({ startedAt }));
+    assert.ok(!html.includes('class="burn"'), String(startedAt));
+    assert.match(html, /<footer>/, 'the rest of the page still renders');
+  }
 });
 
 test('the burn-up\'s legend and end labels give the current counts; a ticket dropped before the run is not in scope', () => {

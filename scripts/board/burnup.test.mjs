@@ -80,9 +80,9 @@ test('a ticket with no createdAt enters at the start; a run that has not started
 
 test('bucketPoints folds steps closer than the gap into one hover target, ending at the last of them', () => {
   const t0 = at(START);
-  const span = 1000 * 60 * 100; // 100 minutes, so 1 minute = 1%
+  // 100 minutes from the first point to the last, so 1 minute = 1%
   const p = (min, scope) => ({ t: t0 + min * 60000, scope, done: 0, items: [{ kind: 'filed', ref: R(min), title: '' }] });
-  const buckets = bucketPoints([p(0, 1), p(10, 2), p(10.3, 3), p(10.6, 4), p(50, 5), p(100, 5)], t0, t0 + span, 0.005);
+  const buckets = bucketPoints([p(0, 1), p(10, 2), p(10.3, 3), p(10.6, 4), p(50, 5), p(100, 5)], 0.005);
   assert.deepEqual(buckets.map((b) => [b.from, b.to.scope, b.items.length]), [
     [t0, 1, 1], [t0 + 10 * 60000, 4, 3], [t0 + 50 * 60000, 5, 1], [t0 + 100 * 60000, 5, 1],
   ]);
@@ -94,10 +94,15 @@ for (const [name, from, to, want] of [
   ['two days, naming the day each time it changes', '2026-10-16T15:00:00Z', '2026-10-18T03:00:00Z', ['Oct 16, 12 PM PDT', '6 PM PDT', 'Oct 17, 12 AM PDT', '6 AM PDT', '12 PM PDT', '6 PM PDT']],
   ['two weeks in days', '2026-10-01T15:00:00Z', '2026-10-14T15:00:00Z', ['Oct 2', 'Oct 4', 'Oct 6', 'Oct 8', 'Oct 10', 'Oct 12', 'Oct 14']],
   ['across the fall-back change, in PST after it', '2026-11-01T06:00:00Z', '2026-11-01T14:00:00Z', ['Nov 1, 12 AM PDT', '2 AM PST', '4 AM PST', '6 AM PST']],
+  ['across the spring-forward change, skipping the 2 AM that never happens', '2026-03-08T07:00:00Z', '2026-03-08T13:00:00Z', ['Mar 7, 11 PM PST', 'Mar 8, 12 AM PST', '1 AM PST', '3 AM PDT', '4 AM PDT', '5 AM PDT', '6 AM PDT']],
+  ['across the spring-forward change in half hours', '2027-03-14T08:30:00Z', '2027-03-14T11:00:00Z', ['12:30 AM PST', '1 AM PST', '1:30 AM PST', '3 AM PDT', '3:30 AM PDT', '4 AM PDT']],
+  ['exactly as many hours as ticks allowed, so no more than the limit', '2026-10-17T16:00:00Z', '2026-10-17T23:00:00Z', ['10 AM PDT', '12 PM PDT', '2 PM PDT', '4 PM PDT']],
 ]) {
   test(`pacificTicks: ${name}`, () => {
     const ticks = pacificTicks(at(from), at(to), 7);
     assert.deepEqual(ticks.map((k) => k.label), want);
+    assert.ok(ticks.length <= 7, 'at most max ticks');
+    assert.deepEqual(ticks.map((k) => k.t), [...new Set(ticks.map((k) => k.t))].sort((a, b) => a - b), 'distinct and in order');
     for (const k of ticks) { assert.ok(k.t >= at(from) && k.t <= at(to), `${k.label} inside the range`); }
   });
 }

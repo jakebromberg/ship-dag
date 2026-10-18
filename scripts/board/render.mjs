@@ -78,7 +78,7 @@ export function waveSpan(labels) {
  * @param {Array<{ref:string,url:string,title:string,dropped:number,shipped:Array<{ref:string,title:string,url:string,closedAt?:string}>}>} [v.before]
  *   `shippedBefore`'s result: what the predecessor epics shipped before this run. Counted in the headline, listed in a collapsed section.
  * @param {string} v.rebuild  the command that rebuilds this page
- * @param {string} [v.startedAt]  ISO instant the run started (board.json); with it, the page draws the burn-up, which
+ * @param {string} [v.startedAt]  ISO instant the run started (board.json); with a parseable one, the page draws the burn-up, which
  *   reads each ticket's `createdAt` (absent: it was in scope from the start)
  * @returns {string}
  */
@@ -105,7 +105,8 @@ export function renderBoard(v) {
   h.push(bar(counts, total));
   h.push(html`<div class="legend">${SHOWN.map(({ token, legend }) => html`<span><i style="background:var(--${token})"></i>${legend}</span>`)}</div>`);
   h.push(repoBars(v.tickets, v.repoLabel));
-  if (v.startedAt) { h.push(burnup(v, link)); }
+  const burn = Number.isFinite(Date.parse(v.startedAt ?? '')); // a hand-edited startedAt that is not a date skips the chart
+  if (burn) { h.push(burnup(v, link)); }
 
   if (notes.callouts?.length) {
     h.push(html`<h2>Needs attention</h2><div class="callouts">${notes.callouts.map((c) => html`<div class="callout${c.owner === 'you' ? ' you' : ''}"><b>${c.title}</b>${c.text}</div>`)}</div>`);
@@ -141,7 +142,7 @@ export function renderBoard(v) {
     h.push(html`<details><summary>Closed as not planned (${dropped.length})</summary><div class="items">${dropped.map((t) => html`<span class="item">${link(t.ref)} <span class="x">${t.title}</span></span>`)}</div></details>`);
   }
   h.push(html`<footer>Times are Pacific. Rebuild with <code>${v.rebuild}</code>. Built from GitHub, the run's engine state, its review files and telemetry, and its board notes. Local file, not committed.</footer></main>`
-    + html`<script>${raw(ROAD_JS)}</script>${v.startedAt ? html`<script>${raw(BURN_JS)}</script>` : ''}</body></html>`);
+    + html`<script>${raw(ROAD_JS)}</script>${burn ? html`<script>${raw(BURN_JS)}</script>` : ''}</body></html>`);
   return h.join('\n');
 }
 
@@ -230,11 +231,10 @@ const pct = (n) => `${Number(n.toFixed(2))}%`;
  */
 function burnup(v, link) {
   const points = burnupSeries({ tickets: v.tickets, startedAt: v.startedAt, now: v.now });
-  const t0 = points[0].t;
-  const t1 = points[points.length - 1].t;
-  const span = Math.max(1, t1 - t0);
   const first = points[0];
   const last = points[points.length - 1];
+  const [t0, t1] = [first.t, last.t];
+  const span = Math.max(1, t1 - t0);
   const { step, top } = yScale(Math.max(...points.map((p) => p.scope)));
   const X = (t) => ((t - t0) / span) * 100;
   const Y = (n) => 100 - (n / top) * 100;
@@ -248,7 +248,8 @@ function burnup(v, link) {
 
   const grid = [...ys.map((n) => html`<line class="grid" x1="0" x2="100" y1="${Y(n)}" y2="${Y(n)}"/>`),
     ...ticks.map((k) => html`<line class="grid v" x1="${X(k.t)}" x2="${X(k.t)}" y1="0" y2="100"/>`)];
-  const svg = html`<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${grid}<path class="area" d="${path('done')} V100 H0 Z"/><path class="scope" d="${path('scope')}"/><path class="done" d="${path('done')}"/></svg>`;
+  const done = path('done');
+  const svg = html`<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${grid}<path class="area" d="${done} V100 H0 Z"/><path class="scope" d="${path('scope')}"/><path class="done" d="${done}"/></svg>`;
   const labels = html`${ys.map((n) => html`<span class="yl" style="top:${pct(Y(n))}">${n}</span>`)}${ticks.map((k, i) => {
     const x = X(k.t);
     const edge = x < 6 ? ' first' : x > 94 ? ' last' : '';
@@ -259,7 +260,7 @@ function burnup(v, link) {
   if (dy - sy < 9) { const mid = (sy + dy) / 2; [sy, dy] = [mid - 4.5, mid + 4.5]; }
   const ends = html`<span class="end s" style="top:${pct(sy)}">Scope ${last.scope}</span><span class="end d" style="top:${pct(dy)}">Shipped ${last.done}</span>`;
 
-  const buckets = bucketPoints(points, t0, t1, BUCKET_GAP);
+  const buckets = bucketPoints(points, BUCKET_GAP);
   const xs = buckets.map((b) => X(b.to.t));
   const cols = buckets.map((b, i) => {
     const left = i ? (xs[i - 1] + xs[i]) / 2 : 0;
