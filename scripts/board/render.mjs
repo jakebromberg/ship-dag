@@ -35,18 +35,18 @@ const CHIP = Object.fromEntries(STATUSES.map((s) => [s.status, s.chip]));
  * stage from the board notes) keeps the ticket's status colour. Tiles, legend, bar and node borders count by
  * status and do not read this table.
  */
-export const STAGE_STATUS = {
-  Building: 'flight',
-  'In review': 'flight',
-  Reviewed: 'flight',
-  Fixing: 'flight',
-  Stalled: 'you',
-  'Review unreadable': 'you',
-};
+const STAGE_STATUS = new Map([
+  ['Building', 'flight'],
+  ['In review', 'flight'],
+  ['Reviewed', 'flight'],
+  ['Fixing', 'flight'],
+  ['Stalled', 'you'],
+  ['Review unreadable', 'you'],
+]);
 
 /** A status chip: its label is the ticket's stage if it has one, else the status's own; its class follows the label, or the status when the stage is not in STAGE_STATUS. */
 const chip = (status, stage) => {
-  const wears = stage && Object.hasOwn(STAGE_STATUS, stage) ? STAGE_STATUS[stage] : status;
+  const wears = STAGE_STATUS.get(stage) ?? status;
   return html`<span class="chip c-${wears}">${stage || CHIP[status] || status}</span>`;
 };
 
