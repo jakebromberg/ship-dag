@@ -11,6 +11,8 @@ import { estimate } from './model.mjs';
 const ID_RE = /^(?:sd|ship-dag)-(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/;
 const WAVE_DIR_RE = /-w\d+[a-z]*$/i;
 const REF_RE = /^([^/\s#]+\/[^/\s#]+)#(\d+)$/;
+/** Close reasons that say the work was not done here, so the close is no merge. */
+const CLOSED_UNDONE = new Set(['NOT_PLANNED', 'DUPLICATE']);
 
 /** `{repo, number}` of an `owner/repo#N` ref, or null. */
 export function parseRef(ref) {
@@ -44,9 +46,12 @@ export async function latestRun(io, base) {
   return null;
 }
 
-/** The run's dir and its wave dirs (`<runId>-w1b`, ...), the run's first. */
+/** A family dir's suffix after the run id: wave dirs (`-w1b`, `-w37aa`), retry letters (`-b`), `-r2`, `-resume`, as `runFamily` folds them. */
+const FAMILY_SUFFIX_RE = /^(?:-w\d+[a-z]*|-(?:wave|resume|r)\d*[a-z]?|-[a-z])+$/i;
+
+/** The run's dir and every dir of its family (wave dirs and retry dirs), the run's first. */
 async function familyDirs(io, base, runId) {
-  const names = (await io.list(base)).filter((e) => e.isDir && e.name.startsWith(`${runId}-`) && WAVE_DIR_RE.test(e.name)).map((e) => e.name);
+  const names = (await io.list(base)).filter((e) => e.isDir && e.name.startsWith(`${runId}-`) && FAMILY_SUFFIX_RE.test(e.name.slice(runId.length))).map((e) => e.name);
   return [runId, ...names.sort()].map((n) => `${base}/${n}`);
 }
 
@@ -84,20 +89,32 @@ export async function readRun(io, base, runId) {
   const openAtFetch = new Set((spec.nodes ?? []).map((n) => n.ref));
   const scope = spec.members ?? [...openAtFetch];
   const startedAt = new Map();
-  const prByRef = new Map();
+  const reports = [];
   for (const dir of await familyDirs(io, base, runId)) {
-    for (const ref of scope) {
+    // Probe only the metadata files the engine wrote in this dir, not every ref of the scope in every family dir.
+    const written = new Set((await io.list(`${dir}/state/metadata`)).map((e) => e.name));
+    for (const ref of scope.filter((r) => written.has(`issue-${encodeURIComponent(r)}.json`))) {
       const at = Date.parse((await readJson(io, `${dir}/state/metadata/issue-${encodeURIComponent(ref)}.json`))?.startedAt);
       if (!Number.isNaN(at) && !(startedAt.get(ref) <= at)) {
         startedAt.set(ref, at);
       }
     }
-    for (const e of (await io.list(`${dir}/state/reports`)).filter((x) => x.name.endsWith('.json')).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const e of (await io.list(`${dir}/state/reports`)).filter((x) => x.name.endsWith('.json'))) {
       const report = await readJson(io, `${dir}/state/reports/${e.name}`);
-      for (const row of report?.issues ?? report?.rows ?? []) {
-        if (Number.isInteger(row?.prNumber) && parseRef(row.ref)) {
-          prByRef.set(row.ref, row.prNumber);
-        }
+      if (report) {
+        reports.push({ report, at: Date.parse(report.startedAt), name: e.name });
+      }
+    }
+  }
+  // The newest report naming a ticket's PR wins, whichever dir holds it: dir names do not sort by wave (`-w10` sorts
+  // before `-w2`, `-w1aa` before `-w1b`). A report with no start sorts first, then by file name (its start, as stamped).
+  const startOf = (r) => (Number.isNaN(r.at) ? -Infinity : r.at);
+  reports.sort((a, b) => startOf(a) - startOf(b) || a.name.localeCompare(b.name));
+  const prByRef = new Map();
+  for (const { report } of reports) {
+    for (const row of report.issues ?? report.rows ?? []) {
+      if (Number.isInteger(row?.prNumber) && row.prNumber > 0 && parseRef(row.ref)) {
+        prByRef.set(row.ref, row.prNumber);
       }
     }
   }
@@ -118,16 +135,42 @@ export function liveQuery(refs, prs) {
   const repos = [...byRepo.keys()];
   const parts = repos.map((repo, i) => {
     const [owner, name] = repo.split('/');
-    return `r${i}: repository(owner: "${owner}", name: "${name}") { ${[...new Set(byRepo.get(repo))].join(' ')} }`;
+    return `r${i}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${[...new Set(byRepo.get(repo))].join(' ')} }`;
   });
   return { text: `query { ${parts.join(' ')} }`, repos };
 }
 
-/** Each ref's live `{open, mergedAt}` from GitHub, in one call: the report's merged PR, else a closing PR, else `closedAt`. */
-export async function fetchLive(refs, prByRef, gh) {
+/** The GraphQL body a failed `gh api graphql` printed on stdout (its partial `data` beside `errors`), or null. */
+function failedBody(err) {
+  try {
+    const body = JSON.parse(err?.stdout);
+    return body?.data ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Each ref's live `{open, mergedAt}` from GitHub, in one call: the report's merged PR, else a closing PR, else `closedAt`.
+ * gh exits non-zero when any one alias fails (an issue transferred or deleted, a PR number that is an issue's), so a
+ * failed call that still printed `data` is read as far as it goes, and `onErrors` gets the paths it could not resolve.
+ */
+export async function fetchLive(refs, prByRef, gh, { onErrors = () => {} } = {}) {
   const prs = [...prByRef].map(([ref, number]) => ({ repo: parseRef(ref).repo, number }));
   const { text, repos } = liveQuery(refs, prs);
-  const data = JSON.parse(await gh(['api', 'graphql', '-f', `query=${text}`])).data ?? {};
+  let body;
+  try {
+    body = JSON.parse(await gh(['api', 'graphql', '-f', `query=${text}`]));
+  } catch (err) {
+    body = failedBody(err);
+    if (!body) {
+      throw err;
+    }
+  }
+  if (body.errors?.length) {
+    onErrors(body.errors.map((e) => (e.path ?? []).join('.') || e.message));
+  }
+  const data = body.data ?? {};
   const live = new Map();
   for (const ref of refs) {
     const { repo, number } = parseRef(ref) ?? {};
@@ -137,7 +180,7 @@ export async function fetchLive(refs, prByRef, gh) {
       continue;
     }
     const closing = issue.closedByPullRequestsReferences?.nodes?.map((n) => n.mergedAt).filter(Boolean).sort().at(-1);
-    const merged = node[`p${prByRef.get(ref)}`]?.mergedAt ?? closing ?? (issue.stateReason === 'NOT_PLANNED' ? null : issue.closedAt);
+    const merged = node[`p${prByRef.get(ref)}`]?.mergedAt ?? closing ?? (CLOSED_UNDONE.has(issue.stateReason) ? null : issue.closedAt);
     live.set(ref, { open: issue.state === 'OPEN', mergedAt: issue.state === 'OPEN' || !merged ? null : Date.parse(merged) });
   }
   return live;
@@ -163,9 +206,15 @@ export async function computeEta({ io, gh, base, runId, now, warn = () => {} }) 
   const notes = [];
   let live = new Map();
   try {
-    live = await fetchLive(run.scope, run.prByRef, gh);
+    live = await fetchLive(run.scope, run.prByRef, gh, {
+      onErrors: (paths) => {
+        notes.push(`GitHub could not resolve ${paths.join(', ')}: those tickets read as the fetched DAG left them`);
+        warn(notes.at(-1));
+      },
+    });
   } catch (err) {
-    const why = err.code === 'ENOENT' ? 'gh is not installed' : String(err.message).split('\n')[0];
+    // gh's own stderr line, not execFile's message, whose first line is the command with the whole query in it.
+    const why = err.code === 'ENOENT' ? 'gh is not installed' : String(err.stderr || err.message).trim().split('\n')[0];
     notes.push(`gh unavailable (${why}): open tickets are the fetched DAG's, and no merge times were read`);
     warn(notes.at(-1));
   }
@@ -173,6 +222,9 @@ export async function computeEta({ io, gh, base, runId, now, warn = () => {} }) 
     ref, repo: parseRef(ref)?.repo ?? ref, startedAt: run.startedAt.get(ref) ?? null,
     ...(live.get(ref) ?? { open: run.openAtFetch.has(ref), mergedAt: null }),
   }));
+  // The plan's blocked list is as old as the plan: a ticket it blocked that has since closed is no longer blocked.
+  const stillOpen = new Set(nodes.filter((n) => n.open).map((n) => n.ref));
+  const blocked = run.blocked.filter((ref) => stillOpen.has(ref));
   const runStart = Math.min(runStartFromId(id) ?? Infinity, ...run.startedAt.values());
-  return { runId: id, runStart, ...estimate({ now, runStart, nodes, blocked: run.blocked, waves: run.waves }), notes };
+  return { runId: id, runStart, ...estimate({ now, runStart, nodes, blocked, waves: run.waves }), notes };
 }
