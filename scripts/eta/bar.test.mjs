@@ -18,6 +18,9 @@ for (const [repo, want] of [
   ['o/o-shared', 'shared'],
   ['acme/acme-web-app', 'web app'],
   ['acme/Widgets', 'Widgets'],
+  ['a(b/a(b-x', 'X'],
+  ['o/o-', 'O'],
+  ['o/', 'o/'],
 ]) {
   test(`shortRepo(${repo}) is ${want}`, () => {
     assert.equal(shortRepo(repo), want);
@@ -93,6 +96,14 @@ for (const [binding, want] of [['throughput', 'pace'], ['depth', 'waves'], ['don
   });
 }
 
+test('barModel of a finished run has no ETA markers, so the pane says nothing is left', () => {
+  const nodes = [node('o/r#1', { open: false, mergedAt: t(0) })];
+  const r = { ...estimate({ now: t(30), runStart: t(-30), nodes, blocked: [], waves: [] }), runId: 'sd-1', runStart: t(-30) };
+  const b = barModel(r);
+  assert.deepEqual(b.markers.map((k) => k.id), ['now']);
+  assert.deepEqual(renderBar(b, 40).slice(1), ['nothing left to merge']);
+});
+
 // ---- layoutBar -------------------------------------------------------------
 
 const model = (markers, binding = null, extra = {}) => ({
@@ -132,6 +143,15 @@ test('compactBar is a fixed-width bar with the binding glyph in its cell', () =>
   const got = compactBar(model([{ id: 'late', glyph: '›', label: 'late ETA', at: m(100) }, { id: 'w', glyph: '≡', label: 'waves left', at: m(95) }], 'w'), 20);
   assert.equal(got, '[█████████·········≡·]');
   assert.equal(got.length, 22);
+});
+
+test('renderBar keeps the legend notes inside 60 columns, shortening the times and then the label when a label is long', () => {
+  const r = liveResult();
+  const b = barModel({ ...r, queues: r.queues.map((q) => ({ ...q, repo: q.repo === 'o/dj-site' ? 'o/claude-orchestrator-dj-site' : q.repo })), binding: 'queue o/claude-orchestrator-dj-site' });
+  const lines = renderBar(b, 60);
+  assert.ok(lines.every((l) => [...l].length <= 60), lines.join('\n'));
+  assert.match(lines.join('\n'), /^C claude orchestrator DJ site.* \w{3} \d+:\d\d [AP]M P[DS]T \(binding\)$/m);
+  assert.ok(lines.filter((l) => l.includes('(under')).every((l) => /\(under .\)$/.test(l)), lines.join('\n'));
 });
 
 for (const [columns, wantLines, wantFull] of [[40, 3, false], [59, 3, false], [60, 4, true], [100, 4, true]]) {

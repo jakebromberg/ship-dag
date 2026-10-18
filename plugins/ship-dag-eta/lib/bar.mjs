@@ -13,35 +13,46 @@ const EMPTY = '·';
 const PAST = '→';
 const COMPACT_BELOW = 60; // columns: narrower than this draws the compact bar
 
-/** A short display name for `owner/repo`: the owner's prefix dropped, capitalized words to initials, short words upper-cased. */
+/**
+ * A short display name for `owner/repo`: the owner's prefix dropped, capitalized words to initials, short words
+ * upper-cased. Never empty: a name that shortens to nothing is given back whole.
+ */
 export function shortRepo(repo) {
   const [owner, name = owner] = repo.split('/');
-  const words = name.replace(new RegExp(`^${owner}-`, 'i'), '').split('-');
-  if (words.length > 1 && words.every((w) => /^[A-Z]/.test(w))) {
-    return words.map((w) => w[0]).join('');
-  }
-  return words.map((w) => (w.length <= 2 ? w.toUpperCase() : w)).join(' ');
+  const prefix = `${owner}-`.toLowerCase();
+  const words = (name.toLowerCase().startsWith(prefix) && name.length > prefix.length ? name.slice(prefix.length) : name).split('-');
+  const short = words.length > 1 && words.every((w) => /^[A-Z]/.test(w))
+    ? words.map((w) => w[0]).join('')
+    : words.map((w) => (w.length <= 2 ? w.toUpperCase() : w)).join(' ');
+  return short.trim() || repo;
 }
 
 const BINDING = { throughput: 'pace', depth: 'waves', done: null };
 
-/** The bar's model from `estimate`'s result (with `runId` and `runStart`): axis, counts, binding marker and markers. */
+/**
+ * The bar's model from `estimate`'s result (with `runId` and `runStart`): axis, counts, binding marker and markers.
+ * A finished run (`done`) has no ETA markers.
+ */
 export function barModel(r) {
   const queues = r.queues.filter((q) => q.remaining > 0);
-  const firsts = queues.map((q) => shortRepo(q.repo)[0].toUpperCase());
+  const names = queues.map((q) => shortRepo(q.repo));
+  const firsts = names.map((s) => s[0].toUpperCase());
   let n = 0;
   const glyphs = firsts.map((g) => (firsts.filter((o) => o === g).length > 1 ? String(++n) : g));
-  const markers = [
-    { id: 'now', glyph: GLYPHS.now, label: 'now', at: r.now },
+  const eta = r.binding === 'done' ? [] : [
     { id: 'early', glyph: GLYPHS.early, label: 'early ETA', at: r.eta.lo },
     { id: 'likely', glyph: GLYPHS.likely, label: 'likely ETA', at: r.eta.mid },
     { id: 'late', glyph: GLYPHS.late, label: 'late ETA', at: r.eta.hi },
-    ...queues.map((q, i) => ({ id: `queue:${q.repo}`, glyph: glyphs[i], label: `${shortRepo(q.repo)} queue`, at: q.finish.mid })),
+  ];
+  const markers = [
+    { id: 'now', glyph: GLYPHS.now, label: 'now', at: r.now },
+    ...eta,
+    ...queues.map((q, i) => ({ id: `queue:${q.repo}`, glyph: glyphs[i], label: `${names[i]} queue`, at: q.finish.mid })),
     ...(r.throughput.finish && r.throughput.remaining > 0 ? [{ id: 'pace', glyph: GLYPHS.pace, label: 'overall pace', at: r.throughput.finish.mid }] : []),
     ...(r.depth.waves > 0 ? [{ id: 'waves', glyph: GLYPHS.waves, label: 'waves left', at: r.depth.finish.mid }] : []),
   ];
   const binding = r.binding in BINDING ? BINDING[r.binding] : `queue:${r.binding.replace(/^queue /, '')}`;
-  const merged = r.queues.reduce((s, q) => s + q.merged, 0);
+  const merged = r.throughput.merges;
   return { runId: r.runId, now: r.now, start: r.runStart, end: r.eta.hi, merged, total: merged + r.throughput.remaining, binding, markers };
 }
 
@@ -70,7 +81,7 @@ export function layoutBar(b, width) {
   }).join('');
   const placed = b.markers.map((k) => ({ ...k, ...cellOf(k.at, b.start, b.end, width), binding: k.id === b.binding }));
   const owner = new Map();
-  for (const k of [...placed.filter((p) => p.binding), ...placed.filter((p) => !p.binding)]) {
+  for (const k of placed.toSorted((a, z) => z.binding - a.binding)) {
     if (!owner.has(k.cell)) {
       owner.set(k.cell, k);
     }
@@ -82,13 +93,9 @@ export function layoutBar(b, width) {
 
 /** The compact bar for the status line: `[` + `width` cells + `]`, the binding marker's glyph in its cell. */
 export function compactBar(b, width = 20) {
-  const { bar } = layoutBar(b, width);
-  const binding = b.markers.find((k) => k.id === b.binding);
-  if (!binding) {
-    return `[${bar}]`;
-  }
-  const { cell } = cellOf(binding.at, b.start, b.end, width);
-  return `[${[...bar].map((c, i) => (i === cell ? binding.glyph : c)).join('')}]`;
+  const { bar, legend } = layoutBar(b, width);
+  const binding = legend.find((k) => k.binding);
+  return `[${[...bar].map((c, i) => (i === binding?.cell ? binding.glyph : c)).join('')}]`;
 }
 
 const SHORT = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
@@ -102,8 +109,9 @@ export function formatPacificShort(ms) {
 const fit = (line, columns) => [...line].slice(0, columns).join('');
 
 /**
- * The bar as lines no wider than `columns`: below 60 columns the compact bar, the likely ETA and the binding
- * constraint; from 60 the full bar, its marker row and a legend with the run's start and every marker's Pacific time.
+ * The bar as lines no wider than `columns`: below 60 columns the compact bar, the likely ETA (or that nothing is
+ * left) and the binding constraint; from 60 the full bar, its marker row and a legend with the run's start and every
+ * marker's Pacific time, shortened to weekday and time when the full date would cut a line's notes off.
  */
 export function renderBar(b, columns) {
   const count = ` ${b.merged}/${b.total} merged`;
@@ -111,20 +119,24 @@ export function renderBar(b, columns) {
   if (columns < COMPACT_BELOW) {
     const likely = b.markers.find((k) => k.id === 'likely');
     return [
-      `${compactBar(b, 20)}${count}`,
+      `${compactBar(b)}${count}`,
       likely ? `likely ${formatPacificShort(likely.at)}` : 'nothing left to merge',
-      binding ? `bound by ${binding.label}` : '',
+      ...(binding ? [`bound by ${binding.label}`] : []),
     ].map((l) => fit(l, columns));
   }
   const width = Math.min(100, columns - count.length - 2);
   const { bar, marks, legend } = layoutBar(b, width);
-  const pad = Math.max(...legend.map((k) => k.label.length), 'start'.length);
-  const lines = [
-    `${bar}${count}`,
-    marks,
-    `${'├'} ${'start'.padEnd(pad)} ${formatPacific(b.start)}`,
-    ...legend.map((k) => `${k.glyph} ${k.label.padEnd(pad)} ${formatPacific(k.at)}`
-      + `${k.binding ? ' (binding)' : ''}${k.past ? ` ${PAST} past the end` : ''}${k.hiddenBy ? ` (under ${legend.find((o) => o.id === k.hiddenBy).glyph})` : ''}`),
-  ];
-  return lines.map((l) => fit(l, columns));
+  const entries = [{ glyph: '├', label: 'start', at: b.start }, ...legend];
+  const notes = (k) => `${k.binding ? ' (binding)' : ''}${k.past ? ` ${PAST} past the end` : ''}`
+    + `${k.hiddenBy ? ` (under ${legend.find((o) => o.id === k.hiddenBy).glyph})` : ''}`;
+  const widest = Math.max(...entries.map((k) => k.label.length));
+  // The time and its notes (binding, under) always fit; the label column gives way, after the date does.
+  const rows = (format) => {
+    const tails = entries.map((k) => `${format(k.at)}${notes(k)}`);
+    const pad = Math.max(0, Math.min(widest, columns - 3 - Math.max(...tails.map((x) => [...x].length))));
+    return { cut: pad < widest, lines: entries.map((k, i) => `${k.glyph} ${fit(k.label, pad).padEnd(pad)} ${tails[i]}`) };
+  };
+  const full = rows(formatPacific);
+  const legendRows = full.cut ? rows(formatPacificShort).lines : full.lines;
+  return [`${bar}${count}`, marks, ...legendRows].map((l) => fit(l, columns));
 }
