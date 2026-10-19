@@ -10,8 +10,8 @@
 // pessimistic finish. No I/O here; state.mjs gathers the inputs.
 
 export const DEFAULTS = Object.freeze({
-  window: 6, // trailing merges per repo that set its service time
-  runWindow: 12, // trailing run-wide merges that set throughput
+  window: 6, // trailing gaps between a repo's merges that set its service time (6 gaps = 7 merges)
+  runWindow: 12, // trailing gaps between run-wide merges that set throughput
   serviceFallbackMs: 15 * 60_000, // a repo's service time before it has two merges (its CI duration)
   waveLatencyMs: 2 * 3_600_000, // one wave's latency while fewer than minLatencySamples tickets have passed review
   minLatencySamples: 3, // review-passed tickets needed before depth trusts its own measurement
