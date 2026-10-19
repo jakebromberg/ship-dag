@@ -281,17 +281,27 @@ test('renderBoard without the run\'s startedAt, or with one that is not a date, 
 
 test('the burn-up\'s legend and end labels give the current counts; a ticket dropped before the run is not in scope', () => {
   const c = chart(renderBoard(view({ startedAt: STARTED })));
-  assert.match(c, /<span class="end s"[^>]*>Scope 6<\/span>/);
-  assert.match(c, /<span class="end d"[^>]*>Shipped 1<\/span>/);
+  assert.match(c, /<span class="end s"[^>]*>Scope this run 6<\/span>/);
+  assert.match(c, /<span class="end d"[^>]*>Shipped this run 1<\/span>/);
   assert.match(c, /Scope<\/span>/);
   assert.match(c, /Shipped<\/span>/);
-  assert.match(c, /aria-label="Burn-up: 1 of 6 shipped as of Oct 8, 1:30 PM PDT; 6 in scope when the run started, Oct 8, 5:00 AM PDT\."/);
+  assert.match(c, /aria-label="Burn-up: 1 of 6 shipped this run as of Oct 8, 1:30 PM PDT; 6 in scope when the run started, Oct 8, 5:00 AM PDT\."/);
+});
+
+test('with predecessor epics, the headline counts them and the burn-up labels its smaller totals as this run\'s', () => {
+  const html = renderBoard(view({ startedAt: STARTED, before: [before(R(50), [60, 61, 62])] }));
+  assert.match(html, /<b>4\/9<\/b><span>shipped \(3 before this run\)<\/span>/);
+  const c = chart(html);
+  assert.match(c, /<span class="end d"[^>]*>Shipped this run 1<\/span>/);
+  assert.match(c, /<span class="end s"[^>]*>Scope this run 6<\/span>/);
+  assert.match(c, /aria-label="Burn-up: 1 of 6 shipped this run as of /);
+  assert.match(c, /<th>Shipped this run<\/th>/);
 });
 
 test('the burn-up\'s axis and tooltips are Pacific with their zone, never UTC', () => {
   const c = chart(renderBoard(view({ startedAt: STARTED })));
   for (const tick of ['6 AM PDT', '8 AM PDT', '10 AM PDT', '12 PM PDT']) { assert.ok(c.includes(`>${tick}</span>`), tick); }
-  assert.match(c, /<b>Oct 8, 1:02 PM PDT<\/b>1 of 6 shipped, 5 to go<ul><li>Shipped <span class="r">r#1<\/span> <em>Ticket 1<\/em><\/li><\/ul>/);
+  assert.match(c, /<b>Oct 8, 1:02 PM PDT<\/b>1 of 6 shipped this run, 5 to go<ul><li>Shipped <span class="r">r#1<\/span> <em>Ticket 1<\/em><\/li><\/ul>/);
   assert.doesNotMatch(c, /UTC|GMT|\dZ/);
 });
 
