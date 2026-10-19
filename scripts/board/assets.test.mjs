@@ -45,6 +45,15 @@ for (const [status, token] of CHIP_TOKENS) {
   });
 }
 
+// The burn-up's end labels sit in the plot's right margin (`.end` is placed at
+// `left: calc(100% + 8px)`), so that margin must hold the longest one. Width is
+// estimated at 0.58em per character of 12px bold text, for a three-digit count.
+test('the burn-up\'s right margin holds its longest end label', () => {
+  const right = Number(PAGE_CSS.match(/\.burn \.plot\{[^}]*margin:\S+ (\d+)px/)[1]);
+  const label = 'Shipped this run 999';
+  assert.ok(right >= 8 + Math.ceil(label.length * 12 * 0.58), `right margin ${right}px`);
+});
+
 test('every chip class the stylesheet styles is a status', () => {
   const chips = new Set(RULES.flatMap((r) => r.sels).filter((s) => /^\.c-[\w-]+$/.test(s)));
   assert.deepEqual([...chips].sort(), CHIP_TOKENS.map(([status]) => `.c-${status}`).sort());
