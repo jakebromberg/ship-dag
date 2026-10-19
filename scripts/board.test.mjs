@@ -384,6 +384,6 @@ test('render asks for createdAt in its batched lookup and draws the burn-up from
   assert.equal(queries.length, 1, 'no extra query for the chart');
   assert.match(queries[0], /createdAt/);
   assert.match(html, /<section class="burn">/);
-  assert.match(html, /aria-label="Burn-up: 1 of 3 shipped as of Oct 8, 1:30 PM PDT; 2 in scope when the run started, Oct 8, 5:00 AM PDT\."/,
+  assert.match(html, /aria-label="Burn-up: 1 of 3 shipped this run as of Oct 8, 1:30 PM PDT; 2 in scope when the run started, Oct 8, 5:00 AM PDT\."/,
     'r#1 and r#9 from the start, r#9 shipped at 6 AM, r#2 filed at 8 AM');
 });
