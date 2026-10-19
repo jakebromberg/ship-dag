@@ -11,15 +11,16 @@
 
 import { planWaves, compareRefString } from '../plan-waves.mjs';
 import { parseRef, refKey } from '../lib/ref.mjs';
+import { CLOSED_UNDONE } from '../eta/state.mjs';
 
 /** Ref order for anything the board sorts: the topo core's, repo then number (`#9` before `#10`). */
 export const compareRefs = compareRefString;
 
-/** A closed ticket's board status: `dropped` when closed as not planned, else `shipped`. */
-export const closedKind = (stateReason) => (stateReason === 'NOT_PLANNED' ? 'dropped' : 'shipped');
+/** A closed ticket's board status: `dropped` when closed without shipping (not planned or a duplicate, as the ETA's CLOSED_UNDONE), else `shipped`. */
+export const closedKind = (stateReason) => (CLOSED_UNDONE.has(stateReason) ? 'dropped' : 'shipped');
 
 /**
- * A ticket's board status, first match wins: closed as not planned → `dropped`;
+ * A ticket's board status, first match wins: closed without shipping → `dropped`;
  * closed → `shipped`; an open closing PR → `flight`; owned by the operator (a
  * release they cut) → `you`; any open blocker → `blocked`; else `ready`.
  *
@@ -131,7 +132,7 @@ export function orderSteps(g) {
 
 /**
  * What each predecessor epic shipped before this run, for the "Shipped before this run" section. A leaf counts when
- * `classify` calls it shipped (closed, not as not planned), newest first; one closed as not planned is only counted in
+ * `classify` calls it shipped (closed, not without shipping), newest first; one closed without shipping is only counted in
  * `dropped`; an open one is neither. A leaf in `exclude` (the run's own tickets) is left out, and one under several
  * epics counts once, under the first that lists it. An epic with no such leaf is kept, with an empty list.
  *

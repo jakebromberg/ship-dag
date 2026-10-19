@@ -134,12 +134,12 @@ export function renderBoard(v) {
     })}</tbody></table></div></details>`);
   for (const g of v.before || []) {
     h.push(html`<details><summary>Shipped before this run: ${link(g.ref, null, g.url)} — ${g.title} `
-      + html`(${g.shipped.length}${g.dropped ? `, plus ${g.dropped} closed as not planned` : ''})</summary>`
+      + html`(${g.shipped.length}${g.dropped ? `, plus ${g.dropped} closed without shipping` : ''})</summary>`
       + html`<div class="tw"><table><thead><tr><th>Ticket</th><th>Title</th><th>Closed</th></tr></thead><tbody>${g.shipped.map((t) => html`<tr><td class="n">${link(t.ref, null, t.url)}</td><td>${t.title}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`)}</tbody></table></div></details>`);
   }
   const dropped = v.tickets.filter((t) => t.status === 'dropped');
   if (dropped.length) {
-    h.push(html`<details><summary>Closed as not planned (${dropped.length})</summary><div class="items">${dropped.map((t) => html`<span class="item">${link(t.ref)} <span class="x">${t.title}</span></span>`)}</div></details>`);
+    h.push(html`<details><summary>Closed without shipping (${dropped.length})</summary><div class="items">${dropped.map((t) => html`<span class="item">${link(t.ref)} <span class="x">${t.title}</span></span>`)}</div></details>`);
   }
   h.push(html`<footer>Times are Pacific. Rebuild with <code>${v.rebuild}</code>. Built from GitHub, the run's engine state, its review files and telemetry, and its board notes. Local file, not committed.</footer></main>`
     + html`<script>${raw(ROAD_JS)}</script>${burn ? html`<script>${raw(BURN_JS)}</script>` : ''}</body></html>`);
@@ -217,7 +217,7 @@ function roadAhead(v, byRef, link, gates) {
   return h.join('\n');
 }
 
-const VERB = { filed: 'Filed', done: 'Shipped', dropped: 'Closed as not planned' };
+const VERB = { filed: 'Filed', done: 'Shipped', dropped: 'Closed without shipping' };
 const TIP_ITEMS = 6; // a tooltip lists this many changes, then counts the rest
 const BUCKET_GAP = 0.005; // steps closer than this share of the run's span are one hover target
 const pct = (n) => `${Number(n.toFixed(2))}%`;
@@ -288,8 +288,8 @@ function burnup(v, link) {
   return html`<section class="burn"><h2>Burn-up <small>tickets shipped against scope since the run started</small></h2>`
     + html`<div class="chart" role="group" aria-label="${summary}"><div class="bl"><span><i class="ks"></i>Scope</span><span><i class="kd"></i>Shipped</span></div>`
     + html`<div class="plot">${svg}${labels}${ends}${cols}</div>`
-    + '<p class="note">Each step is a ticket filed, shipped or closed as not planned. Point at one, or tab to the chart and use the arrow keys, to see which. '
-    + 'Tickets filed before the run count from its start; one closed as not planned leaves the scope. Times are Pacific.</p></div>'
+    + '<p class="note">Each step is a ticket filed, shipped or closed without shipping. Point at one, or tab to the chart and use the arrow keys, to see which. '
+    + 'Tickets filed before the run count from its start; one closed without shipping leaves the scope. Times are Pacific.</p></div>'
     + '<details><summary>The burn-up as a table</summary><div class="tw"><table><thead><tr><th>When</th><th>Scope this run</th><th>Shipped this run</th><th>To go</th><th>What changed</th></tr></thead>'
     + html`<tbody>${rows}</tbody></table></div></details></section>`;
 }

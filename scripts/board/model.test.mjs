@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, makeRepoLabel, formatPacific, compareRefs, shippedBefore,
+  classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, makeRepoLabel, formatPacific, compareRefs, shippedBefore, closedKind,
 } from './model.mjs';
 
 const R = (n) => `o/r#${n}`;
@@ -15,6 +15,7 @@ const edgesOf = (pairs) => pairs.map(([a, b]) => ({ blockedBy: R(a), blocked: R(
 
 for (const [want, ticket] of [
   ['dropped', { state: 'CLOSED', stateReason: 'NOT_PLANNED', hasOpenPr: false, owned: true, openBlockers: 1 }],
+  ['dropped', { state: 'CLOSED', stateReason: 'DUPLICATE', hasOpenPr: false, owned: false, openBlockers: 0 }],
   ['shipped', { state: 'CLOSED', stateReason: 'COMPLETED', hasOpenPr: false, owned: false, openBlockers: 0 }],
   ['shipped', { state: 'CLOSED', stateReason: null, hasOpenPr: true, owned: false, openBlockers: 0 }],
   ['flight', { state: 'OPEN', hasOpenPr: true, owned: true, openBlockers: 2 }],
@@ -201,6 +202,7 @@ const epic = (n, leaves) => ({ ref: R(n), url: `u${n}`, title: `Epic ${n}`, leav
 for (const [name, groups, exclude, want] of [
   ['closed leaves are shipped, newest first', [epic(1, [leaf(2), leaf(4), leaf(3)])], [], [{ shipped: [R(4), R(3), R(2)], dropped: 0 }]],
   ['closed as not planned is dropped, not shipped', [epic(1, [leaf(2), leaf(3, { stateReason: 'NOT_PLANNED' })])], [], [{ shipped: [R(2)], dropped: 1 }]],
+  ['closed as a duplicate is dropped, not shipped', [epic(1, [leaf(2), leaf(3, { stateReason: 'DUPLICATE' })])], [], [{ shipped: [R(2)], dropped: 1 }]],
   ['an open leaf is neither', [epic(1, [leaf(2), leaf(3, { state: 'OPEN', stateReason: null, closedAt: null })])], [], [{ shipped: [R(2)], dropped: 0 }]],
   ['a ticket of the run itself is left out', [epic(1, [leaf(2), leaf(3)])], [R(3)], [{ shipped: [R(2)], dropped: 0 }]],
   ['a leaf under two epics counts once, under the first', [epic(1, [leaf(2)]), epic(5, [leaf(2), leaf(3)])], [], [{ shipped: [R(2)], dropped: 0 }, { shipped: [R(3)], dropped: 0 }]],
@@ -211,4 +213,8 @@ for (const [name, groups, exclude, want] of [
     assert.deepEqual(got.map((g) => ({ shipped: g.shipped.map((l) => l.ref), dropped: g.dropped })), want);
     assert.deepEqual(got.map((g) => [g.ref, g.url, g.title]), groups.map((g) => [g.ref, g.url, g.title]));
   });
+}
+
+for (const [reason, want] of [['NOT_PLANNED', 'dropped'], ['DUPLICATE', 'dropped'], ['COMPLETED', 'shipped'], [null, 'shipped']]) {
+  test(`closedKind(${reason}) is ${want}`, () => assert.equal(closedKind(reason), want));
 }
