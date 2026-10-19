@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  quantile, gaps, spread, queueFinish, throughputFinish, depthFinish, estimate, formatPacific, formatDuration, renderText,
+  quantile, gaps, spread, queueFinish, throughputFinish, depthFinish, estimate, formatPacific, formatPacificShort, formatDuration, renderText,
 } from './model.mjs';
 
 const MIN = 60_000;
@@ -248,10 +248,20 @@ for (const [iso, want] of [
   });
 }
 
-test('formatPacific is empty for an invalid instant rather than throwing', () => {
-  assert.equal(formatPacific(NaN), '');
-  assert.equal(formatPacific(Infinity), '');
-});
+for (const [name, format, pdt, pst] of [
+  ['formatPacific', formatPacific, 'Sat, Oct 17, 10:52 AM PDT', 'Tue, Dec 1, 12:05 AM PST'],
+  ['formatPacificShort', formatPacificShort, 'Sat 10:52 AM PDT', 'Tue 12:05 AM PST'],
+]) {
+  test(`${name} formats a PDT and a PST instant`, () => {
+    assert.equal(format(Date.parse('2026-10-17T17:52:00Z')), pdt);
+    assert.equal(format(Date.parse('2026-12-01T08:05:00Z')), pst);
+  });
+
+  test(`${name} is empty for an invalid instant rather than throwing`, () => {
+    assert.equal(format(NaN), '');
+    assert.equal(format(Infinity), '');
+  });
+}
 
 for (const [ms, want] of [[m(12), '12m'], [m(65), '1h 05m'], [m(0.4), '0m'], [26 * HOUR, '26h 00m']]) {
   test(`formatDuration(${ms}) is ${want}`, () => {
