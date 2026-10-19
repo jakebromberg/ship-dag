@@ -162,6 +162,14 @@ export function formatPacific(ms) {
   return `${p.weekday}, ${p.month} ${p.day}, ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
 }
 
+const SHORT = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+
+/** `Sat 10:52 AM PDT`: a Pacific time short enough for a narrow terminal. */
+export function formatPacificShort(ms) {
+  const p = Object.fromEntries(SHORT.formatToParts(new Date(ms)).map(({ type, value }) => [type, value]));
+  return `${p.weekday} ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
+}
+
 /** A duration as `12m` or `1h 05m`. */
 export function formatDuration(ms) {
   const total = Math.round(ms / 60_000);
