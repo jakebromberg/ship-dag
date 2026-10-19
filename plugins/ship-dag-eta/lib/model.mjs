@@ -145,6 +145,9 @@ export function estimate({ now, runStart, nodes, blocked, waves, opts = {} }) {
   return { now, eta: range((k) => Math.max(...limits.map((l) => l.finish[k]))), binding, ...rest };
 }
 
+// The formatter's parts as an object by type; '' for a non-finite instant, which `formatToParts` would throw on.
+const partsOf = (fmt, ms) => (Number.isFinite(ms) ? Object.fromEntries(fmt.formatToParts(new Date(ms)).map(({ type, value }) => [type, value])) : '');
+
 const PACIFIC = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/Los_Angeles', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
 });
@@ -155,19 +158,16 @@ const PACIFIC = new Intl.DateTimeFormat('en-US', {
  * is '', as in the board's `formatPacific`, rather than a RangeError.
  */
 export function formatPacific(ms) {
-  if (!Number.isFinite(ms)) {
-    return '';
-  }
-  const p = Object.fromEntries(PACIFIC.formatToParts(new Date(ms)).map(({ type, value }) => [type, value]));
-  return `${p.weekday}, ${p.month} ${p.day}, ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
+  const p = partsOf(PACIFIC, ms);
+  return p && `${p.weekday}, ${p.month} ${p.day}, ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
 }
 
 const SHORT = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
 
 /** `Sat 10:52 AM PDT`: a Pacific time short enough for a narrow terminal. */
 export function formatPacificShort(ms) {
-  const p = Object.fromEntries(SHORT.formatToParts(new Date(ms)).map(({ type, value }) => [type, value]));
-  return `${p.weekday} ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
+  const p = partsOf(SHORT, ms);
+  return p && `${p.weekday} ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
 }
 
 /** A duration as `12m` or `1h 05m`. */
