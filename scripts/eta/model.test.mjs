@@ -94,16 +94,16 @@ test('throughputFinish has no rate when every merge landed at the same instant',
 
 for (const [name, input, want] of [
   ['counts only waves with an open node and uses the measured latency',
-    { waves: [['a', 'b'], ['c'], ['d']], open: new Set(['b', 'd']), latencies: [HOUR, 2 * HOUR, 3 * HOUR], now: 0, window: 8, defaultMs: 9 * HOUR, minSamples: 3 },
+    { waves: [['a', 'b'], ['c'], ['d']], open: new Set(['b', 'd']), latencies: [HOUR, 2 * HOUR, 3 * HOUR], now: 0, window: 8, defaultMs: 9 * HOUR, minSamples: 3, trimK: 3 },
     { waves: 2, source: 'measured', samples: 3, finish: { lo: 3 * HOUR, mid: 4 * HOUR, hi: 5 * HOUR } }],
   ['falls back to the default latency with nothing measured',
-    { waves: [['a']], open: new Set(['a']), latencies: [], now: HOUR, window: 8, defaultMs: 2 * HOUR, minSamples: 3 },
+    { waves: [['a']], open: new Set(['a']), latencies: [], now: HOUR, window: 8, defaultMs: 2 * HOUR, minSamples: 3, trimK: 3 },
     { waves: 1, source: 'default', samples: 0, finish: { lo: 3 * HOUR, mid: 3 * HOUR, hi: 3 * HOUR } }],
   ['falls back to the default latency with fewer samples than the minimum, and still counts them',
-    { waves: [['a']], open: new Set(['a']), latencies: [HOUR, 5 * HOUR], now: 0, window: 8, defaultMs: 2 * HOUR, minSamples: 3 },
+    { waves: [['a']], open: new Set(['a']), latencies: [HOUR, 5 * HOUR], now: 0, window: 8, defaultMs: 2 * HOUR, minSamples: 3, trimK: 3 },
     { waves: 1, source: 'default', samples: 2, finish: { lo: 2 * HOUR, mid: 2 * HOUR, hi: 2 * HOUR } }],
   ['no open wave finishes now',
-    { waves: [['a']], open: new Set(), latencies: [HOUR, HOUR, HOUR], now: HOUR, window: 8, defaultMs: 2 * HOUR, minSamples: 3 },
+    { waves: [['a']], open: new Set(), latencies: [HOUR, HOUR, HOUR], now: HOUR, window: 8, defaultMs: 2 * HOUR, minSamples: 3, trimK: 3 },
     { waves: 0, source: 'measured', samples: 3, finish: { lo: HOUR, mid: HOUR, hi: HOUR } }],
 ]) {
   test(`depthFinish ${name}`, () => {
@@ -126,7 +126,7 @@ for (const [name, latencies, want] of [
     hours(1, 2, 3), { window: 0, samples: 3, used: 0, latency: { lo: HOUR, mid: HOUR, hi: HOUR } }],
 ]) {
   test(`depthFinish ${name}`, () => {
-    const got = depthFinish({ waves: [['a']], open: new Set(['a']), latencies, now: 0, window: want.window ?? 8, defaultMs: HOUR, minSamples: 3 });
+    const got = depthFinish({ waves: [['a']], open: new Set(['a']), latencies, now: 0, window: want.window ?? 8, defaultMs: HOUR, minSamples: 3, trimK: Infinity });
     assert.equal(got.samples, want.samples);
     assert.equal(got.used, want.used);
     assert.deepEqual(got.latency, want.latency);
@@ -214,10 +214,10 @@ for (const [name, nodes, opts, want] of [
     [...[1, 2, 3, 4, 5, 6, 7, 8].map(quick), overnight(20), overnight(21)], {},
     { samples: 10, used: 8, latency: { lo: m(30), mid: m(30), hi: m(30) } }],
   ['keeps tickets that started first but passed review last',
-    [slow(20), slow(21), ...[1, 2, 3, 4, 5, 6, 7, 8].map(quick)], {},
+    [slow(20), slow(21), ...[1, 2, 3, 4, 5, 6, 7, 8].map(quick)], { latencyTrimK: Infinity },
     { samples: 10, used: 8, latency: { lo: m(30), mid: m(30), hi: m(272.5) } }],
   ['takes every review pass when there are 8 or fewer',
-    [...[1, 2, 3, 4, 5, 6].map(quick), overnight(20), overnight(21)], {},
+    [...[1, 2, 3, 4, 5, 6].map(quick), overnight(20), overnight(21)], { latencyTrimK: Infinity },
     { samples: 8, used: 8, latency: { lo: m(30), mid: m(30), hi: m(172.5) } }],
   ['takes its window from latencyWindow',
     [...[1, 2, 3, 4, 5, 6].map(quick), overnight(20), overnight(21)], { latencyWindow: 3 },
@@ -228,6 +228,41 @@ for (const [name, nodes, opts, want] of [
     assert.equal(got.depth.samples, want.samples);
     assert.equal(got.depth.used, want.used);
     assert.deepEqual(got.depth.latency, want.latency);
+  });
+}
+
+// Trimming: samples above median + k x MAD (MAD floored at 10% of the median) leave the spread; `trimmed` counts them.
+const trim = (latencies, over = {}) => depthFinish({ waves: [['a']], open: new Set(['a']), latencies, now: 0, window: 8, defaultMs: HOUR, minSamples: 3, trimK: 3, ...over });
+for (const [name, latencies, over, want] of [
+  ['trims overnight samples inside a window of 8 or fewer', [...Array(6).fill(m(30)), m(600), m(610)], {}, { used: 8, trimmed: 2, hi: m(30) }],
+  ['trims against a MAD of 0 by flooring it at 10% of the median', [m(30), m(30), m(30), m(30), m(30), m(42)], {}, { used: 6, trimmed: 1, hi: m(30) }],
+  ['keeps a sample within the floored margin when the MAD is 0', [m(30), m(30), m(30), m(30), m(30), m(39)], {}, { used: 6, trimmed: 0, hi: m(30) }],
+  ['trims nothing without outliers', hours(1, 2, 3, 4, 5, 6, 7, 8), {}, { used: 8, trimmed: 0, hi: 6.25 * HOUR }],
+  ['never trims low samples', [m(1), m(30), m(30), m(30), m(31), m(32)], {}, { used: 6, trimmed: 0, hi: m(30.75) }],
+  ['falls back to the untrimmed window when fewer than minSamples would survive', [m(30), m(30), m(600), m(600), m(600), m(600)], { minSamples: 3 }, { used: 6, trimmed: 0, hi: m(600) }],
+  ['takes k from trimK', [m(30), m(30), m(30), m(40), m(45), m(50), m(50)], { trimK: 0.5 }, { used: 7, trimmed: 2, hi: m(40) }],
+  ['trims nothing with an infinite trimK', [...Array(6).fill(m(30)), m(600)], { trimK: Infinity }, { used: 7, trimmed: 0, hi: m(30) }],
+]) {
+  test(`depthFinish ${name}`, () => {
+    const got = trim(latencies, over);
+    assert.equal(got.used, want.used);
+    assert.equal(got.trimmed, want.trimmed);
+    assert.equal(got.latency.hi, want.hi);
+  });
+}
+
+test('estimate threads latencyTrimK to depth and trims by default', () => {
+  const nodes = [...[1, 2, 3, 4, 5, 6].map(quick), overnight(20), overnight(21), node('o/r#99')];
+  const run = (opts) => estimate({ now: m(1000), runStart: m(-1000), nodes, blocked: [], waves: [['o/r#99']], opts }).depth;
+  assert.equal(run({}).trimmed, 2);
+  assert.equal(run({ latencyTrimK: Infinity }).trimmed, 0);
+});
+
+for (const [trimmedCount, want] of [[2, /\(median of 8 tickets, 2 outliers trimmed, latest/], [1, /\(median of 8 tickets, 1 outlier trimmed, latest/], [0, /\(median of 8 tickets, latest/]]) {
+  test(`renderText says ${trimmedCount} trimmed outliers on the Depth line`, () => {
+    const nodes = [...Array.from({ length: 8 - trimmedCount }, (_, i) => quick(i + 1)), ...Array.from({ length: trimmedCount }, (_, i) => overnight(20 + i)), node('o/r#99')];
+    const got = estimate({ now: m(1000), runStart: m(-1000), nodes, blocked: [], waves: [['o/r#99']] });
+    assert.match(renderText({ ...got, runId: 'sd-1' }), want);
   });
 }
 
