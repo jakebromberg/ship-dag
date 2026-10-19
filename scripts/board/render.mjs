@@ -258,7 +258,7 @@ function burnup(v, link) {
   // End labels sit beside the last step; when the two lines end close together, they part around the middle.
   let [sy, dy] = [Y(last.scope), Y(last.done)];
   if (dy - sy < 9) { const mid = (sy + dy) / 2; [sy, dy] = [mid - 4.5, mid + 4.5]; }
-  const ends = html`<span class="end s" style="top:${pct(sy)}">Scope ${last.scope}</span><span class="end d" style="top:${pct(dy)}">Shipped ${last.done}</span>`;
+  const ends = html`<span class="end s" style="top:${pct(sy)}">Scope this run ${last.scope}</span><span class="end d" style="top:${pct(dy)}">Shipped this run ${last.done}</span>`;
 
   const buckets = bucketPoints(points, BUCKET_GAP);
   const xs = buckets.map((b) => X(b.to.t));
@@ -271,7 +271,7 @@ function burnup(v, link) {
     const from = when(b.from);
     const to = when(p.t);
     const head = b.from === p.t ? to : from.split(', ')[0] === to.split(', ')[0] ? `${from} to ${to.split(', ')[1]}` : `${from} to ${to}`;
-    const status = `${p.done} of ${p.scope} shipped, ${p.scope - p.done} to go`;
+    const status = `${p.done} of ${p.scope} shipped this run, ${p.scope - p.done} to go`;
     const shown = b.items.slice(0, TIP_ITEMS).map((it) => html`<li>${change(it, html`<span class="r">${v.shortRef(it.ref)}</span>`)}</li>`);
     if (b.items.length > TIP_ITEMS) { shown.push(html`<li>and ${b.items.length - TIP_ITEMS} more</li>`); }
     const place = xs[i] > 50 ? `right:calc(${pct(100 - xs[i])} + 10px)` : `left:calc(${pct(xs[i])} + 10px)`;
@@ -280,7 +280,7 @@ function burnup(v, link) {
     return html`<div class="pt" role="img" tabindex="${i === buckets.length - 1 ? 0 : -1}" aria-label="${`${head}: ${status}`}" aria-describedby="burn-tip-${i}" style="left:${pct(left)};width:${pct(width)}">${dots}</div>${tip}`;
   });
 
-  const summary = `Burn-up: ${last.done} of ${last.scope} shipped as of ${when(t1)}; ${first.scope} in scope when the run started, ${when(t0)}.`;
+  const summary = `Burn-up: ${last.done} of ${last.scope} shipped this run as of ${when(t1)}; ${first.scope} in scope when the run started, ${when(t0)}.`;
   const rows = [...points].reverse().map((p) => {
     const changed = p.items.length ? list(p.items.map((it) => change(it)), '; ') : html`<span class="meta">—</span>`;
     return html`<tr><td class="n">${when(p.t)}</td><td class="n">${p.scope}</td><td class="n">${p.done}</td><td class="n">${p.scope - p.done}</td><td>${changed}</td></tr>`;
@@ -290,6 +290,6 @@ function burnup(v, link) {
     + html`<div class="plot">${svg}${labels}${ends}${cols}</div>`
     + '<p class="note">Each step is a ticket filed, shipped or closed as not planned. Point at one, or tab to the chart and use the arrow keys, to see which. '
     + 'Tickets filed before the run count from its start; one closed as not planned leaves the scope. Times are Pacific.</p></div>'
-    + '<details><summary>The burn-up as a table</summary><div class="tw"><table><thead><tr><th>When</th><th>Scope</th><th>Shipped</th><th>To go</th><th>What changed</th></tr></thead>'
+    + '<details><summary>The burn-up as a table</summary><div class="tw"><table><thead><tr><th>When</th><th>Scope this run</th><th>Shipped this run</th><th>To go</th><th>What changed</th></tr></thead>'
     + html`<tbody>${rows}</tbody></table></div></details></section>`;
 }
