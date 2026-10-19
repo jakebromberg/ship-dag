@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { metadataPathForRef } from '../lib/failure.mjs';
 import { fsIo, main } from './run.mjs';
-import { latestRun, runStartFromId, liveQuery } from './state.mjs';
+import { familyDirs, latestRun, runStartFromId, liveQuery } from './state.mjs';
 
 const RUN = 'sd-20261017-080000';
 const bases = [];
@@ -223,4 +223,14 @@ test('main takes a ticket\'s PR from its newest report, across retry dirs and wa
 
 test('liveQuery quotes repo names as GraphQL strings', () => {
   assert.match(liveQuery(['o/r"x#1'], []).text, /owner: "o", name: "r\\"x"/);
+});
+
+test('familyDirs follows runFamily: case and prefix fold, chained retries and a prefix-sharing run do not', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'eta-fam-'));
+  bases.push(base);
+  const mine = [`${RUN}-w2`, `${RUN}-b`, `${RUN}-r2`, `${RUN}-resume`, `ship-dag-${RUN}-w3`, `${RUN.toUpperCase()}-W4`];
+  const others = [`${RUN}-b-c`, `${RUN}-w37aa`, `${RUN}-label`, `${RUN}x`];
+  for (const name of [RUN, ...mine, ...others]) mkdirSync(join(base, name));
+  const dirs = await familyDirs(fsIo, base, RUN);
+  assert.deepEqual(dirs, [RUN, ...mine.sort()].map((n) => `${base}/${n}`));
 });
