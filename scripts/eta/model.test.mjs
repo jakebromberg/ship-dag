@@ -154,7 +154,7 @@ test('estimate takes the latest of the three limits and names the binding one', 
   const got = estimate({
     now: m(30), runStart: m(-30), nodes, blocked: ['o/slow#9'], waves: [['o/slow#3', 'o/fast#3'], ['o/slow#4'], ['o/slow#5', 'o/slow#9']],
   });
-  assert.equal(got.binding, 'queue o/slow');
+  assert.equal(got.binding, 'queue:o/slow');
   assert.deepEqual(got.eta, { lo: m(120), mid: m(120), hi: m(120) });
   assert.deepEqual(got.queues.map((q) => [q.repo, q.merged, q.remaining]), [['o/slow', 2, 3], ['o/fast', 2, 1]]);
   assert.deepEqual(got.blocked, ['o/slow#9']);
@@ -182,7 +182,7 @@ test('estimate binds on depth when one ticket sits behind a long chain', () => {
     node('o/r#3'), node('o/r#4'),
   ];
   const got = estimate({ now: m(20), runStart: m(-60), nodes, blocked: [], waves: [['o/r#3', 'o/r#5'], ['o/r#4']] });
-  assert.equal(got.binding, 'depth');
+  assert.equal(got.binding, 'waves');
   assert.equal(got.depth.samples, 3);
   assert.deepEqual(got.eta, { lo: m(140), mid: m(140), hi: m(140) });
 });
@@ -270,6 +270,15 @@ test('estimate with nothing left is done now', () => {
   const got = estimate({ now: m(5), runStart: 0, nodes: [node('o/r#1', { open: false, mergedAt: m(1) })], blocked: [], waves: [] });
   assert.equal(got.binding, 'done');
   assert.deepEqual(got.eta, { lo: m(5), mid: m(5), hi: m(5) });
+});
+
+test('estimate with only blocked tickets open is blocked, not done', () => {
+  const nodes = [node('o/r#1', { open: false, mergedAt: m(1) }), node('o/r#2'), node('o/r#3', { open: false, mergedAt: m(2) })];
+  const got = estimate({ now: m(5), runStart: 0, nodes, blocked: ['o/r#2', 'o/r#3'], waves: [['o/r#2']] });
+  assert.equal(got.binding, 'blocked');
+  assert.deepEqual(got.blocked, ['o/r#2']);
+  assert.deepEqual(got.eta, { lo: m(5), mid: m(5), hi: m(5) });
+  assert.match(renderText({ ...got, runId: 'sd-1' }), /ETA: none, waiting on 1 blocked ticket\n/);
 });
 
 // ---- formatting -----------------------------------------------------------

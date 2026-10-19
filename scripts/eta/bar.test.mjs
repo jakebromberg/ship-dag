@@ -90,11 +90,23 @@ test('barModel numbers the queue glyphs when two repos share a first letter', ()
   assert.deepEqual(b.markers.filter((k) => k.id.startsWith('queue:')).map((k) => k.glyph), ['1', 'S', '2']);
 });
 
-for (const [binding, want] of [['throughput', 'pace'], ['depth', 'waves'], ['done', null], ['queue o/r', 'queue:o/r']]) {
-  test(`barModel maps the binding constraint ${binding} to the marker ${want}`, () => {
-    assert.equal(barModel({ ...liveResult(), binding }).binding, want);
+for (const id of ['pace', 'waves', 'queue:o/dj-site']) {
+  test(`barModel's binding ${id} is a marker id, and that marker is listed`, () => {
+    const b = barModel({ ...liveResult(), binding: id });
+    assert.equal(b.binding, id);
+    assert.ok(b.markers.some((k) => k.id === id));
   });
 }
+
+test('barModel of a run whose open tickets are all blocked has no ETA markers, and both panes say it is waiting', () => {
+  const nodes = [node('o/r#1', { open: false, mergedAt: t(0) }), node('o/r#2'), node('o/r#3')];
+  const r = { ...estimate({ now: t(30), runStart: t(-30), nodes, blocked: ['o/r#2', 'o/r#3'], waves: [['o/r#2', 'o/r#3']] }), runId: 'sd-1', runStart: t(-30) };
+  assert.equal(r.binding, 'blocked');
+  const b = barModel(r);
+  assert.deepEqual(b.markers.map((k) => k.id), ['now']);
+  assert.deepEqual(renderBar(b, 40).slice(1), ['waiting on 2 blocked tickets']);
+  assert.equal(renderBar(b, 80).at(-1), 'waiting on 2 blocked tickets');
+});
 
 test('barModel of a finished run has no ETA markers, so the pane says nothing is left', () => {
   const nodes = [node('o/r#1', { open: false, mergedAt: t(0) })];
@@ -147,7 +159,7 @@ test('compactBar is a fixed-width bar with the binding glyph in its cell', () =>
 
 test('renderBar keeps the legend notes inside 60 columns, shortening the times and then the label when a label is long', () => {
   const r = liveResult();
-  const b = barModel({ ...r, queues: r.queues.map((q) => ({ ...q, repo: q.repo === 'o/dj-site' ? 'o/claude-orchestrator-dj-site' : q.repo })), binding: 'queue o/claude-orchestrator-dj-site' });
+  const b = barModel({ ...r, queues: r.queues.map((q) => ({ ...q, repo: q.repo === 'o/dj-site' ? 'o/claude-orchestrator-dj-site' : q.repo })), binding: 'queue:o/claude-orchestrator-dj-site' });
   const lines = renderBar(b, 60);
   assert.ok(lines.every((l) => [...l].length <= 60), lines.join('\n'));
   assert.match(lines.join('\n'), /^C claude orchestrator DJ site.* \w{3} \d+:\d\d [AP]M P[DS]T \(binding\)$/m);

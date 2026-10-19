@@ -3,7 +3,7 @@
 // and a legend that names every one, its Pacific time and which is binding. Plain strings, so the mod's pane, its
 // status line and the CLI draw the same thing.
 
-import { formatPacific, formatPacificShort } from './model.mjs';
+import { formatPacific, formatPacificShort, waitingOn } from './model.mjs';
 
 export const GLYPHS = Object.freeze({ now: '▲', early: '‹', likely: '◆', late: '›', pace: '~', waves: '≡' });
 const FILLED = '█';
@@ -27,11 +27,9 @@ export function shortRepo(repo) {
   return short.trim() || repo;
 }
 
-const BINDING = { throughput: 'pace', depth: 'waves', done: null };
-
 /**
  * The bar's model from `estimate`'s result (with `runId` and `runStart`): axis, counts, binding marker and markers.
- * A finished run (`done`) has no ETA markers.
+ * A finished (`done`) or blocked run has no ETA markers; a blocked one carries `waiting`, the message that says so.
  */
 export function barModel(r) {
   const queues = r.queues.filter((q) => q.remaining > 0);
@@ -39,7 +37,7 @@ export function barModel(r) {
   const firsts = names.map((s) => s[0].toUpperCase());
   let n = 0;
   const glyphs = firsts.map((g) => (firsts.filter((o) => o === g).length > 1 ? String(++n) : g));
-  const eta = r.binding === 'done' ? [] : [
+  const eta = r.binding === 'done' || r.binding === 'blocked' ? [] : [
     { id: 'early', glyph: GLYPHS.early, label: 'early ETA', at: r.eta.lo },
     { id: 'likely', glyph: GLYPHS.likely, label: 'likely ETA', at: r.eta.mid },
     { id: 'late', glyph: GLYPHS.late, label: 'late ETA', at: r.eta.hi },
@@ -51,9 +49,8 @@ export function barModel(r) {
     ...(r.throughput.finish && r.throughput.remaining > 0 ? [{ id: 'pace', glyph: GLYPHS.pace, label: 'overall pace', at: r.throughput.finish.mid }] : []),
     ...(r.depth.waves > 0 ? [{ id: 'waves', glyph: GLYPHS.waves, label: 'waves left', at: r.depth.finish.mid }] : []),
   ];
-  const binding = r.binding in BINDING ? BINDING[r.binding] : `queue:${r.binding.replace(/^queue /, '')}`;
   const merged = r.throughput.merges;
-  return { runId: r.runId, now: r.now, start: r.runStart, end: r.eta.hi, merged, total: merged + r.throughput.remaining, binding, markers };
+  return { runId: r.runId, now: r.now, start: r.runStart, end: r.eta.hi, merged, total: merged + r.throughput.remaining, binding: r.binding, waiting: r.binding === 'blocked' ? waitingOn(r.blocked.length) : null, markers };
 }
 
 /** The cell `at` falls in on a `width`-cell axis from `start` to `end`, clamped to the axis; `past` when beyond its end. */
@@ -112,7 +109,7 @@ export function renderBar(b, columns) {
     const likely = b.markers.find((k) => k.id === 'likely');
     return [
       `${compactBar(b)}${count}`,
-      likely ? `likely ${formatPacificShort(likely.at)}` : 'nothing left to merge',
+      likely ? `likely ${formatPacificShort(likely.at)}` : b.waiting ?? 'nothing left to merge',
       ...(binding ? [`bound by ${binding.label}`] : []),
     ].map((l) => fit(l, columns));
   }
@@ -130,5 +127,5 @@ export function renderBar(b, columns) {
   };
   const full = rows(formatPacific);
   const legendRows = full.cut ? rows(formatPacificShort).lines : full.lines;
-  return [`${bar}${count}`, marks, ...legendRows].map((l) => fit(l, columns));
+  return [`${bar}${count}`, marks, ...legendRows, ...(b.waiting ? [b.waiting] : [])].map((l) => fit(l, columns));
 }
