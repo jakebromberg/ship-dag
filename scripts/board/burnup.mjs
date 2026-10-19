@@ -11,7 +11,7 @@ const KIND_ORDER = { filed: 0, done: 1, dropped: 2 };
 /**
  * The run's burn-up as a step series. A ticket enters scope when it was filed, but never before the run started:
  * every ticket that existed at `startedAt` enters there. A ticket the board calls `shipped` counts as done when it
- * closed; one it calls `dropped` (closed as not planned) leaves scope when it closed and never counts as done, and one
+ * closed; one it calls `dropped` (closed without shipping) leaves scope when it closed and never counts as done, and one
  * dropped before the run started is never in scope at all. A change GitHub dates after `now` is drawn at `now`.
  *
  * There is a point at the start, one at each later instant something changed (its `items`, filed before done before

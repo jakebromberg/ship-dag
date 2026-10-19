@@ -15,7 +15,7 @@ const ID_RE = /^(?:sd|ship-dag)-(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/;
 const WAVE_DIR_RE = /-w\d+[a-z]*$/i;
 const REF_RE = /^([^/#\s]+\/[^/#\s]+)#(\d+)$/;
 /** Close reasons that say the work was not done here, so the close is no merge. */
-const CLOSED_UNDONE = new Set(['NOT_PLANNED', 'DUPLICATE']);
+export const CLOSED_UNDONE = new Set(['NOT_PLANNED', 'DUPLICATE']);
 
 /** A ref's file stem as the engine writes it: a verbatim copy of `artifactStem` (scripts/lib/failure.mjs). */
 export const stem = (ref) => String(ref).replace(/%/g, '%25').replace(/\//g, '%2F').replace(/#/g, '%23');
