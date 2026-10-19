@@ -16,7 +16,10 @@ export const DEFAULTS = Object.freeze({
   waveLatencyMs: 2 * 3_600_000, // one wave's latency while fewer than minLatencySamples tickets have passed review
   minLatencySamples: 3, // review-passed tickets needed before depth trusts its own measurement
   latencyWindow: 8, // most recent review passes that set depth's latency (older ones, overnight waits among them, drop out)
+  latencyTrimK: 3, // depth drops latency samples above median + this many MADs (an overnight wait among quick tickets)
 });
+
+const MAD_FLOOR = 0.1; // of the median: the least spread the trim uses, so a window of equal samples still trims a far outlier
 
 /** The `q` quantile of `xs` by linear interpolation, or null when `xs` is empty. */
 export function quantile(xs, q) {
@@ -86,16 +89,23 @@ export function throughputFinish({ merges, remaining, now, window }) {
 /**
  * DAG depth: the planned waves that still hold an open ticket, times one ticket's latency (latest engine start to
  * review pass), measured over the last `window` of `latencies`, which run oldest review pass first. With fewer than
- * `minSamples` of them it uses `defaultMs`; `samples` says how many there were in all and `used` how many it took.
- * @param {{waves: string[][], open: Set<string>, latencies: number[], now: number, window: number, defaultMs: number, minSamples: number}} input
+ * `minSamples` of them it uses `defaultMs`; `samples` says how many there were in all and `used` how many the window took.
+ * Of those it drops the high outliers, samples above median + `trimK` x MAD (the median absolute deviation, floored at
+ * 10% of the median so equal samples still trim a far one), and `trimmed` counts them; when fewer than `minSamples` would
+ * survive, nothing is trimmed.
+ * @param {{waves: string[][], open: Set<string>, latencies: number[], now: number, window: number, defaultMs: number, minSamples: number, trimK: number}} input
  */
-export function depthFinish({ waves, open, latencies, now, window, defaultMs, minSamples }) {
+export function depthFinish({ waves, open, latencies, now, window, defaultMs, minSamples, trimK }) {
   const left = waves.filter((w) => w.some((ref) => open.has(ref))).length;
   const recent = newest(latencies, window);
-  const measured = recent.length >= minSamples ? spread(recent) : null;
+  const med = quantile(recent, 0.5);
+  const mad = quantile(recent.map((x) => Math.abs(x - med)), 0.5);
+  const kept = recent.filter((x) => x <= med + trimK * Math.max(mad, MAD_FLOOR * med));
+  const trimmed = kept.length >= minSamples ? recent.length - kept.length : 0;
+  const measured = recent.length >= minSamples ? spread(trimmed ? kept : recent) : null;
   const latency = measured ?? flat(defaultMs);
   return {
-    waves: left, latency, samples: latencies.length, used: recent.length, minSamples,
+    waves: left, latency, samples: latencies.length, used: recent.length, trimmed, minSamples,
     source: measured ? 'measured' : 'default', finish: finishAfter(now, left, latency),
   };
 }
@@ -130,7 +140,7 @@ export function estimate({ now, runStart, nodes, blocked, waves, opts = {} }) {
   const throughput = throughputFinish({ merges: merged.map((n) => n.mergedAt), remaining: open.size, now, window: o.runWindow });
   const latencies = nodes.filter((n) => n.startedAt != null && n.reviewedAt != null && n.reviewedAt > n.startedAt)
     .sort((a, b) => a.reviewedAt - b.reviewedAt).map((n) => n.reviewedAt - n.startedAt);
-  const depth = depthFinish({ waves, open, latencies, now, window: o.latencyWindow, defaultMs: o.waveLatencyMs, minSamples: o.minLatencySamples });
+  const depth = depthFinish({ waves, open, latencies, now, window: o.latencyWindow, defaultMs: o.waveLatencyMs, minSamples: o.minLatencySamples, trimK: o.latencyTrimK });
 
   const limits = [
     ...queues.filter((q) => q.remaining > 0).map((q) => ({ name: `queue ${q.repo}`, finish: q.finish })),
@@ -184,7 +194,8 @@ const depthBasis = (d) => {
   if (d.source !== 'measured') {
     return `default: ${d.used} of ${d.minSamples} samples`;
   }
-  return d.used < d.samples ? `median of the latest ${d.used} of ${d.samples} tickets` : `median of ${d.samples} tickets`;
+  const basis = d.used < d.samples ? `median of the latest ${d.used} of ${d.samples} tickets` : `median of ${d.samples} tickets`;
+  return d.trimmed > 0 ? `${basis}, ${d.trimmed} outlier${d.trimmed > 1 ? 's' : ''} trimmed` : basis;
 };
 
 /** The human-readable block: ETA range, binding constraint, per-repo table, throughput, depth, blocked, notes. */
