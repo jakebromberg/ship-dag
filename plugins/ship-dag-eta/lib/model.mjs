@@ -48,11 +48,14 @@ export function spread(samples) {
   return range((k) => quantileSorted(s, BAND_Q[k]));
 }
 
+/** The last `n` of `xs`: none for 0, all when `n` exceeds them (not slice(-n), which keeps all for 0). */
+const newest = (xs, n) => xs.slice(Math.max(0, xs.length - n));
+
 /**
  * The spread of the gaps between the last `window` + 1 merges, or null with no gap. Merges at the same instant (one
  * PR closing several tickets) count once, so they add no zero-length gap that would read as an instant service time.
  */
-const recentGaps = (merges, window) => spread(gaps([...new Set(merges)]).slice(-window));
+const recentGaps = (merges, window) => spread(newest(gaps([...new Set(merges)]), window));
 
 const finishAfter = (now, count, per) => range((k) => now + count * per[k]);
 const flat = (ms) => range(() => ms);
@@ -88,7 +91,7 @@ export function throughputFinish({ merges, remaining, now, window }) {
  */
 export function depthFinish({ waves, open, latencies, now, window, defaultMs, minSamples }) {
   const left = waves.filter((w) => w.some((ref) => open.has(ref))).length;
-  const recent = latencies.slice(Math.max(0, latencies.length - window)); // not slice(-window): slice(-0) keeps all
+  const recent = newest(latencies, window);
   const measured = recent.length >= minSamples ? spread(recent) : null;
   const latency = measured ?? flat(defaultMs);
   return {
