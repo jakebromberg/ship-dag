@@ -107,12 +107,13 @@
     "WXYC/wxyc-fastapi": {
       "baseBranch": "main",
       "commands": [
-        "uv sync --extra dev",
-        "uv run --no-sync ruff check src tests scripts",
-        "uv run --no-sync ruff format --check src tests scripts",
-        "uv run --no-sync pytest -q"
+        "uv venv -q --allow-existing .venv",
+        "uv pip install -q --python .venv/bin/python -e '.[dev,posthog]'",
+        ".venv/bin/ruff check src tests scripts",
+        ".venv/bin/ruff format --check src tests scripts",
+        ".venv/bin/pytest -q"
       ],
-      "_note": "Verified green 2026-08-10 in a clean detached worktree (191 pytest passed, ruff check + format clean). Mirrors .github/workflows/ci.yml, which runs `pip install -e '.[dev,posthog]'` then `ruff check/format --check src tests scripts` and `pytest -v`; the `dev` extra already pulls posthog + psycopg + jsonschema, so a single `--extra dev` covers CI's `[dev,posthog]`. No mypy — this repo's CI does not run it (unlike library-metadata-lookup).",
+      "_note": "Updated 2026-10-19: replaced `uv sync --extra dev` / `uv run --no-sync` with a venv plus `uv pip install`, because `uv sync` writes a uv.lock into this pip-based repo (which has no lockfile) and an implementer committed that file in WXYC/wxyc-fastapi PR #50. The new commands write no lockfile and mirror CI's `pip install -e '.[dev,posthog]'`. Verified 2026-10-19 in a fresh clone: ruff check + format clean, 298 pytest passed, and `git status --porcelain` empty afterward (.venv is gitignored). Earlier verification 2026-08-10 (191 passed). Mirrors .github/workflows/ci.yml, which runs `ruff check/format --check src tests scripts` and `pytest -v`. No mypy — this repo's CI does not run it (unlike library-metadata-lookup).",
       "_deploy_note": "Publishes to PyPI via tag-pushed Trusted Publishing (publish.yml), so a merge here is not itself a release — but a version bump + `v*` tag is. Consumers (library-metadata-lookup, request-o-matic, semantic-index) pin the package, so a merge does NOT reach them until published AND their pin is bumped: treat any downstream issue as a cross-repo cutover (SKILL.md step 7 / HITL point C), not an auto-release."
     },
     "WXYC/wxyc-ios-64": {
