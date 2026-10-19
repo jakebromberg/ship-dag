@@ -63,7 +63,7 @@ details summary{cursor:pointer;color:var(--ink2);margin:8px 0}footer{margin-top:
 .burn .bl{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--ink2)}
 .burn .bl i{display:inline-block;width:16px;height:0;border-top:2px solid;margin-right:6px;vertical-align:3px}
 .burn .bl .ks{border-color:var(--ink2);border-top-style:dashed}.burn .bl .kd{border-color:var(--ship)}
-.burn .plot{position:relative;height:220px;margin:14px 96px 30px 34px}
+.burn .plot{position:relative;height:220px;margin:14px 148px 30px 34px}
 .burn svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}
 .burn svg *{vector-effect:non-scaling-stroke}
 .burn .grid{stroke:var(--line);stroke-width:1}.burn .grid.v{stroke-dasharray:2 3}
