@@ -339,7 +339,7 @@ test('render reads board.json\'s predecessors: their closed leaves join the head
   assert.equal(code, 0, err.join('\n'));
   assert.equal(gh.asked.length, 1, 'one extra query');
   assert.match(html, /<b>3\/5<\/b><span>shipped \(2 before this run\)<\/span>/, 'the run\'s 1 of 3, plus 2 earlier; #1 is the run\'s, #62 dropped, #63 open');
-  assert.match(html, /<summary>Shipped before this run: <a href="https:\/\/github.com\/o\/r\/issues\/50">r#50<\/a> — First epic \(2, plus 1 closed as not planned\)<\/summary>/);
+  assert.match(html, /<summary>Shipped before this run: <a href="https:\/\/github.com\/o\/r\/issues\/50">r#50<\/a> — First epic \(2, plus 1 closed without shipping\)<\/summary>/);
 });
 
 test('render counts a predecessor leaf that blocks a run ticket as shipped before the run: only the run\'s own tickets are left out', async () => {

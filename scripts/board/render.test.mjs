@@ -49,7 +49,7 @@ function view(over = {}) {
 
 test('renderBoard emits every section a reader relies on', () => {
   const html = renderBoard(view());
-  for (const heading of ['Needs attention', 'In flight', 'Road ahead', 'Shipped', "Can't be ordered", 'Closed as not planned']) {
+  for (const heading of ['Needs attention', 'In flight', 'Road ahead', 'Shipped', "Can't be ordered", 'Closed without shipping']) {
     assert.ok(html.includes(heading), `missing section: ${heading}`);
   }
   assert.match(html, /^<!doctype html>/);
@@ -231,7 +231,7 @@ test('renderBoard adds a collapsed "Shipped before this run" section below Shipp
   const html = renderBoard(view({ before: [before(R(50), [60, 61, 62], 2)] }));
   assert.ok(html.indexOf('Shipped before this run') > html.indexOf('Show all 1'), 'below the run\'s own Shipped section');
   const section = html.slice(html.indexOf('<details><summary>Shipped before this run'));
-  assert.match(section, /^<details><summary>Shipped before this run: <a href="https:\/\/github.com\/o\/r\/issues\/50">r#50<\/a> — The first epic \(3, plus 2 closed as not planned\)<\/summary>/);
+  assert.match(section, /^<details><summary>Shipped before this run: <a href="https:\/\/github.com\/o\/r\/issues\/50">r#50<\/a> — The first epic \(3, plus 2 closed without shipping\)<\/summary>/);
   assert.ok(!section.slice(0, 40).includes('open'), 'collapsed: no open attribute');
   for (const n of [60, 61, 62]) { assert.ok(section.includes(`<a href="https://github.com/o/r/issues/${n}">r#${n}</a>`) && section.includes(`Earlier ${n}`)); }
   assert.match(section, /Sep 2, 12:00 PM PDT/);

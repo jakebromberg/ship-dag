@@ -23,7 +23,7 @@ test('tickets that existed at the start all enter at the start; a later one ente
   assert.deepEqual(points[2].items, [], 'the point at now changes nothing');
 });
 
-test('a ticket closed as completed counts as shipped when it closed; one closed as not planned leaves scope then and never counts as shipped', () => {
+test('a ticket closed as completed counts as shipped when it closed; one closed without shipping leaves scope then and never counts as shipped', () => {
   const points = burnupSeries({ tickets: [
     ticket(1, 'shipped', { closedAt: '2026-10-17T16:00:00Z' }),
     ticket(2, 'dropped', { closedAt: '2026-10-17T18:00:00Z' }),
