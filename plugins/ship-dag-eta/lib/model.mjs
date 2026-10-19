@@ -143,20 +143,27 @@ export function estimate({ now, runStart, nodes, blocked, waves, opts = {} }) {
   const depth = depthFinish({ waves, open, latencies, now, window: o.latencyWindow, defaultMs: o.waveLatencyMs, minSamples: o.minLatencySamples, trimK: o.latencyTrimK });
 
   const limits = [
-    ...queues.filter((q) => q.remaining > 0).map((q) => ({ name: `queue ${q.repo}`, finish: q.finish })),
-    ...(throughput.finish && throughput.remaining > 0 ? [{ name: 'throughput', finish: throughput.finish }] : []),
-    ...(depth.waves > 0 ? [{ name: 'depth', finish: depth.finish }] : []),
+    ...queues.filter((q) => q.remaining > 0).map((q) => ({ id: `queue:${q.repo}`, finish: q.finish })),
+    ...(throughput.finish && throughput.remaining > 0 ? [{ id: 'pace', finish: throughput.finish }] : []),
+    ...(depth.waves > 0 ? [{ id: 'waves', finish: depth.finish }] : []),
   ];
-  const rest = { queues, throughput, depth, blocked: [...parked] };
+  const stuck = nodes.filter((n) => n.open && parked.has(n.ref)).map((n) => n.ref);
+  const rest = { queues, throughput, depth, blocked: stuck };
   if (limits.length === 0) {
-    return { now, eta: flat(now), binding: 'done', ...rest };
+    return { now, eta: flat(now), binding: stuck.length > 0 ? 'blocked' : 'done', ...rest };
   }
-  const binding = limits.reduce((a, b) => (b.finish.mid > a.finish.mid ? b : a)).name;
+  const binding = limits.reduce((a, b) => (b.finish.mid > a.finish.mid ? b : a)).id;
   return { now, eta: range((k) => Math.max(...limits.map((l) => l.finish[k]))), binding, ...rest };
 }
 
 // The formatter's parts as an object by type; '' for a non-finite instant, which `formatToParts` would throw on.
 const partsOf = (fmt, ms) => (Number.isFinite(ms) ? Object.fromEntries(fmt.formatToParts(new Date(ms)).map(({ type, value }) => [type, value])) : '');
+
+/** The binding id (also the bar's marker id) as a display name: `queue o/r`, `throughput`, `depth`; `blocked` and `done` as they are. */
+export const bindingName = (id) => ({ pace: 'throughput', waves: 'depth' })[id] ?? id.replace(/^queue:/, 'queue ');
+
+/** What a run with only blocked tickets left is doing, on every surface that says so. */
+export const waitingOn = (n) => `waiting on ${n} blocked ticket${n === 1 ? '' : 's'}`;
 
 const PACIFIC = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/Los_Angeles', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
@@ -206,8 +213,8 @@ export function renderText({ runId, now, eta, binding, queues, throughput, depth
   const serviceWidth = Math.max(24, ...[...service.values()].map((s) => s.length)) + 2;
   const lines = [
     `ship-dag ETA for ${runId} (as of ${formatPacific(now)})`,
-    `ETA: ${formatPacific(eta.lo)} to ${formatPacific(eta.hi)}, likely ${formatPacific(eta.mid)}`,
-    `Binding: ${binding}`,
+    binding === 'blocked' ? `ETA: none, ${waitingOn(blocked.length)}` : `ETA: ${formatPacific(eta.lo)} to ${formatPacific(eta.hi)}, likely ${formatPacific(eta.mid)}`,
+    `Binding: ${bindingName(binding)}`,
     '',
     `${pad('repo', width)}${pad('merged', 8)}${pad('left', 6)}${pad('service p25/p50/p75', serviceWidth)}finish (likely)`,
     ...queues.map((q) => `${pad(q.repo, width)}${pad(q.merged, 8)}${pad(q.remaining, 6)}`

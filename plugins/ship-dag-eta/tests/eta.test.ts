@@ -102,6 +102,16 @@ test('an active run shows its ETA in Pacific time, its binding constraint and th
   expect(line).toMatch(/as of Sat, Oct 17, 11:00 AM PDT/)
 })
 
+test('a run whose open tickets are all blocked says it is waiting, not that nothing is left', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const tree = runTree(NOW - 10 * MIN)
+  tree[`${BASE}/${RUN}/plan.json`] = { text: JSON.stringify({ waves: [], blocked: [{ ref: 'o/r#2' }, { ref: 'o/r#3' }], cyclic: [] }), mtimeMs: NOW - 10 * MIN }
+  const seen = world(on, tree)
+  await $.session.start(start)
+  await clock.settle()
+  expect(seen.statuses.at(-1)).toMatch(/^ship-dag sd-20261017-080000: waiting on 2 blocked tickets, as of Sat, Oct 17, 11:00 AM PDT$/)
+})
+
 test('the status line refreshes on its own and fetches from GitHub at most once in five minutes', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const seen = world(on, runTree(NOW - 10 * MIN))
