@@ -12,7 +12,7 @@
 // the skill's scripts/eta/review-passes.mjs through `node` (cached the same way); without the skill, depth falls
 // back to its default and the estimate says why.
 
-import { formatPacific, renderText } from '../lib/model.mjs';
+import { bindingName, formatPacific, renderText, waitingOn } from '../lib/model.mjs';
 import { computeEta, familyDirs, latestRun } from '../lib/state.mjs';
 import { barModel, compactBar, renderBar } from '../lib/bar.mjs';
 
@@ -105,7 +105,10 @@ export function statusLine(r, b) {
   if (r.binding === 'done') {
     return `ship-dag ${r.runId}: nothing left to merge, as of ${formatPacific(r.now)}`;
   }
-  return `ship-dag ${compactBar(b)} ${b.merged}/${b.total} merged, ETA ${formatPacific(r.eta.mid)} (${formatPacific(r.eta.lo)} to ${formatPacific(r.eta.hi)}), bound by ${r.binding}, as of ${formatPacific(r.now)}`;
+  if (r.binding === 'blocked') {
+    return `ship-dag ${r.runId}: ${waitingOn(r.blocked.length)}, as of ${formatPacific(r.now)}`;
+  }
+  return `ship-dag ${compactBar(b)} ${b.merged}/${b.total} merged, ETA ${formatPacific(r.eta.mid)} (${formatPacific(r.eta.lo)} to ${formatPacific(r.eta.hi)}), bound by ${bindingName(r.binding)}, as of ${formatPacific(r.now)}`;
 }
 
 /** @param {import('claude-code').EngineInterface} $ */
