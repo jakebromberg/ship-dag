@@ -299,3 +299,22 @@ for (const [count, opts, want] of [
     assert.match(renderText({ ...got, runId: 'sd-1' }), want);
   });
 }
+
+// The three window limits read 0 as "keep none", 1 as "keep the newest one", and more than the samples as "keep all".
+// Merges at minutes 0, 1, 3, 7 leave gaps of 1, 2 and 4; latencies arrive oldest first, so the newest is 4.
+for (const [window, want] of [
+  [0, { mid: null, used: 0 }],
+  [1, { mid: m(4), used: 1 }],
+  [9, { mid: m(2), used: 3 }],
+]) {
+  test(`window, runWindow and latencyWindow of ${window} keep ${want.used} of 3 samples`, () => {
+    const merges = [m(0), m(1), m(3), m(7)];
+    const queue = queueFinish({ merges, remaining: 1, now: 0, window, fallbackMs: m(99) });
+    const run = throughputFinish({ merges, remaining: 1, now: 0, window });
+    const depth = depthFinish({ waves: [['a']], open: new Set(['a']), latencies: [m(1), m(2), m(4)], now: 0, window, defaultMs: m(99), minSamples: 1 });
+    assert.equal(queue.service.mid, want.mid ?? m(99));
+    assert.equal(run.finish === null ? null : 3_600_000 / run.perHour, want.mid);
+    assert.equal(depth.used, want.used);
+    assert.equal(depth.latency.mid, want.mid ?? m(99));
+  });
+}
