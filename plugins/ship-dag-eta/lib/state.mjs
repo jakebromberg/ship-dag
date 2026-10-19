@@ -9,19 +9,20 @@
 //     host's to supply, since the verdict is the review gate's (the CLI reads it in process, the mod through node)
 
 import { estimate } from './model.mjs';
+import { runFamily } from './run-id.mjs';
 
 const ID_RE = /^(?:sd|ship-dag)-(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/;
 const WAVE_DIR_RE = /-w\d+[a-z]*$/i;
-const REF_RE = /^([^/\s#]+\/[^/\s#]+)#(\d+)$/;
+const REF_RE = /^([^/#\s]+\/[^/#\s]+)#(\d+)$/;
 /** Close reasons that say the work was not done here, so the close is no merge. */
 const CLOSED_UNDONE = new Set(['NOT_PLANNED', 'DUPLICATE']);
 
-/** A ref's file stem as the engine writes it (`artifactStem` in scripts/lib/failure.mjs): only `%`, `/` and `#` escaped. */
-const stem = (ref) => String(ref).replace(/%/g, '%25').replace(/\//g, '%2F').replace(/#/g, '%23');
+/** A ref's file stem as the engine writes it: a verbatim copy of `artifactStem` (scripts/lib/failure.mjs). */
+export const stem = (ref) => String(ref).replace(/%/g, '%25').replace(/\//g, '%2F').replace(/#/g, '%23');
 
-/** `{repo, number}` of an `owner/repo#N` ref, or null. */
+/** A verbatim copy of `parseRef` (scripts/lib/ref.mjs): `{repo, number}` for an `owner/repo#N` string, or null. */
 export function parseRef(ref) {
-  const m = REF_RE.exec(String(ref));
+  const m = typeof ref === 'string' ? REF_RE.exec(ref) : null;
   return m ? { repo: m[1], number: Number(m[2]) } : null;
 }
 
@@ -51,12 +52,10 @@ export async function latestRun(io, base) {
   return null;
 }
 
-/** A family dir's suffix after the run id: wave dirs (`-w1b`, `-w37aa`), retry letters (`-b`), `-r2`, `-resume`, as `runFamily` folds them. */
-const FAMILY_SUFFIX_RE = /^(?:-w\d+[a-z]*|-(?:wave|resume|r)\d*[a-z]?|-[a-z])+$/i;
-
-/** The run's dir and every dir of its family (wave dirs and retry dirs), the run's first. */
+/** The run's dir and every dir of its family (wave dirs and retry dirs, as `runFamily` folds them), the run's first. */
 export async function familyDirs(io, base, runId) {
-  const names = (await io.list(base)).filter((e) => e.isDir && e.name.startsWith(`${runId}-`) && FAMILY_SUFFIX_RE.test(e.name.slice(runId.length))).map((e) => e.name);
+  const family = runFamily(runId);
+  const names = (await io.list(base)).filter((e) => e.isDir && e.name !== runId && runFamily(e.name) === family).map((e) => e.name);
   return [runId, ...names.sort()].map((n) => `${base}/${n}`);
 }
 
