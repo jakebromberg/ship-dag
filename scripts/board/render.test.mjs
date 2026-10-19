@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildGraph, projectWaves, makeShortRef, makeRepoLabel, classify } from './model.mjs';
-import { renderBoard, STATUSES, waveSpan } from './render.mjs';
+import { renderBoard, STATUSES, STAGE_STATUS, waveSpan } from './render.mjs';
+import { STAGES } from './stage.mjs';
 import { PAGE_CSS } from './assets.mjs';
 
 const R = (n) => `o/r#${n}`;
@@ -150,8 +151,8 @@ test('renderBoard labels an in-flight card with no stage by its STATUSES chip', 
 // A chip's colour follows its word: a stage reads the same in the in-flight cards and the road ahead, whatever
 // the ticket's status, so a Stalled ticket is never the colour of a Ready one.
 for (const [stage, status] of [
-  ['Building', 'flight'], ['In review', 'flight'], ['Reviewed', 'flight'], ['Fixing', 'flight'],
-  ['Stalled', 'you'], ['Review unreadable', 'you'],
+  [STAGES.building, 'flight'], [STAGES.inReview, 'flight'], [STAGES.reviewed, 'flight'], [STAGES.fixing, 'flight'],
+  [STAGES.stalled, 'you'], [STAGES.unreadable, 'you'],
 ]) {
   test(`a ${stage} chip wears the ${status} colour in every section`, () => {
     const v = view();
@@ -162,6 +163,12 @@ for (const [stage, status] of [
     assert.deepEqual([...new Set(classes)], [`c-${status}`]);
   });
 }
+
+test('every engine stage label has a chip colour', () => {
+  for (const stage of Object.values(STAGES)) {
+    assert.ok(STATUSES.some((s) => s.status === STAGE_STATUS.get(stage)), `${stage} has no STAGE_STATUS entry`);
+  }
+});
 
 test('a stage the board does not know keeps the ticket\'s status colour', () => {
   const v = view();
