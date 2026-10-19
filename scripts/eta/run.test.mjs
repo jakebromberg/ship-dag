@@ -2,50 +2,58 @@
 // path when gh is unavailable. Fixtures are real dirs under a temp state base; `gh` is injected.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { metadataPathForRef } from '../lib/failure.mjs';
+import { engineFixture, stamped } from '../lib/engine-fixture.mjs';
 import { fsIo, main } from './run.mjs';
 import { familyDirs, latestRun, runStartFromId, liveQuery } from './state.mjs';
 
 const RUN = 'sd-20261017-080000';
-const bases = [];
-test.after(() => bases.forEach((b) => rmSync(b, { recursive: true, force: true })));
+const fixtures = [];
+test.after(() => fixtures.forEach((fx) => fx.cleanup()));
 
-function put(path, value) {
-  mkdirSync(join(path, '..'), { recursive: true });
-  writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value));
+const started = (ref, at) => [metadataPathForRef('.', ref), { startedAt: at }];
+const wave1b = (reports = { 'r.json': { startedAt: '2026-10-17T17:00:00.000Z', issues: [{ ref: 'o/r#1', number: 1, status: 'succeeded', prNumber: 11 }] } }) => ({
+  reports,
+  files: Object.fromEntries([
+    started('o/r#1', '2026-10-17T17:00:00.000Z'), started('o/r#2', '2026-10-17T17:00:00.000Z'), started('o/r#3', '2026-10-17T17:10:00.000Z'),
+  ]),
+});
+
+/** Build `specs` (engineFixture's) as a state base, removed after the tests. */
+function stateBase(specs) {
+  const fx = engineFixture(specs);
+  fixtures.push(fx);
+  return fx;
 }
 
 /**
  * A state base holding one run with two family dirs: o/r#1 merged, o/r#2 and o/r#3 open, o/r#4 blocked. Each of
- * #1-#3 has a latest engine start and a passing review round, 20, 30 and 40 minutes after it.
+ * #1-#3 has a latest engine start and a passing review round, 20, 30 and 40 minutes after it. `dirs` adds more
+ * dirs (name → engineFixture spec), `w1bReports` replaces the -w1b dir's reports, and `dagNewAt` pins dag.new.json's mtime.
  */
-function fixture() {
-  const base = mkdtempSync(join(tmpdir(), 'eta-run-'));
-  bases.push(base);
-  const dir = join(base, RUN);
-  put(join(dir, 'dag.json'), { repo: 'o/r', nodes: [{ ref: 'o/r#9' }], edges: [], done: [] });
-  put(join(dir, 'dag.new.json'), {
+function fixture({ dirs = {}, w1bReports, dagNewAt } = {}) {
+  const dagNew = {
     repo: 'o/r', nodes: ['o/r#2', 'o/r#3', 'o/r#4'].map((ref) => ({ ref })), edges: [], done: ['o/r#1'],
     members: ['o/r#1', 'o/r#2', 'o/r#3', 'o/r#4'],
+  };
+  const { base, dirs: made } = stateBase({
+    [RUN]: {
+      files: {
+        'dag.json': { repo: 'o/r', nodes: [{ ref: 'o/r#9' }], edges: [], done: [] },
+        'dag.new.json': dagNewAt ? stamped(dagNewAt, dagNew) : dagNew,
+        'plan.new.json': { waves: [['o/r#2', 'o/r#3']], blocked: [{ ref: 'o/r#4', reason: 'external', missing: ['x/y#1'] }], cyclic: [] },
+        [metadataPathForRef('.', 'o/r#1')]: { startedAt: '2026-10-17T16:00:00.000Z' },
+      },
+      reviews: [['o/r#1', '17:20'], ['o/r#2', '17:30'], ['o/r#3', '17:50']].map(([ref, passed]) => ({ ref, findings: [], at: `2026-10-17T${passed}:00Z` })),
+    },
+    [`${RUN}-w1b`]: wave1b(w1bReports),
+    // An older run, and a family dir of the newer one, must not be picked as the newest run.
+    'sd-20261001-090000': {},
+    ...dirs,
   });
-  put(join(dir, 'plan.new.json'), { waves: [['o/r#2', 'o/r#3']], blocked: [{ ref: 'o/r#4', reason: 'external', missing: ['x/y#1'] }], cyclic: [] });
-  put(metadataPathForRef(dir, 'o/r#1'), { startedAt: '2026-10-17T16:00:00.000Z' });
-  put(metadataPathForRef(`${dir}-w1b`, 'o/r#1'), { startedAt: '2026-10-17T17:00:00.000Z' });
-  put(metadataPathForRef(`${dir}-w1b`, 'o/r#2'), { startedAt: '2026-10-17T17:00:00.000Z' });
-  put(metadataPathForRef(`${dir}-w1b`, 'o/r#3'), { startedAt: '2026-10-17T17:10:00.000Z' });
-  for (const [ref, passed] of [['o/r#1', '17:20'], ['o/r#2', '17:30'], ['o/r#3', '17:50']]) {
-    const round = join(dir, 'reviews', `${encodeURIComponent(ref)}.json`);
-    put(round, { issue: 1, findings: [] });
-    const when = new Date(`2026-10-17T${passed}:00Z`);
-    utimesSync(round, when, when);
-  }
-  put(join(`${dir}-w1b`, 'state/reports/r.json'), { startedAt: '2026-10-17T17:00:00.000Z', issues: [{ ref: 'o/r#1', number: 1, status: 'succeeded', prNumber: 11 }] });
-  // An older run, and a family dir of the newer one, must not be picked as the newest run.
-  mkdirSync(join(base, 'sd-20261001-090000'));
-  return { base, dir };
+  return { base, dir: made[RUN] };
 }
 
 const answer = {
@@ -75,15 +83,12 @@ async function run(argv, { gh = async () => JSON.stringify(answer), reviews } = 
 }
 
 test('latestRun picks the newest run by the start its id encodes, skipping wave dirs', async () => {
-  const { base } = fixture();
-  mkdirSync(join(base, `${RUN}-w9`));
+  const { base } = fixture({ dirs: { [`${RUN}-w9`]: {} } });
   assert.equal(await latestRun(fsIo, base), RUN);
 });
 
 test('latestRun skips a newer dir that holds no fetched DAG (a board dir, a retry, a run that kept its spec elsewhere)', async () => {
-  const { base } = fixture();
-  mkdirSync(join(base, `${RUN}-board`));
-  mkdirSync(join(base, 'sd-20261018-090000'));
+  const { base } = fixture({ dirs: { [`${RUN}-board`]: {}, 'sd-20261018-090000': {} } });
   assert.equal(await latestRun(fsIo, base), RUN);
 });
 
@@ -136,26 +141,21 @@ test('main without gh degrades to the fetched DAG and says so', async () => {
 });
 
 test('main exits 1 naming the base when there is no run', async () => {
-  const base = mkdtempSync(join(tmpdir(), 'eta-empty-'));
-  bases.push(base);
+  const { base } = stateBase({});
   const got = await run(['--state-base', base]);
   assert.equal(got.code, 1);
   assert.match(got.err, /no ship-dag run under/);
 });
 
 test('main exits 1 when the run has no fetched DAG', async () => {
-  const base = mkdtempSync(join(tmpdir(), 'eta-nodag-'));
-  bases.push(base);
-  mkdirSync(join(base, RUN));
+  const { base } = stateBase({ [RUN]: {} });
   const got = await run(['--state-base', base, '--run', RUN]);
   assert.equal(got.code, 1);
   assert.match(got.err, /no dag\.json/);
 });
 
 test('main reads the newer of dag.json and dag.new.json', async () => {
-  const { base, dir } = fixture();
-  const old = new Date('2026-10-01T00:00:00Z');
-  utimesSync(join(dir, 'dag.new.json'), old, old);
+  const { base } = fixture({ dagNewAt: '2026-10-01T00:00:00Z' });
   const got = await run(['--state-base', base, '--json']);
   assert.deepEqual(JSON.parse(got.out).queues.map((q) => q.repo), ['o/r']);
   assert.match(got.calls[0].join(' '), /i9: issue/);
@@ -171,9 +171,7 @@ test('main without readable review rounds falls back to the default depth latenc
 });
 
 test('main reads a hand-rebuilt report, whose rows are under `rows`, for the PR that merged', async () => {
-  const { base, dir } = fixture();
-  rmSync(join(`${dir}-w1b`, 'state/reports/r.json'));
-  put(join(`${dir}-w1b`, 'state/reports/rebuilt.json'), { synthesized: 'by hand', rows: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }] });
+  const { base } = fixture({ w1bReports: { 'rebuilt.json': { synthesized: 'by hand', rows: [{ ref: 'o/r#1', status: 'succeeded', prNumber: 11 }] } } });
   const got = await run(['--state-base', base, '--json']);
   assert.match(got.calls[0].join(' '), /p11: pullRequest/);
   assert.equal(JSON.parse(got.out).queues[0].merged, 1);
@@ -209,12 +207,15 @@ test('main lists a ticket the plan blocked only while it is still open', async (
 });
 
 test('main takes a ticket\'s PR from its newest report, across retry dirs and wave dirs past -w9', async () => {
-  const { base, dir } = fixture();
-  rmSync(join(`${dir}-w1b`, 'state/reports/r.json'));
-  const report = (startedAt, prNumber) => ({ startedAt, issues: [{ ref: 'o/r#1', status: 'succeeded', prNumber }] });
-  put(join(`${dir}-w2`, 'state/reports/a.json'), report('2026-10-17T16:10:00.000Z', 12));
-  put(join(`${dir}-w10`, 'state/reports/a.json'), report('2026-10-17T16:50:00.000Z', 13));
-  put(join(`${dir}-b`, 'state/reports/a.json'), report('2026-10-17T17:00:00.000Z', 11));
+  const report = (startedAt, prNumber) => ({ 'a.json': { startedAt, issues: [{ ref: 'o/r#1', status: 'succeeded', prNumber }] } });
+  const { base } = fixture({
+    w1bReports: {},
+    dirs: {
+      [`${RUN}-w2`]: { reports: report('2026-10-17T16:10:00.000Z', 12) },
+      [`${RUN}-w10`]: { reports: report('2026-10-17T16:50:00.000Z', 13) },
+      [`${RUN}-b`]: { reports: report('2026-10-17T17:00:00.000Z', 11) },
+    },
+  });
   const got = await run(['--state-base', base, '--json']);
   const query = got.calls[0].join(' ');
   assert.match(query, /p11: pullRequest/);
