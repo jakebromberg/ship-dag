@@ -18,6 +18,16 @@ import { reviewRoundFiles, classifyRound } from '../lib/review-rounds.mjs';
 import { readWaveReports, reportOwnership, runFamilyStateDirs } from '../lib/wave-reports.mjs';
 import { isPr } from '../lib/ref.mjs';
 
+/** The engine stage labels `deriveStage` returns; render.mjs keys the chip colours (`STAGE_STATUS`) on them. */
+export const STAGES = Object.freeze({
+  building: 'Building',
+  stalled: 'Stalled',
+  inReview: 'In review',
+  fixing: 'Fixing',
+  reviewed: 'Reviewed',
+  unreadable: 'Review unreadable',
+});
+
 const readText = (path) => { try { return readFileSync(path, 'utf8'); } catch { return null; } };
 const readJson = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
 const mtimeMs = (path) => { try { return statSync(path).mtimeMs; } catch { return NaN; } };
@@ -79,7 +89,7 @@ export function readFamily(dir, { dirs, ...opts } = {}) {
  * @param {boolean} a.prOpen  whether the ticket has an open PR
  * @param {number} [a.openPr]  that open PR's number, which a stamped round's report row is compared against;
  *   `metadata.prNumber` stands in when the caller has none
- * @returns {'Building'|'Stalled'|'In review'|'Fixing'|'Reviewed'|'Review unreadable'|null}
+ * @returns {string|null} one of the `STAGES` values, or null
  */
 export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen, openPr }) {
   const status = (readText(statusPathForRef(dir, ref)) || 'pending').trim();
@@ -87,17 +97,17 @@ export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen, openPr 
   const { ownerOf, rowOf } = family.ownership;
   if (status === 'running') {
     const owner = ownerOf(ref);
-    if (!owner || owner.startedAt < waveTs) return 'Building';
+    if (!owner || owner.startedAt < waveTs) return STAGES.building;
     const finishedAt = Date.parse(owner.report.finishedAt ?? '');
     const reportEnd = Number.isFinite(finishedAt) ? finishedAt : owner.startedAt;
     // The engine writes metadata.startedAt at each launch, right after `running`; the mtime is only a fallback.
     const launched = Date.parse(metadata.startedAt ?? '');
     const sessionStart = Number.isFinite(launched) ? launched : mtimeMs(statusPathForRef(dir, ref));
-    return reportEnd < sessionStart ? 'Building' : 'Stalled';
+    return reportEnd < sessionStart ? STAGES.building : STAGES.stalled;
   }
   const current = openPr ?? metadata.prNumber;
   if ((status === 'failed' || status === 'interrupted') && (!prOpen || routeFailure({ status, prNumber: current }) !== 'review-gate')) {
-    return 'Stalled';
+    return STAGES.stalled;
   }
   if (!prOpen) return null;
   const since = ownerOf(ref)?.startedAt ?? -Infinity;
@@ -110,10 +120,10 @@ export function deriveStage({ dir, ref, waveTs, family, blockOn, prOpen, openPr 
   const latest = reviewRoundFiles(family.dirs.map((d) => join(d, 'reviews')), ref)
     .map((file) => ({ ...file, review: readJson(file.path) }))
     .findLast((file) => !notThisPr(file, file.review?.meta?.reportId));
-  return latest ? scoreReview({ path: latest.path, review: latest.review }, blockOn) : 'In review';
+  return latest ? scoreReview({ path: latest.path, review: latest.review }, blockOn) : STAGES.inReview;
 }
 
 function scoreReview(round, blockOn) {
   const { unreadable, verdict } = classifyRound(round, blockOn);
-  return unreadable ? 'Review unreadable' : verdict === 'blocking' ? 'Fixing' : 'Reviewed';
+  return unreadable ? STAGES.unreadable : verdict === 'blocking' ? STAGES.fixing : STAGES.reviewed;
 }
