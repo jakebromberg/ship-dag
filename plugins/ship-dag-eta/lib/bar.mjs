@@ -3,7 +3,7 @@
 // and a legend that names every one, its Pacific time and which is binding. Plain strings, so the mod's pane, its
 // status line and the CLI draw the same thing.
 
-import { formatPacific } from './model.mjs';
+import { formatPacific, formatPacificShort } from './model.mjs';
 
 export const GLYPHS = Object.freeze({ now: '▲', early: '‹', likely: '◆', late: '›', pace: '~', waves: '≡' });
 const FILLED = '█';
@@ -96,14 +96,6 @@ export function compactBar(b, width = 20) {
   const { bar, legend } = layoutBar(b, width);
   const binding = legend.find((k) => k.binding);
   return `[${[...bar].map((c, i) => (i === binding?.cell ? binding.glyph : c)).join('')}]`;
-}
-
-const SHORT = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
-
-/** `Sat 10:52 AM PDT`: a Pacific time short enough for a narrow terminal. */
-export function formatPacificShort(ms) {
-  const p = Object.fromEntries(SHORT.formatToParts(new Date(ms)).map(({ type, value }) => [type, value]));
-  return `${p.weekday} ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
 }
 
 const fit = (line, columns) => [...line].slice(0, columns).join('');
