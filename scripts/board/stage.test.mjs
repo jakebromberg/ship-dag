@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deriveStage, readFamily } from './stage.mjs';
 import { artifactStem } from '../lib/failure.mjs';
-import { EMITTED, RUN, T0, engineFixture, stamped, stateReport, stateRow } from '../lib/engine-fixture.mjs';
+import { EMITTED, RUN, T0, scopedEngineFixture, stamped, stateReport, stateRow } from '../lib/engine-fixture.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
 
 const REF = 'o/r#12';
@@ -22,9 +22,6 @@ const CLEAN = round([]);
 const report = (startedAt, row = {}) => stateReport([stateRow(REF, row)], { startedAt });
 const PR = { prNumber: 99 };
 
-const fixtures = [];
-test.after(() => fixtures.forEach((fx) => fx.cleanup()));
-
 /**
  * A run family under one base dir, `specs` mapping each dir's name to what it holds: REF's `status` (written at T0,
  * when the wave's run started the ticket, unless `stamped`) and `metadata`,
@@ -32,7 +29,7 @@ test.after(() => fixtures.forEach((fx) => fx.cleanup()));
  * a string written as is, `stamped` to pin its mtime). Returns each dir's path by name.
  */
 function family(specs) {
-  const fx = engineFixture(Object.fromEntries(Object.entries(specs).map(([name, { status, metadata, reports = {}, rounds = {} }]) => [name, {
+  const fx = scopedEngineFixture(Object.fromEntries(Object.entries(specs).map(([name, { status, metadata, reports = {}, rounds = {} }]) => [name, {
     reports,
     files: {
       ...(status && { [`state/status/issue-${STEM}.status`]: typeof status === 'string' ? stamped(T0, status) : status }),
@@ -40,7 +37,6 @@ function family(specs) {
       ...Object.fromEntries(Object.entries(rounds).map(([n, body]) => [`reviews/${n.replaceAll('STEM', STEM)}`, body])),
     },
   }])));
-  fixtures.push(fx);
   return fx.dirs;
 }
 

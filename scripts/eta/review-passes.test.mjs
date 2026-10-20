@@ -6,12 +6,10 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { reviewPasses, main } from './review-passes.mjs';
 import { artifactStem } from '../lib/failure.mjs';
-import { engineFixture } from '../lib/engine-fixture.mjs';
+import { scopedEngineFixture } from '../lib/engine-fixture.mjs';
 
 const RUN = 'sd-20261017-080000';
 const at = (h) => new Date(Date.UTC(2026, 9, 17, h));
-const fixtures = [];
-test.after(() => fixtures.forEach((fx) => fx.cleanup()));
 
 const CLEAN = { issue: 1, findings: [] };
 const NIT = { issue: 1, findings: [{ category: 'simplification', verdict: 'PLAUSIBLE', summary: 'nit' }] };
@@ -28,9 +26,7 @@ function fixture(rounds, { blockOn, sidecar = blockOn ? [{ runId: RUN, wave: 1, 
     sidecar,
     files: Object.fromEntries(rounds.filter(([, , , , { raw } = {}]) => raw).map(([ref, tag]) => [`reviews/${artifactStem(ref)}${tag}.json.raw`, 'lost findings'])),
   };
-  const fx = engineFixture({ [RUN]: run, [`${RUN}-w1b`]: {}, ...dirs });
-  fixtures.push(fx);
-  return fx.base;
+  return scopedEngineFixture({ [RUN]: run, [`${RUN}-w1b`]: {}, ...dirs }).base;
 }
 
 for (const [name, rounds, want] of [

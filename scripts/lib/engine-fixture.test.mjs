@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { engineFixture, stamped, stateRow, stateReport, sidecarEntry, engineConfig, RUN, T0, EMITTED } from './engine-fixture.mjs';
+import { engineFixture, scopedEngineFixture, stamped, stateRow, stateReport, sidecarEntry, engineConfig, RUN, T0, EMITTED } from './engine-fixture.mjs';
 import { readWaveReports, waveContextFor } from './wave-reports.mjs';
 import { parseRef } from './ref.mjs';
 
@@ -59,4 +60,14 @@ test('stateRow: ran and sessionIds are options, and a row without them is a pre-
   const launched = stateRow(REF, { ran: true, sessionIds: ['a', 'b'] });
   assert.deepEqual([launched.ran, launched.sessionIds], [true, ['a', 'b']]);
   assert.equal(stateRow(REF, { ran: false }).ran, false);
+});
+
+test('scopedEngineFixture builds a fixture that is removed when the importing test file finishes', () => {
+  const script = `import { scopedEngineFixture } from ${JSON.stringify(new URL('./engine-fixture.mjs', import.meta.url).href)};
+    import { test } from 'node:test';
+    test('x', () => console.log(scopedEngineFixture({ a: {} }).base));`;
+  const out = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+  const base = out.stdout.split('\n').find((l) => l.includes('engine-fixture-'))?.trim();
+  assert.ok(base, out.stdout + out.stderr);
+  assert.equal(existsSync(base), false);
 });

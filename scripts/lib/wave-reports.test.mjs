@@ -4,12 +4,10 @@ import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readRunFamilyReports, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
 import { appendWave } from './wave-sidecar.mjs';
-import { engineFixture, putReport } from './engine-fixture.mjs';
+import { scopedEngineFixture, putReport } from './engine-fixture.mjs';
 
 const REF = 'WXYC/repo#1';
-const fixtures = [];
-const stateDir = (spec = {}) => { const fx = engineFixture({ 'wave-reports': spec }); fixtures.push(fx); return fx.dirs['wave-reports']; };
-test.after(() => fixtures.forEach((fx) => fx.cleanup()));
+const stateDir = (spec = {}) => scopedEngineFixture({ 'wave-reports': spec }).dirs['wave-reports'];
 const put = (d, id, body) => putReport(d, `${id}.json`, body);
 const sidecar = (d, ...entries) => entries.forEach((e) => appendWave(d, e));
 const entry = (emittedAt, tuningVersion) => ({ emittedAt, tuningVersion, issues: [{ ref: REF, complexity: 'normal' }] });
@@ -144,8 +142,7 @@ test('reportOwnership: ownerOf breaks a startedAt tie by id, and owns is the neg
 });
 
 test('readRunFamilyReports: the reports of every dir of the state dir\'s run family, once each, however the dir is spelled', () => {
-  const fx = engineFixture({ 'sd-1': {}, 'sd-1-b': {}, 'sd-1-board': {}, 'sd-2': {} });
-  fixtures.push(fx);
+  const fx = scopedEngineFixture({ 'sd-1': {}, 'sd-1-b': {}, 'sd-1-board': {}, 'sd-2': {} });
   for (const [d, id] of [['sd-1', 'w1'], ['sd-1-b', 'w2'], ['sd-1-board', 'w3'], ['sd-2', 'w4']]) put(fx.dirs[d], id, { startedAt: STARTED, issues: [] });
   assert.deepEqual(readRunFamilyReports(fx.dirs['sd-1-b'], { warn: () => {} }).map((r) => r.id).sort(), ['w1', 'w2']);
   assert.deepEqual(readRunFamilyReports(join(fx.base, '.', 'sd-1')).map((r) => r.id).sort(), ['w1', 'w2']);
@@ -153,8 +150,7 @@ test('readRunFamilyReports: the reports of every dir of the state dir\'s run fam
 });
 
 test('readRunFamilyReports: a dir spelled with a trailing slash, or through a symlink, is read once', () => {
-  const fx = engineFixture({ 'sd-1': {}, 'sd-1-b': {} });
-  fixtures.push(fx);
+  const fx = scopedEngineFixture({ 'sd-1': {}, 'sd-1-b': {} });
   put(fx.dirs['sd-1'], 'w1', { startedAt: STARTED, issues: [] });
   put(fx.dirs['sd-1-b'], 'w2', { startedAt: STARTED, issues: [] });
   const link = join(fx.base, 'link');
@@ -166,16 +162,14 @@ test('readRunFamilyReports: a dir spelled with a trailing slash, or through a sy
 });
 
 test('readRunFamilyReports: a runId names the family when the dir\'s own name does not', () => {
-  const fx = engineFixture({ 'sd-1': {}, 'sd-1-retry': {}, 'sd-9': {} });
-  fixtures.push(fx);
+  const fx = scopedEngineFixture({ 'sd-1': {}, 'sd-1-retry': {}, 'sd-9': {} });
   for (const [d, id] of [['sd-1', 'w1'], ['sd-1-retry', 'w2'], ['sd-9', 'w3']]) put(fx.dirs[d], id, { startedAt: STARTED, issues: [] });
   assert.deepEqual(readRunFamilyReports(fx.dirs['sd-1-retry'], { warn: () => {} }).map((r) => r.id), ['w2']);
   assert.deepEqual(readRunFamilyReports(fx.dirs['sd-1-retry'], { warn: () => {}, runId: 'sd-1' }).map((r) => r.id).sort(), ['w1', 'w2']);
 });
 
 test('readRunFamilyReports: a parent that cannot be listed is warned about and leaves the dir alone', { skip: process.getuid?.() === 0 }, () => {
-  const fx = engineFixture({ 'sd-1': {}, 'sd-1-b': {} });
-  fixtures.push(fx);
+  const fx = scopedEngineFixture({ 'sd-1': {}, 'sd-1-b': {} });
   put(fx.dirs['sd-1'], 'w1', { startedAt: STARTED, issues: [] });
   put(fx.dirs['sd-1-b'], 'w2', { startedAt: STARTED, issues: [] });
   chmodSync(fx.base, 0o311);
