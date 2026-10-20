@@ -15,7 +15,8 @@ const ID_RE = /^(?:sd|ship-dag)-(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/;
 const WAVE_DIR_RE = /-w\d+[a-z]*$/i;
 const REF_RE = /^([^/#\s]+\/[^/#\s]+)#(\d+)$/;
 /** Close reasons that say the work was not done here, so the close is no merge. */
-export const CLOSED_UNDONE = new Set(['NOT_PLANNED', 'DUPLICATE']);
+const CLOSED_UNDONE = new Set(['NOT_PLANNED', 'DUPLICATE']);
+export const isClosedUndone = (reason) => CLOSED_UNDONE.has(reason);
 
 /** A ref's file stem as the engine writes it: a verbatim copy of `artifactStem` (scripts/lib/failure.mjs). */
 export const stem = (ref) => String(ref).replace(/%/g, '%25').replace(/\//g, '%2F').replace(/#/g, '%23');
@@ -190,7 +191,7 @@ export async function fetchLive(refs, prByRef, gh, { onErrors = () => {} } = {})
       continue;
     }
     const closing = issue.closedByPullRequestsReferences?.nodes?.map((n) => n.mergedAt).filter(Boolean).sort().at(-1);
-    const merged = node[`p${prByRef.get(ref)}`]?.mergedAt ?? closing ?? (CLOSED_UNDONE.has(issue.stateReason) ? null : issue.closedAt);
+    const merged = node[`p${prByRef.get(ref)}`]?.mergedAt ?? closing ?? (isClosedUndone(issue.stateReason) ? null : issue.closedAt);
     live.set(ref, { open: issue.state === 'OPEN', mergedAt: issue.state === 'OPEN' || !merged ? null : Date.parse(merged) });
   }
   return live;
