@@ -239,7 +239,7 @@ for (const [name, latencies, over, want] of [
   ['keeps a sample within the floored margin when the MAD is 0', [m(30), m(30), m(30), m(30), m(30), m(39)], {}, { used: 6, trimmed: 0, hi: m(30) }],
   ['trims nothing without outliers', hours(1, 2, 3, 4, 5, 6, 7, 8), {}, { used: 8, trimmed: 0, hi: 6.25 * HOUR }],
   ['never trims low samples', [m(1), m(30), m(30), m(30), m(31), m(32)], {}, { used: 6, trimmed: 0, hi: m(30.75) }],
-  ['falls back to the untrimmed window when fewer than minSamples would survive', [m(30), m(30), m(600), m(600), m(600), m(600)], { minSamples: 3 }, { used: 6, trimmed: 0, hi: m(600) }],
+  ['falls back to the untrimmed window when fewer than minSamples would survive', [m(30), m(30), m(30), m(30), m(600), m(600)], { minSamples: 5 }, { used: 6, trimmed: 0, hi: m(457.5) }],
   ['takes k from trimK', [m(30), m(30), m(30), m(40), m(45), m(50), m(50)], { trimK: 0.5 }, { used: 7, trimmed: 2, hi: m(40) }],
   ['trims nothing with an infinite trimK', [...Array(6).fill(m(30)), m(600)], { trimK: Infinity }, { used: 7, trimmed: 0, hi: m(30) }],
 ]) {
