@@ -2,11 +2,10 @@
 // engine fixture; sidecars are written by waveSidecar from the config buildConfig makes, never by hand.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRun, runBaseDir, runWaves, readNotes, readBoard, readRetros } from './run.mjs';
-import { RUN, engineFixture, stamped } from '../lib/engine-fixture.mjs';
+import { RUN, scopedEngineFixture, stamped } from '../lib/engine-fixture.mjs';
 import { SIDECAR_NAME, waveSidecar } from '../lib/wave-sidecar.mjs';
 import { appendRecord } from '../telemetry.mjs';
 import { buildConfig } from '../emit-config.mjs';
@@ -18,12 +17,8 @@ const entry = (numbers, wave) => { const s = spec(numbers, { wave }); return wav
 const at = (n) => `2026-10-08T1${n}:00:00.000Z`;
 const ids = (waves) => waves.map((w) => w.id);
 
-const fixtures = [];
-const fixture = (specs) => { const fx = engineFixture(specs); fixtures.push(fx); return fx; };
-test.after(() => fixtures.forEach((fx) => fx.cleanup()));
-
 test('a family of sibling dirs is labelled by suffix, ordered by mtime, and leaves the -board dir out', () => {
-  const { base, dirs } = fixture({
+  const { base, dirs } = scopedEngineFixture({
     [RUN]: { configs: { 'config.json': stamped(at(1), config([1])) } },
     [`${RUN}-w4b`]: { configs: { 'config.json': stamped(at(3), config([3])) } },
     [`${RUN}-w2`]: { configs: { 'config.json': stamped(at(2), config([2])) } },
@@ -40,7 +35,7 @@ test('a family of sibling dirs is labelled by suffix, ordered by mtime, and leav
 });
 
 test('one dir holding every wave: filename ids keep their letter, .bak and non-config JSON are not waves', () => {
-  const { dirs } = fixture({
+  const { dirs } = scopedEngineFixture({
     solo: {
       configs: {
         'config-wave14b.json': stamped(at(3), config([14])),
@@ -56,7 +51,7 @@ test('one dir holding every wave: filename ids keep their letter, .bak and non-c
 });
 
 test('a sidecar entry labels a wave only when its ref set matches; wave null and stale entries are absent', () => {
-  const { dirs } = fixture({
+  const { dirs } = scopedEngineFixture({
     [RUN]: {
       sidecar: [entry([1, 2], 7), entry([3], null), entry([9], 5)],
       configs: {
@@ -70,12 +65,12 @@ test('a sidecar entry labels a wave only when its ref set matches; wave null and
 });
 
 test('the base dir with no other source is 1', () => {
-  const { dirs } = fixture({ [RUN]: { configs: { 'config.json': stamped(at(1), config([1])) } } });
+  const { dirs } = scopedEngineFixture({ [RUN]: { configs: { 'config.json': stamped(at(1), config([1])) } } });
   assert.deepEqual(ids(runWaves({ runId: RUN, runDir: dirs[RUN] })), ['1']);
 });
 
 test('the older layout\'s state/config.json is a wave, and a config without a configDir string is not', () => {
-  const { dirs } = fixture({
+  const { dirs } = scopedEngineFixture({
     [RUN]: { configs: { 'state/config.json': stamped(at(1), config([1])), 'config-wave2.json': stamped(at(2), { ...config([2]), configDir: undefined }) } },
   });
   const waves = runWaves({ runId: RUN, runDir: dirs[RUN] });
@@ -83,7 +78,7 @@ test('the older layout\'s state/config.json is a wave, and a config without a co
 });
 
 test('resolveRun({runId}) finds the run under $XDG_STATE_HOME/ship-dag/engine, and its waves through it', () => {
-  const { base } = fixture({
+  const { base } = scopedEngineFixture({
     [`ship-dag/engine/${RUN}`]: { configs: { 'config.json': stamped(at(1), config([1])) } },
     [`ship-dag/engine/${RUN}-w2`]: { configs: { 'config.json': stamped(at(2), config([2])) } },
   });
@@ -95,7 +90,7 @@ test('a ref set re-emitted under a new wave labels each config with its own entr
   // emit-config writes a config and then stamps its entry, but emittedAt has only millisecond precision, so an
   // entry reads as the floor of its own config's fractional mtime. Set exactly that, rather than racing the clock:
   // a file's mtime comes from a coarser clock than Date.now() on some systems.
-  const { dirs } = fixture({ [RUN]: {} });
+  const { dirs } = scopedEngineFixture({ [RUN]: {} });
   const dir = dirs[RUN];
   const T = Date.parse(at(1));
   const emits = [['config-a.json', '3', T], ['config-b.json', '3b', T + 10]];
@@ -124,7 +119,7 @@ const precedence = [
 ];
 for (const [name, specs, named, want] of precedence) {
   test(`display id: ${name}`, () => {
-    const { dirs } = fixture(specs);
+    const { dirs } = scopedEngineFixture(specs);
     assert.deepEqual(ids(runWaves(resolveRun({ stateDir: dirs[named] }))), want);
   });
 }
@@ -132,7 +127,7 @@ for (const [name, specs, named, want] of precedence) {
 // The base dir is 1 however the run is spelled, even when its config is not the family's oldest.
 for (const spelling of [RUN, `ship-dag-${RUN}`, `${RUN}-w2-b`, `${RUN}-r2`, RUN.toUpperCase()]) {
   test(`display id: the base dir is 1 when the run is named ${spelling}`, () => {
-    const { dirs } = fixture({
+    const { dirs } = scopedEngineFixture({
       [`${RUN}-b`]: { configs: { 'config.json': stamped(at(1), config([1])) } },
       [RUN]: { configs: { 'config.json': stamped(at(2), config([2])) } },
     });
@@ -142,7 +137,7 @@ for (const spelling of [RUN, `ship-dag-${RUN}`, `${RUN}-w2-b`, `${RUN}-r2`, RUN.
 
 test('a torn sidecar line warns once per dir, however many configs the dir holds', () => {
   const lines = [entry([1], 1), entry([2], 2)].map((e) => JSON.stringify(e)).join('\n');
-  const { dirs } = fixture({
+  const { dirs } = scopedEngineFixture({
     [RUN]: { files: { [SIDECAR_NAME]: `${lines}\n{torn\n` }, configs: { 'config-1.json': stamped(at(1), config([1])), 'config-2.json': stamped(at(2), config([2])) } },
   });
   const warnings = [];
@@ -157,8 +152,7 @@ test('resolveRun reads $SHIP_DAG_RUN_ID only when told to', () => {
 });
 
 test('board-notes.json and board.json read as null when missing, parsed when present, and throw naming the path when malformed', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'board-run-'));
-  fixtures.push({ cleanup: () => rmSync(dir, { recursive: true, force: true }) });
+  const dir = scopedEngineFixture({ d: {} }).dirs.d;
   assert.equal(readNotes(dir), null);
   assert.equal(readBoard(dir), null);
   writeFileSync(join(dir, 'board-notes.json'), '{"wave":"2"}');
@@ -176,8 +170,7 @@ const unreadable = [
 ];
 for (const [name, make, skip] of unreadable) {
   test(`board.json that is ${name} throws a read error naming the path, not a JSON one`, { skip }, () => {
-    const dir = mkdtempSync(join(tmpdir(), 'board-run-'));
-    fixtures.push({ cleanup: () => rmSync(dir, { recursive: true, force: true }) });
+    const dir = scopedEngineFixture({ d: {} }).dirs.d;
     const path = join(dir, 'board.json');
     make(path);
     assert.throws(() => readBoard(dir), (e) => e.message.includes(path) && /cannot read/.test(e.message) && !/not valid JSON/.test(e.message));
@@ -185,8 +178,7 @@ for (const [name, make, skip] of unreadable) {
 }
 
 test('retro records are the run family\'s, deduplicated, with engine and agent rows skipped', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'board-run-'));
-  fixtures.push({ cleanup: () => rmSync(dir, { recursive: true, force: true }) });
+  const dir = scopedEngineFixture({ d: {} }).dirs.d;
   const path = join(dir, 'runs.jsonl');
   writeFileSync(path, `${[{ kind: 'engine', runId: RUN }, { kind: 'agent', runId: RUN }, { kind: 'issue', runId: RUN }].map((r) => JSON.stringify(r)).join('\n')}\n`);
   let tick = 0;
@@ -204,7 +196,7 @@ for (const [name, named, run, want] of [
   ['--state-dir naming the base dir', RUN, (dirs) => resolveRun({ stateDir: dirs[RUN] }), RUN],
 ]) {
   test(`runBaseDir: ${name} finds the base dir`, () => {
-    const { base, dirs } = fixture({ [`ship-dag/engine/${RUN}`]: {}, [`ship-dag/engine/${RUN}-b`]: {}, [`ship-dag/engine/${RUN}-w2`]: {} });
+    const { base, dirs } = scopedEngineFixture({ [`ship-dag/engine/${RUN}`]: {}, [`ship-dag/engine/${RUN}-b`]: {}, [`ship-dag/engine/${RUN}-w2`]: {} });
     const engine = join(base, 'ship-dag/engine');
     const named = run(Object.fromEntries(Object.keys(dirs).map((k) => [k.split('/').pop(), dirs[k]])), base);
     assert.equal(runBaseDir(named), join(engine, want));
@@ -212,14 +204,14 @@ for (const [name, named, run, want] of [
 }
 
 test('runBaseDir falls back to the named dir when the family has no base dir, or no dir exists', () => {
-  const { dirs, base } = fixture({ [`${RUN}-b`]: {} });
+  const { dirs, base } = scopedEngineFixture({ [`${RUN}-b`]: {} });
   assert.equal(runBaseDir({ runId: `${RUN}-b`, runDir: dirs[`${RUN}-b`] }), dirs[`${RUN}-b`]);
   const absent = join(base, 'nobody');
   assert.equal(runBaseDir({ runId: 'nobody', runDir: absent }), absent);
 });
 
 test('runWaves and runBaseDir read the dirs they are given instead of listing the family again', () => {
-  const { dirs } = fixture({
+  const { dirs } = scopedEngineFixture({
     [`ship-dag/engine/${RUN}`]: { configs: { 'config.json': stamped(at(1), config([1])) } },
     [`ship-dag/engine/${RUN}-b`]: { configs: { 'config.json': stamped(at(2), config([2])) } },
   });
