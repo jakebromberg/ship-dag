@@ -65,3 +65,22 @@ for (const [a, b, expected] of [
   });
 }
 
+
+test('canonicalRunId and runFamily are the plugin\'s single definitions, re-exported', async () => {
+  const plugin = await import('../../plugins/ship-dag-eta/lib/run-id.mjs');
+  assert.equal(canonicalRunId, plugin.canonicalRunId);
+  assert.equal(runFamily, plugin.runFamily);
+});
+
+test('canonicalRunId and runFamily over the ETA parity ids', () => {
+  const RUN = 'sd-20261017-080000';
+  for (const [id, canon, family] of [
+    [RUN, RUN, RUN], [`${RUN}-w1`, RUN, RUN], [`${RUN}-w1b`, RUN, RUN], [`${RUN}-b`, `${RUN}-b`, RUN], [`${RUN}-b-c`, `${RUN}-b-c`, `${RUN}-b`],
+    [`${RUN}-r2`, RUN, RUN], [`${RUN}-resume`, RUN, RUN], [`${RUN}-wave3`, RUN, RUN], [`ship-dag-${RUN}-w2`, RUN, RUN],
+    ['SD-20261017-080000-W2', RUN, RUN], [`${RUN.toUpperCase()}-B`, `${RUN}-b`, RUN], [`${RUN}-label`, `${RUN}-label`, `${RUN}-label`],
+    [`${RUN}x`, `${RUN}x`, `${RUN}x`], ['', null, null], [null, null, null], [undefined, null, null], [7, null, null],
+  ]) {
+    assert.equal(canonicalRunId(id), canon, `canonicalRunId(${JSON.stringify(id)})`);
+    assert.equal(runFamily(id), family, `runFamily(${JSON.stringify(id)})`);
+  }
+});

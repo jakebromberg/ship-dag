@@ -69,3 +69,15 @@ test('REPO_RE: a bare owner/repo, refusing a ref, a second slash, whitespace or 
   for (const ok of ['o/r', 'WXYC/dj-site', 'jakebromberg/ship-dag', 'a.b/c_d-e']) assert.equal(REPO_RE.test(ok), true, ok);
   for (const bad of ['o/r#1', 'o/r/x', 'o /r', 'r', '/r', 'o/', '']) assert.equal(REPO_RE.test(bad), false, bad);
 });
+
+test('parseRef and REF_RE are the plugin\'s single definitions, re-exported', async () => {
+  const plugin = await import('../../plugins/ship-dag-eta/lib/ref.mjs');
+  assert.equal(parseRef, plugin.parseRef);
+  assert.equal(REF_RE, plugin.REF_RE);
+});
+
+test('parseRef: refs that must not parse (ETA parity inputs)', () => {
+  for (const input of ['o/r', 'o/r#1x', 'o r#1', '#1', null, ['o/r#1']]) assert.equal(parseRef(input), null, JSON.stringify(input));
+  assert.deepEqual(parseRef('O/R#3'), { repo: 'O/R', number: 3 });
+  assert.deepEqual(parseRef('a%b/c#2'), { repo: 'a%b/c', number: 2 });
+});

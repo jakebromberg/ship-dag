@@ -28,6 +28,8 @@
 import { join } from 'node:path';
 import { isRateLimitDeathLine } from './rate-limit.mjs';
 import { isPr } from './ref.mjs';
+import { artifactStem } from '../../plugins/ship-dag-eta/lib/ref.mjs';
+export { artifactStem };
 
 /** Reasons the engine stops a row for infrastructure rather than model failure (claude-orchestrator#87), beside `"rate-limited"` which ship-dag also reads from a transcript. */
 export const RESOURCE_STOPS = new Set(['memory-critical', 'lease-wait']);
@@ -39,21 +41,6 @@ export const RESULT_TYPE_KEY = '"type":"result"';
 
 /** Cap on the terminal `result` string. It is an assistant turn — unbounded in principle — and a diagnosis is read straight into an agent context. */
 export const MAX_REASON_CHARS = 500;
-
-/**
- * The filename stem the engine gives a ref's per-issue artifacts (logs,
- * metadata, failure digests). Mirrors claude-orchestrator's
- * `encodeRefForFilename` **exactly** — only `%`, `/` and `#` are escaped.
- *
- * Deliberately not `encodeURIComponent`: the two agree on every ref made of
- * legal GitHub owner/repo characters, which is precisely what would keep a
- * mismatch hidden until some ref contained a character they disagree about and
- * a lookup silently found no file.
- * @param {string} ref  composite issue ref, `owner/repo#N`
- */
-export function artifactStem(ref) {
-  return String(ref).replace(/%/g, '%25').replace(/\//g, '%2F').replace(/#/g, '%23');
-}
 
 /**
  * The engine's status file for a composite ref (`pending`/`running`/`succeeded`/
