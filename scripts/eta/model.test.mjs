@@ -369,6 +369,17 @@ for (const [window, want] of [
     assert.equal(queue.service.mid, want.mid ?? m(99));
     assert.equal(run.finish === null ? null : 3_600_000 / run.perHour, want.mid);
     assert.equal(depth.used, want.used);
+    assert.equal(depth.trimmed, 0);
     assert.equal(depth.latency.mid, want.mid ?? m(99));
+  });
+}
+
+// An omitted trimK means "do not trim", whatever minSamples is.
+for (const minSamples of [0, 1, 3]) {
+  test(`depthFinish with trimK omitted and minSamples ${minSamples} trims nothing`, () => {
+    const depth = depthFinish({ waves: [['a']], open: new Set(['a']), latencies: [m(1), m(2), m(100)], now: 0, window: 9, defaultMs: m(99), minSamples });
+    assert.equal(depth.trimmed, 0);
+    assert.equal(depth.source, 'measured');
+    assert.equal(depth.latency.mid, m(2));
   });
 }
