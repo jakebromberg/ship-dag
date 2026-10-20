@@ -92,7 +92,8 @@ export function throughputFinish({ merges, remaining, now, window }) {
  * `minSamples` of them it uses `defaultMs`; `samples` says how many there were in all and `used` how many the window took.
  * Of those it drops the high outliers, samples above median + `trimK` x MAD (the median absolute deviation, floored at
  * 10% of the median so equal samples still trim a far one; omitted, `trimK` is Infinity and nothing is trimmed), and `trimmed` counts them; when fewer than `minSamples` would
- * survive, or the cutoff is NaN (a NaN `trimK`, or Infinity x 0 when the median is 0), nothing is trimmed.
+ * survive, or the cutoff is below every sample (a negative `trimK`, or a NaN cutoff: a NaN `trimK`, or Infinity x 0
+ * when the median is 0), nothing is trimmed.
  * @param {{waves: string[][], open: Set<string>, latencies: number[], now: number, window: number, defaultMs: number, minSamples: number, trimK?: number}} input
  */
 export function depthFinish({ waves, open, latencies, now, window, defaultMs, minSamples, trimK = Infinity }) {
@@ -101,7 +102,8 @@ export function depthFinish({ waves, open, latencies, now, window, defaultMs, mi
   const med = quantile(recent, 0.5);
   const mad = quantile(recent.map((x) => Math.abs(x - med)), 0.5);
   const cut = med + trimK * Math.max(mad, MAD_FLOOR * med);
-  const kept = Number.isNaN(cut) ? recent : recent.filter((x) => x <= cut);
+  const under = recent.filter((x) => x <= cut);
+  const kept = under.length ? under : recent;
   const trimmed = kept.length >= minSamples ? recent.length - kept.length : 0;
   const measured = recent.length >= minSamples ? spread(trimmed ? kept : recent) : null;
   const latency = measured ?? flat(defaultMs);
