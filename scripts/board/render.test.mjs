@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildGraph, projectWaves, makeShortRef, makeRepoLabel, classify } from './model.mjs';
-import { renderBoard, STATUSES, STAGE_STATUS, waveSpan } from './render.mjs';
+import { renderBoard, STATUSES, stageStatus, waveSpan } from './render.mjs';
+import * as render from './render.mjs';
 import { STAGES } from './stage.mjs';
 import { PAGE_CSS } from './assets.mjs';
 
@@ -166,8 +167,13 @@ for (const [stage, status] of [
 
 test('every engine stage label has a chip colour', () => {
   for (const stage of Object.values(STAGES)) {
-    assert.ok(STATUSES.some((s) => s.status === STAGE_STATUS.get(stage)), `${stage} has no STAGE_STATUS entry`);
+    assert.ok(STATUSES.some((s) => s.status === stageStatus(stage)), `${stage} has no stageStatus entry`);
   }
+});
+
+test('the stage-to-status table is not exported, so importers cannot mutate it', () => {
+  assert.equal(render.STAGE_STATUS, undefined);
+  assert.equal(stageStatus('not a stage'), undefined);
 });
 
 test('a stage the board does not know keeps the ticket\'s status colour', () => {

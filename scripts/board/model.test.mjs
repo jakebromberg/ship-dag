@@ -218,3 +218,10 @@ for (const [name, groups, exclude, want] of [
 for (const [reason, want] of [['NOT_PLANNED', 'dropped'], ['DUPLICATE', 'dropped'], ['COMPLETED', 'shipped'], [null, 'shipped']]) {
   test(`closedKind(${reason}) is ${want}`, () => assert.equal(closedKind(reason), want));
 }
+
+test('the close-reason table is not exported, so importers cannot mutate it', async () => {
+  const state = await import('../eta/state.mjs');
+  assert.equal(state.CLOSED_UNDONE, undefined);
+  assert.equal(state.isClosedUndone('DUPLICATE'), true);
+  assert.equal(state.isClosedUndone('COMPLETED'), false);
+});
