@@ -11,13 +11,13 @@
 
 import { planWaves, compareRefString } from '../plan-waves.mjs';
 import { parseRef, refKey } from '../lib/ref.mjs';
-import { CLOSED_UNDONE } from '../eta/state.mjs';
+import { isClosedUndone } from '../eta/state.mjs';
 
 /** Ref order for anything the board sorts: the topo core's, repo then number (`#9` before `#10`). */
 export const compareRefs = compareRefString;
 
-/** A closed ticket's board status: `dropped` when closed without shipping (not planned or a duplicate, as the ETA's CLOSED_UNDONE), else `shipped`. */
-export const closedKind = (stateReason) => (CLOSED_UNDONE.has(stateReason) ? 'dropped' : 'shipped');
+/** A closed ticket's board status: `dropped` when closed without shipping (not planned or a duplicate, as the ETA's isClosedUndone), else `shipped`. */
+export const closedKind = (stateReason) => (isClosedUndone(stateReason) ? 'dropped' : 'shipped');
 
 /**
  * A ticket's board status, first match wins: closed without shipping → `dropped`;
