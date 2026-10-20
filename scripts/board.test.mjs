@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join, resolve } from 'node:path';
 import { main } from './board.mjs';
 import { graphqlAnswer } from './lib/gh-fixture.mjs';
-import { RUN, T0, engineConfig, engineFixture, stamped } from './lib/engine-fixture.mjs';
+import { RUN, T0, engineConfig, scopedEngineFixture, stamped } from './lib/engine-fixture.mjs';
 import { parseRef } from './lib/ref.mjs';
 import { artifactStem } from './lib/failure.mjs';
 import { appendRecord } from './telemetry.mjs';
@@ -17,12 +17,9 @@ const STARTED = '2026-10-08T12:00:00.000Z';
 const BOARD = { runId: RUN, title: 'Invented board', issueSet: {}, blockOn: ['correctness'], startedAt: STARTED };
 const SPEC = { nodes: [{ ref: R(1) }, { ref: R(2) }], edges: [{ blocked: R(2), blockedBy: R(1) }], done: [R(9)] };
 
-const fixtures = [];
-test.after(() => fixtures.forEach((fx) => fx.cleanup()));
-
 /** A base dir holding the run's family: `RUN` (a config for refs 1 and 2, `files` beside it, one left undefined is left out) and any `siblings`. */
 function setUp({ files = {}, siblings = {}, reviews = [] } = {}) {
-  const fx = engineFixture({
+  const fx = scopedEngineFixture({
     [`ship-dag/engine/${RUN}`]: {
       configs: { 'config.json': stamped(T0, engineConfig([R(1), R(2)], { configDir: `/x/${RUN}/state` })) },
       files: Object.fromEntries(Object.entries({ 'board.json': BOARD, 'dag.json': SPEC, ...files }).filter(([, body]) => body !== undefined)),
@@ -30,7 +27,6 @@ function setUp({ files = {}, siblings = {}, reviews = [] } = {}) {
     },
     ...siblings,
   });
-  fixtures.push(fx);
   const dir = fx.dirs[`ship-dag/engine/${RUN}`];
   return { ...fx, dir, env: { XDG_STATE_HOME: fx.base, HOME: '/nope', SHIP_DAG_TELEMETRY: join(fx.base, 'runs.jsonl') } };
 }

@@ -1,5 +1,7 @@
 // engine-fixture.mjs — test support: builds the on-disk layout the engine leaves for a run, so no test hand-rolls it.
 // Not a test file (no `.test.mjs`), so `node --test` does not run it.
+// In a test, build state with `scopedEngineFixture(specs)`: it is removed when the test file finishes, so no file keeps its own fixtures list or `test.after`.
+import { after } from 'node:test';
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -71,6 +73,15 @@ export function engineFixture(specs) {
     throw err;
   }
   return { base, dirs, cleanup: () => rmSync(base, { recursive: true, force: true }) };
+}
+
+const scoped = [];
+after(() => scoped.splice(0).forEach((fx) => fx.cleanup()));
+/** `engineFixture(specs)`, removed once the importing test file finishes. */
+export function scopedEngineFixture(specs) {
+  const fx = engineFixture(specs);
+  scoped.push(fx);
+  return fx;
 }
 
 /** A report row for `ref` (an `owner/repo#N` string; any other is kept as is, with `number` null, for the malformed-row refusal tests) that succeeded with PR 11; `over` overrides any field, among them the engine's `ran` (whether it launched a session) and `sessionIds` (the sessions it launched). A row given neither is a pre-change row. */

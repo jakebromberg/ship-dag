@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { engineFixture, stamped } from './lib/engine-fixture.mjs';
+import { scopedEngineFixture, stamped } from './lib/engine-fixture.mjs';
 import {
   logPathForRef, statusPathForRef, metadataPathForRef, owningReport, digestPathForRef, diagnose, ownerId, MAX_REASON_CHARS,
 } from './diagnose-failure.mjs';
@@ -17,17 +17,13 @@ const line = (obj) => `${JSON.stringify(obj)}\n`;
 const REF = 'daisysguide/backend#620';
 const CLI = fileURLToPath(new URL('./diagnose-failure.mjs', import.meta.url));
 
-const fixtures = [];
-test.after(() => fixtures.forEach((fx) => fx.cleanup()));
-
 /** A state dir laid out the way the engine writes one. */
 function fixture({ rows, transcript, digest, ref = REF, reportName = '2026-08-31T23-43-43.528Z.json' } = {}) {
-  const fx = engineFixture({ diag: {
+  const fx = scopedEngineFixture({ diag: {
     digests: digest === undefined ? [] : [{ ref, body: digest }],
     reports: rows ? { [reportName]: { configName: 'ship-dag-test', startedAt: '2026-08-31T23:43:43.528Z', issues: rows } } : {},
     files: { 'state/logs/.keep': '', ...(transcript !== undefined && { [`state/logs/issue-${encodeURIComponent(ref)}.log`]: transcript }) },
   } });
-  fixtures.push(fx);
   return fx.dirs.diag;
 }
 
@@ -47,12 +43,11 @@ for (const [name, fn, want] of [
 
 /** A state dir of `reports` (stem -> {startedAt, rows}) and, optionally, a digest for REF; `files` writes anything else. */
 function waves(reports, { digest, files } = {}) {
-  const fx = engineFixture({ diag: {
+  const fx = scopedEngineFixture({ diag: {
     reports: Object.fromEntries(Object.entries(reports).map(([stem, { startedAt, rows, mtime }]) => [`${stem}.json`, mtime ? stamped(mtime, { startedAt, issues: rows }) : { startedAt, issues: rows }])),
     digests: digest ? [{ ref: REF, body: digest }] : [],
     files,
   } });
-  fixtures.push(fx);
   return fx.dirs.diag;
 }
 const W1 = '2026-10-08T19:00:00.000Z';
@@ -249,8 +244,7 @@ function family({ base, retry }) {
     digests: digest ? [{ ref: REF, body: digest }] : [],
     files: transcript === undefined ? {} : { [`state/logs/issue-${encodeURIComponent(REF)}.log`]: transcript },
   });
-  const fx = engineFixture({ 'sd-20261001-000000': spec(base), 'sd-20261001-000000-b': spec(retry) });
-  fixtures.push(fx);
+  const fx = scopedEngineFixture({ 'sd-20261001-000000': spec(base), 'sd-20261001-000000-b': spec(retry) });
   return fx.dirs;
 }
 const maxTurns = () => line({ type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: 80, result: 'Reached max turns' });

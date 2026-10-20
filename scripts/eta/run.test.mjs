@@ -5,13 +5,11 @@ import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { metadataPathForRef } from '../lib/failure.mjs';
-import { engineFixture, stamped } from '../lib/engine-fixture.mjs';
+import { scopedEngineFixture, stamped } from '../lib/engine-fixture.mjs';
 import { fsIo, main } from './run.mjs';
 import { familyDirs, latestRun, runStartFromId, liveQuery } from './state.mjs';
 
 const RUN = 'sd-20261017-080000';
-const fixtures = [];
-test.after(() => fixtures.forEach((fx) => fx.cleanup()));
 
 const started = (ref, at) => [metadataPathForRef('.', ref), { startedAt: at }];
 const wave1b = (reports = { 'r.json': { startedAt: '2026-10-17T17:00:00.000Z', issues: [{ ref: 'o/r#1', number: 1, status: 'succeeded', prNumber: 11 }] } }) => ({
@@ -20,13 +18,6 @@ const wave1b = (reports = { 'r.json': { startedAt: '2026-10-17T17:00:00.000Z', i
     started('o/r#1', '2026-10-17T17:00:00.000Z'), started('o/r#2', '2026-10-17T17:00:00.000Z'), started('o/r#3', '2026-10-17T17:10:00.000Z'),
   ]),
 });
-
-/** Build `specs` (engineFixture's) as a state base, removed after the tests. */
-function stateBase(specs) {
-  const fx = engineFixture(specs);
-  fixtures.push(fx);
-  return fx;
-}
 
 /**
  * A state base holding one run with two family dirs: o/r#1 merged, o/r#2 and o/r#3 open, o/r#4 blocked. Each of
@@ -38,7 +29,7 @@ function fixture({ dirs = {}, w1bReports, dagNewAt } = {}) {
     repo: 'o/r', nodes: ['o/r#2', 'o/r#3', 'o/r#4'].map((ref) => ({ ref })), edges: [], done: ['o/r#1'],
     members: ['o/r#1', 'o/r#2', 'o/r#3', 'o/r#4'],
   };
-  const { base, dirs: made } = stateBase({
+  const { base, dirs: made } = scopedEngineFixture({
     [RUN]: {
       files: {
         'dag.json': { repo: 'o/r', nodes: [{ ref: 'o/r#9' }], edges: [], done: [] },
@@ -141,14 +132,14 @@ test('main without gh degrades to the fetched DAG and says so', async () => {
 });
 
 test('main exits 1 naming the base when there is no run', async () => {
-  const { base } = stateBase({});
+  const { base } = scopedEngineFixture({});
   const got = await run(['--state-base', base]);
   assert.equal(got.code, 1);
   assert.match(got.err, /no ship-dag run under/);
 });
 
 test('main exits 1 when the run has no fetched DAG', async () => {
-  const { base } = stateBase({ [RUN]: {} });
+  const { base } = scopedEngineFixture({ [RUN]: {} });
   const got = await run(['--state-base', base, '--run', RUN]);
   assert.equal(got.code, 1);
   assert.match(got.err, /no dag\.json/);
@@ -229,7 +220,7 @@ test('liveQuery quotes repo names as GraphQL strings', () => {
 test('familyDirs follows runFamily: case and prefix fold, chained retries and a prefix-sharing run do not', async () => {
   const mine = [`${RUN}-w2`, `${RUN}-b`, `${RUN}-r2`, `${RUN}-resume`, `ship-dag-${RUN}-w3`, `${RUN.toUpperCase()}-W4`];
   const others = [`${RUN}-b-c`, `${RUN}-w37aa`, `${RUN}-label`, `${RUN}x`];
-  const { base } = stateBase(Object.fromEntries([RUN, ...mine, ...others].map((name) => [name, {}])));
+  const { base } = scopedEngineFixture(Object.fromEntries([RUN, ...mine, ...others].map((name) => [name, {}])));
   const dirs = await familyDirs(fsIo, base, RUN);
   assert.deepEqual(dirs, [RUN, ...mine.sort()].map((n) => `${base}/${n}`));
 });

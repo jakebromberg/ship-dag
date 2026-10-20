@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { withBackoff } from './gh.mjs';
 import { escapesDir, cites, findEscapes, escapeReport, shipDagPrs, CLOSING_PRS_QUERY } from './escapes.mjs';
 import { ingestWave } from '../telemetry.mjs';
-import { engineFixture, stamped } from './engine-fixture.mjs';
+import { scopedEngineFixture, stamped } from './engine-fixture.mjs';
 
 const NOW = Date.parse('2026-09-30T00:00:00Z');
 const tmp = () => mkdtempSync(join(tmpdir(), 'ship-dag-escapes-'));
@@ -400,12 +400,9 @@ test('escapeReport: rate by merge month and by tuningVersion', () => {
   assert.deepEqual(escapeReport(rows).byMonth['2026-07'], { prs: 2, escaped: 1, rate: 0.5, strong: 1, strongRate: 0.5 });
 });
 
-const fixtures = [];
-test.after(() => fixtures.forEach((fx) => fx.cleanup()));
 /** An engine base dir holding one run, `sd-1`: its report rows (as `r.json`) and its sidecar entries; `more` adds to or overrides the dir's spec (`reports`, `configs`), and `others` names more dirs. */
 function engineDir(rows, entries, { reports = {}, others = {}, ...more } = {}) {
-  const fx = engineFixture({ ...others, 'sd-1': { reports: { 'r.json': { startedAt: '2026-08-01T00:00:00Z', issues: rows }, ...reports }, sidecar: entries, ...more } });
-  fixtures.push(fx);
+  const fx = scopedEngineFixture({ ...others, 'sd-1': { reports: { 'r.json': { startedAt: '2026-08-01T00:00:00Z', issues: rows }, ...reports }, sidecar: entries, ...more } });
   return fx.base;
 }
 const closers = (repo, n) => `api graphql -f query=${CLOSING_PRS_QUERY} -f owner=${repo.split('/')[0]} -f name=${repo.split('/')[1]} -F n=${n}`;
