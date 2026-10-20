@@ -91,11 +91,11 @@ export function throughputFinish({ merges, remaining, now, window }) {
  * review pass), measured over the last `window` of `latencies`, which run oldest review pass first. With fewer than
  * `minSamples` of them it uses `defaultMs`; `samples` says how many there were in all and `used` how many the window took.
  * Of those it drops the high outliers, samples above median + `trimK` x MAD (the median absolute deviation, floored at
- * 10% of the median so equal samples still trim a far one), and `trimmed` counts them; when fewer than `minSamples` would
+ * 10% of the median so equal samples still trim a far one; omitted, `trimK` is Infinity and nothing is trimmed), and `trimmed` counts them; when fewer than `minSamples` would
  * survive, nothing is trimmed.
- * @param {{waves: string[][], open: Set<string>, latencies: number[], now: number, window: number, defaultMs: number, minSamples: number, trimK: number}} input
+ * @param {{waves: string[][], open: Set<string>, latencies: number[], now: number, window: number, defaultMs: number, minSamples: number, trimK?: number}} input
  */
-export function depthFinish({ waves, open, latencies, now, window, defaultMs, minSamples, trimK }) {
+export function depthFinish({ waves, open, latencies, now, window, defaultMs, minSamples, trimK = Infinity }) {
   const left = waves.filter((w) => w.some((ref) => open.has(ref))).length;
   const recent = newest(latencies, window);
   const med = quantile(recent, 0.5);
