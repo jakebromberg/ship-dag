@@ -1,17 +1,11 @@
 // ref.mjs — the one place the telemetry modules parse and build `owner/repo#N` refs, say what a PR
 // number is, read a recorded PR value (`parsePr`), and fold repos for comparison.
 
-/** A composite issue ref: group 1 is `owner/repo` (one slash, no whitespace), group 2 the number. */
-export const REF_RE = /^([^/#\s]+\/[^/#\s]+)#(\d+)$/;
+import { parseRef } from '../../plugins/ship-dag-eta/lib/ref.mjs';
+export { REF_RE, parseRef } from '../../plugins/ship-dag-eta/lib/ref.mjs';
 
 /** A bare `owner/repo`: one slash, no whitespace and no `#`, so a ref passed where a repo belongs is refused. */
 export const REPO_RE = /^[^/#\s]+\/[^/#\s]+$/;
-
-/** `{repo, number}` for an `owner/repo#N` string, or null for anything else (a non-string, a missing owner, a second slash, whitespace, a `#` in the repo, trailing text). */
-export function parseRef(ref) {
-  const m = typeof ref === 'string' ? REF_RE.exec(ref) : null;
-  return m ? { repo: m[1], number: Number(m[2]) } : null;
-}
 
 /** The `owner/repo#N` ref for `repo` and `number`, as the engine writes it. */
 export const formatRef = (repo, number) => `${repo}#${number}`;

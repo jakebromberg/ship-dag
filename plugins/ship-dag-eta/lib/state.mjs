@@ -10,22 +10,13 @@
 
 import { estimate } from './model.mjs';
 import { runFamily } from './run-id.mjs';
+import { parseRef, artifactStem } from './ref.mjs';
 
 const ID_RE = /^(?:sd|ship-dag)-(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/;
 const WAVE_DIR_RE = /-w\d+[a-z]*$/i;
-const REF_RE = /^([^/#\s]+\/[^/#\s]+)#(\d+)$/;
 /** Close reasons that say the work was not done here, so the close is no merge. */
 const CLOSED_UNDONE = new Set(['NOT_PLANNED', 'DUPLICATE']);
 export const isClosedUndone = (reason) => CLOSED_UNDONE.has(reason);
-
-/** A ref's file stem as the engine writes it: a verbatim copy of `artifactStem` (scripts/lib/failure.mjs). */
-export const stem = (ref) => String(ref).replace(/%/g, '%25').replace(/\//g, '%2F').replace(/#/g, '%23');
-
-/** A verbatim copy of `parseRef` (scripts/lib/ref.mjs): `{repo, number}` for an `owner/repo#N` string, or null. */
-export function parseRef(ref) {
-  const m = typeof ref === 'string' ? REF_RE.exec(ref) : null;
-  return m ? { repo: m[1], number: Number(m[2]) } : null;
-}
 
 /** The start a run id encodes, in the local time `mintRunId` writes it in, as epoch ms; null when it encodes none. */
 export function runStartFromId(runId) {
@@ -102,8 +93,8 @@ export async function readRun(io, base, runId) {
   for (const dir of await familyDirs(io, base, runId)) {
     // Probe only the metadata files the engine wrote in this dir, not every ref of the scope in every family dir.
     const written = new Set((await io.list(`${dir}/state/metadata`)).map((e) => e.name));
-    for (const ref of scope.filter((r) => written.has(`issue-${stem(r)}.json`))) {
-      const at = Date.parse((await readJson(io, `${dir}/state/metadata/issue-${stem(ref)}.json`))?.startedAt);
+    for (const ref of scope.filter((r) => written.has(`issue-${artifactStem(r)}.json`))) {
+      const at = Date.parse((await readJson(io, `${dir}/state/metadata/issue-${artifactStem(ref)}.json`))?.startedAt);
       if (Number.isNaN(at)) {
         continue;
       }

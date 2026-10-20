@@ -287,3 +287,8 @@ test('buildDiagnosis: clips a long terminal reason — this lands in an agent co
   const d = buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed' }, terminal: { subtype: 's', isError: true, numTurns: 1, reason: 'x'.repeat(5000) }, rateLimited: false });
   assert.ok(d.terminal.reason.endsWith('…'));
 });
+
+test('artifactStem is the plugin\'s single definition, re-exported', async () => {
+  const plugin = await import('../../plugins/ship-dag-eta/lib/ref.mjs');
+  assert.equal(artifactStem, plugin.artifactStem);
+});

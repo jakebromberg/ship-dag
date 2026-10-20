@@ -1,5 +1,5 @@
-// run-id.mjs — verbatim copies of `canonicalRunId` and `runFamily` from scripts/lib/run-id.mjs, which an installed
-// plugin cannot import. scripts/eta/parity.test.mjs holds them equal to the originals.
+// run-id.mjs — the one definition of `canonicalRunId` and `runFamily`; scripts/lib/run-id.mjs re-exports them.
+// No Node imports: an installed plugin reaches nothing outside its folder.
 
 /**
  * Fold a runId to the form its spellings share, for *matching only*: lowercase,
