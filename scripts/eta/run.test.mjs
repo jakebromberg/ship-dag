@@ -227,11 +227,9 @@ test('liveQuery quotes repo names as GraphQL strings', () => {
 });
 
 test('familyDirs follows runFamily: case and prefix fold, chained retries and a prefix-sharing run do not', async () => {
-  const base = mkdtempSync(join(tmpdir(), 'eta-fam-'));
-  bases.push(base);
   const mine = [`${RUN}-w2`, `${RUN}-b`, `${RUN}-r2`, `${RUN}-resume`, `ship-dag-${RUN}-w3`, `${RUN.toUpperCase()}-W4`];
   const others = [`${RUN}-b-c`, `${RUN}-w37aa`, `${RUN}-label`, `${RUN}x`];
-  for (const name of [RUN, ...mine, ...others]) mkdirSync(join(base, name));
+  const { base } = stateBase(Object.fromEntries([RUN, ...mine, ...others].map((name) => [name, {}])));
   const dirs = await familyDirs(fsIo, base, RUN);
   assert.deepEqual(dirs, [RUN, ...mine.sort()].map((n) => `${base}/${n}`));
 });
