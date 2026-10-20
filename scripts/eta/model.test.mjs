@@ -384,17 +384,19 @@ for (const minSamples of [0, 1, 3]) {
   });
 }
 
-// A cutoff below every sample trims nothing, rather than emptying the window: a NaN cutoff (Infinity x 0 when every
-// sample is 0, or a NaN trimK) and a negative trimK far enough below the median.
+// A trimK that is negative or NaN trims nothing, and so does a cutoff below every sample (Infinity x 0 when every
+// sample is 0), rather than emptying the window or trimming part of it.
 for (const [name, latencies, trimK, mid] of [
   ['an all-zero window with trimK omitted', [0, 0, 0], undefined, 0],
   ['a NaN trimK', [m(1), m(2), m(100)], NaN, m(2)],
   ['a -Infinity trimK', [m(1), m(2), m(100)], -Infinity, m(2)],
   ['a negative trimK below every sample', [m(1), m(2), m(100)], -100, m(2)],
+  ['a small negative trimK', [m(1), m(2), m(100)], -1, m(2)],
 ]) {
   test(`depthFinish with ${name} trims nothing`, () => {
     const depth = depthFinish({ waves: [['a']], open: new Set(['a']), latencies, now: 0, window: 9, defaultMs: m(99), minSamples: 0, trimK });
     assert.equal(depth.trimmed, 0);
+    assert.equal(depth.source, 'measured');
     assert.equal(depth.latency.mid, mid);
   });
 }
