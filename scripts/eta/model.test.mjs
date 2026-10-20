@@ -383,3 +383,15 @@ for (const minSamples of [0, 1, 3]) {
     assert.equal(depth.latency.mid, m(2));
   });
 }
+
+// A cutoff that comes out NaN trims nothing either: Infinity x 0 when every sample is 0, or a NaN trimK.
+for (const [name, latencies, trimK, mid] of [
+  ['an all-zero window with trimK omitted', [0, 0, 0], undefined, 0],
+  ['a NaN trimK', [m(1), m(2), m(100)], NaN, m(2)],
+]) {
+  test(`depthFinish with ${name} trims nothing`, () => {
+    const depth = depthFinish({ waves: [['a']], open: new Set(['a']), latencies, now: 0, window: 9, defaultMs: m(99), minSamples: 0, trimK });
+    assert.equal(depth.trimmed, 0);
+    assert.equal(depth.latency.mid, mid);
+  });
+}
