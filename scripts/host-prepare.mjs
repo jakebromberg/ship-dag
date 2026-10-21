@@ -18,10 +18,10 @@ import { DEFAULT_REPOS_DIR, repoDirName } from './engine/repo-layout.mjs';
 import { coHome } from './lib/co-home.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { loadHosts } from './lib/hosts.mjs';
-import { configStateDir, planHost, probeScript, parseProbe, withCoHome } from './lib/host-prepare.mjs';
+import { SSH_OPTS, remoteCommand } from './lib/remote.mjs';
+import { configStateDir, planHost, probeScript, parseProbe } from './lib/host-prepare.mjs';
 import { isMain } from './lib/is-main.mjs';
 
-const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
 const sha256 = (path) => { try { return createHash('sha256').update(readFileSync(path)).digest('hex'); } catch { return ''; } };
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
 
@@ -32,7 +32,7 @@ export const CLONE_TIMEOUT_MS = 30 * 60_000;
 
 /** The real runner: `{ ssh(sshAlias, command, timeoutMs?), scp(sshAlias, from, to) }`, each bounded to `timeoutMs`. */
 export const realRunner = (timeoutMs = 120_000) => ({
-  ssh: (alias, command, timeout = timeoutMs) => execFileSync('ssh', [...SSH_OPTS, alias, command], { encoding: 'utf8', timeout }),
+  ssh: (alias, command, timeout = timeoutMs) => execFileSync('ssh', [...SSH_OPTS, alias, remoteCommand(command)], { encoding: 'utf8', timeout }),
   scp: (alias, from, to) => execFileSync('scp', [...SSH_OPTS, '-q', from, `${alias}:${to}`], { encoding: 'utf8', timeout: timeoutMs }),
 });
 
@@ -42,7 +42,7 @@ export const layoutReposDir = (env = process.env) => reposDirFromEnv(env) ?? DEF
 /** Probe, plan and (unless `dryRun`) run; returns the process exit code. `run` is the injected runner, `log` writes a stderr line. */
 export function prepareHost({ name, hosts, config, configPath, local, run, minFreeGb, dryRun, log, reposDir }) {
   if (!Object.hasOwn(hosts, name)) throw new Error(`unknown host ${JSON.stringify(name)}; known: ${Object.keys(hosts).join(', ') || 'none'}`);
-  const host = withCoHome(hosts[name]);
+  const host = hosts[name];
   const call = (step, fn, ...args) => {
     log(`host-prepare: ${name}: ${step}`);
     try { return fn(host.ssh, ...args); } catch (e) { throw new Error(`host-prepare: ${name}: ${step} failed: ${e.message}`); }

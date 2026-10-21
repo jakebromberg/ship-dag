@@ -7,6 +7,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mergeSettings, syncClaude } from './host-sync-claude.mjs';
+import { SSH_OPTS as BATCH } from './remote.mjs';
 
 // Lease entries are recognised by their command (it runs `cli-lease.js … hook`), as claude-orchestrator prints them.
 const lease = (path, extra = {}) => ({ matcher: 'Bash', hooks: [{ type: 'command', command: `grep -qE 'npm' || exit 0; exec node '${path}/cli-lease.js' hook`, ...extra }] });
@@ -47,12 +48,11 @@ function shellHost({ fresh = false, fail = () => false } = {}) {
     if (args.at(-1).includes('--print-settings-entry')) return { status: 0, stdout: JSON.stringify(entry) };
     return spawnSync('sh', ['-c', args.at(-1)], { encoding: 'utf8', input });
   };
-  return { home, dir, run, calls, host: { ssh: 'box', home } };
+  return { home, dir, run, calls, host: { ssh: 'box', home, coHome: `${home}/Developer/claude-orchestrator` } };
 }
 const base = { readFile: () => 'GLOBAL\n', localHome: '/m/.claude', now: () => new Date('2026-10-21T12:00:00Z') };
 const read = (f) => readFileSync(f, 'utf8');
 const sshCmds = (calls) => calls.filter((c) => c[0] === 'ssh').map((c) => c.at(-1));
-const BATCH = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
 
 test('a sync writes CLAUDE.md with a backup, merges settings, and a second run changes nothing', () => {
   const { dir, run, host } = shellHost();
@@ -158,28 +158,23 @@ for (const [name, porcelain, warns] of [['a dirty synced path warns', ' M CLAUDE
     const logs = [];
     const calls = [];
     const run = (cmd, args) => (calls.push([cmd, ...args]), { status: 0, stdout: cmd === 'git' ? porcelain : cmd === 'ssh' && args.at(-1).includes('--print-settings-entry') ? '{}' : '' });
-    syncClaude({ ...base, host: { ssh: 'box', home: '/h' }, run, log: (m) => logs.push(m) });
+    syncClaude({ ...base, host: { ssh: 'box', home: '/h', coHome: '/h/Developer/claude-orchestrator' }, run, log: (m) => logs.push(m) });
     assert.deepEqual(calls.find((c) => c[0] === 'git'), ['git', '-C', '/m/.claude', 'status', '--porcelain', '--', 'CLAUDE.md', 'skills']);
     assert.equal(logs.some((l) => l.startsWith('warning: ')), warns);
   });
 }
 
-for (const [name, coHome, script] of [
-  ['the host coHome', '/co', '/co/dist/src/cli-lease.js'],
-  ['<home>/Developer/claude-orchestrator without one', undefined, '/h/Developer/claude-orchestrator/dist/src/cli-lease.js'],
-]) {
-  test(`the lease entries are printed on the host under a login shell from ${name}`, () => {
-    const calls = [];
-    const run = (cmd, args) => (calls.push([cmd, ...args]), { status: 0, stdout: cmd === 'ssh' && args.at(-1).includes('--print-settings-entry') ? '{}' : '' });
-    syncClaude({ ...base, host: { ssh: 'box', home: '/h', coHome }, run });
-    const print = sshCmds(calls).find((c) => c.includes('--print-settings-entry'));
-    assert.equal(print, `exec "$SHELL" -lc 'node '\\''${script}'\\'' hook --print-settings-entry'`);
-  });
-}
+test('the lease entries are printed on the host by a bare node run from its coHome', () => {
+  const calls = [];
+  const run = (cmd, args) => (calls.push([cmd, ...args]), { status: 0, stdout: cmd === 'ssh' && args.at(-1).includes('--print-settings-entry') ? '{}' : '' });
+  syncClaude({ ...base, host: { ssh: 'box', home: '/h', coHome: '/co' }, run });
+  const print = sshCmds(calls).find((c) => c.includes('--print-settings-entry'));
+  assert.equal(print, `node '/co/dist/src/cli-lease.js' hook --print-settings-entry`);
+});
 
 test('a command that cannot be started is reported per step with its error, without throwing', () => {
   const run = () => ({ status: null, stdout: undefined, stderr: undefined, error: new Error('spawn ssh ENOENT') });
-  const { failures } = syncClaude({ ...base, host: { ssh: 'box', home: '/h' }, run });
+  const { failures } = syncClaude({ ...base, host: { ssh: 'box', home: '/h', coHome: '/h/Developer/claude-orchestrator' }, run });
   assert.equal(failures.length, 3);
   assert.ok(failures.every((f) => f.endsWith('spawn ssh ENOENT')), failures.join('\n'));
 });

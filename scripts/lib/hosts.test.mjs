@@ -12,8 +12,18 @@ test('the shipped hosts.json loads, listing funlandresearch with the node toolch
 
 test('validateHosts accepts a full entry, defaulting toolchains to none', () => {
   const full = { ...GOOD, coHome: '/c', sessionSlots: 2, leaseSlots: 1, toolchains: ['node', 'python'] };
-  assert.deepEqual(validateHosts({ a: full, b: GOOD }), { a: full, b: { ...GOOD, toolchains: [] } });
+  assert.deepEqual(validateHosts({ a: full, b: GOOD }).a, full);
+  assert.deepEqual(validateHosts({ b: GOOD }).b.toolchains, []);
 });
+
+for (const [name, coHome, expected] of [
+  ['defaults coHome to <home>/Developer/claude-orchestrator', undefined, '/Users/jake/Developer/claude-orchestrator'],
+  ['keeps a coHome it is given', '/c', '/c'],
+]) {
+  test(`validateHosts ${name}`, () => {
+    assert.equal(validateHosts({ a: { ...GOOD, coHome } }).a.coHome, expected);
+  });
+}
 
 for (const [name, hosts, message] of [
   ['an entry missing ssh', { a: { ...GOOD, ssh: undefined } }, /a: ssh must be a non-empty string/],

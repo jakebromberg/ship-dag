@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 const HOSTS = new URL('../../references/hosts.json', import.meta.url);
 export const TOOLCHAINS = ['node', 'python', 'xcode'];
 
-/** Throw unless `hosts` is a well-formed registry map; returns it with each entry's `toolchains` defaulted to none. */
+/** Throw unless `hosts` is a well-formed registry map; returns it with each entry's `toolchains` defaulted to none and `coHome` to `<home>/Developer/claude-orchestrator`, as CO_HOME defaults on the main Mac. */
 export function validateHosts(hosts) {
   const bad = (name, msg) => {
     throw new Error(`hosts.json: ${name}: ${msg}`);
@@ -19,7 +19,7 @@ export function validateHosts(hosts) {
     for (const k of ['sessionSlots', 'leaseSlots']) if (h[k] !== undefined && !(Number.isInteger(h[k]) && h[k] > 0)) bad(name, `${k} must be a positive integer`);
     const toolchains = h.toolchains ?? [];
     if (!Array.isArray(toolchains) || !toolchains.every((t) => TOOLCHAINS.includes(t))) bad(name, `toolchains must be an array of ${TOOLCHAINS.join('/')}`);
-    return [name, { ...h, toolchains }];
+    return [name, { ...h, coHome: h.coHome ?? `${h.home}/Developer/claude-orchestrator`, toolchains }];
   }));
 }
 
