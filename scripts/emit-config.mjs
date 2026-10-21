@@ -155,26 +155,46 @@ export function withDecisions(description, decisions) {
 // decisions (one read each, none when there are none) and returns a block of facts to prepend: the refs that
 // merged or closed since `triagedAt`, and any whose read failed, named "state unknown" (a failed read warns and
 // never stops the emit). It states facts only and never rewrites the digest. `readRef(repo, number)` is
-// injected and returns the GitHub issues-API row `{state, title, closed_at, pull_request}`. `triagedAt` comes
-// from a model's return, so a time with no zone is read as UTC and an unreadable one is ignored with a warning.
-// Without a `triagedAt` or a reader, or when nothing changed, the description comes back untouched. URLs are
-// skipped, and so are hex colours (6 or 8 digits, or one digit three times) and a bare single-digit `#N` (an
-// ordinal), none of which is a ref worth a read.
+// injected and returns the GitHub issues-API row `{state, title, closed_at, pull_request}`. `triagedAt` is
+// stamped by the main agent (a model's return is only a fallback), so a strict ISO 8601 time is read, a
+// time with no zone as UTC, and anything else is ignored with a warning. Without a `triagedAt` or a reader,
+// or when nothing changed, the description comes back untouched.
+// Not refs worth a read: URLs; a bare `#N` that is a hex colour (6 or 8 digits, or one digit three times) or an
+// ordinal (one digit); and a bare `#N` that follows a repo-like word and a space ("dj-site #5", "LML #5"),
+// whose repo is not the issue's own. An `owner/repo#N` is always a ref, whatever its number looks like.
 const REF_IN_TEXT = /(?<![\w#/])(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
 const NOT_A_REF = /^(\d)\1\1$|^(\d{6}|\d{8})$/;
+const ISO_TIME = /^(\d{4}-\d{2}-\d{2})(?:[Tt ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|z|[+-]\d{2}(?::?\d{2})?)?)?$/;
+
+/** Epoch ms of a strict ISO 8601 time (a space may stand for the T; no zone means UTC), else NaN. */
+function parseTriagedAt(text) {
+  const m = ISO_TIME.exec(String(text).trim());
+  if (!m) return NaN;
+  const zone = !m[3] ? 'Z' : m[3].toUpperCase() === 'Z' ? 'Z' : m[3].replace(/^([+-]\d{2}):?(\d{2})?$/, (_, h, mm) => `${h}:${mm ?? '00'}`);
+  return Date.parse(`${m[1]}T${m[2] ?? '00:00'}${zone}`);
+}
+
+/** True when the word before a bare `#N` names some other repo: a name with `-`, `.` or `_` inside, or an acronym, but not "PR" and not the issue's own repo. */
+function namesOtherRepo(before, repo) {
+  const word = /([\w.-]+) $/.exec(before)?.[1];
+  if (!word || /[.-]$/.test(word) || word.toLowerCase() === repo.split('/')[1]?.toLowerCase()) return false;
+  return /[._-]/.test(word) || (/^[A-Z]{2,}$/.test(word) && !/^(PRS?|MRS?)$/.test(word));
+}
 
 export function withMergedSinceTriage(description, { texts, repo, self, base, triagedAt, readRef, warn = () => {} }) {
   if (!triagedAt || !readRef) return description;
-  const since = Date.parse(/T[\d:.]+$/.test(triagedAt) ? `${triagedAt}Z` : triagedAt);
+  const since = parseTriagedAt(triagedAt);
   if (!Number.isFinite(since)) {
     warn(`emit-config: WARNING — triagedAt "${triagedAt}" is not an ISO 8601 time; no since-triage note for #${self}`);
     return description;
   }
   const refs = new Map();
-  for (const m of texts.join('\n').replace(/\bhttps?:\/\/\S+/g, ' ').matchAll(REF_IN_TEXT)) {
+  const text = texts.join('\n').replace(/\bhttps?:\/\/\S+/g, ' ');
+  for (const m of text.matchAll(REF_IN_TEXT)) {
     const r = m[1] ?? repo;
     const n = Number(m[2]);
-    if ((refKey(r) === refKey(repo) && n === self) || NOT_A_REF.test(m[2]) || (!m[1] && m[2].length === 1)) continue;
+    if (refKey(r) === refKey(repo) && n === self) continue;
+    if (!m[1] && (NOT_A_REF.test(m[2]) || m[2].length === 1 || namesOtherRepo(text.slice(0, m.index), repo))) continue;
     const key = `${refKey(r)}#${n}`;
     if (!refs.has(key)) refs.set(key, { r, n, label: m[1] ? `${m[1]}#${n}` : `#${n}` });
   }
@@ -240,6 +260,16 @@ export function validateSpec(spec, tuning = loadTuning()) {
  */
 export function buildConfig(spec, tuning = loadTuning(), { readRef, warn } = {}) {
   validateSpec(spec, tuning);
+  const memo = new Map(); // one read per ref across the whole wave; a failed read is remembered too, so a stalled gh is waited on once
+  const readOnce = readRef && ((repo, number) => {
+    const key = `${refKey(repo)}#${number}`;
+    if (!memo.has(key)) {
+      try { memo.set(key, { row: readRef(repo, number) }); } catch (err) { memo.set(key, { err }); }
+    }
+    const hit = memo.get(key);
+    if (hit.err) throw hit.err;
+    return hit.row;
+  });
   const repos = {};
   for (const r of distinctRepos(spec)) {
     const profile = spec.repos?.[r] ?? {};
@@ -259,7 +289,7 @@ export function buildConfig(spec, tuning = loadTuning(), { readRef, warn } = {})
       dependsOn: [], // every ready-wave issue is independent → one flat parallel wave
       description: withMergedSinceTriage(
         withLineBudget(withDecisions(issue.digest || 'See the GitHub issue for the canonical spec.', issue.decisions), issue.sourceEstimate),
-        { texts: [issue.digest ?? '', ...(issue.decisions ?? [])], repo: repoOfIssue(issue, spec), self: number, base: repos[repoOfIssue(issue, spec)].baseBranch, triagedAt: issue.triagedAt, readRef, warn },
+        { texts: [issue.digest ?? '', ...(issue.decisions ?? [])], repo: repoOfIssue(issue, spec), self: number, base: repos[repoOfIssue(issue, spec)].baseBranch, triagedAt: issue.triagedAt, readRef: readOnce, warn },
       ),
     };
     // Optional per-issue routing — omitted fields fall back to engine defaults
