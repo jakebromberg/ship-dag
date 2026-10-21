@@ -138,10 +138,10 @@ export function withLineBudget(description, sourceEstimate) {
 // Triage's `decisions` ride on the description for the same reason: the implementer reads
 // DESCRIPTION, and the review enforces these as binding, so the implementer must see them
 // (the wave sidecar still records them, unchanged). One decision per line, each kept verbatim
-// but for line breaks, which would split it; the engine enforces no description size limit,
-// so none is dropped. No decisions (absent, null, empty or all blank) returns the description untouched.
+// but for line breaks (LF, CR, U+2028, U+2029), which would split it, and trimmed ends; the engine
+// enforces no description size limit, so none is dropped. No decisions (absent, null, empty or all blank) returns the description untouched.
 export function withDecisions(description, decisions) {
-  const lines = (decisions ?? []).map((d) => d.replace(/\s*\n\s*/g, ' ')).filter((d) => d.trim());
+  const lines = (decisions ?? []).map((d) => d.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ').trim()).filter(Boolean);
   if (lines.length === 0) return description;
   return `${description}\n\nSettled decisions (binding; they override the issue body where they differ):\n${lines.map((d) => `- ${d}`).join('\n')}`;
 }
