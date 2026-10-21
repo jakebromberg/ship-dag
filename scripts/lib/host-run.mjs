@@ -3,6 +3,12 @@
 // (scripts/host-run.mjs) runs them through an injected runner; nothing here touches a host.
 import { EXIT, RSYNC_SSH, shQuote as q } from './remote.mjs';
 
+/** The lease env a host's engine runs under, from its hosts.json entry; the remote resource preflight reads capacity under the same one. */
+export const leaseEnv = (host) => ({ CO_HOME: host.coHome, CO_LEASE_HOOK: 'on', CO_LEASE_SESSION_SLOTS: host.sessionSlots ?? 1, CO_LEASE_SLOTS: host.leaseSlots ?? 1 });
+
+const assign = (env) => Object.entries(env).map(([k, v]) => `${k}=${q(v)}`).join(' ');
+const cap = (host, parallel) => Math.min(parallel ?? host.sessionSlots ?? 1, host.sessionSlots ?? 1);
+
 /**
  * The engine command line for `host` (a validated hosts.json entry) with the config host-prepare placed at
  * `<stateDir>/config.json`: SKILL.md step 4b's line plus the host's lease env. `mode` is `run` (detached, `--parallel`
@@ -10,12 +16,13 @@ import { EXIT, RSYNC_SSH, shQuote as q } from './remote.mjs';
  * and `leaseSlots` default to 1, as they are optional in hosts.json.
  */
 export function engineCommand(host, stateDir, mode, parallel) {
-  const sessions = host.sessionSlots ?? 1;
-  const env = { SHIP_DAG_CONFIG: `${stateDir}/config.json`, SHIP_DAG_PROJECT_ROOT: host.reposDir, CO_HOME: host.coHome, CO_LEASE_HOOK: 'on', CO_LEASE_SESSION_SLOTS: sessions, CO_LEASE_SLOTS: host.leaseSlots ?? 1 };
-  const flags = { run: `--parallel ${Math.min(parallel ?? sessions, sessions)} --detach`, plan: '--plan', tail: '--tail' }[mode];
-  const assigns = Object.entries(env).map(([k, v]) => `${k}=${q(v)}`).join(' ');
-  return `${assigns} npx --prefix ${q(host.coHome)} tsx ${q(`${host.sdHome}/scripts/engine/run.mts`)} wave ${flags}`;
+  const env = { SHIP_DAG_CONFIG: `${stateDir}/config.json`, SHIP_DAG_PROJECT_ROOT: host.reposDir, ...leaseEnv(host) };
+  const flags = { run: `--parallel ${cap(host, parallel)} --detach`, plan: '--plan', tail: '--tail' }[mode];
+  return `${assign(env)} npx --prefix ${q(host.coHome)} tsx ${q(`${host.sdHome}/scripts/engine/run.mts`)} wave ${flags}`;
 }
+
+/** The host's resource preflight (`check --parallel` capped as `engineCommand` caps it) under `leaseEnv`, so it reads the session capacity the engine will run under. */
+export const preflightCommand = (host, parallel) => `${assign(leaseEnv(host))} node ${q(`${host.sdHome}/scripts/resource-preflight.mjs`)} check --parallel ${cap(host, parallel)}`;
 
 /** The most engine-log bytes one poll returns, so a poll's output stays far under the runner's buffer however long the log. */
 export const LOG_CHUNK = 262_144;

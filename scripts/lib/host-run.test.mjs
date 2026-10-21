@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { testHost } from './host-fixture.mjs';
-import { LOG_CHUNK, PID_FILE, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './host-run.mjs';
+import { LOG_CHUNK, PID_FILE, engineCommand, launchScript, leaseEnv, preflightCommand, outcome, parsePoll, parseReports, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './host-run.mjs';
 
 const box = testHost();
 const big = testHost('/b', { coHome: '/b/co', sessionSlots: 3, leaseSlots: 5 }, 'big');
@@ -24,6 +24,23 @@ for (const [name, h, mode, parallel, expected] of [
 ]) {
   test(`engineCommand: ${name}`, () => {
     assert.equal(engineCommand(h, stateDir, mode, parallel), expected);
+  });
+}
+
+for (const [name, h, expected] of [
+  ['slots default to 1', box, { CO_HOME: box.coHome, CO_LEASE_HOOK: 'on', CO_LEASE_SESSION_SLOTS: 1, CO_LEASE_SLOTS: 1 }],
+  ['slots and coHome from hosts.json', big, { CO_HOME: '/b/co', CO_LEASE_HOOK: 'on', CO_LEASE_SESSION_SLOTS: 3, CO_LEASE_SLOTS: 5 }],
+]) {
+  test(`leaseEnv: ${name}`, () => {
+    assert.deepEqual(leaseEnv(h), expected);
+  });
+}
+
+for (const [name, h, parallel] of [['slots default to 1', box, undefined], ['capped at sessionSlots', big, 8], ['below the cap', big, 2]]) {
+  test(`preflightCommand: ${name} runs under the env engineCommand builds`, () => {
+    const lease = engineCommand(h, stateDir, 'run', parallel).match(/CO_HOME=.*?CO_LEASE_SLOTS='\d+'/)[0];
+    const cap = Math.min(parallel ?? h.sessionSlots ?? 1, h.sessionSlots ?? 1);
+    assert.equal(preflightCommand(h, parallel), `${lease} node '${h.sdHome}/scripts/resource-preflight.mjs' check --parallel ${cap}`);
   });
 }
 

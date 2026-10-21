@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readRunFamilyReports, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
+import { configDirs, readRunFamilyReports, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
 import { appendWave } from './wave-sidecar.mjs';
 import { scopedEngineFixture, putReport } from './engine-fixture.mjs';
 
@@ -55,6 +55,17 @@ test('waveContextFor falls back to the config in the state dir, then state/, and
     assert.equal(ctx.config.configFile, ctx.configFile);
   }
   assert.deepEqual(waveContextFor(stateDir(), report, { warn: () => {} }), { entry: null, config: null, configFile: null, source: null });
+});
+
+test('waveContextFor finds the config a --by-host emit wrote under hosts/, one per host, and configDirs lists where configs are searched', () => {
+  const config = (repo) => ({ name: 'ship-dag-run1', defaultEffort: 'high', defaultModel: 'sonnet', issues: [{ repo: 'WXYC/repo', number: repo, complexity: 'normal' }] });
+  const d = stateDir({ configs: { 'hosts/config.local.json': config(1), 'hosts/config.big.json': config(2) } });
+  for (const [number, file] of [[1, 'config.local.json'], [2, 'config.big.json']]) {
+    const ctx = waveContextFor(d, { report: { issues: [{ ref: `WXYC/repo#${number}` }] }, startedAt: Date.now() + 60_000 }, { warn: () => {} });
+    assert.equal(ctx.source, 'config');
+    assert.equal(ctx.configFile, join(d, 'hosts', file));
+  }
+  assert.deepEqual(configDirs(d), [d, join(d, 'hosts'), join(d, 'state')]);
 });
 
 test('readWaveReport reads any path, and keeps the rows of a report whose startedAt does not parse', () => {
