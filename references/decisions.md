@@ -1,8 +1,8 @@
 # Tuning decision log
 
-One entry per decision in #64 (D1–D8), then the cross-cutting tripwire that guards no single decision, then the metric definitions the tripwires are computed under, then the dismissals. SKILL.md step 7 runs `telemetry.mjs tripwires` and answers a tripped tripwire here. Every decision was taken on 2026-10-08 ("go with recommendations", #64), so each first review date is 2026-12-07, 60 days later.
+One entry per decision in #64 (D1–D8) and #291 (D9), then the cross-cutting tripwire that guards no single decision, then the metric definitions the tripwires are computed under, then the dismissals. SKILL.md step 7 runs `telemetry.mjs tripwires` and answers a tripped tripwire here. Every decision was taken on 2026-10-08 ("go with recommendations", #64), so each first review date is 2026-12-07, 60 days later.
 
-Each entry's *Review date* is also the `reviewDate` of every row in `references/tripwires.json` whose `decision` names that entry: `D1`–`D8` name a decision, and `all` names the entry of the row's own id under *Cross-cutting tripwires*. `tripwires` reports `reviewOverdue` once that date has passed. Change the two together; `scripts/lib/tripwires.test.mjs` fails when they disagree. When a review is answered, move the date to the answer date + 60 days in both places, or every later wave reports it overdue again.
+Each entry's *Review date* is also the `reviewDate` of every row in `references/tripwires.json` whose `decision` names that entry: `D1`–`D9` name a decision (D9 was decided in #291, not #64), and `all` names the entry of the row's own id under *Cross-cutting tripwires*. `tripwires` reports `reviewOverdue` once that date has passed. Change the two together; `scripts/lib/tripwires.test.mjs` fails when they disagree. When a review is answered, move the date to the answer date + 60 days in both places, or every later wave reports it overdue again.
 
 ## Decisions
 
