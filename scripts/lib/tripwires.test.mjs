@@ -67,6 +67,14 @@ describe('the version window', () => {
   });
 });
 
+/** A retro record proposing `p` refactors and approving `a`; `over` adds or overrides keys. */
+const retro = (p, a, over = {}) => ({
+  kind: 'retro', runId: 'sd-20261020-100000', wave: 1, mergedPrs: [], ts: '2026-10-20T00:00:00Z',
+  proposedRefactors: p, approvedRefactors: a, proposedAdjustments: 0, approvedAdjustments: 0, ...over,
+});
+/** `n` retro records dated 2026-10-10 onward, each proposing 10 and approving `approved(i)`. */
+const retros = (n, approved) => Array.from({ length: n }, (_, i) => retro(10, approved(i), { ts: `2026-10-${String(10 + i).padStart(2, '0')}T00:00:00Z` }));
+
 // One table per state, per evaluator: [name, records, state].
 const TABLES = {
   'T-explore-unique': [
@@ -102,6 +110,17 @@ const TABLES = {
     ['30 records, half on it', many(30, (i) => ({ path: i % 2 ? 'workflow' : 'engine' })), 'tripped'],
     ['30 records, 4 on it: the interval reaches 10%', many(30, (i) => ({ path: i < 4 ? 'workflow' : 'engine' })), 'holding'],
     ['30 records on the inline path are not fallback', many(30, { path: 'inline' }), 'holding'],
+  ],
+  'T-retro-approval': [
+    ['no retro records', [], 'insufficient-data'],
+    ['90 proposals: below the minimum sample', retros(9, () => 10), 'insufficient-data'],
+    ['100 proposals, all approved', retros(10, () => 10), 'tripped'],
+    ['100 proposals, 70 approved', retros(10, (i) => (i < 7 ? 10 : 0)), 'holding'],
+    ['100 proposals, 91 approved: the interval reaches 90%', retros(10, (i) => (i === 0 ? 1 : 10)), 'holding'],
+    ['plan adjustments count with refactors', retros(10, () => 0).map((r) => ({ ...r, proposedRefactors: 5, approvedRefactors: 5, proposedAdjustments: 5, approvedAdjustments: 5 })), 'tripped'],
+    ['records are taken whole, newest first, until 100 proposals: an older rejection is outside', [...retros(10, () => 10), retro(50, 0, { ts: '2026-09-01T00:00:00Z' })], 'tripped'],
+    ['a record with 0 proposals adds nothing', [...retros(10, () => 10), retro(0, 0, { ts: '2026-10-30T00:00:00Z' })], 'tripped'],
+    ['legacy-key records are left out', [...retros(9, () => 10), ...['refactorsProposed', 'adjustmentsProposed', 'proposedPlanAdjustments', 'approvedAll'].map((k) => retro(10, 0, { [k]: 10 }))], 'insufficient-data'],
   ],
 };
 for (const [id, rows] of Object.entries(TABLES)) {
