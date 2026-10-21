@@ -490,3 +490,76 @@ test('the unverified-repo warning names both remedies: the repo declaring script
   assert.match(r.stderr, /executable scripts\/ci/);
   assert.match(r.stderr, /references\/repo-ci-profiles\.json/);
 });
+
+// ---- merged since triage ------------------------------------------------
+
+const R = 'WXYC/library-metadata-lookup';
+const TRIAGED = '2026-10-16T12:00:00Z';
+const sinceSpec = (digest, extra = {}) => spec({ issues: [{ number: 924, repo: R, digest, triagedAt: TRIAGED, ...extra }] });
+const stubReader = (table) => {
+  const calls = [];
+  const readRef = (repo, number) => {
+    calls.push(`${repo}#${number}`);
+    const row = table[`${repo}#${number}`];
+    if (row instanceof Error) throw row;
+    return row;
+  };
+  return { readRef, calls };
+};
+const merged = (title, at = '2026-10-17T00:00:00Z') => ({ state: 'closed', title, closed_at: at, pull_request: { merged_at: at } });
+
+test('a ref the digest names that merged or closed since triage is prepended as a fact; other refs and the digest stay as written', () => {
+  const { readRef, calls } = stubReader({
+    [`${R}#2299`]: merged('Add the thing'),
+    [`${R}#2003`]: { state: 'closed', title: 'Old', closed_at: '2026-10-18T00:00:00Z' },
+    [`${R}#5`]: { state: 'open', title: 'Still open' },
+    'WXYC/dj-site#7': merged('Other repo'),
+  });
+  const c = buildConfig(sinceSpec('Do X after #2299 (and #2299 again), if #2003 lands, see #5 and WXYC/dj-site#7.'), loadTuning(), { readRef });
+  assert.equal(c.issues[0].description, [
+    `Since this plan was written: #2299 merged (Add the thing); #2003 closed; WXYC/dj-site#7 merged (Other repo). Conditionals in the plan that name them are settled. Read each file the plan names on \`origin/main\` before editing it.`,
+    '',
+    'Do X after #2299 (and #2299 again), if #2003 lands, see #5 and WXYC/dj-site#7.',
+  ].join('\n'));
+  assert.deepEqual(calls.sort(), [`${R}#2003`, `${R}#2299`, `${R}#5`, 'WXYC/dj-site#7'].sort());
+});
+
+test('the issue\'s decisions are scanned too, and the block precedes the decisions and budget', () => {
+  const { readRef } = stubReader({ [`${R}#9`]: merged('Nine') });
+  const d = buildConfig(sinceSpec('Plan.', { decisions: ['Follow #9'], sourceEstimate: 50 }), loadTuning(), { readRef }).issues[0].description;
+  assert.match(d, /^Since this plan was written: #9 merged \(Nine\)\..*\n\nPlan\.\n\nSettled decisions/s);
+});
+
+// Each case must leave the description byte-identical to a build with no reader.
+for (const [name, digest, extra, table, withReader] of [
+  ['nothing changed since triage', 'See #5 and #6.', {}, { [`${R}#5`]: { state: 'open', title: 'a' }, [`${R}#6`]: merged('b', '2026-10-01T00:00:00Z') }, true],
+  ['the digest names no refs', 'No refs here, v1.2#x.', {}, {}, true],
+  ['the issue names only itself', 'Part of #924.', {}, {}, true],
+  ['triage recorded no triagedAt', 'See #5.', { triagedAt: undefined }, { [`${R}#5`]: merged('a') }, true],
+  ['no reader is supplied', 'See #5.', {}, {}, false],
+  ['a read fails', 'See #5.', {}, { [`${R}#5`]: new Error('boom') }, true],
+]) {
+  test(`byte-identical description when ${name}`, () => {
+    const s = sinceSpec(digest, extra);
+    const { readRef, calls } = stubReader(table);
+    const warnings = [];
+    const got = buildConfig(s, loadTuning(), withReader ? { readRef, warn: (m) => warnings.push(m) } : undefined);
+    assert.equal(got.issues[0].description, buildConfig(s).issues[0].description);
+    if (['the digest names no refs', 'the issue names only itself', 'triage recorded no triagedAt'].includes(name)) assert.deepEqual(calls, []);
+    if (name === 'a read fails') assert.match(warnings.join(), /WXYC\/library-metadata-lookup#5.*boom/);
+  });
+}
+
+test('a failed read drops only that ref\'s line', () => {
+  const { readRef } = stubReader({ [`${R}#5`]: new Error('boom'), [`${R}#6`]: merged('Six') });
+  const d = buildConfig(sinceSpec('#5 then #6'), loadTuning(), { readRef, warn: () => {} }).issues[0].description;
+  assert.match(d, /^Since this plan was written: #6 merged \(Six\)\. /);
+  assert.ok(!d.includes('#5 merged'));
+});
+
+test('the block names the repo\'s own base branch', () => {
+  const { readRef } = stubReader({ [`${R}#6`]: merged('Six') });
+  const s = sinceSpec('#6');
+  s.repos[R].baseBranch = 'develop';
+  assert.match(buildConfig(s, loadTuning(), { readRef }).issues[0].description, /on `origin\/develop` before editing/);
+});
