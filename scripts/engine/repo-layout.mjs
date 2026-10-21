@@ -27,7 +27,7 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 
 /** `owner/repo` (or a remote URL) reduced to a comparable `owner/repo`, lowercased. */
-function normalizeRepo(value) {
+export function normalizeRepo(value) {
   if (!value) return "";
   const trimmed = String(value).trim().replace(/\.git$/i, "");
   // git@host:owner/repo · ssh://host/owner/repo · https://host/owner/repo · owner/repo

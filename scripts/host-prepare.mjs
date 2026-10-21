@@ -24,9 +24,14 @@ const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
 const sha256 = (path) => { try { return createHash('sha256').update(readFileSync(path)).digest('hex'); } catch { return ''; } };
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
 
-/** The real runner: `{ ssh(sshAlias, command), scp(sshAlias, from, to) }`, each bounded to `timeoutMs`. */
+const USAGE = 'usage: host-prepare.mjs <host> <config.<host>.json> [--dry-run] [--min-free-gb N]';
+
+/** The bound on a `gh repo clone`, which for a large repo outlasts the default 120 s. */
+export const CLONE_TIMEOUT_MS = 30 * 60_000;
+
+/** The real runner: `{ ssh(sshAlias, command, timeoutMs?), scp(sshAlias, from, to) }`, each bounded to `timeoutMs`. */
 export const realRunner = (timeoutMs = 120_000) => ({
-  ssh: (alias, command) => execFileSync('ssh', [...SSH_OPTS, alias, command], { encoding: 'utf8', timeout: timeoutMs }),
+  ssh: (alias, command, timeout = timeoutMs) => execFileSync('ssh', [...SSH_OPTS, alias, command], { encoding: 'utf8', timeout }),
   scp: (alias, from, to) => execFileSync('scp', [...SSH_OPTS, '-q', from, `${alias}:${to}`], { encoding: 'utf8', timeout: timeoutMs }),
 });
 
@@ -43,19 +48,21 @@ export function prepareHost({ name, hosts, config, configPath, local, run, minFr
   };
   const repos = Object.keys(config.repos ?? {}).map((repo) => ({ repo, name: repo.split('/').pop(), layoutDir: repoDirName(repo, { reposDir }) }));
   const probe = parseProbe(call('probe', run.ssh, probeScript(host, config.stateDir, repos.map((r) => r.name))));
-  const { refusals, plan } = planHost({ name, host, stateDir: config.stateDir, configPath, repos, local: { ...local, configHash: sha256(configPath) }, probe, minFreeGb });
+  const { refusals, plan } = planHost({ name, host, stateDir: config.stateDir, projectRoot: config.projectRoot, configPath, repos, local: { ...local, configHash: sha256(configPath) }, probe, minFreeGb });
   for (const r of refusals) log(r);
   if (refusals.length) return 1;
   for (const a of plan) {
     log(`${dryRun ? 'would run' : 'run'}: ${a.step}: ${a.ssh ?? a.scp.join(' -> ')}`);
-    if (!dryRun) a.ssh ? call(a.step, run.ssh, a.ssh) : call(a.step, run.scp, ...a.scp);
+    if (!dryRun) a.ssh ? call(a.step, run.ssh, a.ssh, a.slow ? CLONE_TIMEOUT_MS : undefined) : call(a.step, run.scp, ...a.scp);
   }
   return 0;
 }
 
 function main(argv) {
+  const unknown = argv.find((a) => a.startsWith('--') && !['--dry-run', '--min-free-gb'].includes(a));
+  if (unknown) throw new Error(`unknown option ${unknown}; ${USAGE}`);
   const [name, configPath] = argv.filter((a, i) => !a.startsWith('--') && !['--min-free-gb'].includes(argv[i - 1]));
-  if (!name || !configPath) throw new Error('usage: host-prepare.mjs <host> <config.<host>.json> [--dry-run] [--min-free-gb N]');
+  if (!name || !configPath) throw new Error(USAGE);
   const minFreeGb = stringOption(argv, '--min-free-gb') === undefined ? 10 : parseNumberOption('min-free-gb', stringOption(argv, '--min-free-gb'), { min: 0 });
   const sdHome = fileURLToPath(new URL('..', import.meta.url));
   const local = { sdSha: git(sdHome, 'rev-parse', 'HEAD'), coSha: git(coHome(), 'rev-parse', 'HEAD'), claudeHash: sha256(`${homedir()}/.claude/CLAUDE.md`) };
