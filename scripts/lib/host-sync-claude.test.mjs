@@ -210,3 +210,73 @@ test('every ssh command is the remoteCommand form of a plain command, and rsync 
   const rsync = calls.find((c) => c[0] === 'rsync');
   assert.equal(rsync[rsync.indexOf('-e') + 1], RSYNC_SSH);
 });
+
+// A call that fails the way spawnSync reports it: ssh's own exit 255, a timeout, a missing binary, a failing command.
+const droppedBy = { 255: { status: 255, stdout: '', stderr: 'ssh: connect timed out' }, timeout: { status: null, stdout: '', stderr: '', error: Object.assign(new Error('spawnSync ssh ETIMEDOUT'), { code: 'ETIMEDOUT' }) } };
+const missing = { status: null, stdout: '', stderr: '', error: Object.assign(new Error('spawnSync ssh ENOENT'), { code: 'ENOENT' }) };
+
+for (const [name, reply, unreachable] of [
+  ['ssh exit 255', droppedBy[255], true],
+  ['a timeout', droppedBy.timeout, true],
+  ['a missing ssh', missing, false],
+  ['a failing command', { status: 23, stdout: '', stderr: 'boom' }, false],
+]) {
+  test(`every call failing with ${name} is ${unreachable ? '' : 'not '}an unreachable host`, () => {
+    const result = syncClaude({ ...base, host: validHost('/h'), run: (cmd) => (cmd === 'git' ? { status: 0, stdout: '' } : reply) });
+    assert.equal(result.failures.length, 3);
+    assert.equal(result.unreachable, unreachable);
+  });
+}
+
+test('a drop before the first write is unreachable even when it is one of several failures, but a sync with no failure is not', () => {
+  const { run, host } = shellHost();
+  assert.equal(syncClaude({ ...base, host, run }).unreachable, false);
+});
+
+// Where the drop falls decides it: a drop at a put, a cp or the rsync may follow a write, so it is a failure. From the
+// first matching call on, every later call drops too, so only the call that changed the host can make it a failure.
+const dropsFrom = (matches, run) => {
+  let down = false;
+  return (cmd, args, input) => {
+    down ||= matches(cmd, args);
+    return down && cmd !== 'git' ? droppedBy[255] : run(cmd, args, input);
+  };
+};
+for (const [name, matches, claude, settings] of [
+  ['the CLAUDE.md put', (cmd, args) => cmd === 'ssh' && /cat > '[^']*CLAUDE\.md\.tmp'/.test(args.at(-1)), undefined, undefined],
+  ['the CLAUDE.md backup cp', (cmd, args) => cmd === 'ssh' && /^cp /.test(args.at(-1)), 'old\n', undefined],
+  ['the skills rsync', (cmd) => cmd === 'rsync', 'GLOBAL\n', JSON.stringify(entry)],
+]) {
+  test(`a drop at ${name} is a failure, not an unreachable host, however many calls drop after it`, () => {
+    const { dir, run, host } = shellHost();
+    if (claude) writeFileSync(join(dir, 'CLAUDE.md'), claude);
+    if (settings) writeFileSync(join(dir, 'settings.json'), settings);
+    const result = syncClaude({ ...base, host, run: dropsFrom(matches, run) });
+    assert.ok(result.failures.length >= 1);
+    assert.equal(result.unreachable, false);
+  });
+}
+
+test('drops mixed with a failure that is not a drop are a failure, not an unreachable host', () => {
+  let first = true;
+  const run = (cmd) => (cmd === 'git' ? { status: 0, stdout: '' } : first ? ((first = false), { status: 23, stdout: '', stderr: 'boom' }) : droppedBy[255]);
+  const result = syncClaude({ ...base, host: validHost('/h'), run });
+  assert.equal(result.failures.length, 3);
+  assert.equal(result.unreachable, false);
+});
+
+test('a drop in the dry-run rsync, which writes nothing, is an unreachable host', () => {
+  const { dir, run, host } = shellHost();
+  writeFileSync(join(dir, 'CLAUDE.md'), 'GLOBAL\n');
+  writeFileSync(join(dir, 'settings.json'), JSON.stringify(entry));
+  const result = syncClaude({ ...base, host, dryRun: true, run: (cmd, args, input) => (cmd === 'rsync' ? droppedBy[255] : run(cmd, args, input)) });
+  assert.equal(result.failures.length, 1);
+  assert.equal(result.unreachable, true);
+});
+
+test('a drop that follows a successful write is a failure even when every failure is a drop', () => {
+  const { run, host } = shellHost();
+  const result = syncClaude({ ...base, host, run: (cmd, args, input) => (args?.at(-1)?.includes('--print-settings-entry') ? droppedBy[255] : run(cmd, args, input)) });
+  assert.equal(result.failures.length, 1);
+  assert.equal(result.unreachable, false);
+});

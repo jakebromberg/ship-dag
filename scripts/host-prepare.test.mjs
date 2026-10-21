@@ -90,10 +90,38 @@ test('a config for another host is refused after the probe', () => {
   assert.match(logs.join('\n'), /box: config projectRoot \/Users\/me\/Developer\/WXYC is not \/h\/D/);
 });
 
-test('a failing call names the host and step', () => {
-  const run = { ssh: () => { throw new Error('timed out'); }, scp: () => {} };
-  assert.throws(() => prepareHost({ name: 'box', hosts, config: JSON.parse(body), configPath, local, run, minFreeGb: 10, log() {} }), /host-prepare: box: probe failed: timed out/);
-});
+// What execFileSync throws: status and code at the top level.
+const execError = (props) => Object.assign(new Error('Command failed'), props);
+const thrown = (run, opts = {}) => {
+  try { prepareHost({ name: 'box', hosts, config: JSON.parse(body), configPath, local, run, minFreeGb: 10, log() {}, ...opts }); } catch (e) { return e; }
+  return assert.fail('prepareHost did not throw');
+};
+
+for (const [name, error, exitCode] of [
+  ['ssh exit 255', execError({ status: 255 }), 3],
+  ['a timeout', execError({ code: 'ETIMEDOUT', status: null }), 3],
+  ['a missing ssh', execError({ code: 'ENOENT', status: null }), 1],
+  ['a normal non-zero status', execError({ status: 1 }), 1],
+]) {
+  test(`a probe that fails with ${name} names the host and step and exits ${exitCode}`, () => {
+    const e = thrown({ ssh: () => { throw error; }, scp: () => {} });
+    assert.match(e.message, /host-prepare: box: probe failed: Command failed/);
+    assert.equal(e.exitCode, exitCode);
+  });
+}
+
+// Every call after the probe changes the host, so even a drop there leaves the host in an unknown state.
+for (const [name, error] of [['ssh exit 255', execError({ status: 255 })], ['a timeout', execError({ code: 'ETIMEDOUT', status: null })], ['a normal non-zero status', execError({ status: 1 })]]) {
+  for (const [step, fails] of [['the first fetch', (n) => n === 2], ['the scp', (n, kind) => kind === 'scp']]) {
+    test(`${name} at ${step} exits 1`, () => {
+      let n = 0;
+      const call = (kind) => { n += 1; if (fails(n, kind)) throw error; return n === 1 ? probeOut(state()) : ''; };
+      const e = thrown({ ssh: () => call('ssh'), scp: () => call('scp') });
+      assert.equal(e.exitCode, 1);
+      assert.match(e.message, /host-prepare: box: (fetch|copy config) .* failed/);
+    });
+  }
+}
 
 test('an unknown host throws, naming the known ones', () => {
   assert.throws(() => prepareHost({ name: 'nope', hosts, config: {}, configPath, local, run: {}, log() {} }), /unknown host "nope"; known: box/);
@@ -111,3 +139,16 @@ test('an unknown flag (a mistyped --dry-run) exits 2 before touching any host', 
   assert.equal(r.status, 2);
   assert.match(r.stderr, /^unknown option --dryrun; usage: host-prepare\.mjs/);
 });
+
+// The whole CLI against a stand-in `ssh` first on PATH, so the real runner's execFileSync error is what main classifies; nothing connects.
+for (const [name, sshExit, expected] of [['ssh exit 255 (an unreachable host)', 255, 3], ['a failing remote command', 1, 1]]) {
+  test(`the CLI exits ${expected} when the probe gets ${name}`, () => {
+    const bin = mkdtempSync(join(tmpdir(), 'host-prepare-ssh-'));
+    writeFileSync(join(bin, 'ssh'), `#!/bin/sh\nexit ${sshExit}\n`, { mode: 0o755 });
+    const cli = fileURLToPath(new URL('./host-prepare.mjs', import.meta.url));
+    const sdHome = fileURLToPath(new URL('..', import.meta.url));
+    const r = spawnSync(process.execPath, [cli, 'mini', configPath], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CO_HOME: sdHome } });
+    assert.equal(r.status, expected, r.stderr);
+    assert.match(r.stderr, /host-prepare: mini: probe failed/);
+  });
+}

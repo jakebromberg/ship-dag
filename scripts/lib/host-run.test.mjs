@@ -33,10 +33,10 @@ for (const [name, kind, ctx, expected] of [
   ['a report was written', 'done', {}, { code: 0, message: undefined }],
   ['no report', 'no-report', { engineLog: 'box:/l/orchestrator.log' }, { code: 1, message: /exited with no report; see box:\/l\/orchestrator\.log/ }],
   ['a dropped connection (255)', 'dropped', { reattach: 'RE', collect: 'COLLECT' }, { code: 255, message: /connection dropped.*may still be running.*RE.*COLLECT/s }],
-  ['a drop before any engine started', 'dropped-unstarted', { step: 'the plan', reattach: 'RE', collect: 'COLLECT' }, { code: 255, message: /connection dropped during the plan; no engine was started, so there is nothing to resume/ }],
+  ['a drop before any engine started', 'dropped-unstarted', { step: 'the plan', reattach: 'RE', collect: 'COLLECT' }, { code: 3, message: /connection dropped during the plan; no engine was started, so there is nothing to resume/ }],
   ['a failed step', 'failed', { detail: 'rsync exited 23' }, { code: 1, message: /rsync exited 23/ }],
   ['no pid file', 'no-pid', { pidFile: '/s/host-run.pid' }, { code: 1, message: /no \/s\/host-run\.pid.*cannot tell whether the engine is still running/s }],
-  ['the deadline passed', 'timeout', { minutes: 360, collect: 'COLLECT' }, { code: 1, message: /still running after 360 minutes.*not an engine failure.*COLLECT/s }],
+  ['the deadline passed', 'timeout', { minutes: 360, collect: 'COLLECT' }, { code: 4, message: /still running after 360 minutes.*not an engine failure.*COLLECT/s }],
 ]) {
   test(`outcome: ${name}`, () => {
     const o = outcome('box', kind, ctx);

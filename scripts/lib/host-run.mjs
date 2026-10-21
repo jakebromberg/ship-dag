@@ -1,7 +1,7 @@
 // host-run.mjs — the pure parts of running a wave's engine on a remote host and collecting its results: the remote
 // command lines, the poll, the rsync file selection, the exit-code mapping and the output prefix. The CLI
 // (scripts/host-run.mjs) runs them through an injected runner; nothing here touches a host.
-import { RSYNC_SSH, shQuote as q } from './remote.mjs';
+import { EXIT, RSYNC_SSH, shQuote as q } from './remote.mjs';
 
 /**
  * The engine command line for `host` (a validated hosts.json entry) with the config host-prepare placed at
@@ -94,22 +94,22 @@ export const rsyncArgs = (src, dest) => [
 ];
 
 /**
- * `{ code, message }` for how a host run ended: `done` (a report was written; 0), `no-report` (the engine exited
- * without one; 1), `dropped` (the ssh connection dropped, 255, which says nothing about the engine, so the message gives
- * the re-attach and `--collect-only` commands in `ctx.reattach`/`ctx.collect`), `dropped-unstarted` (the connection
- * dropped during `ctx.step`, before any engine was started, so there is nothing to resume; 255), `no-pid` (no
- * `ctx.pidFile`, so whether the engine runs is unknown; 1), `timeout` (still running after `ctx.minutes`; 1, with `ctx.collect` to resume) or `failed`
- * (a step failed; 1).
+ * `{ code, message }` for how a host run ended (codes are `EXIT`'s): `done` (a report was written; 0), `no-report` (the
+ * engine exited without one; 1), `dropped` (the ssh connection dropped, 255, which says nothing about the engine, so the
+ * message gives the re-attach and `--collect-only` commands in `ctx.reattach`/`ctx.collect`), `dropped-unstarted` (the
+ * connection dropped during `ctx.step`, before any engine was started, so there is nothing to resume; 3), `no-pid` (no
+ * `ctx.pidFile`, so whether the engine runs is unknown; 1), `timeout` (still running after `ctx.minutes`; 4, with
+ * `ctx.collect` to resume) or `failed` (a step failed; 1).
  */
 export function outcome(name, kind, ctx = {}) {
   return {
-    done: { code: 0 },
-    'no-report': { code: 1, message: `host-run: ${name}: the engine exited with no report; see ${ctx.engineLog}` },
-    'no-pid': { code: 1, message: `host-run: ${name}: there is no ${ctx.pidFile} (host-run writes it when it starts the engine), so host-run cannot tell whether the engine is still running; it collected what is there and found no report` },
-    timeout: { code: 1, message: `host-run: ${name}: the engine is still running after ${ctx.minutes} minutes; host-run stopped waiting, which is not an engine failure.\n  resume: ${ctx.collect}` },
-    dropped: { code: 255, message: `host-run: ${name}: the ssh connection dropped; the engine may still be running there, so this is not an engine failure.\n  re-attach: ${ctx.reattach}\n  collect:   ${ctx.collect}` },
-    'dropped-unstarted': { code: 255, message: `host-run: ${name}: the ssh connection dropped during ${ctx.step}; no engine was started, so there is nothing to resume.` },
-    failed: { code: 1, message: `host-run: ${name}: ${ctx.detail}` },
+    done: { code: EXIT.ok },
+    'no-report': { code: EXIT.failure, message: `host-run: ${name}: the engine exited with no report; see ${ctx.engineLog}` },
+    'no-pid': { code: EXIT.failure, message: `host-run: ${name}: there is no ${ctx.pidFile} (host-run writes it when it starts the engine), so host-run cannot tell whether the engine is still running; it collected what is there and found no report` },
+    timeout: { code: EXIT.waiting, message: `host-run: ${name}: the engine is still running after ${ctx.minutes} minutes; host-run stopped waiting, which is not an engine failure.\n  resume: ${ctx.collect}` },
+    dropped: { code: EXIT.dropped, message: `host-run: ${name}: the ssh connection dropped; the engine may still be running there, so this is not an engine failure.\n  re-attach: ${ctx.reattach}\n  collect:   ${ctx.collect}` },
+    'dropped-unstarted': { code: EXIT.unreachable, message: `host-run: ${name}: the ssh connection dropped during ${ctx.step}; no engine was started, so there is nothing to resume.` },
+    failed: { code: EXIT.failure, message: `host-run: ${name}: ${ctx.detail}` },
   }[kind];
 }
 
