@@ -634,6 +634,19 @@ for (const [name, kind, go] of [
     });
   }
 
+  test('an engine-died row resumed to a point-B hold and deferred records the death and its continuation', () => {
+    const row = { ref: 'a/b#1', status: 'failed', prNumber: null, failureReason: 'engine-died' };
+    const { records } = deriveWaveRecords(at([row]), { runId: RUN, issues: [] }, {}, {}, { 'a/b#1': { hitl: { pointB: true }, finalState: 'deferred' } }, { reportId: 'w1', warn: () => {} });
+    assert.deepEqual(records.map((r) => [r.finalState, r.failureReason ?? null, Boolean(r.hitl?.pointB)]), [['deferred', 'engine-died', false], ['deferred', null, true]]);
+  });
+
+  test('a pending row stamped engine-died is recorded once --outcomes ends it, as a launch stop is', () => {
+    const row = { ref: 'a/b#1', status: 'pending', prNumber: null, failureReason: 'engine-died' };
+    assert.equal(deriveWaveRecords(at([row]), { runId: RUN, issues: [] }, {}, {}, {}, { reportId: 'w1', warn: () => {} }).records.length, 0);
+    const { records } = deriveWaveRecords(at([row]), { runId: RUN, issues: [] }, {}, {}, { 'a/b#1': { finalState: 'deferred' } }, { reportId: 'w1', warn: () => {} });
+    assert.deepEqual(records.map((r) => [r.finalState, r.failureReason]), [['deferred', 'engine-died']]);
+  });
+
   test('ran: a derived record carries the row\'s ran, and a row with none carries none', () => {
     const [own] = deriveWaveRecords(at([ranFalse(setUp)]), { runId: RUN, issues: [] }, {}, {}, {}, { reportId: 'w1', warn: () => {} }).records;
     assert.deepEqual([own.ran, own.reportId], [false, 'w1']);
@@ -702,9 +715,8 @@ for (const [name, kind, go] of [
     ['the same report\'s two records', rec({ reportId: 'w1', ran: true }), rec({ reportId: 'w1', ran: true }), true],
     ['a hand-written record and one with ran', rec(), rec({ reportId: 'w2', ran: true }), true],
     ['a carried-over record (no reportId) and the earlier one', rec({ reportId: 'w1', ran: true }), rec({ ran: false }), true],
-    // A report's engine-died row ingested before engine-died was an infra reason was logged with no failureReason.
-    ['an engine death and the same report\'s record of it logged with no reason', rec({ implStatus: 'error', finalState: 'error', reportId: 'w1' }), rec({ implStatus: 'error', finalState: 'error', failureReason: 'engine-died', reportId: 'w1' }), true],
-    ['an engine death and another report\'s error with no reason', rec({ implStatus: 'error', finalState: 'error', reportId: 'w1' }), rec({ implStatus: 'error', finalState: 'error', failureReason: 'engine-died', reportId: 'w2' }), false],
+    // A death and its continuation (no reason) are two events: the continuation carries the outcome and its point-B mark.
+    ['an engine death and the same report\'s deferred continuation', rec({ implStatus: 'error', finalState: 'deferred', reportId: 'w1' }), rec({ implStatus: 'error', finalState: 'deferred', failureReason: 'engine-died', reportId: 'w1' }), false],
     ['a rate-limit death and the same report\'s error with no reason', rec({ implStatus: 'error', finalState: 'deferred', reportId: 'w1' }), rec({ implStatus: 'error', finalState: 'deferred', failureReason: 'rate-limited', reportId: 'w1' }), false],
   ]) {
     test(`ran: sameEvent: ${name} ${same ? 'are' : 'are not'} one event`, () => {

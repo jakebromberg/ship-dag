@@ -17,10 +17,10 @@
 // A row is recorded once it is terminal for this wave (`succeeded`, `failed`,
 // `blocked`, `skipped`): `pending`, `running` and `interrupted` rows are left for
 // the ingest that sees them finish, and any other status is warned about and skipped.
-// The exception is a `pending` row the engine stopped at launch (a `RESOURCE_STOPS` failureReason): it is
+// The exception is a `pending` row the engine stopped at launch, or never launched before it died (a `RESOURCE_ROUTE` failureReason): it is
 // recorded only once `--outcomes` gives it a `finalState`, because the user deferred it or stopped the run.
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
-import { INFRA_REASONS, RESOURCE_STOPS, ranOf, routeFailure } from './failure.mjs';
+import { INFRA_REASONS, RESOURCE_ROUTE, ranOf, routeFailure } from './failure.mjs';
 import { isPr, parsePr, parseRef, sameRepo } from './ref.mjs';
 import { classifyRound } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
@@ -39,7 +39,7 @@ const SEVERITY = { clean: 0, 'nits-only': 1, blocking: 2 };
 export const TERMINAL = new Set(['succeeded', 'failed', 'blocked', 'skipped']);
 const NOT_YET = new Set(['pending', 'running', 'interrupted']);
 /** A `pending` row the engine stopped at launch: never started, so it is not yet terminal unless `--outcomes` ends it. */
-const stoppedAtLaunch = (row, outcome) => row?.status === 'pending' && RESOURCE_STOPS.has(row.failureReason) && Boolean(outcome?.finalState);
+const stoppedAtLaunch = (row, outcome) => row?.status === 'pending' && RESOURCE_ROUTE.has(row.failureReason) && Boolean(outcome?.finalState);
 // A succeeded row is supplied by a PR, in the report or --outcomes, or by an outcome
 // saying it never merged: point B left a find-pr row without one.
 const NOT_MERGED = new Set(['blocked-hitl', 'deferred', 'error']);
@@ -62,19 +62,10 @@ const samePr = (a, b) => (a && b ? a.pr === b.pr && sameRepo(a.repo, b.repo) : a
 
 /** A PR-less failure: a record that reached implement and opened no PR the gate reviewed. */
 const prLessFailure = (r) => r.implStatus === 'error' || r.implStatus === 'blocked';
-/**
- * Whether two records carry the same `failureReason` (absent reads as null). A report's engine-died row ingested before
- * `"engine-died"` was an infra reason was logged with none, so within one report (both carry the same `reportId`)
- * null and `"engine-died"` are one reason: that row has one stop, and the log is never rewritten (#286).
- */
-const sameReason = (a, b) => {
-  const [x, y] = [a.failureReason ?? null, b.failureReason ?? null];
-  return x === y || (Boolean(a.reportId) && a.reportId === b.reportId && [x, y].includes(null) && [x, y].includes('engine-died'));
-};
 
 /**
  * Whether records `a` and `b` are the same event: the one identity ingest-wave's dedupe and `rowCovered` both use.
- * They share `sameRun`, ref, `eventState` and failureReason (`sameReason`). Both reached implement or
+ * They share `sameRun`, ref, `eventState` and failureReason (absent reads as null). Both reached implement or
  * neither did (`implStatus` null); which non-null status a record gives is not compared, so a merge hand-written
  * as `error` or `blocked` is the merge ingest derives as `pushed`. They hold the same PR (`parsePr`: the same number in the same repo, or none), or both are merges.
  * Records of different reports (both carry a `reportId`, and they differ) are told apart by `ran`, the report row's
@@ -85,7 +76,7 @@ const sameReason = (a, b) => {
  * recurs unchanged. A hand-written record has no `reportId`, so the rest decides.
  */
 export const sameEvent = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.repo) && a.issue === b.issue
-  && eventState(a) === eventState(b) && sameReason(a, b)
+  && eventState(a) === eventState(b) && (a.failureReason ?? null) === (b.failureReason ?? null)
   && (a.implStatus == null) === (b.implStatus == null)
   && (samePr(parsePr(a.pr, a.repo), parsePr(b.pr, b.repo)) || (a.finalState === 'merged' && b.finalState === 'merged'))
   && (!a.reportId || !b.reportId || a.reportId === b.reportId
@@ -123,6 +114,14 @@ const stopReasonOf = (row, digest) => {
   const reason = digest?.failureReason ?? row.failureReason;
   return row.status !== 'succeeded' && INFRA_REASONS.has(reason) ? reason : null;
 };
+/**
+ * Whether `r` is this report's record of an engine-died row ingested before `"engine-died"` was an infra reason: a model
+ * error (`error`/`error`, no reason) of the same report. The log is never rewritten (#286), so audit takes it as the death;
+ * ingest still derives the death, a superseding record appended only with the maintainer's approval.
+ */
+const legacyDeath = (r, event) => event.failureReason === 'engine-died' && Boolean(event.reportId) && r.reportId === event.reportId
+  && sameRun(r.runId, event.runId) && sameRepo(r.repo, event.repo) && r.issue === event.issue
+  && r.implStatus === 'error' && r.finalState === 'error' && r.failureReason == null;
 /** Whether a row with `implStatus` carries its stop as the record's `failureReason`: a death, or a launch stop that never started. */
 const diesWith = (row, implStatus) => implStatus === 'error' || row.status === 'pending';
 
@@ -165,7 +164,8 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest, earli
     // Every finalState a record can hold is one --outcomes may give a find-pr row.
     const derivable = pr !== null || row.status === 'skipped' || findPr || finalState !== 'merged';
     const event = { runId, repo, issue: number, reportId: carried ? null : id, ran: ranOf(row), implStatus, finalState, failureReason, pr };
-    return derivable && sameEvent(r, event) && (Boolean(r.reportId) || !prLessFailure(event) || Date.parse(r.ts) >= startedAt);
+    return (derivable && sameEvent(r, event) && (Boolean(r.reportId) || !prLessFailure(event) || Date.parse(r.ts) >= startedAt))
+      || legacyDeath(r, event);
   });
 }
 
