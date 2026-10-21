@@ -43,3 +43,19 @@ for (const [name, marker] of [['step 3c', '**c. Proceed.**'], ['step 4a', '**a. 
     assert.match(line, /`baseSha`/);
   });
 }
+
+// A model has no clock, so the main agent stamps triagedAt itself when the triage return arrives, and its stamp wins.
+const STAMP = /date -u \+%Y-%m-%dT%H:%M:%SZ/;
+test('step 3c has the main agent stamp triagedAt with date -u when the return arrives, and that stamp wins', () => {
+  const line = stepLine('**c. Proceed.**');
+  assert.match(line, STAMP);
+  assert.match(line, /stamp wins/);
+});
+test('step 4a says a space-separated or zone-less triagedAt is read as UTC', () => {
+  assert.match(stepLine('**a. Emit the engine config.**'), /2026-10-20 15:00:00`\) is read as UTC/);
+});
+test('step 5 names the same ref inputs as emit-config: the digest, the decisions and the findings', () => {
+  const line = skill.split('\n').find((l) => l.startsWith('- **Blocking finding**'));
+  assert.match(line, /digest, the decisions you quote and these findings/);
+  assert.match(line, /owner\/repo#N` is always a ref/);
+});
