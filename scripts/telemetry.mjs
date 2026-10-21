@@ -73,11 +73,11 @@ import { parseArgs } from 'node:util';
 import { readArg } from './lib/read-arg.mjs';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { INFRA_REASONS, isResourceStop, ranOf } from './lib/failure.mjs';
+import { INFRA_REASONS, RESOURCE_ROUTE, ranOf } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
-import { isPr, parseRef, refKey, sameRepo } from './lib/ref.mjs';
+import { formatRef, isPr, parseRef, refKey, sameRepo } from './lib/ref.mjs';
 import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
@@ -259,7 +259,7 @@ export function readRecords(path = telemetryPath()) {
  * failure) is likewise excluded from yield/byComplexity/triage-miss/bounce/
  * review-catch — it still counts toward the record total and HITL, and is
  * tallied separately in `quotaFailures`. So is an engine stop (`RESOURCE_STOPS`:
- * memory-critical, lease-wait) or an engine death (engine-died), tallied in `resourceStops`.
+ * memory-critical, lease-wait) or an engine death (engine-died), together `RESOURCE_ROUTE`, tallied in `resourceStops`.
  * kind:"retro" records are excluded from every per-issue indicator (they are
  * pass-scoped, not issue-scoped) and aggregated into their own `retro` section.
  * `byRepo` groups the same population by repo (casing folded by `sameRepo`, keyed as first written); a repo with
@@ -274,7 +274,7 @@ export function report(records, { minSample = 20 } = {}) {
   // byComplexity breakdown), triage-miss, bounce rate, review-catch — so a
   // quota outage never dilutes those; it's counted instead in quotaFailures.
   const quotaFailures = issues.filter((r) => r.failureReason === 'rate-limited');
-  const resourceStops = issues.filter((r) => isResourceStop(r.failureReason));
+  const resourceStops = issues.filter((r) => RESOURCE_ROUTE.has(r.failureReason));
   const modelIssues = issues.filter((r) => !INFRA_REASONS.has(r.failureReason));
   const reached = modelIssues.filter((r) => r.implStatus != null);
   const cleared = modelIssues.filter((r) => r.triageStatus === 'clear');
@@ -585,7 +585,7 @@ function waveWindow(stateDir, { report, startedAt, id }, familyReports, { owns, 
  * terminal row is not named), and one with an `error` is `unreadable` (`{path, error}`). `terminalRows`
  * is the number of terminal rows examined (a row a retry carries over counts once per report that lists it,
  * as `notIngested` names it) and `prRows` those with a PR, `{total, uncovered}`: the denominators for a coverage share. `engineDied` names the refs
- * whose last record in the log is an engine death (`failureReason: "engine-died"`), with no later outcome. A sidecar
+ * whose latest record by `ts` (refs compared case-insensitively) is an engine death (`failureReason: "engine-died"`), with no later outcome. A sidecar
  * entry or config file (in either of `configDirs`) that no readable report matched is `neverReported`:
  * there is no report to ingest. That is a wave the engine died in before it wrote one, but also a wave
  * still running, an earlier emit of a ref set whose re-emit a report matched, and an `unreadable` report's.
@@ -624,9 +624,13 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
     }
     for (const { configFile } of configDirs(dir).flatMap((d) => waveConfigs(d))) if (!matched.has(configFile)) out.neverReported.configs.push(configFile);
   }
-  // A ref's last record is its outcome so far: an engine death nothing followed was never resumed into the log.
-  const last = new Map(logged.filter((r) => r.kind !== 'retro').map((r) => [`${r.repo}#${r.issue}`, r]));
-  out.engineDied = [...last].filter(([, r]) => r.failureReason === 'engine-died').map(([ref]) => ref);
+  // A ref's latest record (by ts; a later ingest can append an earlier event) is its outcome so far: an engine death
+  // nothing followed was never resumed into the log. The death is its deferral with implStatus "error"; an outcome
+  // that keeps the reason (a point-F hold) is not. A ref deferred at point F stays named: its deferral is the death.
+  const byTs = logged.filter((r) => r.kind !== 'retro').map((r, i) => [r, i]).sort(([a, i], [b, j]) => (Date.parse(a.ts) - Date.parse(b.ts)) || i - j);
+  const last = new Map(byTs.map(([r]) => [refKey(formatRef(r.repo, r.issue)), r]));
+  const died = (r) => r.failureReason === 'engine-died' && r.implStatus === 'error' && r.finalState === 'deferred';
+  out.engineDied = [...last.values()].filter(died).map((r) => formatRef(r.repo, r.issue));
   return out;
 }
 

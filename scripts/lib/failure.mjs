@@ -33,10 +33,10 @@ export { artifactStem };
 
 /** Reasons the engine stops a row for infrastructure rather than model failure (claude-orchestrator#87), beside `"rate-limited"` which ship-dag also reads from a transcript. */
 export const RESOURCE_STOPS = new Set(['memory-critical', 'lease-wait']);
-/** Every `failureReason` that marks infrastructure rather than model failure: `"rate-limited"`, `"engine-died"` (the engine process died, and the report was rebuilt from its state files) and the engine's `RESOURCE_STOPS`. */
-export const INFRA_REASONS = new Set(['rate-limited', 'engine-died', ...RESOURCE_STOPS]);
-/** Whether a `failureReason` takes the `resource` route: one of the engine's `RESOURCE_STOPS`, or `"engine-died"`. */
-export const isResourceStop = (reason) => RESOURCE_STOPS.has(reason) || reason === 'engine-died';
+/** Every `failureReason` that takes the `resource` route: the engine's `RESOURCE_STOPS` and `"engine-died"` (the engine process died, and the report was rebuilt from its state files). */
+export const RESOURCE_ROUTE = new Set([...RESOURCE_STOPS, 'engine-died']);
+/** Every `failureReason` that marks infrastructure rather than model failure: `"rate-limited"` and `RESOURCE_ROUTE`. */
+export const INFRA_REASONS = new Set(['rate-limited', ...RESOURCE_ROUTE]);
 
 /** JSON key present on every stream-json result record — a cheap prefilter that skips `JSON.parse` on the ~99% of transcript lines that cannot be one. */
 export const RESULT_TYPE_KEY = '"type":"result"';
@@ -148,7 +148,7 @@ function clipReason(text) {
 export function buildDiagnosis({ row, terminal, rateLimited = false, exitCode = null }) {
   const structured = INFRA_REASONS.has(row?.failureReason) ? row.failureReason : null;
   const failureReason = structured ?? (rateLimited ? 'rate-limited' : null);
-  const stopped = RESOURCE_STOPS.has(failureReason);
+  const stopped = RESOURCE_ROUTE.has(failureReason);
   return {
     ref: row?.ref ?? null,
     status: row?.status ?? null,
@@ -205,7 +205,7 @@ export const ranOf = (row) => (typeof row?.ran === 'boolean' ? row.ran : undefin
  * @returns {"fail"|"none"|null}
  */
 export function stopCiStatus(row) {
-  if (!isResourceStop(row?.failureReason) || !isPr(row.prNumber)) return null;
+  if (!RESOURCE_ROUTE.has(row?.failureReason) || !isPr(row.prNumber)) return null;
   return row.stopStage === 'retry' ? 'fail' : 'none';
 }
 
@@ -261,7 +261,7 @@ export function routeFailure(row) {
   // 0 can't read as "a PR exists" — routing a PR-less stall to a gate with
   // nothing to review is the expensive direction to be wrong in.
   if (isPr(prNumber)) return 'review-gate';
-  if (isResourceStop(failureReason)) return 'resource';
+  if (RESOURCE_ROUTE.has(failureReason)) return 'resource';
   if (status === 'succeeded') return 'find-pr';
   if (failureReason === 'rate-limited') return 'point-E';
   return 'point-B';
