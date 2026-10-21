@@ -11,7 +11,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { artifactStem } from './failure.mjs';
-import { gateReview, issueRefFromPath } from '../review-gate.mjs';
+import { gateReviewAll, issueRefFromPath } from '../review-gate.mjs';
 
 /**
  * Every review round file for `ref` across `dirs`, oldest first. When every file has a name SKILL.md
@@ -59,7 +59,7 @@ export function isUnreadableEmpty(path, review) {
  * One review round as the gate reads it, for every reader that has to say whether a round is
  * readable: `unreadable` is why it is not (empty beside its `.raw` per `isUnreadableEmpty`, or
  * `gateReview` refused it), else null. An unreadable round is `blocking` with nothing to list,
- * never clean; a readable one is `gateReview`'s own result.
+ * never clean; a readable one is `gateReview`'s own result, its `blocking` the whole list rather than the inline window.
  * @param {{path: string, review: object|null}} round
  * @param {string[]} blockOn  the run's parsed `--block-on`
  * @returns {{unreadable: string|null, verdict: string, blocking: Array<object>}}
@@ -67,5 +67,8 @@ export function isUnreadableEmpty(path, review) {
 export function classifyRound({ path, review }, blockOn) {
   const unreadable = (why) => ({ unreadable: why, verdict: 'blocking', blocking: [] });
   if (isUnreadableEmpty(path, review)) return unreadable('empty beside .raw');
-  try { return { unreadable: null, ...gateReview(review, blockOn, undefined, issueRefFromPath(path)) }; } catch (err) { return unreadable(err.message); }
+  try {
+    const { allBlocking, ...gated } = gateReviewAll(review, blockOn, undefined, issueRefFromPath(path));
+    return { unreadable: null, ...gated, blocking: allBlocking };
+  } catch (err) { return unreadable(err.message); }
 }

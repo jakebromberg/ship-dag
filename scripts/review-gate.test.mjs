@@ -138,6 +138,12 @@ test('gateReview: an aliased category normalizes to its canonical spelling BEFOR
   assert.deepEqual(h.unknownCategories, []);
 });
 
+test('gateReview: a blocking entry carries its verdict, upper-cased, and null when blank; the uncapped list is not in the public result', () => {
+  const g = gateReview({ issue: 1, findings: [finding({ verdict: 'confirmed' }), finding({ category: 'made up', verdict: 'PLAUSIBLE' }), finding({ category: 'made up two', verdict: undefined })] });
+  assert.deepEqual(g.blocking.map((b) => b.verdict), ['CONFIRMED', 'PLAUSIBLE', null]);
+  assert.equal('allBlocking' in g, false);
+});
+
 test('gateReview: convention and contract are now in the default gate, discharging the #26 obligation', () => {
   const g = gateReview({ issue: 1, findings: [finding({ category: 'convention' }), finding({ category: 'contract' })] });
   assert.deepEqual(g.unknownCategories, []);
@@ -227,7 +233,7 @@ test('gateReview: clearing a CONFIRMED finding by the reviewer’s own say-so le
   assert.equal(cleared.nitCount, plausible.nitCount);
   // ...and yet the two are distinguishable, which is the whole point.
   assert.equal(cleared.selfClearedCount, 1);
-  assert.deepEqual(cleared.selfCleared, [{ category: 'convention', file: 'src/a.ts', line: 42, summary: 'brace style' }]);
+  assert.deepEqual(cleared.selfCleared, [{ category: 'convention', verdict: 'CONFIRMED', file: 'src/a.ts', line: 42, summary: 'brace style' }]);
   assert.equal(plausible.selfClearedCount, 0);
   assert.deepEqual(plausible.selfCleared, []);
 });
@@ -394,7 +400,7 @@ test('gateReview: lists at most MAX_LISTED blocking findings but counts them all
   assert.equal(g.blockingCount, 7);
   assert.equal(g.blocking.length, MAX_LISTED);
   // Each listed entry is one line of prose, not the whole finding object.
-  assert.deepEqual(Object.keys(g.blocking[0]).sort(), ['category', 'file', 'line', 'summary']);
+  assert.deepEqual(Object.keys(g.blocking[0]).sort(), ['category', 'file', 'line', 'summary', 'verdict']);
 });
 
 test('gateReview: category matching is case-insensitive', () => {
@@ -529,7 +535,7 @@ test('gateReview: blocking[].category reports the same normalized value unknownC
 test('gateReview: a null entry in findings[] blocks instead of crashing the gate', () => {
   const g = gateReview({ issue: 1, findings: [null] });
   assert.equal(g.verdict, 'blocking');
-  assert.deepEqual(g.blocking[0], { category: null, file: null, line: null, summary: null });
+  assert.deepEqual(g.blocking[0], { category: null, verdict: null, file: null, line: null, summary: null });
 });
 
 test('gateFile: reads a review off disk and carries its path through for the human', () => {
@@ -563,7 +569,7 @@ test('CLI: a blank category is reported quoted and still carries a category key 
   const out = JSON.parse(stdout);
   // `category: f.category` alone emitted `undefined`, which JSON.stringify drops
   // outright — the entry reached the operator with no `category` field at all.
-  assert.deepEqual(Object.keys(out.blocking[0]).sort(), ['category', 'file', 'line', 'summary']);
+  assert.deepEqual(Object.keys(out.blocking[0]).sort(), ['category', 'file', 'line', 'summary', 'verdict']);
   assert.equal(out.blocking[0].category, null);
   assert.match(stderr, /unknown categories: "\(blank\)"/);
 });
