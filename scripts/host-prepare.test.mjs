@@ -25,7 +25,7 @@ const body = JSON.stringify(boxConfig);
 writeFileSync(configPath, body);
 const configHash = createHash('sha256').update(body).digest('hex');
 const local = { sdSha: 'a', coSha: 'b', claudeHash: 'c' };
-const state = (over = {}) => ({ sdSha: 'a', coSha: 'b', distNewest: '/co/dist/src/index.js', srcNewer: '', claudeHash: 'c', settings: '{"hooks":{"PreToolUse":[{"hooks":[{"command":"node cli-lease.js hook"}]}]}}', configHash: '', freeKb: 99 * 1048576, present: ['app'], ...over });
+const state = (over = {}) => ({ sdSha: 'a', coSha: 'b', distNewest: '/co/dist/src/index.js', srcNewer: '', claudeHash: 'c', settingsBase64: Buffer.from('{"hooks":{"PreToolUse":[{"hooks":[{"command":"node cli-lease.js hook"}]}]}}').toString('base64'),configHash: '', freeKb: 99 * 1048576, present: ['app'], ...over });
 const probeOut = (s) => [...Object.entries(s).filter(([k]) => k !== 'present').map(([k, v]) => `${k}=${v}`), ...s.present.flatMap((n) => [`present=${n}`, `origin=${n}=https://github.com/o/${n}.git`])].join('\n');
 
 function exec(s, opts = {}) {

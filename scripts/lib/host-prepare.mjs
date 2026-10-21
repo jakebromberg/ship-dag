@@ -83,7 +83,7 @@ export function probeScript(host, stateDir, repoNames) {
     'echo distNewest=$d',
     `echo srcNewer=$(if test -n "$d"; then find ${q(`${coHome}/src`)} -type f -name '*.ts' -newer "$d" 2>/dev/null | head -1; fi)`,
     `echo claudeHash=${hash(`${home}/.claude/CLAUDE.md`)}`,
-    `echo settings=$(tr -d '\\n' < ${q(`${home}/.claude/settings.json`)} 2>/dev/null)`,
+    `printf 'settingsBase64=%s\\n' "$(base64 2>/dev/null < ${q(`${home}/.claude/settings.json`)} | tr -d '\\n')"`,
     ...(stateDir ? [`echo configHash=${hash(`${stateDir}/config.json`)}`] : []),
     `echo freeKb=$(df -Pk ${q(home)} | awk 'NR==2{print $4}')`,
     ...repoNames.map((n) => {
@@ -93,7 +93,12 @@ export function probeScript(host, stateDir, repoNames) {
   ].join('; ');
 }
 
-/** Parse `probeScript` output into the `probe` object of `planHost`; `leaseHook` is whether the host's settings.json (absent or invalid JSON: no) holds a lease hook entry, by host-sync-claude's `isLeaseHook`. */
+/**
+ * Parse `probeScript` output into the `probe` object of `planHost`; `leaseHook` is whether the host's settings.json
+ * (absent, unreadable or invalid JSON: no) holds a lease hook entry, by host-sync-claude's `isLeaseHook`, under
+ * `PreToolUse`, the event that gates. The probe sends the file base64-encoded on one line, so no shell `echo` rewrites
+ * its backslashes and no newline in it can start a line that overwrites another key.
+ */
 export function parseProbe(out) {
   const probe = { present: [], origins: {} };
   for (const line of out.split('\n')) {
@@ -103,8 +108,9 @@ export function parseProbe(out) {
     else if (k === 'origin') probe.origins[rest[0]] = rest.slice(1).join('=');
     else if (k) probe[k] = k === 'freeKb' ? (v === '' ? undefined : Number(v)) : v;
   }
-  probe.leaseHook = Object.values(parseJson(probe.settings)?.hooks ?? {}).flat().some((g) => g?.hooks?.some?.(isLeaseHook));
-  delete probe.settings;
+  const gate = parseJson(Buffer.from(probe.settingsBase64 ?? '', 'base64').toString('utf8'))?.hooks?.PreToolUse;
+  probe.leaseHook = Array.isArray(gate) && gate.some((g) => Array.isArray(g?.hooks) && g.hooks.some(isLeaseHook));
+  delete probe.settingsBase64;
   if (probe.freeKb !== undefined) probe.freeGb = probe.freeKb / 1048576;
   return probe;
 }

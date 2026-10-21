@@ -1,7 +1,8 @@
 // Tests for the host-prepare planner and probe parsing. No test opens a connection.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -134,26 +135,42 @@ for (const [name, opts, refused] of [
   });
 }
 
-const leaseEntry = { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: "exec node '/co/dist/src/cli-lease.js' hook" }] }] } };
-for (const [name, file, leaseHook] of [
-  ['settings.json with the lease hook', JSON.stringify(leaseEntry), true],
-  ['the lease hook on several lines', JSON.stringify(leaseEntry, null, 2), true],
-  ['settings.json without it', '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}', false],
+// The entries claude-orchestrator's `hook --print-settings-entry` prints (lease-hook.ts settingsEntries), its word list
+// cut short: the command holds single quotes, `\\[tnr]` in a grep -E pattern (four backslashes in the JSON) and `\n`.
+const leaseCommand = `[ "\${CO_LEASE_HOOK:-}" = on ] || exit 0; input=$(cat); [ -n "\${CO_LEASE_PATTERNS_FILE:-}" ] || printf '%s' "$input" | grep -qE 'npm|node([^A-Za-z0-9]|\\\\[tnr])+--test([^A-Za-z0-9_./-]|$)|git.*push' || exit 0; [ -f '/co/dist/src/cli-lease.js' ] || { printf '%s\\n' 'claude-orchestrator-lease hook: /co/dist/src/cli-lease.js is missing; print the settings entries again and install them' >&2; exit 0; }; sp=$PPID; printf '%s' "$input" | CO_LEASE_SESSION_PID=$sp exec node '/co/dist/src/cli-lease.js' hook`;
+const leaseGroup = (timeout) => [{ matcher: 'Bash', hooks: [{ type: 'command', command: leaseCommand, ...(timeout && { timeout }) }] }];
+const leaseEntry = { hooks: { PreToolUse: leaseGroup(500), PostToolUse: leaseGroup(), PostToolUseFailure: leaseGroup() } };
+const other = (command) => ({ matcher: 'Bash', hooks: [{ type: 'command', command }] });
+
+/** Run the generated probe with `sh` against a fake home holding a CLAUDE.md and `settings` as its settings.json (none when undefined). */
+function probeSettings(settings) {
+  const home = mkdtempSync(join(tmpdir(), 'host-prepare-settings-'));
+  mkdirSync(join(home, '.claude'));
+  writeFileSync(join(home, '.claude', 'CLAUDE.md'), 'rules\n');
+  if (settings !== undefined) writeFileSync(join(home, '.claude', 'settings.json'), settings);
+  const fake = validateHosts({ box: { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') } }).box;
+  const r = spawnSync('sh', ['-c', probeScript(fake, undefined, [])], { encoding: 'utf8' });
+  return { probe: parseProbe(r.stdout), stderr: r.stderr };
+}
+
+for (const [name, settings, leaseHook] of [
+  ['the entries hook --print-settings-entry prints', JSON.stringify(leaseEntry, null, 2), true],
+  ['those entries on one line', JSON.stringify(leaseEntry), true],
+  ['settings.json that mergeSettings wrote with the printed entries', JSON.stringify(mergeSettings({ model: 'x', hooks: { PreToolUse: [other('echo hi')] } }, leaseEntry), null, 2), true],
+  ['the entries beside a hook whose command has a newline, a tab and a \\. regex', JSON.stringify(mergeSettings({ hooks: { PreToolUse: [other('a\nb\tc | grep -E "x\\.y"')] } }, leaseEntry), null, 2), true],
+  ['a string holding lines that look like probe keys', JSON.stringify({ model: 'x\nclaudeHash=forged\nfreeKb=1\nsdSha=forged', ...leaseEntry }, null, 2), true],
+  ['settings.json without it', JSON.stringify({ hooks: { PreToolUse: [other('echo hi')] } }), false],
+  ['a lease entry under PostToolUse only, which gates nothing', JSON.stringify({ hooks: { PostToolUse: leaseGroup(), PostToolUseFailure: leaseGroup() } }), false],
   ['settings.json with no hooks', '{"model":"x"}', false],
   ['an absent settings.json', undefined, false],
   ['settings.json that is not JSON', '{"hooks":', false],
 ]) {
   test(`the probe's lease hook: ${name}`, () => {
-    const home = mkdtempSync(join(tmpdir(), 'host-prepare-settings-'));
-    if (file !== undefined) { mkdirSync(join(home, '.claude')); writeFileSync(join(home, '.claude', 'settings.json'), file); }
-    const fake = validateHosts({ box: { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') } }).box;
-    const probe = parseProbe(execFileSync('sh', ['-c', probeScript(fake, undefined, [])], { encoding: 'utf8' }));
+    const { probe, stderr } = probeSettings(settings);
     assert.equal(probe.leaseHook, leaseHook);
+    assert.equal(stderr, '');
+    assert.deepEqual([probe.claudeHash, probe.sdSha], [createHash('sha256').update('rules\n').digest('hex'), '']);
+    assert.ok(probe.freeKb > 1);
     assert.equal(/lease hook/.test(run({ leaseHook: probe.leaseHook }).refusals.join('\n')), !leaseHook);
   });
 }
-
-test("settings.json that mergeSettings wrote with a printed entry passes the lease hook check", () => {
-  const written = JSON.stringify(mergeSettings({ model: 'x' }, leaseEntry), null, 2);
-  assert.equal(parseProbe(`settings=${written.replace(/\n/g, '')}\n`).leaseHook, true);
-});
