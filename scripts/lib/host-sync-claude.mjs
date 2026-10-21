@@ -104,7 +104,8 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
     const skills = `${dir}/skills`;
     const linked = ssh(`if [ -d ${q(skills)} ]; then cd ${q(skills)} && find . -mindepth 1 -maxdepth 1 -type l; fi`)
       .split('\n').filter(Boolean).map((l) => `--exclude=/${l.replace(/^\.\//, '')}`);
-    const excludes = ['--exclude=/ship-dag', '--exclude=/.trash', '--exclude=.DS_Store', ...linked];
+    // synced/ belongs to Claude Code's claude.ai skill sync on each machine, manifest and markers included.
+    const excludes = ['--exclude=/ship-dag', '--exclude=/synced', '--exclude=/.trash', '--exclude=.DS_Store', ...linked];
     const args = ['-aL', '--itemize-changes', '-e', `ssh ${SSH_OPTS.join(' ')}`, ...excludes, ...(dryRun ? ['-n'] : []), `${localHome}/skills/`, `${host.ssh}:${skills}/`];
     const r = run('rsync', args);
     if (r.status !== 0) throw new Error(r.stderr || r.error?.message);
