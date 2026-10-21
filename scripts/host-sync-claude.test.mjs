@@ -2,10 +2,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { main, runner } from './host-sync-claude.mjs';
-import { validateHosts } from './lib/hosts.mjs';
+import { testHost } from './lib/test-host.mjs';
 
-// Validated as loadHosts would, so `coHome` is the registry default.
-const { box } = validateHosts({ box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' } });
+const box = testHost();
 
 for (const [name, argv, hosts] of [
   ['an unknown flag (a mistyped --dry-run)', ['box', '--dryrun'], { box }],

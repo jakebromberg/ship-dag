@@ -70,7 +70,8 @@ export function prepareHost({ name, hosts, config, configPath, local, run, minFr
   return 0;
 }
 
-function main(argv) {
+/** The CLI: returns the exit code, or throws an error whose `exitCode` is the one to exit with. `hosts` and `run` default to the registry and the real runner. */
+export function main(argv, { hosts = loadHosts(), run = realRunner() } = {}) {
   const unknown = argv.find((a) => a.startsWith('--') && !['--dry-run', '--min-free-gb'].includes(a));
   if (unknown) throw new Error(`unknown option ${unknown}; ${USAGE}`);
   const [name, configPath] = argv.filter((a, i) => !a.startsWith('--') && !['--min-free-gb'].includes(argv[i - 1]));
@@ -79,7 +80,7 @@ function main(argv) {
   const sdHome = fileURLToPath(new URL('..', import.meta.url));
   const local = { sdSha: git(sdHome, 'rev-parse', 'HEAD'), coSha: git(coHome(), 'rev-parse', 'HEAD'), claudeHash: sha256(`${homedir()}/.claude/CLAUDE.md`) };
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  return prepareHost({ name, hosts: loadHosts(), config, configPath, local, run: realRunner(), minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => process.stderr.write(`${m}\n`), reposDir: layoutReposDir() });
+  return prepareHost({ name, hosts, config, configPath, local, run, minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => process.stderr.write(`${m}\n`), reposDir: layoutReposDir() });
 }
 
 if (isMain(import.meta.url)) {

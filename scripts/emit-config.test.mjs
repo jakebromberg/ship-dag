@@ -9,7 +9,7 @@ import { realRunGh } from './lib/gh.mjs';
 import { deriveSlug, buildConfig, buildConfigsByHost, unknownCiRepos, unknownComplexities, validateSpec, ghReadRef } from './emit-config.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
 import { waveSidecar } from './lib/wave-sidecar.mjs';
-import { validateHosts } from './lib/hosts.mjs';
+import { testHost } from './lib/test-host.mjs';
 
 // A minimal well-formed spec the ready-wave hands the emitter.
 function spec(overrides = {}) {
@@ -495,7 +495,7 @@ test('the unverified-repo warning names both remedies: the repo declaring script
 
 // ---- hosts: --by-host splits the wave into one config per host ---------
 
-const BOX = validateHosts({ box: { ssh: 'box', home: '/Users/jake', reposDir: '/Users/jake/Developer', sdHome: '/Users/jake/Developer/ship-dag', toolchains: ['node', 'python'] } });
+const BOX = { box: testHost('/Users/jake', { toolchains: ['node', 'python'] }) };
 const NODE_REPO = 'o/web';
 const XCODE_REPO = 'o/ios';
 const OPAQUE_REPO = 'o/opaque';
@@ -547,8 +547,8 @@ test("buildConfigsByHost: a remote host's config takes its paths from the regist
   const { box, local } = Object.fromEntries(buildConfigsByHost(s, BOX).map((c) => [c.host, c.config]));
   assert.equal(box.configDir, '/Users/jake/.local/state/ship-dag/engine/run1/state');
   assert.equal(box.worktreeDir, '/Users/jake/.local/state/ship-dag/engine/run1/worktrees');
-  assert.equal(box.projectRoot, '/Users/jake/Developer');
-  assert.equal(box.promptTemplate, '/Users/jake/Developer/ship-dag/scripts/engine/prompt.md');
+  assert.equal(box.projectRoot, '/Users/jake/D');
+  assert.equal(box.promptTemplate, '/Users/jake/D/ship-dag/scripts/engine/prompt.md');
   assert.deepEqual(Object.keys(box.repos), [NODE_REPO]);
   assert.deepEqual([local.configDir, local.worktreeDir, local.projectRoot, local.promptTemplate], ['/state/ship-dag/engine/run1/state', '/state/ship-dag/engine/run1/worktrees', '/Users/jake/Developer/WXYC', '/skill/scripts/engine/prompt.md']);
   assert.deepEqual(Object.keys(local.repos), [XCODE_REPO]);

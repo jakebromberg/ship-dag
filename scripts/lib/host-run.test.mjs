@@ -5,13 +5,11 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { validateHosts } from './hosts.mjs';
+import { testHost } from './test-host.mjs';
 import { LOG_CHUNK, PID_FILE, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './host-run.mjs';
 
-const { box, big } = validateHosts({
-  box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' },
-  big: { ssh: 'big', home: '/b', reposDir: '/b/D', sdHome: '/b/D/ship-dag', coHome: '/b/co', sessionSlots: 3, leaseSlots: 5 },
-});
+const box = testHost();
+const big = testHost('/b', { coHome: '/b/co', sessionSlots: 3, leaseSlots: 5 }, 'big');
 const stateDir = '/h/.local/state/ship-dag/engine/run1';
 const put = (root, rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
 const env = (h, slots) => `SHIP_DAG_CONFIG='${stateDir}/config.json' SHIP_DAG_PROJECT_ROOT='${h.reposDir}' CO_HOME='${h.coHome}' CO_LEASE_HOOK='on' CO_LEASE_SESSION_SLOTS='${slots[0]}' CO_LEASE_SLOTS='${slots[1]}'`;
