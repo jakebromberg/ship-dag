@@ -30,9 +30,12 @@ const USAGE = 'usage: host-prepare.mjs <host> <config.<host>.json> [--dry-run] [
 /** The bound on a `gh repo clone`, which for a large repo outlasts the default 120 s. */
 export const CLONE_TIMEOUT_MS = 30 * 60_000;
 
+/** The output an ssh call may return: the probe carries the host's settings.json base64-encoded, past the 1 MiB default for a large file. */
+const SSH_MAX_BUFFER = 16 * 1024 * 1024;
+
 /** The real runner: `{ ssh(sshAlias, command, timeoutMs?), scp(sshAlias, from, to) }`, each bounded to `timeoutMs`. */
 export const realRunner = (timeoutMs = 120_000) => ({
-  ssh: (alias, command, timeout = timeoutMs) => execFileSync('ssh', [...SSH_OPTS, alias, remoteCommand(command)], { encoding: 'utf8', timeout }),
+  ssh: (alias, command, timeout = timeoutMs) => execFileSync('ssh', [...SSH_OPTS, alias, remoteCommand(command)], { encoding: 'utf8', timeout, maxBuffer: SSH_MAX_BUFFER }),
   scp: (alias, from, to) => execFileSync('scp', [...SSH_OPTS, '-q', from, `${alias}:${to}`], { encoding: 'utf8', timeout: timeoutMs }),
 });
 
