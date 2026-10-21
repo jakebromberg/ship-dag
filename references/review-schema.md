@@ -39,6 +39,8 @@ node scripts/review-gate.mjs <review.json> --block-on correctness,security --exp
 → { issue, verdict, blockingCount, nitCount, selfClearedCount, findingCount, blocking[≤3], selfCleared[≤3], unknownCategories[], malformedBlocking[], mergeOrderCount, mergeOrderClearedCount, mergeOrder[≤3], malformedMergeOrder[], path }
 ```
 
+Each `blocking[]` entry is `{ category, verdict, file, line, summary }`: `verdict` is upper-cased, and `category` and `verdict` are `null` when the reviewer left them blank. The gate lists at most three, but `ingest-wave` records every blocking finding of the worst round in the telemetry log as `{ category, verdict, summary }`, with `summary` the one-line `<category> <file>:<line> <summary>` string; those are the same entries, uncapped, so `category` is the gate's normalized value and a finding in an unknown category is recorded under it.
+
 A merge decision must not rest on a model's claim about its own output, and a review file with no `findings` array is a hard error rather than a silent `clean` — a truncated write must never auto-merge. The same applies to a file that arrives *short*: the gate can recompute a verdict from findings it can read, but it cannot see a finding that never reached disk, so `--expect-findings` is what closes that half. A count disagreement exits 3 with both numbers named, and the remedy is re-running the reviewer — never repairing the file, which is the likeliest way a short one is produced.
 
 ## The gate
