@@ -702,6 +702,10 @@ for (const [name, kind, go] of [
     ['the same report\'s two records', rec({ reportId: 'w1', ran: true }), rec({ reportId: 'w1', ran: true }), true],
     ['a hand-written record and one with ran', rec(), rec({ reportId: 'w2', ran: true }), true],
     ['a carried-over record (no reportId) and the earlier one', rec({ reportId: 'w1', ran: true }), rec({ ran: false }), true],
+    // A report's engine-died row ingested before engine-died was an infra reason was logged with no failureReason.
+    ['an engine death and the same report\'s record of it logged with no reason', rec({ implStatus: 'error', finalState: 'error', reportId: 'w1' }), rec({ implStatus: 'error', finalState: 'error', failureReason: 'engine-died', reportId: 'w1' }), true],
+    ['an engine death and another report\'s error with no reason', rec({ implStatus: 'error', finalState: 'error', reportId: 'w1' }), rec({ implStatus: 'error', finalState: 'error', failureReason: 'engine-died', reportId: 'w2' }), false],
+    ['a rate-limit death and the same report\'s error with no reason', rec({ implStatus: 'error', finalState: 'deferred', reportId: 'w1' }), rec({ implStatus: 'error', finalState: 'deferred', failureReason: 'rate-limited', reportId: 'w1' }), false],
   ]) {
     test(`ran: sameEvent: ${name} ${same ? 'are' : 'are not'} one event`, () => {
       assert.equal(sameEvent(a, b), same);
