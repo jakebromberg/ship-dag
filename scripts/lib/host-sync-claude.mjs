@@ -2,7 +2,7 @@
 // Never touches projects/, sessions/, history.jsonl, file-history/ or credentials. `run(cmd, args, input)` is injected
 // and returns { status, stdout, stderr }, so the steps are testable without ssh.
 import { coDistPathIn } from './co-home.mjs';
-import { SSH_OPTS, remoteCommand, shQuote as q } from './remote.mjs';
+import { RSYNC_SSH, SSH_OPTS, remoteCommand, shQuote as q } from './remote.mjs';
 
 // A lease hook runs `node '<…>/cli-lease.js' hook` (claude-orchestrator's `hook --print-settings-entry` output) or the
 // installed `claude-orchestrator-lease hook`.
@@ -40,7 +40,7 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
   const changes = [];
   const failures = [];
   const ssh = (cmd, input) => {
-    const r = run('ssh', [...SSH_OPTS, host.ssh, cmd], input);
+    const r = run('ssh', [...SSH_OPTS, host.ssh, remoteCommand(cmd)], input);
     if (r.status !== 0) throw new Error(`${cmd}: ${r.stderr || r.error?.message}`);
     return r.stdout;
   };
@@ -86,7 +86,7 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
     const raw = get(file);
     const current = raw.trim() ? JSON.parse(raw) : {};
     const entryScript = coDistPathIn(host.coHome, 'cli-lease.js');
-    const printed = ssh(remoteCommand(`node ${q(entryScript)} hook --print-settings-entry`));
+    const printed = ssh(`node ${q(entryScript)} hook --print-settings-entry`);
     const merged = mergeSettings(current, JSON.parse(printed));
     if (JSON.stringify(merged) === JSON.stringify(current)) return;
     change('merge lease hook entries into settings.json');
@@ -100,7 +100,7 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
       .split('\n').filter(Boolean).map((l) => `--exclude=/${l.replace(/^\.\//, '')}`);
     // synced/ belongs to Claude Code's claude.ai skill sync on each machine, manifest and markers included.
     const excludes = ['--exclude=/ship-dag', '--exclude=/synced', '--exclude=/.trash', '--exclude=.DS_Store', ...linked];
-    const args = ['-aL', '--itemize-changes', '-e', `ssh ${SSH_OPTS.join(' ')}`, ...excludes, ...(dryRun ? ['-n'] : []), `${localHome}/skills/`, `${host.ssh}:${skills}/`];
+    const args = ['-aL', '--itemize-changes', '-e', RSYNC_SSH, ...excludes, ...(dryRun ? ['-n'] : []), `${localHome}/skills/`, `${host.ssh}:${skills}/`];
     const r = run('rsync', args);
     if (r.status !== 0) throw new Error(r.stderr || r.error?.message);
     for (const line of r.stdout.split('\n').filter((l) => l.trim())) change(`skills: ${line}`);

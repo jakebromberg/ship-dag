@@ -1,7 +1,7 @@
 // host-run.mjs — the pure parts of running a wave's engine on a remote host and collecting its results: the remote
 // command lines, the poll, the rsync file selection, the exit-code mapping and the output prefix. The CLI
 // (scripts/host-run.mjs) runs them through an injected runner; nothing here touches a host.
-import { SSH_OPTS, shQuote as q } from './remote.mjs';
+import { RSYNC_SSH, shQuote as q } from './remote.mjs';
 
 /**
  * The engine command line for `host` (a validated hosts.json entry) with the config host-prepare placed at
@@ -88,7 +88,7 @@ export function pollDecision({ alive, reports }, reportSeen) {
  * `logs/orchestrator.log`, `runs/` and `counters/` under the same `state/`, so none of them is ever copied.
  */
 export const rsyncArgs = (src, dest) => [
-  '-a', '-e', ['ssh', ...SSH_OPTS].join(' '),
+  '-a', '-e', RSYNC_SSH,
   ...['reports', 'failure-digest', 'status', 'metadata'].flatMap((d) => [`--include=${d}/`, `--include=${d}/**`]),
   '--include=logs/', '--include=logs/issue-*', '--exclude=*', src, dest,
 ];

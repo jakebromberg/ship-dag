@@ -18,7 +18,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadHosts } from './lib/hosts.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
-import { SSH_OPTS, remoteCommand, shQuote } from './lib/remote.mjs';
+import { SSH_MAX_BUFFER, SSH_OPTS, callFailure, remoteCommand, shQuote, sshCommandLine } from './lib/remote.mjs';
 import { configStateDir } from './lib/host-prepare.mjs';
 import { DETACHED, LOG_CHUNK, PID_FILE, RSYNC_SAFE_PATH, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './lib/host-run.mjs';
 import { isMain } from './lib/is-main.mjs';
@@ -28,8 +28,6 @@ const MINUTE = 60_000;
 const POLL_MS = MINUTE;
 const CALL_MS = 2 * MINUTE;
 const MAX_WAIT_MINUTES = 360;
-// A poll returns at most LOG_CHUNK log bytes; the rest of the buffer is headroom for the launch and plan output.
-const MAX_BUFFER = 16 * 1024 * 1024;
 
 /**
  * The real runner: `ssh(alias, command)` (stdout and stderr as Buffers) and `rsync(args)`, each returning spawnSync's
@@ -37,16 +35,9 @@ const MAX_BUFFER = 16 * 1024 * 1024;
  * `error` whose `code` is `ETIMEDOUT` or `ENOBUFS`.
  */
 export const realRunner = () => ({
-  ssh: (alias, command) => spawnSync('ssh', [...SSH_OPTS, alias, remoteCommand(command)], { timeout: CALL_MS, maxBuffer: MAX_BUFFER }),
-  rsync: (args) => spawnSync('rsync', args, { encoding: 'utf8', timeout: 10 * MINUTE, maxBuffer: MAX_BUFFER }),
+  ssh: (alias, command) => spawnSync('ssh', [...SSH_OPTS, alias, remoteCommand(command)], { timeout: CALL_MS, maxBuffer: SSH_MAX_BUFFER }),
+  rsync: (args) => spawnSync('rsync', args, { encoding: 'utf8', timeout: 10 * MINUTE, maxBuffer: SSH_MAX_BUFFER }),
 });
-
-/**
- * How a call failed to run, or undefined: `dropped` for ssh's own exit 255 or a call that hit its timeout (the
- * connection, not the remote command), else the message of the error that stopped it (an overflowed buffer, a missing
- * binary).
- */
-const broken = (r) => (r.status === 255 || r.error?.code === 'ETIMEDOUT' ? 'dropped' : r.error?.message);
 
 /**
  * Run (or, with `collectOnly`, only wait for and collect) one host's wave; returns the exit code. `host` is a validated
@@ -67,7 +58,7 @@ export async function hostRun({ name, host, stateDir, localState, parallel, plan
   };
   // The exit code for a call that did not run to completion, else undefined. A drop before the launch started nothing.
   const halted = (step, r, unstarted = false) => {
-    const why = broken(r);
+    const why = callFailure(r);
     if (why === 'dropped') return unstarted ? finish('dropped-unstarted', undefined, step) : finish('dropped');
     return why ? finish('failed', `${step} failed: ${why}`) : undefined;
   };
@@ -152,7 +143,7 @@ export async function main(argv, { hosts, run = realRunner(), out = (s) => proce
     // The host log keeps a run's and every resumed --collect-only's output; a --plan is not a run and leaves it alone.
     emit: (chunk) => { out(prefixLines(name, String(chunk))); if (!plan) appendFileSync(logPath, chunk); },
     log: (m) => err(`${m}\n`),
-    reattach: `ssh ${shQuote(host.ssh)} ${shQuote(engineCommand(host, stateDir, 'tail'))}`,
+    reattach: sshCommandLine(host.ssh, engineCommand(host, stateDir, 'tail')),
     collect: `${here} --collect-only`,
   });
 }

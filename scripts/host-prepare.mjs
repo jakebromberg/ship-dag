@@ -18,7 +18,7 @@ import { DEFAULT_REPOS_DIR, repoDirName } from './engine/repo-layout.mjs';
 import { coHome } from './lib/co-home.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { loadHosts } from './lib/hosts.mjs';
-import { SSH_OPTS, remoteCommand } from './lib/remote.mjs';
+import { SSH_MAX_BUFFER, SSH_OPTS, remoteCommand } from './lib/remote.mjs';
 import { configStateDir, planHost, probeScript, parseProbe } from './lib/host-prepare.mjs';
 import { isMain } from './lib/is-main.mjs';
 
@@ -29,9 +29,6 @@ const USAGE = 'usage: host-prepare.mjs <host> <config.<host>.json> [--dry-run] [
 
 /** The bound on a `gh repo clone`, which for a large repo outlasts the default 120 s. */
 export const CLONE_TIMEOUT_MS = 30 * 60_000;
-
-/** The output an ssh call may return: the probe carries the host's settings.json base64-encoded, past the 1 MiB default for a large file. */
-const SSH_MAX_BUFFER = 16 * 1024 * 1024;
 
 /** The real runner: `{ ssh(sshAlias, command, timeoutMs?), scp(sshAlias, from, to) }`, each bounded to `timeoutMs`. */
 export const realRunner = (timeoutMs = 120_000) => ({

@@ -229,7 +229,7 @@ for (const [name, args, replies, log, expected] of [
 test('main: a dropped connection prints resume commands with the host and its ssh alias shell-quoted, absolute paths and the --max-wait', async () => {
   const r = await cli(['--max-wait', '30'], [FRESH, { status: 255, stdout: '', stderr: '' }], { hosts: { box: { ...BOX, ssh: "o'box" } }, relativePaths: true });
   assert.equal(r.code, 255);
-  assert.match(r.err, /re-attach: ssh 'o'\\''box' '/);
+  assert.match(r.err, /re-attach: ssh -o BatchMode=yes -o ConnectTimeout=10 'o'\\''box' '/);
   assert.match(r.err, /collect: +node '\/[^']*host-run\.mjs' 'box' '\/[^']*config\.box\.json' --state '\/[^']*local' --max-wait 30 --collect-only/);
 });
 

@@ -7,7 +7,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mergeSettings, syncClaude } from './host-sync-claude.mjs';
-import { SSH_OPTS as BATCH } from './remote.mjs';
+import { RSYNC_SSH, SSH_OPTS as BATCH, remoteCommand } from './remote.mjs';
 import { validateHosts } from './hosts.mjs';
 
 // Lease entries are recognised by their command (it runs `cli-lease.js … hook`), as claude-orchestrator prints them.
@@ -200,3 +200,13 @@ for (const [name, fails] of [
     assert.ok(calls.some((c) => c[0] === 'rsync'), 'rsync ran');
   });
 }
+
+test('every ssh command is the remoteCommand form of a plain command, and rsync -e is the shared ssh string', () => {
+  const { dir, run, calls, host } = shellHost();
+  mkdirSync(join(dir, 'skills'));
+  syncClaude({ ...base, host, run });
+  for (const cmd of sshCmds(calls)) assert.equal(cmd, remoteCommand(cmd), cmd);
+  assert.equal(sshCmds(calls).filter((c) => c.includes('--print-settings-entry')).length, 1);
+  const rsync = calls.find((c) => c[0] === 'rsync');
+  assert.equal(rsync[rsync.indexOf('-e') + 1], RSYNC_SSH);
+});
