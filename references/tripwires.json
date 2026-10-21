@@ -64,6 +64,17 @@
       "reviewDate": "2026-12-07"
     },
     {
+      "id": "T-retro-approval",
+      "decision": "D9",
+      "metric": "retro-approval",
+      "unit": "approved / proposed refactors and plan adjustments over the newest `kind: retro` records, taken whole until their proposals reach 100; records with a legacy key (refactorsProposed, adjustmentsProposed, proposedPlanAdjustments, approvedAll) are left out; not limited to the current tuningVersion",
+      "baseline": "1130 of 1156 (97.8%) over the 196 retro records in the log on 2026-10-20, legacy-key records left out",
+      "trips": { "lowerAbove": 0.9 },
+      "minSample": 100,
+      "action": "Point D is not filtering: tighten the retrospective (#34) or offer to approve its proposals in bulk instead of one at a time.",
+      "reviewDate": "2026-12-19"
+    },
+    {
       "id": "T-coverage",
       "decision": "D6",
       "metric": "coverage",

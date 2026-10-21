@@ -29,9 +29,11 @@ export const loadTripwires = (path = TRIPWIRES_PATH) => JSON.parse(readFileSync(
  */
 export function tripwireContext(records, { version, now = Date.now(), escapes, audit } = {}) {
   const issues = records.filter((r) => r.kind !== 'retro');
-  return { records: issues, window: issues.filter((r) => ver(r) === version), version, now, escapes, audit };
+  return { records: issues, window: issues.filter((r) => ver(r) === version), retro: records.filter((r) => r.kind === 'retro'), version, now, escapes, audit };
 }
 
+/** Retro keys from before the canonical counts: a record that carries one has counts `normalizeRetroRecord` zero-filled, so it is no sample. */
+const LEGACY_RETRO = ['refactorsProposed', 'adjustmentsProposed', 'proposedPlanAdjustments', 'approvedAll'];
 const ver = (r) => r.tuningVersion ?? 0;
 const at = (r, path) => path.split('.').reduce((v, k) => v?.[k], r);
 /** A merged record whose `pr` parsePr reads (ref.mjs's `isPr` tests a bare number). */
@@ -81,6 +83,19 @@ const EVALUATORS = {
   fallback: (t, { window, now }) => {
     const month = window.filter((r) => Date.parse(r.ts) >= now - 30 * DAY);
     return share(month.filter((r) => r.path === 'workflow').length, month.length, t.trips, t.minSample);
+  },
+
+  // Not tuning-versioned (a retro record carries no tuningVersion): the newest records, taken whole, until their proposals reach minSample.
+  'retro-approval': (t, { retro }) => {
+    const newest = retro.filter((r) => !LEGACY_RETRO.some((key) => key in r)).sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+    let [k, n, records] = [0, 0, 0];
+    for (const r of newest) {
+      if (n >= t.minSample) break;
+      n += r.proposedRefactors + r.proposedAdjustments;
+      k += r.approvedRefactors + r.approvedAdjustments;
+      records += 1;
+    }
+    return { ...share(k, n, t.trips, t.minSample), records };
   },
 
   // A backfilled earlier report whose row lists no `sessionIds` can still absorb a later re-run's sessions, so a version's mean can read low.

@@ -70,6 +70,15 @@ Each entry's *Review date* is also the `reviewDate` of every row in `references/
 - **PR:** none. #11 and #17 are closed.
 - **Review date:** 2026-12-07.
 
+### D9: point D's approval rate is watched
+
+- **Choice:** the step 6.5 retrospective stays, and a tripwire reports when its proposals are approved almost wholesale. Over the newest retro records, taken whole until their proposals (refactors plus plan adjustments) reach 100, it trips when the Wilson lower bound of the approval rate is above 0.9. A record with 0 proposals adds nothing. It is not limited to the current tuning version, because retro records carry none.
+- **Decided:** 2026-10-20, in the comment on #291.
+- **Tripwire:** T-retro-approval.
+- **Baseline:** 1130 of 1156 proposals approved (97.8%) over the 196 retro records in the log on 2026-10-20, as a frozen cohort. The 2 records with legacy keys are left out of the baseline and of the window: `sd-20260916-213414` (`approvedAll`) and `sd-20261002-211445` (`refactorsProposed`, `adjustmentsProposed`). The newest 100 proposals read 104 of 104, so it is expected to trip on the first wave after it ships.
+- **PR:** none yet; it closes #291.
+- **Review date:** 2026-12-19.
+
 ## Cross-cutting tripwires
 
 A tripwire whose `decision` in `tripwires.json` is `all` guards every decision at once, so it has its own entry and review date here.
