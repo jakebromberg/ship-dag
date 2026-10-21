@@ -47,6 +47,13 @@ test('waveSidecar builds one entry', () => {
   ]);
 });
 
+test('waveSidecar records the host only when given one', () => {
+  assert.equal(wave(spec()).host, undefined);
+  assert.equal('host' in wave(spec()), false);
+  assert.equal(wave(spec(), { host: 'box' }).host, 'box');
+  assert.deepEqual(Object.keys(wave(spec(), { host: 'box' })).slice(0, 2), ['runId', 'host']);
+});
+
 test('waveSidecar records the effort, its source, and the model the config resolved', () => {
   for (const [name, issue, want] of [
     ['own effort overrides the tuning map', { complexity: 'complex', effort: 'low' }, { effort: 'low', effortSource: 'override' }],
