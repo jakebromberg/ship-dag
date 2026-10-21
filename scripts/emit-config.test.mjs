@@ -575,6 +575,41 @@ for (const [what, text] of [
   });
 }
 
+// An owner/repo#N is never a colour, an ordinal or an anchor, whatever its number looks like.
+for (const [what, text, repo, number] of [
+  ['a repeated-digit number', 'If WXYC/dj-site#333 lands first, reuse its hook.', 'WXYC/dj-site', 333],
+  ['a zero-run number', 'Needs WXYC/dj-site#000.', 'WXYC/dj-site', 0],
+  ['a 6-digit number', 'Needs WXYC/media-worker#123456.', 'WXYC/media-worker', 123456],
+  ['an 8-digit number', 'Needs o/r#12345678.', 'o/r', 12345678],
+  ['a single-digit number', 'Needs WXYC/media-worker#3.', 'WXYC/media-worker', 3],
+  ['an ordinary number', 'Needs WXYC/dj-site#2253.', 'WXYC/dj-site', 2253],
+]) {
+  test(`an owner-qualified ref with ${what} is read and noted`, () => {
+    const { readRef, calls } = stubReader({ [`${repo}#${number}`]: merged('Landed') });
+    const d = buildConfig(sinceSpec(text), loadTuning(), { readRef }).issues[0].description;
+    assert.deepEqual(calls, [`${repo}#${number}`]);
+    assert.match(d, new RegExp(`^Since this plan was written: ${repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}#${number} merged \\(Landed\\)\\.`));
+  });
+}
+
+// A repo name or acronym, a space, then #N cannot be told from the issue's own repo cheaply, so it is skipped
+// (no read, no false fact), unless the word is the issue's own repo name or an ordinary word such as "PR".
+for (const [text, reads] of [
+  ['After dj-site #2253 merges.', []],
+  ['Reuse LML #337 and wxyc-shared #12.', []],
+  ['Reuse BS #873.', []],
+  ['After PR #55 merges.', [`${R}#55`]],
+  ['After issue #55 merges.', [`${R}#55`]],
+  ['See library-metadata-lookup #55.', [`${R}#55`]],
+  ['Done in this sentence. #55 too.', [`${R}#55`]],
+]) {
+  test(`a bare #N after a word: "${text}"`, () => {
+    const { readRef, calls } = stubReader({ [`${R}#55`]: merged('Fifty-five') });
+    buildConfig(sinceSpec(text), loadTuning(), { readRef });
+    assert.deepEqual(calls, reads);
+  });
+}
+
 test('a failed read names the ref as state unknown, warns, and still emits', () => {
   const { readRef } = stubReader({ [`${R}#55`]: new Error('boom') });
   const warnings = [];
@@ -596,6 +631,10 @@ for (const [name, triagedAt, closedAt, notes] of [
   ['a zone-less time is read as UTC, so a close just after it counts', '2026-10-16T12:00:00', '2026-10-16T12:30:00Z', true],
   ['a zone-less time is read as UTC, so a close just before it does not', '2026-10-16T12:00:00', '2026-10-16T11:30:00Z', false],
   ['a numeric offset', '2026-10-16T05:00:00-07:00', '2026-10-16T12:30:00Z', true],
+  ['a space-separated zone-less time is read as UTC, so a close just after it counts', '2026-10-16 12:00:00', '2026-10-16T12:30:00Z', true],
+  ['a space-separated zone-less time is read as UTC, so a close just before it does not', '2026-10-16 12:00:00', '2026-10-16T11:30:00Z', false],
+  ['a space-separated time with a Z', '2026-10-16 12:00:00Z', '2026-10-16T11:30:00Z', false],
+  ['an offset with no colon', '2026-10-16T05:00:00-0700', '2026-10-16T12:30:00Z', true],
 ]) {
   test(`triagedAt: ${name}`, () => {
     const { readRef } = stubReader({ [`${R}#55`]: merged('x', closedAt) });
@@ -604,13 +643,50 @@ for (const [name, triagedAt, closedAt, notes] of [
   });
 }
 
-test('an unreadable triagedAt is ignored with a warning and no reads', () => {
-  const { readRef, calls } = stubReader({ [`${R}#55`]: merged('x') });
-  const warnings = [];
-  const d = buildConfig(sinceSpec('See #55.', { triagedAt: 'yesterday' }), loadTuning(), { readRef, warn: (m) => warnings.push(m) }).issues[0].description;
-  assert.equal(d, 'See #55.');
-  assert.deepEqual(calls, []);
-  assert.match(warnings.join(), /triagedAt.*yesterday/);
+for (const triagedAt of ['yesterday', 'October 16, 2026 12:00', '2026-10-16 noon', '16/10/2026 12:00']) {
+  test(`an unreadable triagedAt (${triagedAt}) is ignored with a warning and no reads`, () => {
+    const { readRef, calls } = stubReader({ [`${R}#55`]: merged('x') });
+    const warnings = [];
+    const d = buildConfig(sinceSpec('See #55.', { triagedAt }), loadTuning(), { readRef, warn: (m) => warnings.push(m) }).issues[0].description;
+    assert.equal(d, 'See #55.');
+    assert.deepEqual(calls, []);
+    assert.match(warnings.join(), /triagedAt/);
+  });
+}
+
+// V8 reads a zone-less time as host-local, and CI's host is UTC, which hides a missing UTC rule. So the
+// zone-less cases run in child processes under zones either side of UTC, where reading them as local fails.
+for (const tz of ['America/Los_Angeles', 'Pacific/Auckland']) {
+  test(`a zone-less triagedAt is read as UTC even when the host zone is ${tz}`, () => {
+    const child = `
+      import { buildConfig } from ${JSON.stringify(new URL('./emit-config.mjs', import.meta.url).href)};
+      import { load } from ${JSON.stringify(new URL('./lib/tuning.mjs', import.meta.url).href)};
+      const out = {};
+      for (const [k, triagedAt, closedAt] of JSON.parse(process.argv[1])) {
+        const s = { name: 'n', repo: 'o/r', stateDir: '/s', projectRoot: '/p', promptTemplate: '/t', repos: { 'o/r': { baseBranch: 'main' } },
+          issues: [{ number: 1, repo: 'o/r', digest: 'See #55.', triagedAt }] };
+        const readRef = () => ({ state: 'closed', title: 'x', closed_at: closedAt, pull_request: { merged_at: closedAt } });
+        out[k] = buildConfig(s, load(), { readRef }).issues[0].description.startsWith('Since this plan was written');
+      }
+      console.log(JSON.stringify(out));`;
+    const cases = [
+      ['T after', '2026-10-16T12:00:00', '2026-10-16T12:30:00Z'],
+      ['T before', '2026-10-16T12:00:00', '2026-10-16T11:30:00Z'],
+      ['space after', '2026-10-16 12:00:00', '2026-10-16T12:30:00Z'],
+      ['space before', '2026-10-16 12:00:00', '2026-10-16T11:30:00Z'],
+    ];
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', child, JSON.stringify(cases)], { encoding: 'utf8', env: { ...process.env, TZ: tz } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { 'T after': true, 'T before': false, 'space after': true, 'space before': false });
+  });
+}
+
+test('one read serves every issue in the wave that names the same ref, and a failed read is not retried', () => {
+  const { readRef, calls } = stubReader({ [`${R}#55`]: merged('Fifty-five'), [`${R}#66`]: new Error('boom') });
+  const s = spec({ issues: [1, 2, 3].map((n) => ({ number: n, repo: R, digest: 'See #55 and #66.', triagedAt: TRIAGED })) });
+  const c = buildConfig(s, loadTuning(), { readRef, warn: () => {} });
+  assert.deepEqual(calls, [`${R}#55`, `${R}#66`]);
+  for (const i of c.issues) assert.match(i.description, /#55 merged \(Fifty-five\).*#66 state unknown/);
 });
 
 test('the block names the repo\'s own base branch', () => {
