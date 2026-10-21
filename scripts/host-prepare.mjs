@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // host-prepare.mjs — ready a remote host for a wave: check version parity with this Mac, clone missing repos, fetch
-// origin, and place the host's config at <stateDir>/config.json. Never updates ship-dag or the orchestrator, and never
+// origin, and place the host's config at <stateDir>/config.json, <stateDir> being the config's configDir less its
+// trailing /state (emit-config writes no stateDir field). Never updates ship-dag or the orchestrator, and never
 // touches an existing checkout's working tree. Refusals exit 1 naming the fix; a second run changes nothing.
 //
 // Usage: node host-prepare.mjs <host> <config.<host>.json> [--dry-run] [--min-free-gb N]
@@ -17,7 +18,7 @@ import { DEFAULT_REPOS_DIR, repoDirName } from './engine/repo-layout.mjs';
 import { coHome } from './lib/co-home.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { loadHosts } from './lib/hosts.mjs';
-import { planHost, probeScript, parseProbe, withCoHome } from './lib/host-prepare.mjs';
+import { configStateDir, planHost, probeScript, parseProbe, withCoHome } from './lib/host-prepare.mjs';
 import { isMain } from './lib/is-main.mjs';
 
 const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
@@ -47,8 +48,8 @@ export function prepareHost({ name, hosts, config, configPath, local, run, minFr
     try { return fn(host.ssh, ...args); } catch (e) { throw new Error(`host-prepare: ${name}: ${step} failed: ${e.message}`); }
   };
   const repos = Object.keys(config.repos ?? {}).map((repo) => ({ repo, name: repo.split('/').pop(), layoutDir: repoDirName(repo, { reposDir }) }));
-  const probe = parseProbe(call('probe', run.ssh, probeScript(host, config.stateDir, repos.map((r) => r.name))));
-  const { refusals, plan } = planHost({ name, host, stateDir: config.stateDir, projectRoot: config.projectRoot, configPath, repos, local: { ...local, configHash: sha256(configPath) }, probe, minFreeGb });
+  const probe = parseProbe(call('probe', run.ssh, probeScript(host, configStateDir(config), repos.map((r) => r.name))));
+  const { refusals, plan } = planHost({ name, host, config, configPath, repos, local: { ...local, configHash: sha256(configPath) }, probe, minFreeGb });
   for (const r of refusals) log(r);
   if (refusals.length) return 1;
   for (const a of plan) {

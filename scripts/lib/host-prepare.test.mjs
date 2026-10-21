@@ -5,13 +5,25 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { planHost, probeScript, parseProbe } from './host-prepare.mjs';
+import { buildConfigsByHost } from '../emit-config.mjs';
+import { validateHosts } from './hosts.mjs';
+import { configStateDir, planHost, probeScript, parseProbe } from './host-prepare.mjs';
 
-const host = { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' };
+const hosts = validateHosts({ box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag', toolchains: ['node'] } });
+const host = hosts.box;
+// The configs emit-config --by-host writes: o/app runs on box, o/ios stays on this Mac.
+const spec = {
+  name: 'ship-dag-run1', repo: 'o/app', stateDir: '/m/.local/state/ship-dag/engine/run1', projectRoot: '/m/D', promptTemplate: '/m/p.md',
+  repos: { 'o/app': { baseBranch: 'main', commands: ['npm test'], host: 'box' }, 'o/ios': { baseBranch: 'main', commands: ['xcodebuild test'] } },
+  issues: [{ number: 1, title: 'one' }, { number: 2, repo: 'o/ios', title: 'two' }],
+};
+const configs = Object.fromEntries(buildConfigsByHost(spec, hosts).map((c) => [c.host, c.config]));
+const config = configs.box;
+const hostState = '/h/.local/state/ship-dag/engine/run1';
 const repos = [{ repo: 'o/app', name: 'app', layoutDir: 'app' }];
 const local = { sdSha: 'aaa', coSha: 'bbb', claudeHash: 'ccc', configHash: 'new' };
 const good = { sdSha: 'aaa', coSha: 'bbb', distNewest: '/co/dist/src/index.js', srcNewer: '', claudeHash: 'ccc', configHash: 'old', freeGb: 50, present: ['app'], origins: { app: 'git@github.com:O/app.git' } };
-const run = (over = {}, extra = {}) => planHost({ name: 'box', host, stateDir: '/h/s', projectRoot: '/h/D', configPath: '/c.json', repos, local, probe: { ...good, ...over }, ...extra });
+const run = (over = {}, extra = {}) => planHost({ name: 'box', host, config, configPath: '/c.json', repos, local, probe: { ...good, ...over }, ...extra });
 const steps = (r) => r.plan.map((a) => a.step);
 
 for (const [name, over, extra, expected] of [
@@ -38,8 +50,10 @@ for (const [name, over, extra, message] of [
   ['the present directory is another repo', { origins: { app: 'https://github.com/x/app' } }, {}, /\/h\/D\/app exists but its origin is https:\/\/github\.com\/x\/app, not o\/app; move it aside/],
   ['the present directory has no origin', { origins: {} }, {}, /\/h\/D\/app exists but its origin is unset, not o\/app/],
   ['two repos share a directory name', { present: [] }, { repos: [...repos, { repo: 'p/app', name: 'app', layoutDir: 'app' }] }, /o\/app and p\/app both clone to \/h\/D\/app/],
-  ['the config has no stateDir', {}, { stateDir: undefined }, /config stateDir undefined is not under \/h\/; pass the config emit-config --by-host wrote for box/],
-  ['the config is another host\'s', {}, { stateDir: '/elsewhere/s', projectRoot: '/elsewhere/D' }, /stateDir \/elsewhere\/s is not under \/h\/.*\n.*projectRoot \/elsewhere\/D is not \/h\/D/],
+  ['the config has no configDir', {}, { config: { ...config, configDir: undefined } }, /config configDir undefined and worktreeDir \/h\/\.local\/state\/ship-dag\/engine\/run1\/worktrees are not <dir>\/state and a path under <dir>; pass the config emit-config --by-host wrote for box/],
+  ['the configDir does not end in /state', {}, { config: { ...config, configDir: `${hostState}/conf` } }, /config configDir \/h\/\.local\/state\/ship-dag\/engine\/run1\/conf and worktreeDir .* are not <dir>\/state/],
+  ['the worktreeDir is outside the state dir', {}, { config: { ...config, worktreeDir: '/h/wt' } }, /worktreeDir \/h\/wt are not <dir>\/state and a path under <dir>; pass the config/],
+  ['the config is this Mac\'s, not box\'s', {}, { config: configs.local }, /config state dir \/m\/\.local\/state\/ship-dag\/engine\/run1 is not under \/h\/.*\n.*projectRoot \/m\/D is not \/h\/D/],
 ]) {
   test(`refuses and plans nothing when ${name}`, () => {
     const r = run(over, extra);
@@ -47,6 +61,26 @@ for (const [name, over, extra, message] of [
     assert.match(r.refusals.join('\n'), message);
   });
 }
+
+test("emit-config --by-host's config for box plans the clone, fetch, mkdir and copy into box's ~/.local/state/ship-dag/engine/<runId>", () => {
+  const r = run({ present: [] });
+  assert.deepEqual(r.refusals, []);
+  assert.deepEqual(r.plan, [
+    { step: 'clone o/app', ssh: "gh repo clone 'o/app' '/h/D/app'", slow: true },
+    { step: 'fetch o/app', ssh: "git -C '/h/D/app' fetch origin" },
+    { step: 'mkdir stateDir', ssh: `mkdir -p '${hostState}'` },
+    { step: 'copy config', scp: ['/c.json', `${hostState}/config.json`] },
+  ]);
+});
+
+for (const [name, cfg, expected] of [
+  ['the --by-host config for box', config, hostState],
+  ['the --by-host config for this Mac', configs.local, '/m/.local/state/ship-dag/engine/run1'],
+  ['a configDir not ending in /state', { ...config, configDir: `${hostState}/conf` }, undefined],
+  ['a worktreeDir outside the state dir', { ...config, worktreeDir: '/h/wt' }, undefined],
+  ['a bare /state configDir', { configDir: '/state', worktreeDir: '/worktrees' }, undefined],
+  ['no dirs at all', {}, undefined],
+]) test(`configStateDir: ${name}`, () => assert.equal(configStateDir(cfg), expected));
 
 test('disk exactly at the threshold passes', () => assert.deepEqual(run({ freeGb: 10 }).refusals, []));
 
@@ -59,7 +93,7 @@ test('parseProbe reads key=value lines, freeKb as a number, and every present re
 });
 
 /** Run the generated probe with `sh` against a fake host in a temp dir: `app` cloned from o/app, `lib` (the last) absent; ages are seconds ago. */
-function probeFakeHost({ dist = true, srcAge = 200, distAge = 100 } = {}) {
+function probeFakeHost({ dist = true, srcAge = 200, distAge = 100, junkAge } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'host-prepare-probe-'));
   const fake = { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') };
   const co = join(home, 'Developer', 'claude-orchestrator');
@@ -69,6 +103,7 @@ function probeFakeHost({ dist = true, srcAge = 200, distAge = 100 } = {}) {
   if (dist) {
     touch(join(co, 'dist', 'src', 'index.js'), distAge);
     utimesSync(join(co, 'dist'), now - 10_000, now - 10_000); // tsc never touches the dist directory entry itself
+    if (junkAge !== undefined) touch(join(co, 'dist', 'src', '.DS_Store'), junkAge); // not a tsc output, so not a build
   }
   mkdirSync(join(fake.reposDir, 'app'), { recursive: true });
   execFileSync('git', ['-C', join(fake.reposDir, 'app'), 'init', '-q']);
@@ -86,6 +121,7 @@ for (const [name, opts, refused] of [
   ['dist built after its sources passes, however old the dist directory entry', {}, null],
   ['a source edited after the build is refused', { srcAge: 50 }, /dist\/src is older than .*src\/index\.ts/],
   ['a missing dist is refused', { dist: false }, /dist\/src is missing/],
+  ['a stray .DS_Store newer than the source is not a build, so the edit is still refused', { srcAge: 50, junkAge: 10 }, /dist\/src is older than .*src\/index\.ts/],
 ]) {
   test(`the probe's dist freshness: ${name}`, () => {
     const { co, probe } = probeFakeHost(opts);
