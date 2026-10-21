@@ -2,11 +2,7 @@
 // Never touches projects/, sessions/, history.jsonl, file-history/ or credentials. `run(cmd, args, input)` is injected
 // and returns { status, stdout, stderr }, so the steps are testable without ssh.
 import { coDistPathIn } from './co-home.mjs';
-
-const q = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
-
-// Never prompt for a password or host key, and give up on an unreachable host.
-const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
+import { SSH_OPTS, remoteCommand, shQuote as q } from './remote.mjs';
 
 // A lease hook runs `node '<…>/cli-lease.js' hook` (claude-orchestrator's `hook --print-settings-entry` output) or the
 // installed `claude-orchestrator-lease hook`.
@@ -38,7 +34,7 @@ export function mergeSettings(hostSettings, entry) {
   return { ...hostSettings, hooks };
 }
 
-/** Sync `host` ({ ssh, home, coHome? }); returns { changes, failures }, both lists of strings. Changes nothing when `dryRun`. */
+/** Sync `host` (a validated hosts.json entry: { ssh, home, coHome, … }); returns { changes, failures }, both lists of strings. Changes nothing when `dryRun`. */
 export function syncClaude({ host, run, readFile, localHome, dryRun = false, now = () => new Date(), log = () => {} }) {
   const dir = `${host.home}/.claude`;
   const changes = [];
@@ -89,10 +85,8 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
     const file = `${dir}/settings.json`;
     const raw = get(file);
     const current = raw.trim() ? JSON.parse(raw) : {};
-    // The host's checkout, defaulting like CO_HOME does here (host-prepare's withCoHome, #385).
-    const entryScript = coDistPathIn(host.coHome ?? `${host.home}/Developer/claude-orchestrator`, 'cli-lease.js');
-    // A login shell, so node is on the PATH the host's profile sets (Homebrew's is not in a bare ssh command's).
-    const printed = ssh(`exec "$SHELL" -lc ${q(`node ${q(entryScript)} hook --print-settings-entry`)}`);
+    const entryScript = coDistPathIn(host.coHome, 'cli-lease.js');
+    const printed = ssh(remoteCommand(`node ${q(entryScript)} hook --print-settings-entry`));
     const merged = mergeSettings(current, JSON.parse(printed));
     if (JSON.stringify(merged) === JSON.stringify(current)) return;
     change('merge lease hook entries into settings.json');
