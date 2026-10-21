@@ -269,6 +269,10 @@ export function readRecords(path = telemetryPath()) {
  * pass-scoped, not issue-scoped) and aggregated into their own `retro` section.
  * `byRepo` groups the same population by repo (casing folded by `sameRepo`, keyed as first written); a repo with
  * fewer than `minSample` reached rows carries `n` and no rates.
+ * `issues` counts distinct issues (`latestByRef`, casing folded), those merged in the window, the mean non-infra rows
+ * per merged issue (`null` with none), and those whose latest record is no merge and no maintainer deferral. An engine
+ * death is not a deferral, so it is unresolved, as is a point-F deferral of an engine-died ref (its reason is kept).
+ * `legacyDeath` is not read: the historical rows stay model errors here.
  */
 export function report(records, { minSample = 20 } = {}) {
   const issues = records.filter((r) => r.kind !== 'retro');
@@ -305,6 +309,16 @@ export function report(records, { minSample = 20 } = {}) {
       triageMiss: { cleared: clearedHere.length, miss: missOf(clearedHere), rate: clearedHere.length ? missOf(clearedHere) / clearedHere.length : 0 },
     };
   }
+  const latest = latestByRef(records);
+  const attempts = groupBy((r) => refKey(formatRef(r.repo, r.issue)), modelIssues);
+  const mergedKeys = new Set(issues.filter((r) => r.finalState === 'merged').map((r) => refKey(formatRef(r.repo, r.issue))));
+  const unresolved = [...latest.values()].filter((r) => r.finalState !== 'merged' && !(r.finalState === 'deferred' && r.failureReason !== 'engine-died'));
+  const issueOutcomes = {
+    distinct: latest.size,
+    merged: mergedKeys.size,
+    unresolved: unresolved.length,
+    attemptsPerMerged: mergedKeys.size ? mean([...mergedKeys].map((k) => (attempts.get(k) ?? []).length)) : null,
+  };
   const hitlOf = (side) => ({
     n: issues.length,
     count: issues.filter((r) => r.hitl && r.hitl[side]).length,
@@ -320,6 +334,7 @@ export function report(records, { minSample = 20 } = {}) {
     firstPassYield: yieldOf(reached),
     byComplexity,
     byRepo,
+    issues: issueOutcomes,
     minSample,
     triageMiss: { cleared: cleared.length, miss, rate: cleared.length ? miss / cleared.length : 0 },
     bounceRate: mean(reached.map((r) => r.bounces ?? 0)),
@@ -359,6 +374,8 @@ export function renderReport(rep) {
     `HITL point-A:      ${rep.hitl.pointA.count}/${rep.hitl.pointA.n} (${pct(rep.hitl.pointA.rate)})`,
     `HITL point-B:      ${rep.hitl.pointB.count}/${rep.hitl.pointB.n} (${pct(rep.hitl.pointB.rate)})`,
   );
+  const i = rep.issues;
+  lines.push(`issues:            ${i.distinct} distinct, ${i.merged} merged, ${i.unresolved} unresolved, ${i.attemptsPerMerged == null ? '—' : i.attemptsPerMerged.toFixed(2)} attempts per merged`);
   // Gated on a non-empty byRepo so a log with no rows reached renders as before.
   const repos = Object.entries(rep.byRepo ?? {}).sort(([, a], [, b]) => b.n - a.n);
   if (repos.length) {

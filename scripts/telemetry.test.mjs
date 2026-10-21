@@ -1797,3 +1797,27 @@ describe('report: byRepo', () => {
     assert.ok(text.indexOf('b/big') < text.indexOf('a/small'));
   });
 });
+
+describe('report: issues block', () => {
+  const at = (n, over) => normalizeRecord(base({ ts: `2026-07-0${n}T00:00:00Z`, ...over }), FIXED);
+  const err = { finalState: 'error', implStatus: 'error', failureReason: null };
+  const death = { finalState: 'deferred', implStatus: 'error', failureReason: 'engine-died' };
+  const cases = [
+    { name: 'merged on its first row', recs: [at(1, {})], want: { distinct: 1, merged: 1, unresolved: 0, attemptsPerMerged: 1 } },
+    { name: 'merged after an error row', recs: [at(1, err), at(2, {})], want: { distinct: 1, merged: 1, unresolved: 0, attemptsPerMerged: 2 } },
+    { name: 'only infra deaths: distinct, unresolved, no attempts', recs: [at(1, death), at(2, { ...death, runId: 'r2' })], want: { distinct: 1, merged: 0, unresolved: 1, attemptsPerMerged: null } },
+    { name: 'two runs: an error, then a merge', recs: [at(1, { ...err, runId: 'r1' }), at(2, { runId: 'r2' })], want: { distinct: 1, merged: 1, unresolved: 0, attemptsPerMerged: 2 } },
+    { name: 'repo casings are one issue', recs: [at(1, { ...err, repo: 'WXYC/x' }), at(2, { repo: 'wxyc/X' })], want: { distinct: 1, merged: 1, unresolved: 0, attemptsPerMerged: 2 } },
+    { name: 'merged after an engine death: the death is no attempt', recs: [at(1, death), at(2, { runId: 'r2' })], want: { distinct: 1, merged: 1, unresolved: 0, attemptsPerMerged: 1 } },
+    { name: 'a maintainer deferral is not unresolved; an error is', recs: [at(1, { issue: 1, finalState: 'deferred', implStatus: null, failureReason: null }), at(1, { issue: 2, ...err })], want: { distinct: 2, merged: 0, unresolved: 1, attemptsPerMerged: null } },
+    { name: 'a retro record is no issue', recs: [normalizeRecord(retroBase(), FIXED), at(1, {})], want: { distinct: 1, merged: 1, unresolved: 0, attemptsPerMerged: 1 } },
+  ];
+  for (const { name, recs, want } of cases) {
+    test(name, () => assert.deepEqual(report(recs).issues, want));
+  }
+
+  test('renders the block before the by-repo table, with a dash for no merges', () => {
+    assert.match(renderReport(report([at(1, death), at(1, { issue: 3 })])), /issues:\s+2 distinct, 1 merged, 1 unresolved, 1\.00 attempts per merged/);
+    assert.match(renderReport(report([at(1, death)])), /1 distinct, 0 merged, 1 unresolved, — attempts per merged/);
+  });
+});
