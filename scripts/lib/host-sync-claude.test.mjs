@@ -3,9 +3,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeSettings, syncClaude } from './host-sync-claude.mjs';
 
-const pre = { matcher: 'Bash', hooks: [{ type: 'command', command: 'pre' }] };
-const post = { matcher: 'Bash', hooks: [{ type: 'command', command: 'post' }] };
+// Lease entries are recognised by their command (it runs `cli-lease.js … hook`), as claude-orchestrator prints them.
+const lease = (path, extra = {}) => ({ matcher: 'Bash', hooks: [{ type: 'command', command: `grep -qE 'npm' || exit 0; exec node '${path}/cli-lease.js' hook`, ...extra }] });
+const pre = lease('/co/dist/src', { timeout: 500 });
+const post = lease('/co/dist/src');
+const stalePre = lease('/old/dist/src', { timeout: 450 });
 const other = { matcher: 'Edit', hooks: [{ type: 'command', command: 'mine' }] };
+const mineBash = { type: 'command', command: 'echo cli-lease.js is mentioned but not run as a hook' };
 const entry = { hooks: { PreToolUse: [pre], PostToolUse: [post] } };
 
 for (const [name, host, expected] of [
@@ -13,9 +17,15 @@ for (const [name, host, expected] of [
   ['host-only keys are kept', { model: 'x', env: { A: '1' } }, { model: 'x', env: { A: '1' }, hooks: { PreToolUse: [pre], PostToolUse: [post] } }],
   ['host hook entries are kept and the new one appended', { hooks: { PreToolUse: [other], Stop: [other] } }, { hooks: { PreToolUse: [other, pre], Stop: [other], PostToolUse: [post] } }],
   ['an entry already present is not added again', { hooks: { PreToolUse: [pre], PostToolUse: [post] } }, { hooks: { PreToolUse: [pre], PostToolUse: [post] } }],
+  ['a stale lease entry is replaced in place, not duplicated', { hooks: { PreToolUse: [other, stalePre, other], PostToolUse: [post] } }, { hooks: { PreToolUse: [other, pre, other], PostToolUse: [post] } }],
+  ['a non-lease hook sharing a group with a stale lease hook survives', { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [stalePre.hooks[0], mineBash] }] } }, { hooks: { PreToolUse: [pre, { matcher: 'Bash', hooks: [mineBash] }], PostToolUse: [post] } }],
+  ['a lease hook run through the installed claude-orchestrator-lease bin is replaced too', { hooks: { PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'claude-orchestrator-lease hook' }] }] } }, { hooks: { PreToolUse: [pre], PostToolUse: [post] } }],
+  ['a stale lease entry on an event no longer printed is removed', { hooks: { PostToolUseFailure: [post], Stop: [other, post] } }, { hooks: { PreToolUse: [pre], PostToolUse: [post], Stop: [other] } }],
 ]) {
   test(`mergeSettings: ${name}`, () => {
-    assert.deepEqual(mergeSettings(host, entry), expected);
+    const merged = mergeSettings(host, entry);
+    assert.deepEqual(merged, expected);
+    assert.deepEqual(mergeSettings(merged, entry), merged, 'merging the same printed entries again is a no-op');
   });
 }
 
@@ -58,14 +68,28 @@ test('--dry-run reports the changes and writes nothing', () => {
   assert.ok(calls.find((c) => c[0] === 'rsync').includes('-n'));
 });
 
-test('rsync adds without deleting and skips the ship-dag symlink; a failing step is reported and the rest still run', () => {
-  const files = { '/h/.claude/CLAUDE.md': 'GLOBAL\n' };
-  const { run } = fakeHost(files);
-  const calls = [];
-  const failing = (cmd, args, input) => (cmd === 'rsync' ? (calls.push([cmd, ...args]), { status: 23, stdout: '', stderr: 'boom' }) : run(cmd, args, input));
-  const { failures } = syncClaude({ ...base, run: failing });
-  assert.deepEqual(failures, ['skills: boom']);
+test('rsync adds without deleting and skips the ship-dag symlink', () => {
+  const { run, calls } = fakeHost({});
+  syncClaude({ ...base, run });
   const args = calls.find((c) => c[0] === 'rsync');
   assert.ok(args.includes('--exclude=/ship-dag') && !args.some((a) => a.startsWith('--delete')));
-  assert.ok(files['/h/.claude/settings.json']);
 });
+
+// Each step fails in turn; the steps after it must still run.
+for (const [name, fails, failure] of [
+  ['CLAUDE.md', (cmd, args) => cmd === 'ssh' && args[1].startsWith("cat '/h/.claude/CLAUDE.md'"), 'CLAUDE.md: '],
+  ['settings.json', (cmd, args) => cmd === 'ssh' && args[1].startsWith('node '), 'settings.json: '],
+  ['skills', (cmd) => cmd === 'rsync', 'skills: boom'],
+]) {
+  test(`a failing ${name} step is reported and the other steps still run`, () => {
+    const files = { '/h/.claude/CLAUDE.md': 'old\n' };
+    const { run, calls } = fakeHost(files);
+    const failing = (cmd, args, input) => (fails(cmd, args) ? (calls.push([cmd, ...args]), { status: 23, stdout: '', stderr: 'boom' }) : run(cmd, args, input));
+    const { failures } = syncClaude({ ...base, run: failing });
+    assert.equal(failures.length, 1);
+    assert.ok(failures[0].startsWith(failure) && failures[0].endsWith('boom'), failures[0]);
+    assert.equal(name === 'CLAUDE.md' || files['/h/.claude/CLAUDE.md'] === 'GLOBAL\n', true, 'CLAUDE.md written');
+    assert.equal(name === 'settings.json' || Boolean(files['/h/.claude/settings.json']), true, 'settings.json written');
+    assert.ok(calls.some((c) => c[0] === 'rsync'), 'rsync ran');
+  });
+}
