@@ -88,8 +88,8 @@ export function waveContextFor(stateDir, { report, startedAt: asOf }, { warn } =
   return config ? { entry: entryFromConfig(config), config, configFile, source: 'config' } : { entry: null, config, configFile, source: null };
 }
 
-/** Where a state dir keeps its wave configs, in the order they are searched: the dir, then the older layout's `state/`. */
-export const configDirs = (stateDir) => [stateDir, join(stateDir, 'state')];
+/** Where a state dir keeps its wave configs, in the order they are searched: the dir, a `--by-host` emit's `hosts/` (one `config.<host>.json` each), then the older layout's `state/`. */
+export const configDirs = (stateDir) => [stateDir, join(stateDir, 'hosts'), join(stateDir, 'state')];
 
 /**
  * The dirs under `baseDir` that hold waves of `runId`'s run family: every one whose name is `sameRun`

@@ -958,6 +958,16 @@ test('ingest-wave: a pre-sidecar config kept under <stateDir>/state/ is found to
   assert.deepEqual([rec.model, rec.policySource], ['opus', 'default']);
 }));
 
+test('ingest-wave: the config a --by-host emit wrote under hosts/ is found, so no "no config matches" warning', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) },
+  configs: { 'hosts/config.big.json': config([REF], { defaultModel: 'opus' }), 'hosts/config.local.json': config([REF2]) },
+}, (dir) => {
+  const warnings = [];
+  const [rec] = ingest(dir, {}, { warn: (m) => warnings.push(m) }).records;
+  assert.deepEqual([rec.model, rec.policySource], ['opus', 'default']);
+  assert.ok(!warnings.some((m) => /no config/.test(m)), warnings.join('\n'));
+}));
+
 test('ingest-wave: a torn sidecar line is reported through the warn it is handed', () => withStateDir({
   reports: { 'w1.json': stateReport([stateRow(REF)]) },
   files: { 'ship-dag-wave.jsonl': `{torn\n${JSON.stringify(sidecarEntry())}\n` },
@@ -1678,6 +1688,16 @@ describe('audit', () => {
   }, (base, dirs) => {
     const out = audit_(base, [logged()]);
     assert.deepEqual([out.neverReported.configs, out.notIngested], [[join(dirs[RUN_A], 'state', 'config-2.json')], []]);
+  }));
+
+  test('scans hosts/ for the configs of a --by-host wave: one a report matched is not never-reported, one none matched is', () => family({
+    [RUN_A]: {
+      reports: { 'w1.json': stateReport([stateRow(REF)]) },
+      configs: { 'hosts/config.local.json': config([REF]), 'hosts/config.big.json': config([REF2]) },
+    },
+  }, (base, dirs) => {
+    const out = audit_(base, [logged()]);
+    assert.deepEqual([out.neverReported.configs, out.notIngested], [[join(dirs[RUN_A], 'hosts', 'config.big.json')], []]);
   }));
 
   test('refuses a run id no dir under the base dir belongs to, rather than reading as all clear', () => family({

@@ -14,6 +14,7 @@
 8. **Rate-limit window can't be waited out cheaply** (point E) — the step-4 preflight (`scripts/rate-limit-preflight.mjs`), or the identical fork hit mid-recovery-recipe while waiting out a live rate-limit death, finds the five-hour window at/above threshold with the reset more than `--wait-max-minutes` away, or no reset time at all: wait / defer this wave (or issue) / stop the run.
 9. **Resource pressure or lease wait past its cap at a guarded step** (point F) — the resource preflight (`scripts/resource-preflight.mjs`), run before an engine invocation or a review/fix hand-off, still reads `critical` after `--wait-max-minutes` (default 15) of waiting, or step 6.2's reruns, a hand-off subagent's `lease-wait` returns or the resource route's stops for one ref pass their cap (see the table): wait / start anyway / defer this step / stop the run.
 10. **Tripped tripwire or overdue review** (point D) — step 7's `telemetry.mjs tripwires` reports a `tripped` state or a `reviewOverdue` date. Answered confirm-offline, retune, or dismiss-with-reason, in a grilling of its own in step 7.
+11. **A remote host cannot run its sub-wave** (step 4b) — `host-sync-claude`, `host-prepare` or `host-run` exits `3` (the host could not be reached, nothing changed or started on it), or `host-sync-claude`/`host-prepare` exits `1` (a failed sync, or drift the sync did not clear). See *A remote host that cannot run its sub-wave*.
 
 ## Protocol
 
@@ -83,6 +84,13 @@ The four choices:
 - **stop the run**.
 
 **Telemetry.** When the user chooses "start anyway" for an engine invocation, the main agent stamps `pressureOverride: true` in the `--outcomes` of that engine invocation's report for each row (for a filtered re-run, only in the re-run report's file), and `ingest-wave` carries it onto the derived records (`deriveWaveRecords` passes it through; `normalizeRecord` keeps unknown keys). When a row's rate-limit death was resumed at point E, the flag lands on the death record, because the death is the session the overridden engine ran; the continuation is a separate resume that ran without the override, so it does not carry the flag.
+
+## A remote host that cannot run its sub-wave, and remote rows
+
+Step 4b routes a remote script's exit on `EXIT` (`scripts/lib/remote.mjs`). Two outcomes come here; the rest are in SKILL.md's table.
+
+- **The host cannot start its sub-wave** (exit `3`, unreachable with nothing changed or started on it; or exit `1` from `host-sync-claude`/`host-prepare`, a failed sync or CLAUDE.md or lease-hook drift that `host-prepare` still refuses after the sync). Only this host's sub-wave stops; the other hosts' launch. Ask once, with the failing step and its message: **run its issues locally** (re-emit them with the host moved to `local`; nothing was launched there, so nothing can race), **wait** (retry the failed script when the host is back or the drift is fixed, not on a timer), or **defer** (leave its issues `pending`; if the user stops the run, give them `{"finalState":"deferred"}`, step 6.3). A host that answered `255` or `4` from `host-run` is not this case: its engine may still be running, so it is resumed with `--collect-only` and its issues are never run locally.
+- **Remote rows** (step 5's `resource` route on a row whose wave sidecar line's `host` is not `local`). The local session can neither inspect nor continue in a worktree under the host's state dir, so the commit count and dirty flag are read over ssh and a row with commits or a dirty tree goes to point E with three choices: **re-run it on the host** (a filtered re-run: a new `--by-host` emit into its own suffixed dir, `host-prepare`, `host-run`), **continue locally from the pushed branch**, or **defer**. Nothing runs a continuation session on the host. If the host worktree no longer exists, say so and offer the same three. A clean worktree with no commits is the filtered re-run on the same host, as for a local row.
 
 ## What does NOT escalate
 

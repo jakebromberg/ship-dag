@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // host-run.mjs — run a wave's engine on a remote host and collect its reports and logs into the local stateDir.
 //
-// Usage: node host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--collect-only]
+// Usage: node host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--preflight] [--collect-only]
 //
 // Starts the engine detached over ssh (a detached engine outlives the ssh session; an attached one dies with it) and
 // records its pid in <host stateDir>/host-run.pid, polls once a minute until the engine has exited or its report has
@@ -12,7 +12,8 @@
 // minutes) passed with the engine still running, and 255 when ssh dropped after the launch (the engine may still be
 // running; the message gives the commands to resume). A run refuses to start on a host state dir that already holds a report (each
 // wave needs its own state dir). `--collect-only` starts nothing and resumes the same wait on the recorded pid. A
-// `--plan` run only prints the read-only plan.
+// `--plan` run only prints the read-only plan. A `--preflight` run prints the host's resource-preflight JSON (run under the
+// engine's lease env, `--parallel` capped at the host's sessionSlots) and nothing else; it exits 3 when ssh dropped.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -21,10 +22,10 @@ import { loadHosts } from './lib/hosts.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { SSH_MAX_BUFFER, SSH_OPTS, callFailure, remoteCommand, shQuote, sshCommandLine } from './lib/remote.mjs';
 import { configStateDir } from './lib/host-prepare.mjs';
-import { DETACHED, LOG_CHUNK, PID_FILE, RSYNC_SAFE_PATH, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './lib/host-run.mjs';
+import { DETACHED, LOG_CHUNK, PID_FILE, RSYNC_SAFE_PATH, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, preflightCommand, prefixLines, reportsScript, rsyncArgs } from './lib/host-run.mjs';
 import { isMain } from './lib/is-main.mjs';
 
-const USAGE = 'usage: host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--collect-only]';
+const USAGE = 'usage: host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--preflight] [--collect-only]';
 const MINUTE = 60_000;
 const POLL_MS = MINUTE;
 const CALL_MS = 2 * MINUTE;
@@ -45,11 +46,11 @@ export const realRunner = () => ({
  * hosts.json entry and `stateDir` the host's state dir. `run` is the injected runner, `emit(chunk)` receives the
  * engine's output (a string or the raw log bytes) and `log(message)` host-run's own messages; `sleep(ms)` and `now()`
  * pace the polls and the `maxWaitMs` deadline. `reattach` and `collect` are the commands a dropped connection or the
- * deadline prints. A host state dir with a character outside `RSYNC_SAFE_PATH` is refused before any call. A run
+ * deadline prints. `preflight` runs only the host's resource preflight (its stdout is `emit`ted unprefixed, its stderr `log`ged). A host state dir with a character outside `RSYNC_SAFE_PATH` is refused before any call. A run
  * refuses to start when the host state dir already holds a report, since the wait could not tell it from this run's;
  * `--collect-only` resumes the recorded launch whatever the dir holds.
  */
-export async function hostRun({ name, host, stateDir, localState, parallel, plan, collectOnly, maxWaitMs = MAX_WAIT_MINUTES * MINUTE, run, emit, log, sleep, now = Date.now, reattach, collect }) {
+export async function hostRun({ name, host, stateDir, localState, parallel, plan, preflight, collectOnly, maxWaitMs = MAX_WAIT_MINUTES * MINUTE, run, emit, log, sleep, now = Date.now, reattach, collect }) {
   const engineLog = `${host.ssh}:${stateDir}/state/logs/orchestrator.log`;
   const pidFile = `${stateDir}/${PID_FILE}`;
   const finish = (kind, detail, step) => {
@@ -68,6 +69,12 @@ export async function hostRun({ name, host, stateDir, localState, parallel, plan
   }
   const ssh = (command) => run.ssh(host.ssh, command);
   const show = (r) => emit(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+  if (preflight) {
+    const r = ssh(preflightCommand(host, parallel));
+    emit(r.stdout ?? '');
+    if (r.stderr?.length) log(String(r.stderr).trimEnd());
+    return halted('the preflight', r, true) ?? finish(r.status === 0 ? 'done' : 'failed', `the preflight exited ${r.status}`);
+  }
   if (plan) {
     const r = ssh(engineCommand(host, stateDir, 'plan'));
     show(r);
@@ -121,7 +128,7 @@ export async function hostRun({ name, host, stateDir, localState, parallel, plan
  */
 export async function main(argv, { hosts, run = realRunner(), out = (s) => process.stdout.write(s), err = (s) => process.stderr.write(s), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now } = {}) {
   const flags = ['--state', '--parallel', '--max-wait'];
-  const unknown = argv.find((a) => a.startsWith('--') && ![...flags, '--plan', '--collect-only'].includes(a));
+  const unknown = argv.find((a) => a.startsWith('--') && ![...flags, '--plan', '--preflight', '--collect-only'].includes(a));
   if (unknown) throw new Error(`unknown option ${unknown}; ${USAGE}`);
   const [name, configPath, ...extra] = argv.filter((a, i) => !a.startsWith('--') && !flags.includes(argv[i - 1]));
   const state = stringOption(argv, '--state');
@@ -134,15 +141,17 @@ export async function main(argv, { hosts, run = realRunner(), out = (s) => proce
   const host = registry[name];
   const stateDir = configStateDir(JSON.parse(readFileSync(configPath, 'utf8')));
   if (!stateDir) throw new Error(`${configPath}: configDir and worktreeDir are not <dir>/state and a path under <dir>; pass the config emit-config --by-host wrote for ${name}`);
+  const preflight = argv.includes('--preflight');
   const plan = argv.includes('--plan');
+  const readOnly = plan || preflight;
   const logPath = `${state}/host-${name}.log`;
-  if (!plan) mkdirSync(state, { recursive: true });
+  if (!readOnly) mkdirSync(state, { recursive: true });
   // Absolute paths, so the printed command works from any directory, and the same --max-wait.
   const here = `node ${shQuote(fileURLToPath(import.meta.url))} ${shQuote(name)} ${shQuote(resolve(configPath))} --state ${shQuote(resolve(state))} --max-wait ${maxWait}`;
   return hostRun({
-    name, host, stateDir, localState: state, parallel, plan, collectOnly: argv.includes('--collect-only'), maxWaitMs: maxWait * MINUTE, run, sleep, now,
-    // The host log keeps a run's and every resumed --collect-only's output; a --plan is not a run and leaves it alone.
-    emit: (chunk) => { out(prefixLines(name, String(chunk))); if (!plan) appendFileSync(logPath, chunk); },
+    name, host, stateDir, localState: state, parallel, plan, preflight, collectOnly: argv.includes('--collect-only'), maxWaitMs: maxWait * MINUTE, run, sleep, now,
+    // The host log keeps a run's and every resumed --collect-only's output; a --plan or --preflight is not a run and leaves it alone.
+    emit: (chunk) => { out(preflight ? String(chunk) : prefixLines(name, String(chunk))); if (!readOnly) appendFileSync(logPath, chunk); },
     log: (m) => err(`${m}\n`),
     reattach: sshCommandLine(host.ssh, engineCommand(host, stateDir, 'tail')),
     collect: `${here} --collect-only`,
