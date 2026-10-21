@@ -75,7 +75,7 @@ import { INFRA_REASONS, RESOURCE_STOPS, ranOf } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
-import { isPr, parseRef, sameRepo } from './lib/ref.mjs';
+import { isPr, parseRef, refKey, sameRepo } from './lib/ref.mjs';
 import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
@@ -260,8 +260,10 @@ export function readRecords(path = telemetryPath()) {
  * memory-critical, lease-wait), tallied in `resourceStops`.
  * kind:"retro" records are excluded from every per-issue indicator (they are
  * pass-scoped, not issue-scoped) and aggregated into their own `retro` section.
+ * `byRepo` groups the same population by repo (casing folded by `sameRepo`, keyed as first written); a repo with
+ * fewer than `minSample` reached rows carries `n` and no rates.
  */
-export function report(records) {
+export function report(records, { minSample = 20 } = {}) {
   const issues = records.filter((r) => r.kind !== 'retro');
   const retros = records.filter((r) => r.kind === 'retro');
   // A failureReason: "rate-limited" record is an infra death (the wrapper's
@@ -281,8 +283,21 @@ export function report(records) {
   const byComplexity = {};
   const g = groupBy((r) => r.complexity, reached);
   for (const tier of TIERS) byComplexity[tier] = yieldOf(g.get(tier) || []);
-  const miss = cleared.filter((r) => r.implStatus === 'blocked' || r.reviewVerdict === 'blocking').length;
-  const blocking = reached.filter((r) => r.reviewVerdict === 'blocking').length;
+  const missOf = (rs) => rs.filter((r) => r.implStatus === 'blocked' || r.reviewVerdict === 'blocking').length;
+  const blockingOf = (rs) => rs.filter((r) => r.reviewVerdict === 'blocking').length;
+  const miss = missOf(cleared);
+  const blocking = blockingOf(reached);
+  const byRepo = {};
+  for (const [key, rs] of groupBy((r) => refKey(r.repo), reached)) {
+    const repo = rs[0].repo;
+    const clearedHere = cleared.filter((r) => refKey(r.repo) === key);
+    byRepo[repo] = rs.length < minSample ? { n: rs.length } : {
+      n: rs.length,
+      firstPassYield: yieldOf(rs),
+      reviewCatch: { reached: rs.length, blocking: blockingOf(rs), rate: blockingOf(rs) / rs.length },
+      triageMiss: { cleared: clearedHere.length, miss: missOf(clearedHere), rate: clearedHere.length ? missOf(clearedHere) / clearedHere.length : 0 },
+    };
+  }
   const hitlOf = (side) => ({
     n: issues.length,
     count: issues.filter((r) => r.hitl && r.hitl[side]).length,
@@ -297,6 +312,8 @@ export function report(records) {
     resourceStops: resourceStops.length,
     firstPassYield: yieldOf(reached),
     byComplexity,
+    byRepo,
+    minSample,
     triageMiss: { cleared: cleared.length, miss, rate: cleared.length ? miss / cleared.length : 0 },
     bounceRate: mean(reached.map((r) => r.bounces ?? 0)),
     hitl: { pointA: hitlOf('pointA'), pointB: hitlOf('pointB') },
@@ -335,6 +352,16 @@ export function renderReport(rep) {
     `HITL point-A:      ${rep.hitl.pointA.count}/${rep.hitl.pointA.n} (${pct(rep.hitl.pointA.rate)})`,
     `HITL point-B:      ${rep.hitl.pointB.count}/${rep.hitl.pointB.n} (${pct(rep.hitl.pointB.rate)})`,
   );
+  // Gated on a non-empty byRepo so a log with no rows reached renders as before.
+  const repos = Object.entries(rep.byRepo ?? {}).sort(([, a], [, b]) => b.n - a.n);
+  if (repos.length) {
+    lines.push('by repo:           reached  yield  review-catch  triage-miss');
+    for (const [repo, e] of repos) {
+      lines.push(e.firstPassYield
+        ? `  ${repo}  ${e.n}  ${e.firstPassYield.pass}/${e.firstPassYield.reached} (${pct(e.firstPassYield.rate)})  ${pct(e.reviewCatch.rate)}  ${pct(e.triageMiss.rate)}`
+        : `  ${repo}  ${e.n}  n<${rep.minSample}`);
+    }
+  }
   // Gated on passes > 0 so a retro-free log renders byte-identically to before
   // the retro record kind existed (the field report quotes this table verbatim).
   if (rep.retro.passes > 0) {
@@ -611,15 +638,20 @@ function main(argv) {
   }
   if (cmd === 'report') {
     let since = null;
+    let minSample = 20;
     for (let i = 0; i < rest.length; i += 1) {
       if (rest[i] === '--since') {
         since = rest[++i];
         if (!since) { process.stderr.write('--since requires an ISO timestamp\n'); process.exit(2); }
       }
+      if (rest[i] === '--min-sample') {
+        minSample = Number(rest[++i]);
+        if (!Number.isInteger(minSample) || minSample < 1) { process.stderr.write('--min-sample requires a positive integer\n'); process.exit(2); }
+      }
     }
     let records = readRecords(telemetryPath());
     if (since) records = records.filter((r) => r.ts >= since);
-    const rep = report(records);
+    const rep = report(records, { minSample });
     process.stdout.write(`${JSON.stringify(rep, null, 2)}\n`);
     process.stderr.write(`${renderReport(rep)}\n`);
     return;

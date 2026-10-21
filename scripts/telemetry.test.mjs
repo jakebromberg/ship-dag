@@ -1678,3 +1678,65 @@ describe("SKILL.md step 6.3's --outcomes table", () => {
     });
   }
 });
+
+// byRepo groups the model-quality population (the same rows as the totals) by repo, folding casing with sameRepo. A repo with
+// fewer than minSample reached rows carries its count and no rates.
+describe('report: byRepo', () => {
+  // n rows for `repo`: `blocking` of them blocked by review, the rest merged clean.
+  const rows = (repo, n, blocking, over = {}) => Array.from({ length: n }, (_, i) => normalizeRecord(base(i < blocking
+    ? { repo, issue: i + 1, finalState: 'blocked-hitl', reviewVerdict: 'blocking', bounces: 1, ...over }
+    : { repo, issue: i + 1, ...over }), FIXED));
+  const cases = [
+    {
+      name: 'two repos with different rates',
+      recs: [...rows('a/one', 4, 1), ...rows('b/two', 4, 3)],
+      minSample: 1,
+      want: { 'a/one': { n: 4, yield: [3, 4], catchN: 1, miss: 1 }, 'b/two': { n: 4, yield: [1, 4], catchN: 3, miss: 3 } },
+    },
+    {
+      name: 'a repo below the minimum sample has a count and no rates',
+      recs: [...rows('a/one', 3, 1), ...rows('b/two', 2, 0)],
+      minSample: 3,
+      want: { 'a/one': { n: 3, yield: [2, 3], catchN: 1, miss: 1 }, 'b/two': { n: 2 } },
+    },
+    {
+      name: 'a rate-limited row is left out of its repo',
+      recs: [...rows('a/one', 2, 0), normalizeRecord(base({ repo: 'a/one', issue: 9, finalState: 'error', implStatus: 'error', failureReason: 'rate-limited', reviewVerdict: null, ciStatus: null }), FIXED)],
+      minSample: 1,
+      want: { 'a/one': { n: 2, yield: [2, 2], catchN: 0, miss: 0 } },
+    },
+    {
+      name: 'names that differ only in casing share one group, keyed as first written',
+      recs: [...rows('WXYC/Site', 2, 1), ...rows('wxyc/site', 2, 0).map((r) => ({ ...r, issue: r.issue + 10 }))],
+      minSample: 1,
+      want: { 'WXYC/Site': { n: 4, yield: [3, 4], catchN: 1, miss: 1 } },
+    },
+  ];
+  for (const { name, recs, minSample, want } of cases) {
+    test(name, () => {
+      const got = report(recs, { minSample }).byRepo;
+      assert.deepEqual(Object.keys(got), Object.keys(want));
+      for (const [repo, w] of Object.entries(want)) {
+        assert.equal(got[repo].n, w.n);
+        if (!w.yield) {
+          assert.deepEqual(Object.keys(got[repo]), ['n']);
+          continue;
+        }
+        assert.deepEqual([got[repo].firstPassYield.pass, got[repo].firstPassYield.reached], w.yield);
+        assert.equal(got[repo].reviewCatch.blocking, w.catchN);
+        assert.equal(got[repo].triageMiss.miss, w.miss);
+      }
+    });
+  }
+
+  test('defaults to a minimum of 20 and renders the table by sample size', () => {
+    const recs = [...rows('a/small', 2, 1), ...rows('b/big', 20, 5)];
+    const rep = report(recs);
+    assert.deepEqual(rep.byRepo['a/small'], { n: 2 });
+    approx(rep.byRepo['b/big'].firstPassYield.rate, 0.75);
+    const text = renderReport(rep);
+    assert.match(text, /b\/big\s+20\s+15\/20 \(75\.0%\)/);
+    assert.match(text, /a\/small\s+2\s+n<20/);
+    assert.ok(text.indexOf('b/big') < text.indexOf('a/small'));
+  });
+});
