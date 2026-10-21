@@ -163,25 +163,54 @@ test('decisions fold into the description when there is no line budget, and when
   assert.match(noDigest.issues[0].description, /^See the GitHub issue .*\n\nSettled decisions/);
 });
 
-// Absent, null, empty and all-blank decisions leave the description byte-identical to the digest alone.
+// Absent, null, empty and all-blank decisions leave the description byte-identical to what it was
+// before decisions existed. The expected strings are literals, so no row compares the code under
+// test with itself.
+const TODAY_PLAIN = 'Cap it.';
+const TODAY_BUDGETED = 'Cap it.\n\nSize budget: about 120 added lines of production source. Tests, generated data, and docs sit outside the budget — do not trim them to fit. If the change runs more than half again past it, stop at the last green, coherent point and push that.';
 for (const decisions of [undefined, null, [], ['', '  ']]) {
   test(`decisions ${JSON.stringify(decisions) ?? 'absent'} leave the description exactly as today's`, () => {
-    for (const sourceEstimate of [undefined, 120]) {
-      const issue = { number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap it.', sourceEstimate };
-      const today = buildConfig(spec({ issues: [issue] })).issues[0].description;
-      const withDecisions = buildConfig(spec({ issues: [{ ...issue, decisions }] })).issues[0].description;
-      assert.equal(withDecisions, today);
-      assert.doesNotMatch(withDecisions, /Settled decisions/);
+    for (const [sourceEstimate, expected] of [[undefined, TODAY_PLAIN], [120, TODAY_BUDGETED]]) {
+      const issue = { number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap it.', sourceEstimate, decisions };
+      assert.equal(buildConfig(spec({ issues: [issue] })).issues[0].description, expected);
     }
   });
 }
 
-test('a decision with line breaks stays one line, and a decision is otherwise kept verbatim', () => {
+test('a decision is kept verbatim', () => {
   const verbatim = 'The dialog line is "It goes on the review shelf." — not the body\'s older one (see #3382); 30 days, not all rows';
   const c = buildConfig(spec({
-    issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'x', decisions: [verbatim, 'first\nsecond\r\n- third'] }],
+    issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'x', decisions: [verbatim] }],
   }));
-  assert.equal(c.issues[0].description, `x\n\n${DECISIONS_HEADING}\n- ${verbatim}\n- first second - third`);
+  assert.equal(c.issues[0].description, `x\n\n${DECISIONS_HEADING}\n- ${verbatim}`);
+});
+
+// One decision is always one list item: every line break (LF, CRLF, a lone CR, U+2028, U+2029)
+// and the whitespace around it folds to one space, and the ends are trimmed.
+for (const [name, raw, folded] of [
+  ['LF', 'first\nsecond', 'first second'],
+  ['CRLF with a list marker', 'first\r\n- second', 'first - second'],
+  ['a lone CR', 'c\r- d', 'c - d'],
+  ['U+2028', 'c\u2028- d', 'c - d'],
+  ['U+2029', 'c\u2029- d', 'c - d'],
+  ['a run of mixed breaks and spaces', 'a \r\n \u2028\n b', 'a b'],
+  ['leading and trailing whitespace', '  padded \n', 'padded'],
+]) {
+  test(`a decision with ${name} stays one list item`, () => {
+    const c = buildConfig(spec({
+      issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'x', decisions: [raw, 'next'] }],
+    }));
+    assert.equal(c.issues[0].description, `x\n\n${DECISIONS_HEADING}\n- ${folded}\n- next`);
+  });
+}
+
+// The engine prompt interpolates the description under "Implementation plan from triage", and its
+// step 2 tells the implementer how far to trust that plan against the issue body.
+test("prompt.md step 2 does not send the implementer back to the issue body over a listed settled decision", () => {
+  const prompt = readFileSync(fileURLToPath(new URL('./engine/prompt.md', import.meta.url)), 'utf8');
+  const step2 = prompt.split('\n').find((l) => l.startsWith('2. '));
+  assert.match(step2, /scope and acceptance criteria/);
+  assert.match(step2, /listed settled decision differs from the issue body, the decision overrides it\./);
 });
 
 test('the sidecar records decisions exactly as the spec gave them, and the config carries them only in the description', () => {
