@@ -57,5 +57,7 @@ test('step 4a says a space-separated or zone-less triagedAt is read as UTC', () 
 test('step 5 names the same ref inputs as emit-config: the digest, the decisions and the findings', () => {
   const line = skill.split('\n').find((l) => l.startsWith('- **Blocking finding**'));
   assert.match(line, /digest, the decisions you quote and these findings/);
-  assert.match(line, /owner\/repo#N` is always a ref/);
+  assert.match(line, /read every other bare `#N` against the issue's own repo, whatever word comes before it/);
+  assert.match(line, /`owner\/repo#N` against its own repo, always/);
+  assert.doesNotMatch(line, /after a repo name or acronym/);
 });
