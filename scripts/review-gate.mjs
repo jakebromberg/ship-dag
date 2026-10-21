@@ -245,8 +245,12 @@ export function readPositional(argv, valueFlags = []) {
   return undefined;
 }
 
-/** A PR in the form a merge-order note names it: `owner/repo#N`. */
-const PR_REF = /^[^\s/#]+\/[^\s/#]+#\d+$/;
+/**
+ * A PR in the form a merge-order note names it: `owner/repo#N`. No leading zero
+ * and no `#0`: `#0100` names the same PR as `#100`, so it would slip past the
+ * check that a note does not name the issue itself.
+ */
+const PR_REF = /^[^\s/#]+\/[^\s/#]+#[1-9]\d*$/;
 
 /**
  * Whether a finding's `mergeOrder` is a usable merge-order note: an object
@@ -340,17 +344,12 @@ export function issueRefFromPath(path) {
  * `unknownCategories[]`.
  *
  * A usable `mergeOrder` (`isMergeOrder`, and its `with` in the issue's own repo
- * but not the issue itself) clears only what `blocking: false` could already
- * clear: a CONFIRMED finding in a gated category outside `ALWAYS_BLOCK`. It
- * never clears a CONFIRMED correctness or security finding, nor a blank or
- * coined category. It is about what breaks only after another open PR lands,
- * which is that PR's gate to hold, not this one's. A note is counted in
- * `mergeOrderCount` and listed in `mergeOrder[≤MAX_LISTED]` (clearances first,
- * each with its `verdict` and `cleared`), apart from `nitCount`; every
- * clearance is in `mergeOrderClearedCount`. A `mergeOrder` that is present but
- * unusable, or refused for the finding it sits on (`null` counts as absent),
- * leaves the finding scored as usual and is named in `malformedMergeOrder[]`.
- * `issueRef` (`owner/repo#N`) is the issue's ref; without it no note is usable.
+ * but not the issue itself; `issueRef` is the issue's `owner/repo#N`, without
+ * which no note is usable) is counted in `mergeOrderCount`, listed in
+ * `mergeOrder[≤MAX_LISTED]` and, where it clears a finding, in
+ * `mergeOrderClearedCount`; a note present but unusable, or refused for its
+ * finding, is named in `malformedMergeOrder[]`. What a note may clear is
+ * `references/review-schema.md`'s rule.
  *
  * Throws when `findings` is not an array. That is deliberately fatal rather
  * than defaulted to `[]`: a truncated or half-written review file would
@@ -425,10 +424,7 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
       line: f?.line ?? null,
       summary: f?.summary ?? null,
     };
-    // Before the `blocking` axis, which a usable note makes moot. It would block
-    // here (`wouldBlock`) unless a note clears it, and a note may clear only a
-    // finding `blocking: false` could: an ALWAYS_BLOCK or unknown-category
-    // finding keeps blocking, and the refused note is named.
+    // Before the `blocking` axis; what a note may clear is the schema's rule.
     const note = f?.mergeOrder;
     const wouldBlock = !known || (gate.has(category) && confirmed);
     if (isMergeOrder(note) && siblingOf(note.with, issueRef)) {
