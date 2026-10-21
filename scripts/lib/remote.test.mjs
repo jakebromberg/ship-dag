@@ -22,7 +22,7 @@ test('remoteCommand leaves the command as it is', () => {
   assert.equal(remoteCommand('node x'), 'node x');
 });
 
-test('one buffer size serves every ssh and rsync spawn', () => {
+test('the shared ssh and rsync output bound is 16 MiB', () => {
   assert.equal(SSH_MAX_BUFFER, 16_777_216);
 });
 
