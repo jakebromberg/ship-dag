@@ -48,12 +48,20 @@
 // Usage:
 //   node emit-config.mjs <spec.json|->            # read spec (stdin with -), write config JSON to stdout
 //   node emit-config.mjs <spec.json> > config.json
+//   node emit-config.mjs <spec.json|-> --by-host <dir>   # write <dir>/config.<host>.json for each host that has an issue (config.local.json included), print their paths
+//
+// Hosts (--by-host only): an issue runs on its own `host`, else its repo's `repos[repo].host`, else `local`; see
+// lib/split-by-host.mjs for the toolchain guard and the paths a remote host's config takes from references/hosts.json.
+// An unknown host, or an explicit issue `host` that lacks a toolchain its CI needs, exits 2 naming the issue. `host` never reaches the engine config.
 
-import { readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { stringOption } from './lib/cli-args.mjs';
+import { loadHosts } from './lib/hosts.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { realRunGh } from './lib/gh.mjs';
 import { refKey } from './lib/ref.mjs';
+import { splitByHost } from './lib/split-by-host.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
 import { waveSidecar, appendWave, specBlockOn } from './lib/wave-sidecar.mjs';
 
@@ -322,12 +330,28 @@ export function buildConfig(spec, tuning = loadTuning(), { readRef, warn } = {})
   };
 }
 
+/**
+ * `buildConfig` for each host that has an issue, in `splitByHost`'s order: `[{ host, spec, config }]`, `spec` being
+ * the sub-spec the config was built from. `opts.warn` also receives the toolchain guard's warnings.
+ */
+export function buildConfigsByHost(spec, hosts, tuning = loadTuning(), opts = {}) {
+  return Object.entries(splitByHost(spec, hosts, opts.warn)).map(([host, sub]) => ({ host, spec: sub, config: buildConfig(sub, tuning, opts) }));
+}
+
 // ---- CLI -----------------------------------------------------------------
 
 if (isMain(import.meta.url)) {
-  const arg = process.argv[2];
+  const argv = process.argv.slice(2);
+  let byHost;
+  try {
+    byHost = stringOption(argv, '--by-host');
+  } catch (err) {
+    console.error(`emit-config: ${err.message}`);
+    process.exit(2);
+  }
+  const arg = argv.find((a, i) => a !== '--by-host' && argv[i - 1] !== '--by-host');
   if (!arg) {
-    console.error('Usage: emit-config.mjs <spec.json|->');
+    console.error('Usage: emit-config.mjs <spec.json|-> [--by-host <dir>]');
     process.exit(2);
   }
   const raw = arg === '-' ? readFileSync(0, 'utf-8') : readFileSync(arg, 'utf-8');
@@ -341,20 +365,34 @@ if (isMain(import.meta.url)) {
     );
   }
 
-  let config;
+  let built;
   let tuning;
   try {
     tuning = loadTuning();
-    config = buildConfig(spec, tuning, { readRef: ghReadRef, warn: console.error });
+    const opts = { readRef: ghReadRef, warn: console.error };
+    built = byHost === undefined ? [{ host: 'local', spec, config: buildConfig(spec, tuning, opts) }] : buildConfigsByHost(spec, loadHosts(), tuning, opts);
   } catch (err) {
     console.error(`emit-config: ${err.message}`);
     process.exit(2);
   }
-  process.stdout.write(JSON.stringify(config, null, 2) + '\n');
-  // After the config is out, so a sidecar failure can never change or block it.
-  try {
-    appendWave(dirname(config.configDir), waveSidecar(spec, { config, tuning }));
-  } catch (err) {
-    console.error(`emit-config: WARNING — could not build the wave sidecar: ${err.message}`);
+  const json = (config) => JSON.stringify(config, null, 2) + '\n';
+  if (byHost === undefined) {
+    process.stdout.write(json(built[0].config));
+  } else {
+    mkdirSync(byHost, { recursive: true });
+    for (const { host, config } of built) {
+      const path = join(byHost, `config.${host}.json`);
+      writeFileSync(path, json(config));
+      process.stdout.write(`${path}\n`);
+    }
+  }
+  // After the config is out, so a sidecar failure can never change or block it. A host's engine reports only its own
+  // issues, so each host gets its own line, all in the run's local stateDir.
+  for (const { spec: s, config } of built) {
+    try {
+      appendWave(spec.stateDir, waveSidecar(s, { config, tuning }));
+    } catch (err) {
+      console.error(`emit-config: WARNING — could not build the wave sidecar: ${err.message}`);
+    }
   }
 }
