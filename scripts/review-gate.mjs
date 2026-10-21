@@ -244,6 +244,29 @@ export function readPositional(argv, valueFlags = []) {
   return undefined;
 }
 
+/** A PR in the form a merge-order note names it: `owner/repo#N`. */
+const PR_REF = /^[^\s/#]+\/[^\s/#]+#\d+$/;
+
+/**
+ * Whether a finding's `mergeOrder` is a usable merge-order note: an object
+ * naming the open PR the finding waits on (`with`) and what that PR owes
+ * (`obligation`). Validated rather than coerced, because the field is merge-ward
+ * (a usable note keeps a finding from blocking), so a value the gate cannot read
+ * must leave the finding scored as if the field were absent.
+ * @param {unknown} note
+ * @returns {boolean}
+ */
+export function isMergeOrder(note) {
+  return (
+    Boolean(note) &&
+    typeof note === 'object' &&
+    typeof note.with === 'string' &&
+    PR_REF.test(note.with) &&
+    typeof note.obligation === 'string' &&
+    note.obligation.trim() !== ''
+  );
+}
+
 /**
  * Recompute the merge gate from a review object.
  *
@@ -286,6 +309,14 @@ export function readPositional(argv, valueFlags = []) {
  * operator's scrutiny — the reviewer downgrading its own CONFIRMED finding —
  * would leave no trace, where the other fail-closed path leaves
  * `unknownCategories[]`.
+ *
+ * A finding carrying a usable `mergeOrder` (`isMergeOrder`) never blocks,
+ * whatever its category or `blocking`: it is about what breaks only after
+ * another open PR lands, which is that PR's gate to hold, not this one's. It is
+ * counted in `mergeOrderCount` and listed in `mergeOrder[≤MAX_LISTED]`, apart
+ * from `nitCount`, so a note is never mistaken for a cosmetic finding. A
+ * `mergeOrder` that is present but unusable (`null` counts as absent) leaves
+ * the finding scored as usual and is named in `malformedMergeOrder[]`.
  *
  * Throws when `findings` is not an array. That is deliberately fatal rather
  * than defaulted to `[]`: a truncated or half-written review file would
@@ -336,6 +367,8 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
   const selfCleared = [];
   const unknown = new Set();
   const malformed = new Set();
+  const mergeOrder = [];
+  const malformedMergeOrder = new Set();
   let nitCount = 0;
   for (const f of review.findings) {
     // Trimmed as well as lowercased, symmetrically with `parseBlockOn`: a
@@ -357,6 +390,14 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
       line: f?.line ?? null,
       summary: f?.summary ?? null,
     };
+    // Before the `blocking` axis, which a note makes moot: its value is neither
+    // cleared nor reported as unusable for a finding that was never in play.
+    const note = f?.mergeOrder;
+    if (isMergeOrder(note)) {
+      mergeOrder.push({ ...entry, with: note.with, obligation: note.obligation });
+      continue;
+    }
+    if (note !== undefined && note !== null) malformedMergeOrder.add(renderUnusable(note));
     // The reviewer's own blocking/nit call, only able to narrow a category
     // ALWAYS_BLOCK doesn't already force — a CONFIRMED correctness or
     // security finding blocks no matter what it says here.
@@ -403,6 +444,9 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
     selfCleared: selfCleared.slice(0, MAX_LISTED),
     unknownCategories: [...unknown],
     malformedBlocking: [...malformed].slice(0, MAX_LISTED),
+    mergeOrderCount: mergeOrder.length,
+    mergeOrder: mergeOrder.slice(0, MAX_LISTED),
+    malformedMergeOrder: [...malformedMergeOrder].slice(0, MAX_LISTED),
   };
 }
 
@@ -460,8 +504,12 @@ function main(argv) {
   // Already JSON text, so not re-quoted — `"false"` reads as the string the
   // reviewer wrote, `0` as the number.
   const malformed = out.malformedBlocking.length ? `; unusable blocking: ${out.malformedBlocking.join(', ')}` : '';
+  // Named by the PR each waits on: the note is not a nit, and the rebase gate
+  // of whichever PR lands second is where it is read again (SKILL.md step 6.2).
+  const notes = out.mergeOrderCount ? `; ${out.mergeOrderCount} merge-order: ${out.mergeOrder.map((n) => n.with).join(', ')}` : '';
+  const badNotes = out.malformedMergeOrder.length ? `; unusable mergeOrder: ${out.malformedMergeOrder.join(', ')}` : '';
   process.stderr.write(
-    `review-gate: #${out.issue} ${out.verdict} — ${out.blockingCount} blocking, ${out.nitCount} nits${cleared}${unknown}${malformed}\n`,
+    `review-gate: #${out.issue} ${out.verdict} — ${out.blockingCount} blocking, ${out.nitCount} nits${cleared}${notes}${unknown}${malformed}${badNotes}\n`,
   );
 }
 
