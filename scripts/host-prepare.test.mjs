@@ -7,14 +7,23 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { buildConfigsByHost } from './emit-config.mjs';
 import { CLONE_TIMEOUT_MS, layoutReposDir, prepareHost } from './host-prepare.mjs';
+import { validateHosts } from './lib/hosts.mjs';
 
+const hosts = validateHosts({ box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag', toolchains: ['node'] } });
+// The config emit-config --by-host writes for box, whose state dir is box's ~/.local/state/ship-dag/engine/run1.
+const [{ config: boxConfig }] = buildConfigsByHost({
+  name: 'ship-dag-run1', repo: 'o/app', stateDir: '/m/.local/state/ship-dag/engine/run1', projectRoot: '/m/D', promptTemplate: '/m/p.md',
+  repos: { 'o/app': { baseBranch: 'main', commands: ['npm test'], host: 'box' }, 'o/lib': { baseBranch: 'main', commands: ['npm test'], host: 'box' } },
+  issues: [{ number: 1, title: 'one' }, { number: 2, repo: 'o/lib', title: 'two' }],
+}, hosts);
+const hostState = '/h/.local/state/ship-dag/engine/run1';
 const dir = mkdtempSync(join(tmpdir(), 'host-prepare-'));
 const configPath = join(dir, 'config.box.json');
-const body = JSON.stringify({ stateDir: '/h/s', projectRoot: '/h/D', repos: { 'o/app': {}, 'o/lib': {} } });
+const body = JSON.stringify(boxConfig);
 writeFileSync(configPath, body);
 const configHash = createHash('sha256').update(body).digest('hex');
-const hosts = { box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' } };
 const local = { sdSha: 'a', coSha: 'b', claudeHash: 'c' };
 const state = (over = {}) => ({ sdSha: 'a', coSha: 'b', distNewest: '/co/dist/src/index.js', srcNewer: '', claudeHash: 'c', configHash: '', freeKb: 99 * 1048576, present: ['app'], ...over });
 const probeOut = (s) => [...Object.entries(s).filter(([k]) => k !== 'present').map(([k, v]) => `${k}=${v}`), ...s.present.flatMap((n) => [`present=${n}`, `origin=${n}=https://github.com/o/${n}.git`])].join('\n');
@@ -30,8 +39,22 @@ function exec(s, opts = {}) {
 test('clones only the absent repo, fetches both, makes the state dir and copies the config', () => {
   const { code, calls } = exec(state());
   assert.equal(code, 0);
-  assert.deepEqual(calls.slice(1).map((c) => c[2]), ["git -C '/h/D/app' fetch origin", "gh repo clone 'o/lib' '/h/D/lib'", "git -C '/h/D/lib' fetch origin", "mkdir -p '/h/s'", configPath]);
-  assert.deepEqual(calls.at(-1), ['scp', 'box', configPath, '/h/s/config.json']);
+  assert.deepEqual(calls.slice(1).map((c) => c[2]), ["git -C '/h/D/app' fetch origin", "gh repo clone 'o/lib' '/h/D/lib'", "git -C '/h/D/lib' fetch origin", `mkdir -p '${hostState}'`, configPath]);
+  assert.deepEqual(calls.at(-1), ['scp', 'box', configPath, `${hostState}/config.json`]);
+});
+
+test("the probe hashes the config already at box's state dir, not at an undefined path", () => {
+  const { calls } = exec(state());
+  assert.match(calls[0][2], new RegExp(`shasum -a 256 '${hostState}/config\\.json'`));
+  assert.doesNotMatch(calls[0][2], /undefined/);
+});
+
+test('a config without emit-config\'s configDir/worktreeDir is refused after the probe and runs nothing', () => {
+  const { code, calls, logs } = exec(state(), { config: { ...boxConfig, configDir: undefined } });
+  assert.equal(code, 1);
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0][2], /undefined/);
+  assert.match(logs.join('\n'), /box: config configDir undefined and worktreeDir \S+ are not <dir>\/state/);
 });
 
 test('only the clone gets the long timeout; every other call keeps the runner default', () => {
@@ -61,7 +84,7 @@ test('a refusal exits 1 after the probe and runs nothing', () => {
 });
 
 test('a config for another host is refused after the probe', () => {
-  const { code, calls, logs } = exec(state(), { config: { ...JSON.parse(body), projectRoot: '/Users/me/Developer/WXYC' } });
+  const { code, calls, logs } = exec(state(), { config: { ...boxConfig, projectRoot: '/Users/me/Developer/WXYC' } });
   assert.equal(code, 1);
   assert.equal(calls.length, 1);
   assert.match(logs.join('\n'), /box: config projectRoot \/Users\/me\/Developer\/WXYC is not \/h\/D/);

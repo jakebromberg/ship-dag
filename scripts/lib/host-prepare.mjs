@@ -8,13 +8,24 @@ const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 export const withCoHome = (host) => ({ ...host, coHome: host.coHome ?? `${host.home}/Developer/claude-orchestrator` });
 
 /**
- * `{ refusals, plan }`: a plan is ordered `{ step, ssh, slow? }` or `{ step, scp: [from, to] }` actions (`slow` marks a
- * clone); any refusal empties it. `stateDir` and `projectRoot` are the config's, which must be this host's.
- * `repos` is `[{ repo, name, layoutDir }]` (`layoutDir` is where repo-layout.mjs puts it); `local` and `probe` hold
- * `{ sdSha, coSha, claudeHash }` (probe adds `distNewest`, `srcNewer`, `configHash`, `freeGb`, `present` names and
- * their `origins`).
+ * The state dir an engine config was built for, or undefined when the config does not have emit-config's shape:
+ * buildConfig writes `configDir` as `<stateDir>/state` and `worktreeDir` as `<stateDir>/worktrees`, and has no
+ * `stateDir` field of its own, so the dir is `configDir` less its `/state`, with `worktreeDir` under it.
  */
-export function planHost({ name, host: raw, stateDir, projectRoot, configPath, repos, local, probe, minFreeGb = 10 }) {
+export function configStateDir({ configDir, worktreeDir } = {}) {
+  const stateDir = /^(\/.+)\/state$/.exec(configDir ?? '')?.[1];
+  return stateDir && String(worktreeDir).startsWith(`${stateDir}/`) ? stateDir : undefined;
+}
+
+/**
+ * `{ refusals, plan }`: a plan is ordered `{ step, ssh, slow? }` or `{ step, scp: [from, to] }` actions (`slow` marks a
+ * clone); any refusal empties it. `config` is the engine config emit-config --by-host wrote, which must be this host's:
+ * its state dir (`configStateDir`) under the host's `home` and its `projectRoot` the host's `reposDir`; the plan makes
+ * that dir and copies the config there as `config.json`. `repos` is `[{ repo, name, layoutDir }]` (`layoutDir` is
+ * where repo-layout.mjs puts it); `local` and `probe` hold `{ sdSha, coSha, claudeHash }` (probe adds `distNewest`,
+ * `srcNewer`, `configHash`, `freeGb`, `present` names and their `origins`).
+ */
+export function planHost({ name, host: raw, config, configPath, repos, local, probe, minFreeGb = 10 }) {
   const host = withCoHome(raw);
   const refusals = [];
   for (const [label, key, dir] of [['ship-dag', 'sdSha', host.sdHome], ['claude-orchestrator', 'coSha', host.coHome]]) {
@@ -29,8 +40,10 @@ export function planHost({ name, host: raw, stateDir, projectRoot, configPath, r
   if (probe.claudeHash !== local.claudeHash) refusals.push(`${name}: ~/.claude/CLAUDE.md differs from this Mac's; run host-sync-claude (#342) for ${name}`);
   if (!(probe.freeGb >= minFreeGb)) refusals.push(`${name}: ${probe.freeGb ?? 'unknown'} GB free under ${host.home}, below ${minFreeGb} GB; free space or lower --min-free-gb`);
   const wrongConfig = `pass the config emit-config --by-host wrote for ${name}`;
-  if (!String(stateDir).startsWith(`${host.home}/`)) refusals.push(`${name}: config stateDir ${stateDir} is not under ${host.home}/; ${wrongConfig}`);
-  if (projectRoot !== host.reposDir) refusals.push(`${name}: config projectRoot ${projectRoot} is not ${host.reposDir}; ${wrongConfig}`);
+  const stateDir = configStateDir(config);
+  if (!stateDir) refusals.push(`${name}: config configDir ${config.configDir} and worktreeDir ${config.worktreeDir} are not <dir>/state and a path under <dir>; ${wrongConfig}`);
+  else if (!stateDir.startsWith(`${host.home}/`)) refusals.push(`${name}: config state dir ${stateDir} is not under ${host.home}/; ${wrongConfig}`);
+  if (config.projectRoot !== host.reposDir) refusals.push(`${name}: config projectRoot ${config.projectRoot} is not ${host.reposDir}; ${wrongConfig}`);
   const owners = new Map();
   for (const { repo, name: dir, layoutDir } of repos) {
     const at = `${host.reposDir}/${dir}`;
@@ -56,8 +69,9 @@ export function planHost({ name, host: raw, stateDir, projectRoot, configPath, r
  * The key=value script the CLI runs on the host: the facts `planHost` needs, one per line (a failed command leaves its
  * value empty). Every line exits 0, so an absent repo or file never fails the probe. Dist freshness compares files, not
  * the commit time: `tsc` (no clean) rewrites every output under dist/src on each build but never touches `dist` itself,
- * so `distNewest` is the newest file under dist/src and `srcNewer` the first src `.ts` newer than it (empty when fresh),
- * which also catches an uncommitted source edit. A present repo also reports its `origin=<name>=<url>`.
+ * so `distNewest` is the newest `.js` file under dist/src (a stray `.DS_Store` is not a build) and `srcNewer` the first
+ * src `.ts` newer than it (empty when fresh), which also catches an uncommitted source edit. A present repo also reports
+ * its `origin=<name>=<url>`. With no `stateDir` (a config planHost will refuse) there is no `configHash` line.
  */
 export function probeScript(host, stateDir, repoNames) {
   const { home, sdHome, coHome, reposDir } = withCoHome(host);
@@ -65,11 +79,11 @@ export function probeScript(host, stateDir, repoNames) {
   return [
     `echo sdSha=$(git -C ${q(sdHome)} rev-parse HEAD 2>/dev/null)`,
     `echo coSha=$(git -C ${q(coHome)} rev-parse HEAD 2>/dev/null)`,
-    `d=$(find ${q(`${coHome}/dist/src`)} -type f -exec ls -t {} + 2>/dev/null | head -1)`,
+    `d=$(find ${q(`${coHome}/dist/src`)} -type f -name '*.js' -exec ls -t {} + 2>/dev/null | head -1)`,
     'echo distNewest=$d',
     `echo srcNewer=$(if test -n "$d"; then find ${q(`${coHome}/src`)} -type f -name '*.ts' -newer "$d" 2>/dev/null | head -1; fi)`,
     `echo claudeHash=${hash(`${home}/.claude/CLAUDE.md`)}`,
-    `echo configHash=${hash(`${stateDir}/config.json`)}`,
+    ...(stateDir ? [`echo configHash=${hash(`${stateDir}/config.json`)}`] : []),
     `echo freeKb=$(df -Pk ${q(home)} | awk 'NR==2{print $4}')`,
     ...repoNames.map((n) => {
       const at = q(`${reposDir}/${n}`);
