@@ -128,6 +128,18 @@ for (const name of ['prompt.md step 4', "SKILL.md's Implement block", "workflow.
   });
 }
 
+// Long commands stay in the foreground with an explicit timeout, and engine sessions never drive a browser.
+const foregroundRules = [
+  'Run long commands in the foreground with an explicit timeout** (Bash `timeout` parameter, up to 600000 ms) — a command that outlives the default foreground window gets auto-backgrounded, and **ending your turn to "wait for the notification" ends your session**: the orchestrator treats a returned turn as completion and reaps you, stranding uncommitted work in the worktree. If something does land in the background, poll it to completion (TaskOutput) within the same turn; never end a turn while a test run, install, or push is still pending.',
+  '**Never launch or drive a browser** — no Playwright/e2e runs (headed or headless), no `gh … --web`, no `open <url>`, no browser tools: browser windows disrupt the machine\'s human user, and e2e suites are out of scope for engine sessions. Verification is terminal-only; if a check seems to need a browser, note it as unverified instead.',
+];
+for (const name of ['prompt.md step 4', "SKILL.md's Implement block", "workflow.js's implementPrompt"]) {
+  test(`${name} carries the foreground-timeout and no-browser rules after the lease rules`, () => {
+    for (const rule of foregroundRules) assert.ok(copies[name].includes(rule), rule.slice(0, 40));
+    assert.ok(copies[name].includes(`alone in its own Bash call. **${foregroundRules[0]} ${foregroundRules[1]}`));
+  });
+}
+
 // Review blocks on the same three test gaps again and again, so the engine and inline implement copies both carry the pre-push checklist.
 const checklist = [
   /every acceptance criterion and every settled decision has a test/,
