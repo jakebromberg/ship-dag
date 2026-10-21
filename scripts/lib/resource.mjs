@@ -3,7 +3,7 @@
 //
 //   level      ship-dag preflight
 //   normal     proceed, K
-//   warning    proceed, K (the engine adapts live)
+//   warning    proceed, K (the machine-wide session pool adapts: K is a per-engine upper bound)
 //   critical   wait up to the cap, then hitl (HITL point F) — never a start
 //   unknown    proceed (no pressure signal on this platform)
 //
@@ -13,7 +13,7 @@
 /** How many minutes SKILL.md's loop waits at `critical` before asking. */
 export const DEFAULT_WAIT_MAX_MINUTES = 15;
 
-/** The parallelism the engine is asked for when the caller names none. */
+/** The per-engine upper bound on parallel sessions when the caller names none; the machine-wide session pool decides how many run. */
 export const DEFAULT_PARALLEL = 4;
 
 /**
@@ -24,6 +24,7 @@ export const DEFAULT_PARALLEL = 4;
  */
 export function resourceDecision({ level, parallel = DEFAULT_PARALLEL, waitedMinutes = 0, waitMaxMinutes = DEFAULT_WAIT_MAX_MINUTES }) {
   if (level === 'normal') return { action: 'proceed', reason: 'normal', recommendedParallel: parallel };
+  // The reason string predates the session pool and is kept for telemetry readers; the pool, not the engine, adapts.
   if (level === 'warning') return { action: 'proceed', reason: 'warning-engine-adapts', recommendedParallel: parallel };
   if (level === 'unknown') return { action: 'proceed', reason: 'no-signal', recommendedParallel: parallel };
   if (waitedMinutes < waitMaxMinutes) return { action: 'wait', reason: 'critical-wait', recommendedParallel: 0 };

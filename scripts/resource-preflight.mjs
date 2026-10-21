@@ -19,9 +19,12 @@
 // Usage:
 //   node resource-preflight.mjs check [--parallel K] [--waited-minutes N]
 //                                     [--wait-max-minutes 15] [--sleep-before S]
-// Prints `{ action, reason, level, capacity, live, recommendedParallel, recommendedHandoff }` as
+// Prints `{ action, reason, level, capacity, step, sessions, live, recommendedParallel, recommendedHandoff }` as
 // JSON on stdout (`action`: "proceed" | "wait" | "hitl") and a one-line human
-// summary on stderr. `--sleep-before` waits before sampling, so SKILL.md's
+// summary on stderr. `step` is the machine-wide headroom step (0–4) and
+// `sessions` the implementer pool's `{ capacity, live }` at that step; a dist
+// whose `leaseStatus` predates them (claude-orchestrator before #168/#172)
+// leaves both out. `--sleep-before` waits before sampling, so SKILL.md's
 // loop never needs a foreground `sleep`. `--waited-minutes` is the total
 // waited before this call; the call adds its own `--sleep-before` to it
 // before deciding. Exit codes: 2 = usage error (unknown subcommand, malformed flag).
@@ -49,11 +52,13 @@ export async function checkResource(opts, { env = process.env, leaseOptionsFor, 
     if (!leaseOptionsFor || !leaseStatus) ({ leaseOptionsFor, leaseStatus } = await importLease(env));
     if (opts.sleepBefore > 0) await sleep(opts.sleepBefore * 1000);
     const { CO_PRESSURE_OVERRIDE: _stripped, ...realEnv } = env;
-    const { level, capacity, live } = leaseStatus(leaseOptionsFor(realEnv));
+    const { level, capacity, step, live, sessions } = leaseStatus(leaseOptionsFor(realEnv));
     // --waited-minutes is the total waited before this call; this call's own sleep counts toward the cap.
     const waitedMinutes = (opts.waitedMinutes ?? 0) + (opts.sleepBefore > 0 ? opts.sleepBefore / 60 : 0);
     const decision = resourceDecision({ level, parallel, waitedMinutes, waitMaxMinutes: opts.waitMaxMinutes });
-    return { ...decision, level, capacity, live, recommendedHandoff: handoffLimit({ reason: decision.reason, capacity, live }) };
+    // An older dist's leaseStatus has no `step` or `sessions`: leave them out rather than print undefined.
+    const pool = { ...(step === undefined ? {} : { step }), ...(sessions === undefined ? {} : { sessions }) };
+    return { ...decision, level, capacity, ...pool, live, recommendedHandoff: handoffLimit({ reason: decision.reason, capacity, live }) };
   } catch (err) {
     return { action: 'proceed', reason: 'lease-unavailable', detail: err.message, level: null, capacity: null, live: [], recommendedParallel: parallel, recommendedHandoff: 1 };
   }
