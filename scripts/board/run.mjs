@@ -45,7 +45,7 @@ export function runBaseDir({ runId, runDir }, { warn, dirs = runFamilyStateDirs(
   return dirs.find((dir) => isBaseDir(dir, runId) && existsSync(dir)) ?? runDir;
 }
 
-/** Wave ids are strings; every letter after the number is kept (`14b`, `37aa`). */
+/** Wave ids are strings; every letter after the number is kept (`14b`, `37aa`). Captures the label of the plugin's `WAVE_DIR_RE`. */
 const DIR_SUFFIX = /-w(\d+[a-z]*)$/i;
 const FILE_ID = /^config[-.]?(?:wave|w)?(\d+[a-z]*)\.json$/i;
 

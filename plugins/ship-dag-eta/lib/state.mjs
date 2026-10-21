@@ -9,11 +9,10 @@
 //     host's to supply, since the verdict is the review gate's (the CLI reads it in process, the mod through node)
 
 import { estimate } from './model.mjs';
-import { runFamily } from './run-id.mjs';
+import { runFamily, WAVE_DIR_RE } from './run-id.mjs';
 import { parseRef, artifactStem } from './ref.mjs';
 
 const ID_RE = /^(?:sd|ship-dag)-(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)/;
-const WAVE_DIR_RE = /-w\d+[a-z]*$/i;
 /** Close reasons that say the work was not done here, so the close is no merge. */
 const CLOSED_UNDONE = new Set(['NOT_PLANNED', 'DUPLICATE']);
 export const isClosedUndone = (reason) => CLOSED_UNDONE.has(reason);

@@ -78,6 +78,12 @@ test('latestRun picks the newest run by the start its id encodes, skipping wave 
   assert.equal(await latestRun(fsIo, base), RUN);
 });
 
+test('latestRun skips a -w1aa dir and familyDirs includes it, so the two agree on every wave-dir name', async () => {
+  const { base } = fixture({ dirs: { [`${RUN}-w1aa`]: {} } });
+  assert.equal(await latestRun(fsIo, base), RUN);
+  assert.ok((await familyDirs(fsIo, base, RUN)).includes(`${base}/${RUN}-w1aa`));
+});
+
 test('latestRun skips a newer dir that holds no fetched DAG (a board dir, a retry, a run that kept its spec elsewhere)', async () => {
   const { base } = fixture({ dirs: { [`${RUN}-board`]: {}, 'sd-20261018-090000': {} } });
   assert.equal(await latestRun(fsIo, base), RUN);
@@ -218,8 +224,8 @@ test('liveQuery quotes repo names as GraphQL strings', () => {
 });
 
 test('familyDirs follows runFamily: case and prefix fold, chained retries and a prefix-sharing run do not', async () => {
-  const mine = [`${RUN}-w2`, `${RUN}-b`, `${RUN}-r2`, `${RUN}-resume`, `ship-dag-${RUN}-w3`, `${RUN.toUpperCase()}-W4`];
-  const others = [`${RUN}-b-c`, `${RUN}-w37aa`, `${RUN}-label`, `${RUN}x`];
+  const mine = [`${RUN}-w2`, `${RUN}-b`, `${RUN}-r2`, `${RUN}-resume`, `ship-dag-${RUN}-w3`, `${RUN.toUpperCase()}-W4`, `${RUN}-w37aa`];
+  const others = [`${RUN}-b-c`, `${RUN}-label`, `${RUN}x`];
   const { base } = scopedEngineFixture(Object.fromEntries([RUN, ...mine, ...others].map((name) => [name, {}])));
   const dirs = await familyDirs(fsIo, base, RUN);
   assert.deepEqual(dirs, [RUN, ...mine.sort()].map((n) => `${base}/${n}`));
