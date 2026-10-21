@@ -1399,6 +1399,18 @@ describe('audit', () => {
     assert.deepEqual(audit_(base, [death]).engineDied, [REF]);
     assert.deepEqual(audit_(base, [death, logged({ ts: T2 })]).engineDied, []);
     assert.deepEqual(audit_(base, [logged({ reportId: 'w1', implStatus: 'error', finalState: 'error' })]).engineDied, []);
+    // The last record is the latest by ts, not by place in the log, and a ref is matched whatever its case.
+    assert.deepEqual(audit_(base, [logged({ ts: T2 }), death]).engineDied, []);
+    assert.deepEqual(audit_(base, [death, logged({ ts: T2, repo: 'wxyc/dj-site' })]).engineDied, []);
+    // An outcome that keeps the death's reason (a point-F hold) is an outcome, not the death.
+    assert.deepEqual(audit_(base, [death, logged({ ts: T2, reportId: 'w1', implStatus: 'error', finalState: 'blocked-hitl', failureReason: 'engine-died' })]).engineDied, []);
+  }));
+
+  test('an engine-died row logged before engine-died was an infra reason is covered by its record with no reason', () => family({
+    [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prNumber: null, failureReason: 'engine-died' })]) }, sidecar: [sidecarEntry([REF])] },
+  }, (base) => {
+    assert.deepEqual(audit_(base, [logged({ reportId: 'w1', implStatus: 'error', finalState: 'error' })]).notIngested, []);
+    assert.deepEqual(audit_(base, []).notIngested.map((w) => w.refs), [[REF]]);
   }));
 
   test('one dir holding two waves names only the one not ingested, and a report with no terminal row is not named', () => family({

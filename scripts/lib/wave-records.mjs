@@ -62,10 +62,19 @@ const samePr = (a, b) => (a && b ? a.pr === b.pr && sameRepo(a.repo, b.repo) : a
 
 /** A PR-less failure: a record that reached implement and opened no PR the gate reviewed. */
 const prLessFailure = (r) => r.implStatus === 'error' || r.implStatus === 'blocked';
+/**
+ * Whether two records carry the same `failureReason` (absent reads as null). A report's engine-died row ingested before
+ * `"engine-died"` was an infra reason was logged with none, so within one report (both carry the same `reportId`)
+ * null and `"engine-died"` are one reason: that row has one stop, and the log is never rewritten (#286).
+ */
+const sameReason = (a, b) => {
+  const [x, y] = [a.failureReason ?? null, b.failureReason ?? null];
+  return x === y || (Boolean(a.reportId) && a.reportId === b.reportId && [x, y].includes(null) && [x, y].includes('engine-died'));
+};
 
 /**
  * Whether records `a` and `b` are the same event: the one identity ingest-wave's dedupe and `rowCovered` both use.
- * They share `sameRun`, ref, `eventState` and failureReason (absent reads as null). Both reached implement or
+ * They share `sameRun`, ref, `eventState` and failureReason (`sameReason`). Both reached implement or
  * neither did (`implStatus` null); which non-null status a record gives is not compared, so a merge hand-written
  * as `error` or `blocked` is the merge ingest derives as `pushed`. They hold the same PR (`parsePr`: the same number in the same repo, or none), or both are merges.
  * Records of different reports (both carry a `reportId`, and they differ) are told apart by `ran`, the report row's
@@ -76,7 +85,7 @@ const prLessFailure = (r) => r.implStatus === 'error' || r.implStatus === 'block
  * recurs unchanged. A hand-written record has no `reportId`, so the rest decides.
  */
 export const sameEvent = (a, b) => sameRun(a.runId, b.runId) && sameRepo(a.repo, b.repo) && a.issue === b.issue
-  && eventState(a) === eventState(b) && (a.failureReason ?? null) === (b.failureReason ?? null)
+  && eventState(a) === eventState(b) && sameReason(a, b)
   && (a.implStatus == null) === (b.implStatus == null)
   && (samePr(parsePr(a.pr, a.repo), parsePr(b.pr, b.repo)) || (a.finalState === 'merged' && b.finalState === 'merged'))
   && (!a.reportId || !b.reportId || a.reportId === b.reportId

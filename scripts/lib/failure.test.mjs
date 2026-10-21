@@ -290,6 +290,9 @@ test('buildDiagnosis: an engine-died row is infrastructure — its reason passes
   // The engine died before any check ran, so the open PR is unverified, not passing.
   assert.equal(stopCiStatus({ status: 'failed', prNumber: 7, failureReason: 'engine-died' }), 'none');
   assert.equal(buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed', prNumber: 7, failureReason: 'engine-died' }, terminal: null }).ciStatus, 'none');
+  // Its stop stage is forwarded as a resource stop's is, so it agrees with the ciStatus read from it.
+  const retried = buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed', prNumber: 7, failureReason: 'engine-died', stopStage: 'retry' }, terminal: null });
+  assert.deepEqual([retried.stopStage, retried.ciStatus], ['retry', 'fail']);
 });
 
 test('buildDiagnosis: clips a long terminal reason — this lands in an agent context', () => {
