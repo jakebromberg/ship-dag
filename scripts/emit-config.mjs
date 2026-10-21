@@ -39,7 +39,8 @@
 //       { "number": 924, "repo": "owner/repo", "title": "...", "complexity": "normal",
 //         "model": "opus", "effort": "high", "digest": "2-3 sentence plan", "extraDirs": ["../wxyc-shared"],
 //         "reach": "repo",                         // optional; in-diff|repo|external (a key of tuning review.reachEffort; unknown exits 2) — recorded in the wave sidecar, not the engine config
-//         "decisions": ["use JSONL"] }             // optional; array of strings (anything else exits 2) — recorded in the wave sidecar and folded into the engine description as a "Settled decisions" list
+//         "decisions": ["use JSONL"],           // optional; array of strings (anything else exits 2) — recorded in the wave sidecar and folded into the engine description as a "Settled decisions" list
+//         "triagedAt": "2026-10-16T12:00:00Z" }    // optional; when triage ran (ISO 8601) — the CLI reads each #N / owner/repo#N the digest and decisions name and prepends a note of those that merged or closed since; absent, the description is unchanged
 //     ]
 //   }
 //
@@ -50,6 +51,8 @@
 import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
+import { realRunGh } from './lib/gh.mjs';
+import { refKey } from './lib/ref.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
 import { waveSidecar, appendWave, specBlockOn } from './lib/wave-sidecar.mjs';
 
@@ -146,6 +149,45 @@ export function withDecisions(description, decisions) {
   return `${description}\n\nSettled decisions (binding; they override the issue body where they differ):\n${lines.map((d) => `- ${d}`).join('\n')}`;
 }
 
+// A triage digest is written once, but a wave can launch a day or more later, so the PRs and issues it
+// names as open or conditional may have landed. This collects every `#N` / `owner/repo#N` in the digest and
+// decisions (one read each, none when there are none) and, for those that closed since `triagedAt`, returns
+// a block of facts to prepend. It states facts only and never rewrites the digest. `readRef(repo, number)`
+// is injected and returns the GitHub issues-API row `{state, title, closed_at, pull_request}`; a read that
+// throws drops that ref's line and warns, so a failure never stops the emit. Without a `triagedAt` or a
+// reader, or when nothing changed, the description comes back untouched.
+const REF_IN_TEXT = /(?<![\w#])(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
+
+export function withMergedSinceTriage(description, { texts, repo, self, base, triagedAt, readRef, warn = () => {} }) {
+  if (!triagedAt || !readRef) return description;
+  const since = Date.parse(triagedAt);
+  if (!Number.isFinite(since)) return description;
+  const refs = new Map();
+  for (const m of texts.join('\n').matchAll(REF_IN_TEXT)) {
+    const r = m[1] ?? repo;
+    const n = Number(m[2]);
+    if (refKey(r) === refKey(repo) && n === self) continue;
+    refs.set(`${refKey(r)}#${n}`, { r, n, label: m[1] ? `${m[1]}#${n}` : `#${n}` });
+  }
+  const facts = [];
+  for (const { r, n, label } of refs.values()) {
+    let row;
+    try { row = readRef(r, n); } catch (err) {
+      warn(`emit-config: WARNING — could not read ${r}#${n}; left out of the since-triage note: ${err.message}`);
+      continue;
+    }
+    const mergedAt = row?.pull_request?.merged_at;
+    const at = Date.parse(mergedAt ?? row?.closed_at);
+    if (row?.state !== 'closed' || !(at > since)) continue;
+    facts.push(mergedAt ? `${label} merged (${row.title})` : `${label} closed`);
+  }
+  if (facts.length === 0) return description;
+  return `Since this plan was written: ${facts.join('; ')}. Conditionals in the plan that name them are settled. Read each file the plan names on \`origin/${base}\` before editing it.\n\n${description}`;
+}
+
+/** The real `readRef`: one `gh api` read of an issue or PR, via the issues endpoint that serves both. */
+export const ghReadRef = (repo, number) => JSON.parse(realRunGh(['api', `repos/${repo}/issues/${number}`]));
+
 /**
  * Refuse a spec the emitter must not run, throwing one error that lists every
  * problem at once (unknown complexity, reach or decisions, invalid blockOn). buildConfig calls this
@@ -181,8 +223,10 @@ export function validateSpec(spec, tuning = loadTuning()) {
  * @param spec   the ready-wave spec (shape in the header comment).
  * @param tuning a validated version-1 tuning object (see lib/tuning.mjs `load`);
  *               defaults to reading the shipped references/tuning.json from disk.
+ * @param opts   `{readRef, warn}`: the injected GitHub reader for the since-triage block (see
+ *               withMergedSinceTriage); without a `readRef` no block is built.
  */
-export function buildConfig(spec, tuning = loadTuning()) {
+export function buildConfig(spec, tuning = loadTuning(), { readRef, warn } = {}) {
   validateSpec(spec, tuning);
   const repos = {};
   for (const r of distinctRepos(spec)) {
@@ -201,7 +245,10 @@ export function buildConfig(spec, tuning = loadTuning()) {
       slug: issue.slug || deriveSlug(number, issue.title),
       repo: repoOfIssue(issue, spec),
       dependsOn: [], // every ready-wave issue is independent → one flat parallel wave
-      description: withLineBudget(withDecisions(issue.digest || 'See the GitHub issue for the canonical spec.', issue.decisions), issue.sourceEstimate),
+      description: withMergedSinceTriage(
+        withLineBudget(withDecisions(issue.digest || 'See the GitHub issue for the canonical spec.', issue.decisions), issue.sourceEstimate),
+        { texts: [issue.digest ?? '', ...(issue.decisions ?? [])], repo: repoOfIssue(issue, spec), self: number, base: repos[repoOfIssue(issue, spec)].baseBranch, triagedAt: issue.triagedAt, readRef, warn },
+      ),
     };
     // Optional per-issue routing — omitted fields fall back to engine defaults
     // (defaultModel sonnet). Effort is stamped from tuning.json's implement map when
@@ -258,7 +305,7 @@ if (isMain(import.meta.url)) {
   let tuning;
   try {
     tuning = loadTuning();
-    config = buildConfig(spec, tuning);
+    config = buildConfig(spec, tuning, { readRef: ghReadRef, warn: console.error });
   } catch (err) {
     console.error(`emit-config: ${err.message}`);
     process.exit(2);
