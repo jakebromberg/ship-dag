@@ -1,0 +1,4 @@
+{
+  "_comment": "Hosts other than this machine that can run a whole engine for a ready-wave. `local` is implicit and never listed. Keys are host names; an entry needs ssh (the ssh alias), home, reposDir (where the host's repo checkouts live), and sdHome (the host's ship-dag checkout), and may give coHome, sessionSlots and leaseSlots (positive integers) and toolchains (any of node, python, xcode). A repo or an issue picks a host with `host`: in references/repo-ci-profiles.json, or on a spec issue (which wins). emit-config --by-host splits a spec into one config per host; scripts/lib/split-by-host.mjs holds the toolchain guard.",
+  "hosts": {}
+}

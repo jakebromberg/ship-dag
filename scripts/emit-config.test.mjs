@@ -6,9 +6,10 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { realRunGh } from './lib/gh.mjs';
-import { deriveSlug, buildConfig, unknownCiRepos, unknownComplexities, validateSpec, ghReadRef } from './emit-config.mjs';
+import { deriveSlug, buildConfig, buildConfigsByHost, unknownCiRepos, unknownComplexities, validateSpec, ghReadRef } from './emit-config.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
 import { waveSidecar } from './lib/wave-sidecar.mjs';
+import { validateHosts } from './lib/hosts.mjs';
 
 // A minimal well-formed spec the ready-wave hands the emitter.
 function spec(overrides = {}) {
@@ -490,6 +491,98 @@ test('the unverified-repo warning names both remedies: the repo declaring script
   assert.match(r.stderr, /WARNING — no CI profile for 1 repo\(s\): o\/bare\./);
   assert.match(r.stderr, /executable scripts\/ci/);
   assert.match(r.stderr, /references\/repo-ci-profiles\.json/);
+});
+
+// ---- hosts: --by-host splits the wave into one config per host ---------
+
+const BOX = validateHosts({ box: { ssh: 'box', home: '/Users/jake', reposDir: '/Users/jake/Developer', sdHome: '/Users/jake/Developer/ship-dag', toolchains: ['node', 'python'] } });
+const NODE_REPO = 'o/web';
+const XCODE_REPO = 'o/ios';
+const OPAQUE_REPO = 'o/opaque';
+const hostSpec = (repos, issues) => spec({
+  stateDir: '/state/ship-dag/engine/run1',
+  repo: NODE_REPO,
+  repos: {
+    [NODE_REPO]: { baseBranch: 'main', commands: ['npm test'], ...repos[NODE_REPO] },
+    [XCODE_REPO]: { baseBranch: 'main', commands: ['xcodebuild test -scheme A'], ...repos[XCODE_REPO] },
+    [OPAQUE_REPO]: { baseBranch: 'main', commands: ['scripts/ci'], ...repos[OPAQUE_REPO] },
+  },
+  issues: issues.map((i) => ({ digest: 'x', repo: NODE_REPO, ...i })),
+});
+
+// [name, spec, hosts, expected hosts → issue numbers (in order) or a thrown message, expected warnings]
+for (const [name, s, hosts, expected, warnings = []] of [
+  ['no hosts and no host fields: one local config', hostSpec({}, [{ number: 1 }, { number: 2, repo: XCODE_REPO }]), {}, { local: [1, 2] }],
+  ['a repo assigned to a host', hostSpec({ [NODE_REPO]: { host: 'box' } }, [{ number: 1 }, { number: 2, repo: XCODE_REPO }]), BOX, { box: [1], local: [2] }],
+  ['a per-issue override beats the repo', hostSpec({ [NODE_REPO]: { host: 'box' } }, [{ number: 1, host: 'local' }, { number: 2 }]), BOX, { local: [1], box: [2] }],
+  ['an issue overrides a local repo onto a host', hostSpec({}, [{ number: 1, host: 'box' }]), BOX, { box: [1] }],
+  ['the toolchain guard keeps an Xcode repo local, with a warning', hostSpec({ [XCODE_REPO]: { host: 'box' } }, [{ number: 2, repo: XCODE_REPO }]), BOX, { local: [2] }, [/o\/ios#2 stays on local: host box lacks the xcode toolchain/]],
+  ['declared toolchains win over the commands', hostSpec({ [XCODE_REPO]: { host: 'box', toolchains: ['node'] } }, [{ number: 2, repo: XCODE_REPO }]), BOX, { box: [2] }],
+  ['an unrecognized command keeps a repo-assigned issue local, with a warning', hostSpec({ [OPAQUE_REPO]: { host: 'box' } }, [{ number: 3, repo: OPAQUE_REPO }]), BOX, { local: [3] }, [/o\/opaque#3 stays on local: .*"scripts\/ci"/]],
+  ['an explicit host lacking a toolchain is refused', hostSpec({}, [{ number: 2, repo: XCODE_REPO, host: 'box' }]), BOX, /host box on o\/ios#2 lacks the xcode toolchain/],
+  ['an unknown host is refused, naming the issue', hostSpec({ [NODE_REPO]: { host: 'nope' } }, [{ number: 1 }]), BOX, /unknown host "nope" on o\/web#1; known: local\/box/],
+]) {
+  test(`buildConfigsByHost: ${name}`, () => {
+    const warned = [];
+    const run = () => buildConfigsByHost(s, hosts, loadTuning(), { warn: (m) => warned.push(m) });
+    if (expected instanceof RegExp) return assert.throws(run, expected);
+    const out = run();
+    assert.deepEqual(Object.fromEntries(out.map((c) => [c.host, c.config.issues.map((i) => i.number)])), expected);
+    assert.equal(warned.length, warnings.length, warned.join('\n'));
+    warnings.forEach((w, i) => assert.match(warned[i], w));
+    // The engine config stays host-free.
+    assert.ok(!JSON.stringify(out.map((c) => c.config)).includes('"host"'));
+  });
+}
+
+test('buildConfigsByHost: with no hosts the one local config is exactly what buildConfig gives', () => {
+  const s = hostSpec({}, [{ number: 1 }, { number: 2, repo: XCODE_REPO }]);
+  const [only, ...rest] = buildConfigsByHost(s, {});
+  assert.equal(rest.length, 0);
+  assert.equal(JSON.stringify(only.config), JSON.stringify(buildConfig(s)));
+});
+
+test("buildConfigsByHost: a remote host's config takes its paths from the registry, the local config keeps the spec's", () => {
+  const s = hostSpec({ [NODE_REPO]: { host: 'box' } }, [{ number: 1 }, { number: 2, repo: XCODE_REPO }]);
+  const { box, local } = Object.fromEntries(buildConfigsByHost(s, BOX).map((c) => [c.host, c.config]));
+  assert.equal(box.configDir, '/Users/jake/.local/state/ship-dag/engine/run1/state');
+  assert.equal(box.worktreeDir, '/Users/jake/.local/state/ship-dag/engine/run1/worktrees');
+  assert.equal(box.projectRoot, '/Users/jake/Developer');
+  assert.equal(box.promptTemplate, '/Users/jake/Developer/ship-dag/scripts/engine/prompt.md');
+  assert.deepEqual(Object.keys(box.repos), [NODE_REPO]);
+  assert.deepEqual([local.configDir, local.worktreeDir, local.projectRoot, local.promptTemplate], ['/state/ship-dag/engine/run1/state', '/state/ship-dag/engine/run1/worktrees', '/Users/jake/Developer/WXYC', '/skill/scripts/engine/prompt.md']);
+  assert.deepEqual(Object.keys(local.repos), [XCODE_REPO]);
+});
+
+test('the CLI --by-host writes config.local.json byte-identical to the plain output, and one sidecar line per host', () => {
+  const stateDir = join(mkdtempSync(join(tmpdir(), 'emit-config-')), 'ship-dag', 'engine', 'run1');
+  const outDir = join(mkdtempSync(join(tmpdir(), 'emit-config-')), 'out');
+  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+  const input = JSON.stringify(hostSpec({}, [{ number: 1 }]), null, 0).replace('/state/ship-dag/engine/run1', stateDir);
+  const plain = spawnSync(process.execPath, [cli, '-'], { input, encoding: 'utf-8' });
+  const split = spawnSync(process.execPath, [cli, '-', '--by-host', outDir], { input, encoding: 'utf-8' });
+  assert.equal(split.status, 0, split.stderr);
+  assert.equal(split.stdout, `${join(outDir, 'config.local.json')}\n`);
+  assert.equal(readFileSync(join(outDir, 'config.local.json'), 'utf-8'), plain.stdout);
+  assert.equal(readFileSync(join(stateDir, 'ship-dag-wave.jsonl'), 'utf-8').trim().split('\n').length, 2);
+});
+
+test('the CLI --by-host exits 2 on a host the registry does not list, naming the issue, and writes nothing', () => {
+  const outDir = join(mkdtempSync(join(tmpdir(), 'emit-config-')), 'out');
+  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+  const input = JSON.stringify(hostSpec({}, [{ number: 1, host: 'nope' }]));
+  const r = spawnSync(process.execPath, [cli, '-', '--by-host', outDir], { input, encoding: 'utf-8' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /unknown host "nope" on o\/web#1/);
+  assert.equal(r.stdout, '');
+  assert.throws(() => readdirSync(outDir), /ENOENT/);
+});
+
+test('the CLI exits 2 when --by-host has no directory', () => {
+  const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+  const r = spawnSync(process.execPath, [cli, '-', '--by-host'], { input: '{}', encoding: 'utf-8' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--by-host requires a value/);
 });
 
 // ---- merged since triage ------------------------------------------------

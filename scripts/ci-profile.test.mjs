@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reposMap } from './ci-profile.mjs';
 import { ghStubBin, graphqlFailure, restFailure } from './lib/gh-fixture.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-profile.mjs', import.meta.url));
@@ -56,3 +57,8 @@ for (const [name, args] of [['no repo', []], ['a repo that is not owner/repo', [
     assert.match(r.stderr, /usage: ci-profile\.mjs <owner\/repo>/);
   });
 }
+
+test("prints a registry entry's host, so a spec's repos map carries it to emit-config --by-host", async () => {
+  const repos = await reposMap([REGISTERED], { profiles: { [REGISTERED]: { commands: ['npm test'], host: 'box' } } });
+  assert.deepEqual(repos[REGISTERED], { baseBranch: 'main', commands: ['npm test'], source: 'registry', host: 'box' });
+});
