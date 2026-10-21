@@ -270,10 +270,10 @@ export function readRecords(path = telemetryPath()) {
  * `byRepo` groups the same population by repo (casing folded by `sameRepo`, keyed as first written); a repo with
  * fewer than `minSample` reached rows carries `n` and no rates.
  * `issues` counts distinct issues (`latestByRef`, casing folded), those merged in the window, the mean non-infra rows
- * per merged issue (`null` with none), and those whose latest record is no merge and no maintainer deferral. A
+ * that reached implement per merged issue (`null` with none), and those whose latest record is no merge and no maintainer deferral. A
  * deferral with an infra reason (`INFRA_REASONS`: an engine death, a lease-wait, memory-critical or rate-limited stop)
  * is the engine's, not a maintainer's, so it is unresolved, as is a point-F deferral of an engine-died ref (its reason
- * is kept).
+ * is kept), as is an engine skip (`skipReason`); an unmarked deferral is a maintainer's.
  * `legacyDeath` is not read: the historical rows stay model errors here.
  */
 export function report(records, { minSample = 20 } = {}) {
@@ -312,9 +312,9 @@ export function report(records, { minSample = 20 } = {}) {
     };
   }
   const latest = latestByRef(records);
-  const attempts = groupBy(issueKey, modelIssues);
+  const attempts = groupBy(issueKey, reached);
   const mergedKeys = new Set(issues.filter((r) => r.finalState === 'merged').map(issueKey));
-  const unresolved = [...latest.values()].filter((r) => r.finalState !== 'merged' && (r.finalState !== 'deferred' || INFRA_REASONS.has(r.failureReason)));
+  const unresolved = [...latest.values()].filter((r) => r.finalState !== 'merged' && (r.finalState !== 'deferred' || INFRA_REASONS.has(r.failureReason) || r.skipReason));
   const issueOutcomes = {
     distinct: latest.size,
     merged: mergedKeys.size,

@@ -1813,6 +1813,8 @@ describe('report: issues block', () => {
     ...['lease-wait', 'memory-critical', 'rate-limited'].map((failureReason) => ({ name: `a ${failureReason} stop nothing followed is unresolved`, recs: [at(1, { ...death, failureReason })], want: { distinct: 1, merged: 0, unresolved: 1, attemptsPerMerged: null } })),
     { name: 'a maintainer deferral with no reason is not unresolved', recs: [at(1, { finalState: 'deferred', implStatus: null, failureReason: null })], want: { distinct: 1, merged: 0, unresolved: 0, attemptsPerMerged: null } },
     { name: 'a point-F deferral of an engine-died ref is unresolved', recs: [at(1, death), at(2, { runId: 'r2', finalState: 'deferred', implStatus: null, failureReason: 'engine-died' })], want: { distinct: 1, merged: 0, unresolved: 1, attemptsPerMerged: null } },
+    { name: 'an engine skip nothing followed is unresolved, with no attempt', recs: [at(1, { finalState: 'deferred', implStatus: null, failureReason: null, skipReason: 'dependency' })], want: { distinct: 1, merged: 0, unresolved: 1, attemptsPerMerged: null } },
+    { name: 'skipped in one wave, merged on its first implement in a later one', recs: [at(1, { finalState: 'deferred', implStatus: null, failureReason: null, skipReason: 'dependency' }), at(2, { runId: 'r2' })], want: { distinct: 1, merged: 1, unresolved: 0, attemptsPerMerged: 1 } },
     { name: 'a retro record is no issue', recs: [normalizeRecord(retroBase(), FIXED), at(1, {})], want: { distinct: 1, merged: 1, unresolved: 0, attemptsPerMerged: 1 } },
   ];
   for (const { name, recs, want } of cases) {
