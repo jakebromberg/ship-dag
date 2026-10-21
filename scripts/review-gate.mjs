@@ -33,6 +33,7 @@
 // finding count disagreeing with what the reviewer reported writing.
 
 import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { isMain } from './lib/is-main.mjs';
 
 /**
@@ -268,6 +269,34 @@ export function isMergeOrder(note) {
 }
 
 /**
+ * Whether a note's `with` can be waited on by the issue: in its repo, and not
+ * the issue itself. Without the issue's ref nothing is checkable, so it is no.
+ * @param {string} withRef  a well-formed `owner/repo#N`
+ * @param {string|undefined} issueRef
+ */
+function siblingOf(withRef, issueRef) {
+  const own = typeof issueRef === 'string' ? PR_REF.exec(issueRef) && issueRef.toLowerCase() : null;
+  const other = withRef.toLowerCase();
+  return Boolean(own) && other.split('#')[0] === own.split('#')[0] && other !== own;
+}
+
+/**
+ * The issue ref a round file is named for (`artifactStem`: `owner%2Frepo%23N`,
+ * then an optional round tag), which is the one source of the issue's repo the
+ * gate trusts: the orchestrator picks the path, the reviewer writes the content.
+ * @param {string} path
+ * @returns {string|undefined}
+ */
+export function issueRefFromPath(path) {
+  try {
+    const m = /^([^\s/#]+\/[^\s/#]+#\d+)(?:[.-][A-Za-z0-9-]+)?\.json$/.exec(decodeURIComponent(basename(String(path))));
+    return m?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Recompute the merge gate from a review object.
  *
  * A finding blocks iff its `category` is in `blockOn` AND its `verdict` is
@@ -310,13 +339,18 @@ export function isMergeOrder(note) {
  * would leave no trace, where the other fail-closed path leaves
  * `unknownCategories[]`.
  *
- * A finding carrying a usable `mergeOrder` (`isMergeOrder`) never blocks,
- * whatever its category or `blocking`: it is about what breaks only after
- * another open PR lands, which is that PR's gate to hold, not this one's. It is
- * counted in `mergeOrderCount` and listed in `mergeOrder[≤MAX_LISTED]`, apart
- * from `nitCount`, so a note is never mistaken for a cosmetic finding. A
- * `mergeOrder` that is present but unusable (`null` counts as absent) leaves
- * the finding scored as usual and is named in `malformedMergeOrder[]`.
+ * A usable `mergeOrder` (`isMergeOrder`, and its `with` in the issue's own repo
+ * but not the issue itself) clears only what `blocking: false` could already
+ * clear: a CONFIRMED finding in a gated category outside `ALWAYS_BLOCK`. It
+ * never clears a CONFIRMED correctness or security finding, nor a blank or
+ * coined category. It is about what breaks only after another open PR lands,
+ * which is that PR's gate to hold, not this one's. A note is counted in
+ * `mergeOrderCount` and listed in `mergeOrder[≤MAX_LISTED]` (clearances first,
+ * each with its `verdict` and `cleared`), apart from `nitCount`; every
+ * clearance is in `mergeOrderClearedCount`. A `mergeOrder` that is present but
+ * unusable, or refused for the finding it sits on (`null` counts as absent),
+ * leaves the finding scored as usual and is named in `malformedMergeOrder[]`.
+ * `issueRef` (`owner/repo#N`) is the issue's ref; without it no note is usable.
  *
  * Throws when `findings` is not an array. That is deliberately fatal rather
  * than defaulted to `[]`: a truncated or half-written review file would
@@ -327,8 +361,9 @@ export function isMergeOrder(note) {
  * @param {string[]} [blockOn]
  * @param {number} [expectFindings]  the count the reviewer reported writing; a
  *   disagreement throws rather than yielding a verdict
+ * @param {string} [issueRef]  the issue's `owner/repo#N`, from `issueRefFromPath`
  */
-export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = undefined) {
+export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = undefined, issueRef = undefined) {
   if (!review || !Array.isArray(review.findings)) {
     throw new Error('review has no findings array — refusing to treat an unreadable review as clean');
   }
@@ -390,12 +425,18 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
       line: f?.line ?? null,
       summary: f?.summary ?? null,
     };
-    // Before the `blocking` axis, which a note makes moot: its value is neither
-    // cleared nor reported as unusable for a finding that was never in play.
+    // Before the `blocking` axis, which a usable note makes moot. It would block
+    // here (`wouldBlock`) unless a note clears it, and a note may clear only a
+    // finding `blocking: false` could: an ALWAYS_BLOCK or unknown-category
+    // finding keeps blocking, and the refused note is named.
     const note = f?.mergeOrder;
-    if (isMergeOrder(note)) {
-      mergeOrder.push({ ...entry, with: note.with, obligation: note.obligation });
-      continue;
+    const wouldBlock = !known || (gate.has(category) && confirmed);
+    if (isMergeOrder(note) && siblingOf(note.with, issueRef)) {
+      if (!wouldBlock || (known && !ALWAYS_BLOCK.includes(category))) {
+        const verdict = String(f?.verdict ?? '').toUpperCase() || null;
+        mergeOrder.push({ ...entry, verdict, cleared: wouldBlock, with: note.with, obligation: note.obligation });
+        continue;
+      }
     }
     if (note !== undefined && note !== null) malformedMergeOrder.add(renderUnusable(note));
     // The reviewer's own blocking/nit call, only able to narrow a category
@@ -445,7 +486,9 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
     unknownCategories: [...unknown],
     malformedBlocking: [...malformed].slice(0, MAX_LISTED),
     mergeOrderCount: mergeOrder.length,
-    mergeOrder: mergeOrder.slice(0, MAX_LISTED),
+    mergeOrderClearedCount: mergeOrder.filter((n) => n.cleared).length,
+    // Clearances first, so the cap never hides one behind carried notes.
+    mergeOrder: [...mergeOrder.filter((n) => n.cleared), ...mergeOrder.filter((n) => !n.cleared)].slice(0, MAX_LISTED),
     malformedMergeOrder: [...malformedMergeOrder].slice(0, MAX_LISTED),
   };
 }
@@ -459,7 +502,7 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
  */
 export function gateFile(path, blockOn = DEFAULT_BLOCK_ON, expectFindings = undefined) {
   const review = JSON.parse(readFileSync(path, 'utf8'));
-  return { ...gateReview(review, blockOn, expectFindings), path };
+  return { ...gateReview(review, blockOn, expectFindings, issueRefFromPath(path)), path };
 }
 
 function main(argv) {
@@ -506,7 +549,9 @@ function main(argv) {
   const malformed = out.malformedBlocking.length ? `; unusable blocking: ${out.malformedBlocking.join(', ')}` : '';
   // Named by the PR each waits on: the note is not a nit, and the rebase gate
   // of whichever PR lands second is where it is read again (SKILL.md step 6.2).
-  const notes = out.mergeOrderCount ? `; ${out.mergeOrderCount} merge-order: ${out.mergeOrder.map((n) => n.with).join(', ')}` : '';
+  const notes = out.mergeOrderCount
+    ? `; ${out.mergeOrderCount} merge-order${out.mergeOrderClearedCount ? ` (${out.mergeOrderClearedCount} cleared a blocking finding)` : ''}: ${out.mergeOrder.map((n) => n.with).join(', ')}`
+    : '';
   const badNotes = out.malformedMergeOrder.length ? `; unusable mergeOrder: ${out.malformedMergeOrder.join(', ')}` : '';
   process.stderr.write(
     `review-gate: #${out.issue} ${out.verdict} — ${out.blockingCount} blocking, ${out.nitCount} nits${cleared}${notes}${unknown}${malformed}${badNotes}\n`,
