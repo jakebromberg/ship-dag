@@ -93,6 +93,10 @@ for (const failureReason of ['memory-critical', 'lease-wait']) {
   });
 }
 
+test('normalizeRecord: round-trips "engine-died"', () => {
+  assert.equal(normalizeRecord(base({ finalState: 'deferred', implStatus: 'error', failureReason: 'engine-died' }), FIXED).failureReason, 'engine-died');
+});
+
 test('normalizeRecord: rejects an unrecognized failureReason', () => {
   assert.throws(() => normalizeRecord(base({ failureReason: 'gremlins' }), FIXED), /bad failureReason/);
 });
@@ -447,6 +451,18 @@ for (const [failureReason, stopStage, status, outcome, want] of [
     assert.equal(log.length, want.length);
     // A stopped row is no model-quality signal: report() leaves it out of every indicator.
     assert.equal(report(log).firstPassYield.reached, 0);
+  }));
+}
+
+// A report rebuilt after the engine died stamps its rows `failureReason: "engine-died"`; a real model error carries none.
+for (const [failureReason, want] of [['engine-died', 'engine-died'], [undefined, null]]) {
+  test(`ingest-wave: a failed row with failureReason ${failureReason} ingests with ${want} and ${want ? 'is left out of' : 'counts in'} the model indicators`, () => withStateDir({
+    reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason })]) },
+    sidecar: [sidecarEntry([REF])],
+  }, (dir) => {
+    const { records, log } = ingest(dir);
+    assert.deepEqual(records.map((r) => [r.implStatus, r.failureReason]), [['error', want]]);
+    assert.equal(report(log).firstPassYield.reached, want ? 0 : 1);
   }));
 }
 
@@ -1374,6 +1390,15 @@ describe('audit', () => {
     const first = [logged({ reportId: 'w1', ran: false, implStatus: null, finalState: 'deferred' }), logged({ issue: 2, reportId: 'w1', ran: false, implStatus: 'error', finalState: 'error' })];
     assert.deepEqual(audit_(base, first).notIngested.map((w) => [w.id, w.refs]), [['w2', [REF2]]]);
     assert.deepEqual(audit_(base, [...first, logged({ issue: 2, reportId: 'w2', ran: false, implStatus: 'error', finalState: 'error' })]).notIngested, []);
+  }));
+
+  test('names a ref whose last record is an engine death, until a later record gives its outcome', () => family({
+    [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prNumber: null })]) }, sidecar: [sidecarEntry([REF])] },
+  }, (base) => {
+    const death = logged({ reportId: 'w1', implStatus: 'error', finalState: 'deferred', failureReason: 'engine-died' });
+    assert.deepEqual(audit_(base, [death]).engineDied, [REF]);
+    assert.deepEqual(audit_(base, [death, logged({ ts: T2 })]).engineDied, []);
+    assert.deepEqual(audit_(base, [logged({ reportId: 'w1', implStatus: 'error', finalState: 'error' })]).engineDied, []);
   }));
 
   test('one dir holding two waves names only the one not ingested, and a report with no terminal row is not named', () => family({

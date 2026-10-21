@@ -582,7 +582,8 @@ function waveWindow(stateDir, { report, startedAt, id }, familyReports, { owns, 
  * (`{dir, id, source (where its routing label came from), refs (the uncovered rows')}`; one with no
  * terminal row is not named), and one with an `error` is `unreadable` (`{path, error}`). `terminalRows`
  * is the number of terminal rows examined (a row a retry carries over counts once per report that lists it,
- * as `notIngested` names it) and `prRows` those with a PR, `{total, uncovered}`: the denominators for a coverage share. A sidecar
+ * as `notIngested` names it) and `prRows` those with a PR, `{total, uncovered}`: the denominators for a coverage share. `engineDied` names the refs
+ * whose last record in the log is an engine death (`failureReason: "engine-died"`), with no later outcome. A sidecar
  * entry or config file (in either of `configDirs`) that no readable report matched is `neverReported`:
  * there is no report to ingest. That is a wave the engine died in before it wrote one, but also a wave
  * still running, an earlier emit of a ref set whose re-emit a report matched, and an `unreadable` report's.
@@ -591,7 +592,7 @@ function waveWindow(stateDir, { report, startedAt, id }, familyReports, { owns, 
  * @throws when no dir under `baseDir` belongs to the run family, so a mistyped id does not read as all clear
  */
 export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords(telemetryPath()), warn = (m) => console.error(m) } = {}) {
-  const out = { runId, dirs: runFamilyDirs(runId, baseDir), terminalRows: 0, prRows: { total: 0, uncovered: 0 }, notIngested: [], unreadable: [], neverReported: { sidecar: [], configs: [] } };
+  const out = { runId, dirs: runFamilyDirs(runId, baseDir), terminalRows: 0, prRows: { total: 0, uncovered: 0 }, engineDied: [], notIngested: [], unreadable: [], neverReported: { sidecar: [], configs: [] } };
   if (!out.dirs.length) throw new Error(`no dir under ${baseDir} belongs to run ${runId}`);
   const logged = records.filter((r) => sameRun(r.runId, runId));
   // Quiet: an unreadable report is named in `unreadable`, so it is not warned about as well.
@@ -621,6 +622,9 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
     }
     for (const { configFile } of configDirs(dir).flatMap((d) => waveConfigs(d))) if (!matched.has(configFile)) out.neverReported.configs.push(configFile);
   }
+  // A ref's last record is its outcome so far: an engine death nothing followed was never resumed into the log.
+  const last = new Map(logged.filter((r) => r.kind !== 'retro').map((r) => [`${r.repo}#${r.issue}`, r]));
+  out.engineDied = [...last].filter(([, r]) => r.failureReason === 'engine-died').map(([ref]) => ref);
   return out;
 }
 
