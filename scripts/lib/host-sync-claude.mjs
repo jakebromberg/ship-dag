@@ -1,7 +1,7 @@
 // host-sync-claude.mjs — make a remote host's ~/.claude carry this machine's CLAUDE.md, lease hook entries and skills.
 // Never touches projects/, sessions/, history.jsonl, file-history/ or credentials. `run(cmd, args, input)` is injected
 // and returns { status, stdout, stderr }, so the steps are testable without ssh.
-import { coHome, coDistPathIn } from './co-home.mjs';
+import { coDistPathIn } from './co-home.mjs';
 
 const q = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
 
@@ -42,10 +42,13 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
   const failures = [];
   const ssh = (cmd, input) => {
     const r = run('ssh', [host.ssh, cmd], input);
-    if (r.status !== 0) throw new Error(`${cmd}: ${r.stderr}`);
+    if (r.status !== 0) throw new Error(`${cmd}: ${r.stderr || r.error?.message}`);
     return r.stdout;
   };
-  const put = (file, text) => ssh(`cat > ${q(`${file}.tmp`)} && mv ${q(`${file}.tmp`)} ${q(file)}`, text);
+  // '' only when the file is absent; any read error (permissions, a dangling symlink) fails the step.
+  const get = (file) => ssh(`if [ -e ${q(file)} ] || [ -L ${q(file)} ]; then cat ${q(file)}; fi`);
+  // Written through the existing file, so a symlink stays a symlink and the file keeps its mode.
+  const put = (file, text) => ssh(`mkdir -p ${q(dir)} && cat > ${q(`${file}.tmp`)} && cat ${q(`${file}.tmp`)} > ${q(file)} && rm ${q(`${file}.tmp`)}`, text);
   const step = (name, fn) => {
     try {
       fn();
@@ -59,12 +62,12 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
     log(`${dryRun ? 'would ' : ''}${msg}`);
   };
 
-  if (run('git', ['-C', localHome, 'status', '--porcelain']).stdout.trim()) log(`warning: ${localHome} has uncommitted changes; syncing the working tree`);
+  if (run('git', ['-C', localHome, 'status', '--porcelain']).stdout?.trim()) log(`warning: ${localHome} has uncommitted changes; syncing the working tree`);
 
   step('CLAUDE.md', () => {
     const file = `${dir}/CLAUDE.md`;
     const text = readFile(`${localHome}/CLAUDE.md`);
-    const hostText = ssh(`cat ${q(file)} 2>/dev/null; true`);
+    const hostText = get(file);
     if (hostText === text) return;
     const backup = `${file}.bak-${now().toISOString().replace(/[-:.]/g, '')}`;
     change(`copy CLAUDE.md${hostText ? ` (backup ${backup})` : ''}`);
@@ -75,19 +78,27 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
 
   step('settings.json', () => {
     const file = `${dir}/settings.json`;
-    const raw = ssh(`cat ${q(file)} 2>/dev/null; true`);
+    const raw = get(file);
     const current = raw.trim() ? JSON.parse(raw) : {};
-    const entryScript = coDistPathIn(host.coHome ?? coHome({}), 'cli-lease.js');
-    const merged = mergeSettings(current, JSON.parse(ssh(`node ${q(entryScript)} hook --print-settings-entry`)));
+    // The host's checkout, defaulting like CO_HOME does here (host-prepare's withCoHome, #385).
+    const entryScript = coDistPathIn(host.coHome ?? `${host.home}/Developer/claude-orchestrator`, 'cli-lease.js');
+    // A login shell, so node is on the PATH the host's profile sets (Homebrew's is not in a bare ssh command's).
+    const printed = ssh(`exec "$SHELL" -lc ${q(`node ${q(entryScript)} hook --print-settings-entry`)}`);
+    const merged = mergeSettings(current, JSON.parse(printed));
     if (JSON.stringify(merged) === JSON.stringify(current)) return;
     change('merge lease hook entries into settings.json');
     if (!dryRun) put(file, `${JSON.stringify(merged, null, 2)}\n`);
   });
 
   step('skills', () => {
-    const args = ['-aL', '--itemize-changes', '--exclude=/ship-dag', ...(dryRun ? ['-n'] : []), `${localHome}/skills/`, `${host.ssh}:${dir}/skills/`];
+    // A skill the host links (as ship-dag is) is the host's own: rsync would replace the link with a copy.
+    const skills = `${dir}/skills`;
+    const linked = ssh(`if [ -d ${q(skills)} ]; then cd ${q(skills)} && find . -mindepth 1 -maxdepth 1 -type l; fi`)
+      .split('\n').filter(Boolean).map((l) => `--exclude=/${l.replace(/^\.\//, '')}`);
+    const excludes = ['--exclude=/ship-dag', '--exclude=/.trash', '--exclude=.DS_Store', ...linked];
+    const args = ['-aL', '--itemize-changes', ...excludes, ...(dryRun ? ['-n'] : []), `${localHome}/skills/`, `${host.ssh}:${skills}/`];
     const r = run('rsync', args);
-    if (r.status !== 0) throw new Error(r.stderr);
+    if (r.status !== 0) throw new Error(r.stderr || r.error?.message);
     for (const line of r.stdout.split('\n').filter((l) => l.trim())) change(`skills: ${line}`);
   });
 

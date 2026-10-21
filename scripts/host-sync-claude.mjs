@@ -10,11 +10,12 @@ import { isMain } from './lib/is-main.mjs';
 
 const run = (cmd, args, input) => spawnSync(cmd, args, { encoding: 'utf8', input });
 
-export function main(argv, deps = {}) {
+export function main(argv, { hosts = loadHosts(), ...deps } = {}) {
+  const flags = argv.filter((a) => a.startsWith('--') && a !== '--dry-run');
   const name = argv.find((a) => !a.startsWith('--'));
-  const host = loadHosts()[name];
-  if (!host) {
-    console.error(`usage: host-sync-claude.mjs <host> [--dry-run]; unknown host: ${name}`);
+  const host = Object.hasOwn(hosts, String(name)) ? hosts[name] : undefined;
+  if (flags.length || !host) {
+    console.error(`usage: host-sync-claude.mjs <host> [--dry-run]; ${flags.length ? `unknown flag: ${flags.join(' ')}` : `unknown host: ${name}`}`);
     return 2;
   }
   const { failures } = syncClaude({
