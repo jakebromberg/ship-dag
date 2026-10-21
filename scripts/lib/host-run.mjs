@@ -17,30 +17,58 @@ export function engineCommand(host, stateDir, mode, parallel) {
   return `${assigns} npx --prefix ${q(host.coHome)} tsx ${q(`${host.sdHome}/scripts/engine/run.mts`)} wave ${flags}`;
 }
 
+/** The most engine-log bytes one poll returns, so a poll's output stays far under the runner's buffer however long the log. */
+export const LOG_CHUNK = 262_144;
+
+/** The file, in the host's state dir (outside the `state/` that is collected), that holds the detached engine's pid. */
+export const PID_FILE = 'host-run.pid';
+
+/** The line the engine prints when `--detach` started it; its group is the detached engine's pid. */
+export const DETACHED = /^Detached orchestrator \(PID (\d+)\)/m;
+
 /**
- * One poll of a detached run: whether `pid` is alive, how many reports exist, then `---` and the engine log from byte
- * `offset`. A `pid` that is not an integer (none, for a `--collect-only` look at a finished run) reads as exited. Alive is read before the log,
- * so an engine seen exited has had its whole log read.
+ * `command` (an `engineCommand` run line) wrapped so that, when it exits 0 naming the detached pid, the pid is written to
+ * `pidFile` on the host, where `--collect-only` finds it. The output (stderr folded in) and the exit code pass through.
  */
-export function pollScript(stateDir, pid, offset) {
+export function launchScript(command, pidFile) {
+  const pid = `printf '%s\\n' "$out" | sed -n 's/^Detached orchestrator (PID \\([0-9][0-9]*\\)).*/\\1/p' | head -n 1`;
+  return `out=$({ ${command}; } 2>&1); s=$?; printf '%s\\n' "$out"; pid=$(${pid}); if [ "$s" -eq 0 ] && [ -n "$pid" ]; then printf '%s\\n' "$pid" > ${q(pidFile)}; fi; exit "$s"`;
+}
+
+/**
+ * One poll of a detached run: whether the pid in `<stateDir>/host-run.pid` is alive (`none` without the file), how many
+ * reports exist, then `---` and at most `LOG_CHUNK` bytes of the engine log from byte `offset`. Alive is read before
+ * the log, so an engine seen exited has had its whole log written; a chunk of `LOG_CHUNK` bytes means more may follow.
+ */
+export function pollScript(stateDir, offset) {
   const state = `${stateDir}/state`;
   return [
-    Number.isInteger(pid) ? `echo alive=$(kill -0 ${pid} 2>/dev/null && echo 1 || echo 0)` : 'echo alive=0',
+    `pid=$(cat ${q(`${stateDir}/${PID_FILE}`)} 2>/dev/null)`,
+    'if [ -z "$pid" ]; then echo alive=none; elif kill -0 "$pid" 2>/dev/null; then echo alive=1; else echo alive=0; fi',
     `echo reports=$(ls ${q(`${state}/reports`)}/*.json 2>/dev/null | wc -l)`,
     'echo ---',
-    `tail -c +${offset + 1} ${q(`${state}/logs/orchestrator.log`)} 2>/dev/null; true`,
+    `tail -c +${offset + 1} ${q(`${state}/logs/orchestrator.log`)} 2>/dev/null | head -c ${LOG_CHUNK}; true`,
   ].join('; ');
 }
 
-/** Parse `pollScript` output into `{ alive, reports, log }`. */
+/** Parse `pollScript` output (a Buffer or string) into `{ alive, reports, log }`: `alive` is null without a pid file, and `log` is the raw bytes. */
 export function parsePoll(out) {
-  const cut = out.indexOf('---\n');
-  const head = Object.fromEntries(out.slice(0, cut).split('\n').filter(Boolean).map((l) => l.split('=')));
-  return { alive: head.alive === '1', reports: Number(head.reports), log: out.slice(cut + 4) };
+  const buf = Buffer.from(out);
+  const cut = buf.indexOf('---\n');
+  const head = Object.fromEntries(buf.subarray(0, cut).toString().split('\n').filter(Boolean).map((l) => l.split('=')));
+  return { alive: { 1: true, 0: false }[head.alive] ?? null, reports: Number(head.reports), log: buf.subarray(cut + 4) };
 }
 
-/** `wait` while the engine runs; once it has exited, `done` if a report exists, else `no-report`. */
-export const pollDecision = ({ alive, reports }) => (alive ? 'wait' : reports > 0 ? 'done' : 'no-report');
+/**
+ * `wait` while the engine runs with no report. A report ends the wait once it was already there a poll ago
+ * (`reportSeen`), since the engine writes the failure digests just after it, or at once when the engine has exited:
+ * `done`. An engine that exited without one is `no-report`; with no pid file and no report it is `no-pid`.
+ */
+export function pollDecision({ alive, reports }, reportSeen) {
+  if (alive === null) return reports > 0 ? 'done' : 'no-pid';
+  if (alive) return reports > 0 && reportSeen ? 'done' : 'wait';
+  return reports > 0 ? 'done' : 'no-report';
+}
 
 /**
  * The rsync argv that copies only the per-issue and per-report files of a state dir: `reports/`, `failure-digest/`,
@@ -56,12 +84,16 @@ export const rsyncArgs = (src, dest) => [
 /**
  * `{ code, message }` for how a host run ended: `done` (a report was written; 0), `no-report` (the engine exited
  * without one; 1), `dropped` (the ssh connection dropped, 255, which says nothing about the engine, so the message gives
- * the re-attach and `--collect-only` commands in `ctx.reattach`/`ctx.collect`) or `failed` (a step failed; 1).
+ * the re-attach and `--collect-only` commands in `ctx.reattach`/`ctx.collect`), `no-pid` (no `ctx.pidFile`, so whether the
+ * engine runs is unknown; 1), `timeout` (still running after `ctx.minutes`; 1, with `ctx.collect` to resume) or `failed`
+ * (a step failed; 1).
  */
 export function outcome(name, kind, ctx = {}) {
   return {
     done: { code: 0 },
     'no-report': { code: 1, message: `host-run: ${name}: the engine exited with no report; see ${ctx.engineLog}` },
+    'no-pid': { code: 1, message: `host-run: ${name}: there is no ${ctx.pidFile} (host-run writes it when it starts the engine), so host-run cannot tell whether the engine is still running; it collected what is there and found no report` },
+    timeout: { code: 1, message: `host-run: ${name}: the engine is still running after ${ctx.minutes} minutes; host-run stopped waiting, which is not an engine failure.\n  resume: ${ctx.collect}` },
     dropped: { code: 255, message: `host-run: ${name}: the ssh connection dropped; the engine may still be running there, so this is not an engine failure.\n  re-attach: ${ctx.reattach}\n  collect:   ${ctx.collect}` },
     failed: { code: 1, message: `host-run: ${name}: ${ctx.detail}` },
   }[kind];

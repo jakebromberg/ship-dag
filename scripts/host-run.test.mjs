@@ -2,41 +2,50 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hostRun } from './host-run.mjs';
+import { hostRun, main, realRunner } from './host-run.mjs';
 import { readLatestUtilization } from './rate-limit-preflight.mjs';
-import { rsyncArgs } from './lib/host-run.mjs';
+import { LOG_CHUNK, parsePoll, pollScript, rsyncArgs } from './lib/host-run.mjs';
 import { scopedEngineFixture } from './lib/engine-fixture.mjs';
 import { validateHosts } from './lib/hosts.mjs';
 
-const { box } = validateHosts({ box: { ssh: 'boxssh', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' } });
+const BOX = { ssh: 'boxssh', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' };
+const { box } = validateHosts({ box: BOX });
 const stateDir = '/h/.local/state/ship-dag/engine/run1';
 const LAUNCHED = { status: 0, stdout: 'Detached orchestrator (PID 77)\nLog: /l\n', stderr: '' };
-const poll = (alive, reports, log = '') => ({ status: 0, stdout: `alive=${alive}\nreports=${reports}\n---\n${log}`, stderr: '' });
+const poll = (alive, reports, log = '') => ({ status: 0, stdout: Buffer.concat([Buffer.from(`alive=${alive}\nreports=${reports}\n---\n`), Buffer.from(log)]), stderr: '' });
+const failedToRun = (code) => ({ status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: Object.assign(new Error(`spawnSync ssh ${code}`), { code }) });
+const MINUTE = 60_000;
 
-/** Run `hostRun` with `ssh` answering from `replies` in order (rsync from `rsyncStatus`); returns what it did. */
-async function go(replies, { rsyncStatus = 0, ...opts } = {}) {
-  const calls = { ssh: [], rsync: [], emitted: '', logged: [] };
+/** Run `hostRun` with `ssh` answering from `replies` in order (rsync with `rsyncReply`) on a clock only `sleep` moves; returns what it did. */
+async function go(replies, { rsyncReply = { status: 0, stderr: '' }, ...opts } = {}) {
+  const calls = { ssh: [], rsync: [], emitted: '', logged: [], slept: 0 };
+  let clock = 0;
   const run = {
     ssh: (alias, command) => (calls.ssh.push([alias, command]), replies.shift()),
-    rsync: (args) => (calls.rsync.push(args), { status: rsyncStatus, stderr: '' }),
+    rsync: (args) => (calls.rsync.push(args), rsyncReply),
   };
-  const code = await hostRun({ name: 'box', host: box, stateDir, localState: '/l', run, emit: (t) => (calls.emitted += t), log: (m) => calls.logged.push(m), sleep: async () => {}, reattach: 'RE', collect: 'COLLECT', ...opts });
+  const code = await hostRun({
+    name: 'box', host: box, stateDir, localState: '/l', run, emit: (t) => (calls.emitted += t), log: (m) => calls.logged.push(m),
+    sleep: async (ms) => { calls.slept += 1; clock += ms; }, now: () => clock, reattach: 'RE', collect: 'COLLECT', ...opts,
+  });
   return { code, ...calls };
 }
 
-test('a run launches detached, polls until the engine exits with a report, then collects and exits 0', async () => {
+test('a run launches detached, recording the pid on the host, polls until the engine exits with a report, then collects and exits 0', async () => {
   const r = await go([LAUNCHED, poll(1, 0, 'one\n'), poll(1, 0, 'two\npart'), poll(0, 1, 'partial\n')]);
   assert.equal(r.code, 0);
-  assert.match(r.ssh[0][1], /--parallel 1 --detach$/);
+  assert.match(r.ssh[0][1], /--parallel 1 --detach; } 2>&1\); .*> '\/h\/\.local\/state\/ship-dag\/engine\/run1\/host-run\.pid'/);
+  assert.match(r.ssh[1][1], /host-run\.pid/);
   assert.match(r.ssh[2][1], /tail -c \+5 /);
   assert.match(r.ssh[3][1], /tail -c \+9 /);
   assert.equal(r.emitted, `${LAUNCHED.stdout}one\ntwo\npartial\n`);
+  assert.equal(r.slept, 2);
   assert.equal(r.rsync.length, 1);
-  assert.deepEqual(r.rsync[0].slice(-2), [`boxssh:${stateDir}/state/`, '/l/state/']);
+  assert.deepEqual(r.rsync[0].slice(-2), [`boxssh:'${stateDir}/state/'`, '/l/state/']);
   assert.deepEqual(r.logged, []);
 });
 
@@ -50,7 +59,7 @@ test('an engine that exits with no report exits 1 naming the remote log, and sti
 for (const [name, replies, nextCalls] of [
   ['the launch', [{ status: 255, stdout: '', stderr: 'ssh: connect timed out' }], 1],
   ['a poll', [LAUNCHED, { status: 255, stdout: '', stderr: '' }], 2],
-  ['a poll that timed out', [LAUNCHED, { status: null, stdout: '', stderr: '' }], 2],
+  ['a poll that timed out', [LAUNCHED, failedToRun('ETIMEDOUT')], 2],
 ]) {
   test(`ssh dropping at ${name} exits 255 with the re-attach and collect commands, not as an engine failure`, async () => {
     const r = await go(replies);
@@ -61,27 +70,86 @@ for (const [name, replies, nextCalls] of [
   });
 }
 
-test('a launch that fails or prints no pid exits 1 and polls nothing', async () => {
-  const r = await go([{ status: 1, stdout: '', stderr: 'Detached orchestrator already running (PID 5)\n' }]);
-  assert.equal(r.code, 1);
-  assert.equal(r.ssh.length, 1);
-  assert.match(r.emitted, /already running/);
-});
+for (const [name, replies, rsyncReply, expected] of [
+  ['a launch whose output overflowed', [failedToRun('ENOBUFS')], undefined, /launch.*ENOBUFS/],
+  ['a poll whose output overflowed', [LAUNCHED, failedToRun('ENOBUFS')], undefined, /polling.*ENOBUFS/],
+  ['an rsync that could not start', [LAUNCHED, poll(0, 1)], { status: null, stderr: '', error: new Error('spawnSync rsync ENOENT') }, /rsync.*ENOENT/],
+]) {
+  test(`${name} exits 1 naming the error, not as a dropped connection`, async () => {
+    const r = await go(replies, rsyncReply && { rsyncReply });
+    assert.equal(r.code, 1);
+    assert.match(r.logged.join('\n'), expected);
+    assert.doesNotMatch(r.logged.join('\n'), /dropped/);
+  });
+}
+
+for (const [name, launch, expected] of [
+  ['fails', { status: 1, stdout: 'Detached orchestrator already running (PID 5)\n', stderr: '' }, /ssh exited 1/],
+  ['exits 0 but prints no pid', { status: 0, stdout: 'started\n', stderr: '' }, /no PID/],
+]) {
+  test(`a launch that ${name} exits 1 and polls nothing`, async () => {
+    const r = await go([launch]);
+    assert.equal(r.code, 1);
+    assert.equal(r.ssh.length, 1);
+    assert.match(r.logged.join('\n'), expected);
+    assert.equal(r.rsync.length, 0);
+  });
+}
 
 test('a failed rsync exits 1 even when a report was written', async () => {
-  const r = await go([LAUNCHED, poll(0, 1)], { rsyncStatus: 23 });
+  const r = await go([LAUNCHED, poll(0, 1)], { rsyncReply: { status: 23, stderr: '' } });
   assert.equal(r.code, 1);
   assert.match(r.logged.join('\n'), /rsync exited 23/);
 });
 
-test('--collect-only starts nothing: one poll of the whole log, then the collect', async () => {
-  const r = await go([poll(0, 2, 'old log\n')], { collectOnly: true });
+test('a log chunk at the cap is read on at once, without a sleep, before the run ends', async () => {
+  const big = `${'a'.repeat(LOG_CHUNK - 1)}\n`;
+  const r = await go([LAUNCHED, poll(0, 1, big), poll(0, 1, 'end\n')]);
   assert.equal(r.code, 0);
-  assert.equal(r.ssh.length, 1);
-  assert.match(r.ssh[0][1], /^echo alive=0; .*tail -c \+1 /);
-  assert.equal(r.emitted, 'old log\n');
+  assert.equal(r.slept, 0);
+  assert.match(r.ssh[2][1], new RegExp(`tail -c \\+${LOG_CHUNK + 1} `));
+  assert.equal(r.emitted, `${LAUNCHED.stdout}${big}end\n`);
+});
+
+test('the log offset advances by the raw bytes read, not by their UTF-8 decoding', async () => {
+  const r = await go([LAUNCHED, poll(1, 0, Buffer.from([0x61, 0xff, 0x0a])), poll(0, 1)]);
+  assert.equal(r.code, 0);
+  assert.match(r.ssh[2][1], /tail -c \+4 /);
+});
+
+test('a report that appears while the engine runs ends the wait one poll later, so its digests can land', async () => {
+  const r = await go([LAUNCHED, poll(1, 0), poll(1, 1, 'report\n'), poll(1, 1, 'digests\n')]);
+  assert.equal(r.code, 0);
+  assert.equal(r.ssh.length, 4);
+  assert.equal(r.slept, 2);
   assert.equal(r.rsync.length, 1);
 });
+
+test('an engine still running at --max-wait stops the wait non-zero with the --collect-only command, collecting nothing', async () => {
+  const r = await go([LAUNCHED, poll(1, 0), poll(1, 0), poll(1, 0)], { maxWaitMs: 2 * MINUTE });
+  assert.equal(r.code, 1);
+  assert.equal(r.ssh.length, 4);
+  assert.match(r.logged.join('\n'), /still running after 2 minutes.*COLLECT/s);
+  assert.equal(r.rsync.length, 0);
+});
+
+for (const [name, replies, expected] of [
+  ['a finished run: one poll of the whole log, then the collect', [poll(0, 2, 'old log\n')], { code: 0, polls: 1, slept: 0, emitted: 'old log\n', logged: /^$/ }],
+  ['a run still going: it waits for the engine, then collects', [poll(1, 0, 'a\n'), poll(1, 0, 'b\n'), poll(0, 1, 'c\n')], { code: 0, polls: 3, slept: 2, emitted: 'a\nb\nc\n', logged: /^$/ }],
+  ['no pid file: it says so instead of claiming the engine exited', [poll('none', 0)], { code: 1, polls: 1, slept: 0, emitted: '', logged: /no \/h\/.*\/run1\/host-run\.pid.*cannot tell/s }],
+]) {
+  test(`--collect-only starts nothing: ${name}`, async () => {
+    const r = await go(replies, { collectOnly: true });
+    assert.equal(r.code, expected.code);
+    assert.equal(r.ssh.length, expected.polls);
+    assert.match(r.ssh[0][1], /^pid=\$\(cat .*tail -c \+1 /);
+    assert.equal(r.slept, expected.slept);
+    assert.equal(r.emitted, expected.emitted);
+    assert.match(r.logged.join('\n'), expected.logged);
+    assert.doesNotMatch(r.logged.join('\n'), /exited with no report/);
+    assert.equal(r.rsync.length, 1);
+  });
+}
 
 test('--plan runs the read-only plan, streams it, and starts and collects nothing', async () => {
   const r = await go([{ status: 0, stdout: 'plan out\n', stderr: 'plan err\n' }], { plan: true });
@@ -89,6 +157,63 @@ test('--plan runs the read-only plan, streams it, and starts and collects nothin
   assert.match(r.ssh[0][1], / --plan$/);
   assert.equal(r.emitted, 'plan out\nplan err\n');
   assert.equal(r.rsync.length, 0);
+});
+
+/** Run `main` for host `box` against a scratch config and local state dir (its host log holding `log`, if given), with `ssh` answering from `replies`; returns the exit code, output and host log (undefined when absent). */
+async function cli(args, replies, { hosts = { box: BOX }, log } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'host-run-cli-'));
+  const config = join(dir, 'config.box.json');
+  writeFileSync(config, JSON.stringify({ configDir: `${stateDir}/state`, worktreeDir: `${stateDir}/wt` }));
+  const state = join(dir, 'local');
+  if (log !== undefined) { mkdirSync(state, { recursive: true }); writeFileSync(join(state, 'host-box.log'), log); }
+  let out = '';
+  let err = '';
+  const run = { ssh: () => replies.shift(), rsync: () => ({ status: 0, stderr: '' }) };
+  const code = await main(['box', config, '--state', state, ...args], { hosts: validateHosts(hosts), run, out: (s) => (out += s), err: (s) => (err += s), sleep: async () => {} });
+  const logPath = join(state, 'host-box.log');
+  return { code, out, err, log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined };
+}
+
+for (const [name, args, replies, log, expected] of [
+  ['a run appends to the host log', [], [LAUNCHED, poll(0, 1, 'new\n')], 'earlier\n', `earlier\n${LAUNCHED.stdout}new\n`],
+  ['--collect-only appends to the host log', ['--collect-only'], [poll(0, 1, 'again\n')], 'earlier\n', 'earlier\nagain\n'],
+  ['--plan never touches the host log', ['--plan'], [{ status: 0, stdout: 'plan\n', stderr: '' }], undefined, undefined],
+]) {
+  test(`main: ${name}`, async () => {
+    const r = await cli(args, replies, { log });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.log, expected);
+  });
+}
+
+test('main: a dropped connection prints resume commands with the host and its ssh alias shell-quoted', async () => {
+  const r = await cli([], [{ status: 255, stdout: '', stderr: '' }], { hosts: { box: { ...BOX, ssh: "o'box" } } });
+  assert.equal(r.code, 255);
+  assert.match(r.err, /re-attach: ssh 'o'\\''box' '/);
+  assert.match(r.err, /collect: +node '[^']*host-run\.mjs' 'box' '[^']*config\.box\.json' --state '[^']*local' --collect-only/);
+});
+
+test('main: --max-wait must be a positive number of minutes', async () => {
+  await assert.rejects(cli(['--max-wait', '0'], []), /--max-wait must be >= 1/);
+});
+
+const FAKE_SSH = '#!/bin/sh\n# Drop the -o options and the alias, then run the remote command here.\nwhile [ "$1" = -o ]; do shift 2; done\nshift\nexec /bin/sh -c "$1"\n';
+
+test('realRunner: a poll of a log far over the cap comes back capped and is not read as a drop', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'host-run-ssh-'));
+  writeFileSync(join(dir, 'ssh'), FAKE_SSH, { mode: 0o755 });
+  mkdirSync(join(dir, 'run1', 'state', 'logs'), { recursive: true });
+  writeFileSync(join(dir, 'run1', 'state', 'logs', 'orchestrator.log'), 'x'.repeat(3 * 1024 * 1024));
+  const path = process.env.PATH;
+  process.env.PATH = `${dir}:${path}`;
+  try {
+    const r = realRunner().ssh('box', pollScript(join(dir, 'run1'), 0));
+    assert.equal(r.error, undefined);
+    assert.equal(r.status, 0);
+    assert.equal(parsePoll(r.stdout).log.length, LOG_CHUNK);
+  } finally {
+    process.env.PATH = path;
+  }
 });
 
 const HAVE_RSYNC = spawnSync('rsync', ['--version']).status === 0;
