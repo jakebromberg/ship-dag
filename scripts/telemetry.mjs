@@ -81,6 +81,7 @@ import { formatRef, groupByRepo, isPr, parseRef, refKey, repoSpellings, sameRepo
 import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
+import { latestByRef } from './lib/log-order.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
@@ -627,10 +628,7 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
   // A ref's latest record (by ts; a later ingest can append an earlier event) is its outcome so far: an engine death
   // nothing followed was never resumed into the log. The death is its deferral with implStatus "error"; an outcome
   // that keeps the reason (a point-F hold) is not. A ref deferred at point F stays named: its deferral is the death.
-  // A record with no parseable ts sorts first; the sort is stable, so equal ts keep their log order.
-  const tsOf = (r) => { const t = Date.parse(r.ts); return Number.isNaN(t) ? -Infinity : t; };
-  const byTs = logged.filter((r) => r.kind !== 'retro').sort((a, b) => (tsOf(a) === tsOf(b) ? 0 : tsOf(a) < tsOf(b) ? -1 : 1));
-  const last = new Map(byTs.map((r) => [refKey(formatRef(r.repo, r.issue)), r]));
+  const last = latestByRef(logged);
   const died = (r) => r.failureReason === 'engine-died' && r.implStatus === 'error' && r.finalState === 'deferred';
   const spelled = repoSpellings(records);
   out.engineDied = [...last.values()].filter(died).map((r) => formatRef(spelled.get(refKey(r.repo)), r.issue));
