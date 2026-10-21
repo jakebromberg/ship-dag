@@ -1,7 +1,7 @@
 // Tests for ref.mjs. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REF_RE, REPO_RE, parseRef, formatRef, isPr, refKey, sameRepo, parsePr } from './ref.mjs';
+import { REF_RE, REPO_RE, parseRef, formatRef, isPr, refKey, sameRepo, parsePr, repoSpellings, groupByRepo } from './ref.mjs';
 
 test('parseRef reads owner/repo#N and nothing else', () => {
   for (const [input, want] of [
@@ -80,4 +80,12 @@ test('parseRef: refs that must not parse (ETA parity inputs)', () => {
   for (const input of ['o/r', 'o/r#1x', 'o r#1', '#1', null, ['o/r#1']]) assert.equal(parseRef(input), null, JSON.stringify(input));
   assert.deepEqual(parseRef('O/R#3'), { repo: 'O/R', number: 3 });
   assert.deepEqual(parseRef('a%b/c#2'), { repo: 'a%b/c', number: 2 });
+});
+
+test('groupByRepo buckets a population by folded repo, labelled with the spelling first written in the whole log', () => {
+  const log = [{ repo: 'wxyc/site', n: 1 }, { repo: 'WXYC/Site', n: 2 }, { repo: 'a/b', n: 3 }, { repo: 'WXYC/SITE', n: 4 }];
+  assert.deepEqual([...repoSpellings(log)], [['wxyc/site', 'wxyc/site'], ['a/b', 'a/b']]);
+  const got = groupByRepo(log, [log[1], log[3], log[2]]);
+  assert.deepEqual([...got.keys()], ['wxyc/site', 'a/b']);
+  assert.deepEqual(got.get('wxyc/site').map((r) => r.n), [2, 4]);
 });
