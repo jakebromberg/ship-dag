@@ -8,7 +8,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostRun, main, realRunner } from './host-run.mjs';
 import { readLatestUtilization } from './rate-limit-preflight.mjs';
-import { LOG_CHUNK, parsePoll, pollScript, rsyncArgs } from './lib/host-run.mjs';
+import { LOG_CHUNK, parsePoll, pollScript, preflightCommand, rsyncArgs } from './lib/host-run.mjs';
 import { scopedEngineFixture } from './lib/engine-fixture.mjs';
 import { testHost } from './lib/host-fixture.mjs';
 
@@ -190,6 +190,30 @@ for (const [name, replies, expected] of [
   });
 }
 
+test('--preflight runs resource-preflight on the host under the engine env, emits only its stdout (the JSON), and starts and collects nothing', async () => {
+  const r = await go([{ status: 0, stdout: '{"action":"proceed"}\n', stderr: 'resource: normal\n' }], { preflight: true, parallel: 8 });
+  assert.equal(r.code, 0);
+  assert.equal(r.ssh.length, 1);
+  assert.equal(r.ssh[0][1], preflightCommand(box, 8));
+  assert.match(r.ssh[0][1], /CO_LEASE_SESSION_SLOTS='1'.*resource-preflight\.mjs' check --parallel 1$/);
+  assert.equal(r.emitted, '{"action":"proceed"}\n');
+  assert.deepEqual(r.logged, ['resource: normal\n'.trimEnd()]);
+  assert.equal(r.rsync.length, 0);
+});
+
+for (const [name, reply, code, message] of [
+  ['an unreachable host exits 3: nothing started and nothing changed', { status: 255, stdout: '', stderr: '' }, 3, /nothing to resume/],
+  ['a timed-out call exits 3', failedToRun('ETIMEDOUT'), 3, /nothing to resume/],
+  ['a preflight that fails exits 1', { status: 1, stdout: '', stderr: 'boom' }, 1, /the preflight exited 1/],
+]) {
+  test(`--preflight: ${name}`, async () => {
+    const r = await go([reply], { preflight: true });
+    assert.equal(r.code, code);
+    assert.match(r.logged.join('\n'), message);
+    assert.equal(r.rsync.length, 0);
+  });
+}
+
 test('--plan runs the read-only plan, streams it, and starts and collects nothing', async () => {
   const r = await go([{ status: 0, stdout: 'plan out\n', stderr: 'plan err\n' }], { plan: true });
   assert.equal(r.code, 0);
@@ -219,6 +243,7 @@ for (const [name, args, replies, log, expected] of [
   ['a run appends to the host log', [], [FRESH, LAUNCHED, poll(0, 1, 'new\n')], 'earlier\n', `earlier\n${LAUNCHED.stdout}new\n`],
   ['--collect-only appends to the host log', ['--collect-only'], [poll(0, 1, 'again\n')], 'earlier\n', 'earlier\nagain\n'],
   ['--plan never touches the host log', ['--plan'], [{ status: 0, stdout: 'plan\n', stderr: '' }], undefined, undefined],
+  ['--preflight never touches the host log', ['--preflight'], [{ status: 0, stdout: '{}\n', stderr: '' }], undefined, undefined],
 ]) {
   test(`main: ${name}`, async () => {
     const r = await cli(args, replies, { log });
@@ -226,6 +251,12 @@ for (const [name, args, replies, log, expected] of [
     assert.equal(r.log, expected);
   });
 }
+
+test('main: --preflight prints the JSON with no host prefix, so the caller can parse it', async () => {
+  const r = await cli(['--preflight', '--parallel', '3'], [{ status: 0, stdout: '{"action":"proceed"}\n', stderr: '' }]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, '{"action":"proceed"}\n');
+});
 
 test('main: a dropped connection prints resume commands with the host and its ssh alias shell-quoted, absolute paths and the --max-wait', async () => {
   const r = await cli(['--max-wait', '30'], [FRESH, { status: 255, stdout: '', stderr: '' }], { hosts: { box: testHost('/h', {}, "o'box") }, relativePaths: true });
