@@ -92,8 +92,8 @@ export function throughputFinish({ merges, remaining, now, window }) {
  * `minSamples` of them it uses `defaultMs`; `samples` says how many there were in all and `used` how many the window took.
  * Of those it drops the high outliers, samples above median + `trimK` x MAD (the median absolute deviation, floored at
  * 10% of the median so equal samples still trim a far one; omitted, `trimK` is Infinity and nothing is trimmed), and `trimmed` counts them; when fewer than `minSamples` would
- * survive, when `trimK` is negative or NaN, or when the cutoff is below every sample (Infinity x 0 when the median is
- * 0), nothing is trimmed.
+ * survive, when `trimK` is negative or NaN, or when the cutoff is NaN (Infinity x 0 when the median is 0), nothing is
+ * trimmed.
  * @param {{waves: string[][], open: Set<string>, latencies: number[], now: number, window: number, defaultMs: number, minSamples: number, trimK?: number}} input
  */
 export function depthFinish({ waves, open, latencies, now, window, defaultMs, minSamples, trimK = Infinity }) {
@@ -162,7 +162,7 @@ export function estimate({ now, runStart, nodes, blocked, waves, opts = {} }) {
 // The formatter's parts as an object by type; '' for a non-finite instant, which `formatToParts` would throw on.
 const partsOf = (fmt, ms) => (Number.isFinite(ms) ? Object.fromEntries(fmt.formatToParts(new Date(ms)).map(({ type, value }) => [type, value])) : '');
 
-/** The binding id (also the bar's marker id) as a display name: `queue o/r`, `throughput`, `depth`; `blocked` and `done` as they are. */
+/** The binding id as a display name: `queue o/r`, `throughput`, `depth`; `blocked` and `done` as they are. The three limit ids are also the bar's marker ids; `blocked` and `done` name no marker. */
 export const bindingName = (id) => ({ pace: 'throughput', waves: 'depth' })[id] ?? id.replace(/^queue:/, 'queue ');
 
 /** What a run with only blocked tickets left is doing, on every surface that says so. */
