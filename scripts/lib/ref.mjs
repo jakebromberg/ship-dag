@@ -16,6 +16,9 @@ export const isPr = (n) => Number.isInteger(n) && n > 0;
 /** A repo or ref as a Map, Set or cache-dir key: case-folded, as GitHub compares names. */
 export const refKey = (s) => String(s).toLowerCase();
 
+/** The one key telemetry groups an issue's records by: the record's `owner/repo#N`, case-folded. */
+export const issueKey = (record) => refKey(formatRef(record.repo, record.issue));
+
 /**
  * Whether two repos (`owner/repo`) are the same one: GitHub names compare case-insensitively. Records
  * from different writers (sameEvent, ingest-wave's cost dedupe) compare through it, and escapes keys

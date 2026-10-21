@@ -1,7 +1,7 @@
 // Tests for ref.mjs. Run: node --test "scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REF_RE, REPO_RE, parseRef, formatRef, isPr, refKey, sameRepo, parsePr, repoSpellings, groupByRepo } from './ref.mjs';
+import { REF_RE, REPO_RE, parseRef, formatRef, issueKey, isPr, refKey, sameRepo, parsePr, repoSpellings, groupByRepo } from './ref.mjs';
 
 test('parseRef reads owner/repo#N and nothing else', () => {
   for (const [input, want] of [
@@ -88,4 +88,10 @@ test('groupByRepo buckets a population by folded repo, labelled with the spellin
   const got = groupByRepo(log, [log[1], log[3], log[2]]);
   assert.deepEqual([...got.keys()], ['wxyc/site', 'a/b']);
   assert.deepEqual(got.get('wxyc/site').map((r) => r.n), [2, 4]);
+});
+
+test('issueKey gives two casings of one repo the same key', () => {
+  assert.equal(issueKey({ repo: 'Owner/Repo', issue: 7 }), issueKey({ repo: 'owner/repo', issue: 7 }));
+  assert.equal(issueKey({ repo: 'Owner/Repo', issue: 7 }), 'owner/repo#7');
+  assert.notEqual(issueKey({ repo: 'o/r', issue: 7 }), issueKey({ repo: 'o/r', issue: 8 }));
 });
