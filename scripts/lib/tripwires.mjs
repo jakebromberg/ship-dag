@@ -4,7 +4,7 @@
 // threshold and its `minSample`. Each evaluator returns a `state`: `tripped`, `holding`, `insufficient-data`, or
 // `pending-instrumentation` (no record in the window carries the source field yet: shown, never an error). A
 // tripwire trips only when the whole interval clears its threshold (Wilson for shares, a seeded bootstrap for a
-// mean). The window is the records of the current `tuningVersion` (a missing one is 0); the log is read by the caller
+// mean). The window is the records of the current `tuningVersion` (a missing one is 0), except that T-retro-approval reads the retro records (`ctx.retro`), newest first, outside it; the log is read by the caller
 // and `gh` is never called: T-escapes takes a saved `telemetry.mjs escapes` run.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,7 @@ export const NO_ENGINE_DIR = /^no dir under .* belongs to run /;
 export const loadTripwires = (path = TRIPWIRES_PATH) => JSON.parse(readFileSync(path, 'utf8'));
 
 /**
- * What the evaluators read: the issue records (`records`), those of `version` (`window`), the epoch ms `now`, a
+ * What the evaluators read: the issue records (`records`), those of `version` (`window`), the `kind: retro` records (`retro`, outside the version window), the epoch ms `now`, a
  * saved `escapes` run, and `audit(runId)`, which returns `telemetry.mjs audit`'s result or throws for a run with no engine dir.
  */
 export function tripwireContext(records, { version, now = Date.now(), escapes, audit } = {}) {
