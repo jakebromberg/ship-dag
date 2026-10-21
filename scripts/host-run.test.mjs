@@ -10,10 +10,9 @@ import { hostRun, main, realRunner } from './host-run.mjs';
 import { readLatestUtilization } from './rate-limit-preflight.mjs';
 import { LOG_CHUNK, parsePoll, pollScript, rsyncArgs } from './lib/host-run.mjs';
 import { scopedEngineFixture } from './lib/engine-fixture.mjs';
-import { validateHosts } from './lib/hosts.mjs';
+import { testHost } from './lib/test-host.mjs';
 
-const BOX = { ssh: 'boxssh', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' };
-const { box } = validateHosts({ box: BOX });
+const box = testHost('/h', {}, 'boxssh');
 const stateDir = '/h/.local/state/ship-dag/engine/run1';
 // The pre-launch check's reply for a host state dir with no report yet.
 const FRESH = { status: 0, stdout: 'reports= 0\n', stderr: '' };
@@ -201,7 +200,7 @@ test('--plan runs the read-only plan, streams it, and starts and collects nothin
 });
 
 /** Run `main` for host `box` against a scratch config and local state dir (its host log holding `log`, if given), with `ssh` answering from `replies`; returns the exit code, output and host log (undefined when absent). */
-async function cli(args, replies, { hosts = { box: BOX }, log, relativePaths = false } = {}) {
+async function cli(args, replies, { hosts = { box }, log, relativePaths = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'host-run-cli-'));
   const config = join(dir, 'config.box.json');
   writeFileSync(config, JSON.stringify({ configDir: `${stateDir}/state`, worktreeDir: `${stateDir}/wt` }));
@@ -211,7 +210,7 @@ async function cli(args, replies, { hosts = { box: BOX }, log, relativePaths = f
   let err = '';
   const run = { ssh: () => replies.shift(), rsync: () => ({ status: 0, stderr: '' }) };
   const path = (p) => (relativePaths ? relative(process.cwd(), p) : p);
-  const code = await main(['box', path(config), '--state', path(state), ...args], { hosts: validateHosts(hosts), run, out: (s) => (out += s), err: (s) => (err += s), sleep: async () => {} });
+  const code = await main(['box', path(config), '--state', path(state), ...args], { hosts, run, out: (s) => (out += s), err: (s) => (err += s), sleep: async () => {} });
   const logPath = join(state, 'host-box.log');
   return { code, out, err, log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined };
 }
@@ -229,7 +228,7 @@ for (const [name, args, replies, log, expected] of [
 }
 
 test('main: a dropped connection prints resume commands with the host and its ssh alias shell-quoted, absolute paths and the --max-wait', async () => {
-  const r = await cli(['--max-wait', '30'], [FRESH, { status: 255, stdout: '', stderr: '' }], { hosts: { box: { ...BOX, ssh: "o'box" } }, relativePaths: true });
+  const r = await cli(['--max-wait', '30'], [FRESH, { status: 255, stdout: '', stderr: '' }], { hosts: { box: testHost('/h', {}, "o'box") }, relativePaths: true });
   assert.equal(r.code, 255);
   assert.match(r.err, /re-attach: ssh -o BatchMode=yes -o ConnectTimeout=10 'o'\\''box' '/);
   assert.match(r.err, /collect: +node '\/[^']*host-run\.mjs' 'box' '\/[^']*config\.box\.json' --state '\/[^']*local' --max-wait 30 --collect-only/);

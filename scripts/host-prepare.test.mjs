@@ -8,10 +8,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { buildConfigsByHost } from './emit-config.mjs';
-import { CLONE_TIMEOUT_MS, layoutReposDir, prepareHost } from './host-prepare.mjs';
-import { validateHosts } from './lib/hosts.mjs';
+import { CLONE_TIMEOUT_MS, layoutReposDir, main, prepareHost } from './host-prepare.mjs';
+import { testHost } from './lib/test-host.mjs';
 
-const hosts = validateHosts({ box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag', toolchains: ['node'] } });
+const hosts = { box: testHost('/h', { toolchains: ['node'] }) };
 // The config emit-config --by-host writes for box, whose state dir is box's ~/.local/state/ship-dag/engine/run1.
 const [{ config: boxConfig }] = buildConfigsByHost({
   name: 'ship-dag-run1', repo: 'o/app', stateDir: '/m/.local/state/ship-dag/engine/run1', projectRoot: '/m/D', promptTemplate: '/m/p.md',
@@ -140,15 +140,15 @@ test('an unknown flag (a mistyped --dry-run) exits 2 before touching any host', 
   assert.match(r.stderr, /^unknown option --dryrun; usage: host-prepare\.mjs/);
 });
 
-// The whole CLI against a stand-in `ssh` first on PATH, so the real runner's execFileSync error is what main classifies; nothing connects.
-for (const [name, sshExit, expected] of [['ssh exit 255 (an unreachable host)', 255, 3], ['a failing remote command', 1, 1]]) {
+// The whole CLI in-process against the fixture host, with a runner that throws what the real runner's execFileSync throws; nothing connects.
+for (const [name, error, expected] of [['ssh exit 255 (an unreachable host)', execError({ status: 255 }), 3], ['a failing remote command', execError({ status: 1 }), 1]]) {
   test(`the CLI exits ${expected} when the probe gets ${name}`, () => {
-    const bin = mkdtempSync(join(tmpdir(), 'host-prepare-ssh-'));
-    writeFileSync(join(bin, 'ssh'), `#!/bin/sh\nexit ${sshExit}\n`, { mode: 0o755 });
-    const cli = fileURLToPath(new URL('./host-prepare.mjs', import.meta.url));
-    const sdHome = fileURLToPath(new URL('..', import.meta.url));
-    const r = spawnSync(process.execPath, [cli, 'mini', configPath], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CO_HOME: sdHome } });
-    assert.equal(r.status, expected, r.stderr);
-    assert.match(r.stderr, /host-prepare: mini: probe failed/);
+    const coHomeWas = process.env.CO_HOME;
+    process.env.CO_HOME = fileURLToPath(new URL('..', import.meta.url));
+    try {
+      assert.throws(() => main(['box', configPath], { hosts, run: { ssh: () => { throw error; }, scp() {} } }), (e) => e.exitCode === expected && /host-prepare: box: probe failed/.test(e.message));
+    } finally {
+      if (coHomeWas === undefined) delete process.env.CO_HOME; else process.env.CO_HOME = coHomeWas;
+    }
   });
 }

@@ -7,12 +7,12 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildConfigsByHost } from '../emit-config.mjs';
-import { validateHosts } from './hosts.mjs';
+import { testHost } from './test-host.mjs';
 import { mergeSettings } from './host-sync-claude.mjs';
 import { configStateDir, planHost, probeScript, parseProbe } from './host-prepare.mjs';
 
-const hosts = validateHosts({ box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag', toolchains: ['node'] } });
-const host = hosts.box;
+const host = testHost('/h', { toolchains: ['node'] });
+const hosts = { box: host };
 // The configs emit-config --by-host writes: o/app runs on box, o/ios stays on this Mac.
 const spec = {
   name: 'ship-dag-run1', repo: 'o/app', stateDir: '/m/.local/state/ship-dag/engine/run1', projectRoot: '/m/D', promptTemplate: '/m/p.md',
@@ -98,7 +98,7 @@ test('parseProbe reads key=value lines, freeKb as a number, and every present re
 /** Run the generated probe with `sh` against a fake host in a temp dir: `app` cloned from o/app, `lib` (the last) absent; ages are seconds ago. */
 function probeFakeHost({ dist = true, srcAge = 200, distAge = 100, junkAge } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'host-prepare-probe-'));
-  const fake = validateHosts({ box: { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') } }).box;
+  const fake = testHost(home);
   const co = join(home, 'Developer', 'claude-orchestrator');
   const now = Date.now() / 1000;
   const touch = (path, age) => { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, ''); utimesSync(path, now - age, now - age); };
@@ -148,7 +148,7 @@ function probeSettings(settings) {
   mkdirSync(join(home, '.claude'));
   writeFileSync(join(home, '.claude', 'CLAUDE.md'), 'rules\n');
   if (settings !== undefined) writeFileSync(join(home, '.claude', 'settings.json'), settings);
-  const fake = validateHosts({ box: { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') } }).box;
+  const fake = testHost(home);
   const r = spawnSync('sh', ['-c', probeScript(fake, undefined, [])], { encoding: 'utf8' });
   return { probe: parseProbe(r.stdout), stderr: r.stderr };
 }
