@@ -5,13 +5,32 @@ import { coHome, coDistPathIn } from './co-home.mjs';
 
 const q = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
 
-/** `hostSettings` with each hook entry in `entry.hooks` (the printed lease entry) appended once; every other key is kept. */
+// A lease hook runs `node '<…>/cli-lease.js' hook` (claude-orchestrator's `hook --print-settings-entry` output) or the
+// installed `claude-orchestrator-lease hook`.
+const isLeaseHook = (h) => /cli-lease\.js'?\s+hook\b|claude-orchestrator-lease\s+hook\b/.test(h?.command ?? '');
+
+/**
+ * `hostSettings` with its lease hooks replaced by `entry.hooks` (the freshly printed lease entries). On each event the
+ * printed entries take the place of the first group that held a lease hook (else they are appended), and lease hooks on
+ * events no longer printed are dropped. Every non-lease hook, group and other key is kept.
+ */
 export function mergeSettings(hostSettings, entry) {
   if (!entry.hooks) return hostSettings;
   const hooks = { ...hostSettings.hooks };
-  for (const [event, entries] of Object.entries(entry.hooks)) {
-    const have = new Set((hooks[event] ?? []).map((e) => JSON.stringify(e)));
-    hooks[event] = [...(hooks[event] ?? []), ...entries.filter((e) => !have.has(JSON.stringify(e)))];
+  for (const event of new Set([...Object.keys(hooks), ...Object.keys(entry.hooks)])) {
+    const kept = [];
+    let at = -1;
+    for (const group of hooks[event] ?? []) {
+      const rest = (group.hooks ?? []).filter((h) => !isLeaseHook(h));
+      if (rest.length === (group.hooks ?? []).length) kept.push(group);
+      else {
+        if (at < 0) at = kept.length;
+        if (rest.length) kept.push({ ...group, hooks: rest });
+      }
+    }
+    kept.splice(at < 0 ? kept.length : at, 0, ...(entry.hooks[event] ?? []));
+    if (kept.length || entry.hooks[event]) hooks[event] = kept;
+    else delete hooks[event];
   }
   return { ...hostSettings, hooks };
 }
