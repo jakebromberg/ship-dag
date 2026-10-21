@@ -110,14 +110,14 @@ for (const [file, old] of [['CLAUDE.md', 'old\n'], ['settings.json', '{"model":"
   });
 }
 
-test('rsync adds without deleting and skips the ship-dag symlink, .trash, .DS_Store and every skill the host links', () => {
+test('rsync adds without deleting and skips the ship-dag symlink, the synced/ folder Claude Code manages, .trash, .DS_Store and every skill the host links', () => {
   const { home, dir, run, calls, host } = shellHost();
   mkdirSync(join(dir, 'skills', 'copied'), { recursive: true });
   mkdirSync(join(home, 'checkout'));
   symlinkSync(join(home, 'checkout'), join(dir, 'skills', 'linked'));
   syncClaude({ ...base, host, run });
   const args = calls.find((c) => c[0] === 'rsync');
-  for (const ex of ['--exclude=/ship-dag', '--exclude=/.trash', '--exclude=.DS_Store', '--exclude=/linked']) assert.ok(args.includes(ex), ex);
+  for (const ex of ['--exclude=/ship-dag', '--exclude=/synced', '--exclude=/.trash', '--exclude=.DS_Store', '--exclude=/linked']) assert.ok(args.includes(ex), ex);
   assert.ok(!args.includes('--exclude=/copied'));
   assert.ok(!args.some((a) => a.startsWith('--delete')));
   assert.equal(args[args.indexOf('-e') + 1], `ssh ${BATCH.join(' ')}`, 'rsync connects without prompting and with a connect timeout');
