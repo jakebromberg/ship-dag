@@ -144,3 +144,33 @@ for (const name of ['prompt.md step 3', "SKILL.md's Implement block", "workflow.
     for (const rule of checklist) assert.match(text, rule);
   });
 }
+
+// Triage's settled decisions reach every implement path, in the engine's wording (emit-config's withDecisions).
+// workflow.js has no imports, so its copy of the rendering is pinned to withDecisions here.
+const { withDecisions } = await import('./emit-config.mjs');
+const DECISIONS_HEADING = 'Settled decisions (binding; they override the issue body where they differ):';
+const implementPrompt = new Function('repo', `${read('workflow.js').split('function decisionLines')[1].split('function reviewPathFor')[0].replace(/^/, 'function decisionLines')}\nreturn implementPrompt`)('o/r');
+
+test("SKILL.md's Implement block has a {DECISIONS} slot beside {DIGEST}", () => {
+  assert.match(copies["SKILL.md's Implement block"], /\{DIGEST\}[\s\S]*\{DECISIONS\}/);
+});
+
+test("SKILL.md's Workflow call passes each issue's decisions", () => {
+  assert.match(skill, /issues: \[\{ number, digest, decisions,/);
+});
+
+test("workflow.js's implementPrompt renders decisions exactly as withDecisions does", () => {
+  const decisions = ['use JSONL', 'keep\nthe seam'];
+  const rendered = withDecisions('', decisions).trimStart();
+  assert.ok(rendered.startsWith(DECISIONS_HEADING));
+  assert.ok(implementPrompt({ number: 1, digest: 'd', decisions }).includes(`\n\n${rendered}\n`));
+  assert.match(implementPrompt({ number: 1, digest: 'd', decisions: ['use JSONL'] }), /\n- use JSONL\n/);
+});
+
+for (const decisions of [undefined, null, [], ['', '  ', '\n']]) {
+  test(`workflow.js's implementPrompt is unchanged for decisions ${JSON.stringify(decisions)}`, () => {
+    const base = implementPrompt({ number: 1, digest: 'd' });
+    assert.equal(implementPrompt({ number: 1, digest: 'd', decisions }), base);
+    assert.ok(!base.includes('Settled decisions ('));
+  });
+}
