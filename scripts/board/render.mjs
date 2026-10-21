@@ -181,7 +181,7 @@ function roadAhead(v, byRef, link, gates) {
   const chainEdges = new Set(g.chain.slice(1).map((r, i) => `${g.chain[i]}>${r}`));
   const status = (r) => byRef.get(r)?.status;
   const wave = (r) => v.waves.get(r) || { label: null, now: false };
-  const waveText = (r) => (wave(r).label === null ? 'Yours, not an engine wave' : `Wave ${wave(r).label}${wave(r).now ? ' · building now' : ''}`);
+  const waveText = (r) => (wave(r).label === null ? 'Yours, not an engine wave' : `Wave ${wave(r).label}`);
   const rowWaves = (row) => {
     const labels = [...new Set(row.map((r) => wave(r).label).filter((l) => l !== null))];
     const yours = row.some((r) => wave(r).label === null) ? ' + yours' : '';
@@ -205,7 +205,7 @@ function roadAhead(v, byRef, link, gates) {
       const st = status(r);
       const after = [...g.direct.get(r)].sort((a, b) => g.stepOf.get(a) - g.stepOf.get(b) || compareRefs(a, b)).map((p) => v.shortRef(p)).join(', ');
       const desc = g.descendants.get(r);
-      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${r}"><div class="top">${link(r)}${chip(st, t.stage)}</div><div class="t" title="${t.title}">${t.title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${desc.size ? `unblocks ${desc.size}` : 'nothing waits on it'}</div></div>`);
+      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${r}" title="${waveText(r)}"><div class="top">${link(r)}${chip(st, t.stage)}</div><div class="t" title="${t.title}">${t.title}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${desc.size ? `unblocks ${desc.size}` : 'nothing waits on it'}</div></div>`);
     }
     h.push('</div></div>');
   });
