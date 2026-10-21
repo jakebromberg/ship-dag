@@ -79,6 +79,7 @@ test('checkResource: a CO_HOME whose dist lacks the exports fails open as lease-
   assert.equal(out.recommendedParallel, 2);
   assert.equal(out.recommendedHandoff, 1);
   assert.match(out.detail, /leaseStatus/);
+  assert.ok(!('step' in out) && !('sessions' in out));
 });
 
 test('checkResource: a CO_HOME that fails to import, or a throwing sampler, fails open too', async () => {
@@ -110,6 +111,13 @@ test('SKILL.md: the Guardrails list of HITL points includes F, and step 4 runs t
   assert.match(skill, /--parallel <recommendedParallel>/);
   assert.match(skill, /--sleep-before 60 --waited-minutes/);
   assert.match(skill, /reset the summed-wait counter to 0/);
+});
+
+test('SKILL.md and resource.mjs: --parallel is a per-engine upper bound under the session pool, not a count the engine adapts', () => {
+  assert.match(skill, /per-engine upper bound/);
+  assert.match(skill, /Several engines \(other runs\) may run at once/);
+  const resource = readFileSync(join(REPO_ROOT, 'scripts', 'lib', 'resource.mjs'), 'utf8');
+  for (const text of [skill, resource]) assert.doesNotMatch(text, /engine adapts live|wave --parallel K`/);
 });
 
 test('escalation-policy.md: point F offers its four choices and starts anyway only through the inline override', () => {

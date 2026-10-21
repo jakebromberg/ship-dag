@@ -24,7 +24,7 @@
 // summary on stderr. `step` is the machine-wide headroom step (0–4) and
 // `sessions` the implementer pool's `{ capacity, live }` at that step; a dist
 // whose `leaseStatus` predates them (claude-orchestrator before #168/#172)
-// leaves both out. `--sleep-before` waits before sampling, so SKILL.md's
+// leaves both out, as does the `lease-unavailable` result. `--sleep-before` waits before sampling, so SKILL.md's
 // loop never needs a foreground `sleep`. `--waited-minutes` is the total
 // waited before this call; the call adds its own `--sleep-before` to it
 // before deciding. Exit codes: 2 = usage error (unknown subcommand, malformed flag).
