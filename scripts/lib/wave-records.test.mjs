@@ -98,6 +98,19 @@ for (const [status, over, want] of statusCases) {
   });
 }
 
+// An engine skip says who deferred it; no other row carries the marker, whatever --outcomes makes of its finalState.
+for (const [status, over, outcomes, want] of [
+  ['skipped', { prNumber: null }, {}, 'dependency'],
+  ['skipped', { prNumber: null }, { finalState: 'blocked-hitl' }, 'dependency'],
+  ['failed', { prNumber: null }, {}, undefined],
+  ['succeeded', {}, {}, undefined],
+]) {
+  test(`row status ${status}${outcomes.finalState ? ` with outcome ${outcomes.finalState}` : ''}: skipReason ${want}`, () => {
+    const { records } = derive({ report: report([row({ status, ...over })]), outcomes: { [REF]: outcomes } });
+    assert.equal(records[0].skipReason, want);
+  });
+}
+
 // Rounds on disk for a row that never reached review this wave are not its verdict.
 for (const [status, over] of [['skipped', { prNumber: null }], ['failed', { prNumber: null }]]) {
   test(`row status ${status} with no PR ignores rounds on disk`, () => {

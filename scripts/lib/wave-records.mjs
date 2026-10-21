@@ -270,6 +270,8 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         // A stop is deferred, not abandoned: point E resumes it in place, or a filtered re-run starts it afresh.
         finalState: outcome.finalState ?? (skipped || failureReason ? 'deferred' : pr ? 'merged' : 'error'),
         pr,
+        // Names the engine as the one that deferred it (checkDeps); an unmarked deferral is a maintainer's.
+        ...(skipped && { skipReason: 'dependency' }),
         tokens: outcome.tokens ?? null,
         // Stamped when the user chose point F's "start anyway" for this wave's engine invocation.
         ...(outcome.pressureOverride === true && { pressureOverride: true }),
