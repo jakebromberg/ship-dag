@@ -7,9 +7,10 @@
 // records its pid in <host stateDir>/host-run.pid, polls once a minute until the engine has exited or its report has
 // been there for a poll, then rsyncs the per-issue and per-report files of the host's state dir into
 // <local stateDir>/state/. The engine's output is printed with a `[<host>] ` prefix and appended to
-// <local stateDir>/host-<host>.log. Exits 0 when a report was written, 1 when the engine exited with none, a step
-// failed or --max-wait (default 360 minutes) passed, and 255 when ssh dropped (the engine may still be running; the
-// message gives the commands to resume). A run refuses to start on a host state dir that already holds a report (each
+// <local stateDir>/host-<host>.log. Exits 0 when a report was written, 1 when the engine exited with none or a step
+// failed, 2 on usage, 3 when ssh dropped before any engine started (nothing to resume), 4 when --max-wait (default 360
+// minutes) passed with the engine still running, and 255 when ssh dropped after the launch (the engine may still be
+// running; the message gives the commands to resume). A run refuses to start on a host state dir that already holds a report (each
 // wave needs its own state dir). `--collect-only` starts nothing and resumes the same wait on the recorded pid. A
 // `--plan` run only prints the read-only plan.
 import { spawnSync } from 'node:child_process';

@@ -2,7 +2,9 @@
 // host-prepare.mjs — ready a remote host for a wave: check version parity with this Mac, clone missing repos, fetch
 // origin, and place the host's config at <stateDir>/config.json, <stateDir> being the config's configDir less its
 // trailing /state (emit-config writes no stateDir field). Never updates ship-dag or the orchestrator, and never
-// touches an existing checkout's working tree. Refusals exit 1 naming the fix; a second run changes nothing.
+// touches an existing checkout's working tree. Refusals exit 1 naming the fix; a second run changes nothing. Exits 0
+// when the host is ready, 1 on a refusal or a failed call, 2 on usage and 3 when the host is unreachable at the probe,
+// before anything on it changed.
 //
 // Usage: node host-prepare.mjs <host> <config.<host>.json> [--dry-run] [--min-free-gb N]
 //
@@ -18,7 +20,7 @@ import { DEFAULT_REPOS_DIR, repoDirName } from './engine/repo-layout.mjs';
 import { coHome } from './lib/co-home.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { loadHosts } from './lib/hosts.mjs';
-import { SSH_MAX_BUFFER, SSH_OPTS, remoteCommand } from './lib/remote.mjs';
+import { EXIT, SSH_MAX_BUFFER, SSH_OPTS, callFailure, remoteCommand } from './lib/remote.mjs';
 import { configStateDir, planHost, probeScript, parseProbe } from './lib/host-prepare.mjs';
 import { isMain } from './lib/is-main.mjs';
 
@@ -39,13 +41,20 @@ export const realRunner = (timeoutMs = 120_000) => ({
 /** The org root the engine's hooks resolve repo layout under (hooks.mts): the env override, else layoutWorktreeHooks' default. */
 export const layoutReposDir = (env = process.env) => reposDirFromEnv(env) ?? DEFAULT_REPOS_DIR;
 
-/** Probe, plan and (unless `dryRun`) run; returns the process exit code. `run` is the injected runner, `log` writes a stderr line. */
+/**
+ * Probe, plan and (unless `dryRun`) run; returns the process exit code. `run` is the injected runner, `log` writes a stderr
+ * line. A failed call throws an error naming the host and step, whose `exitCode` is `EXIT.unreachable` for a drop at the
+ * read-only probe and `EXIT.failure` for anything else, a drop after the first plan action included.
+ */
 export function prepareHost({ name, hosts, config, configPath, local, run, minFreeGb, dryRun, log, reposDir }) {
   if (!Object.hasOwn(hosts, name)) throw new Error(`unknown host ${JSON.stringify(name)}; known: ${Object.keys(hosts).join(', ') || 'none'}`);
   const host = hosts[name];
+  let changing = false;
   const call = (step, fn, ...args) => {
     log(`host-prepare: ${name}: ${step}`);
-    try { return fn(host.ssh, ...args); } catch (e) { throw new Error(`host-prepare: ${name}: ${step} failed: ${e.message}`); }
+    try { return fn(host.ssh, ...args); } catch (e) {
+      throw Object.assign(new Error(`host-prepare: ${name}: ${step} failed: ${e.message}`), { exitCode: !changing && callFailure(e) === 'dropped' ? EXIT.unreachable : EXIT.failure });
+    }
   };
   const repos = Object.keys(config.repos ?? {}).map((repo) => ({ repo, name: repo.split('/').pop(), layoutDir: repoDirName(repo, { reposDir }) }));
   const probe = parseProbe(call('probe', run.ssh, probeScript(host, configStateDir(config), repos.map((r) => r.name))));
@@ -54,7 +63,9 @@ export function prepareHost({ name, hosts, config, configPath, local, run, minFr
   if (refusals.length) return 1;
   for (const a of plan) {
     log(`${dryRun ? 'would run' : 'run'}: ${a.step}: ${a.ssh ?? a.scp.join(' -> ')}`);
-    if (!dryRun) a.ssh ? call(a.step, run.ssh, a.ssh, a.slow ? CLONE_TIMEOUT_MS : undefined) : call(a.step, run.scp, ...a.scp);
+    if (dryRun) continue;
+    changing = true;
+    a.ssh ? call(a.step, run.ssh, a.ssh, a.slow ? CLONE_TIMEOUT_MS : undefined) : call(a.step, run.scp, ...a.scp);
   }
   return 0;
 }
@@ -72,5 +83,5 @@ function main(argv) {
 }
 
 if (isMain(import.meta.url)) {
-  try { process.exitCode = main(process.argv.slice(2)); } catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = 2; }
+  try { process.exitCode = main(process.argv.slice(2)); } catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = e.exitCode ?? EXIT.usage; }
 }
