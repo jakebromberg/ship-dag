@@ -1,5 +1,6 @@
-// remote.mjs — the one place that holds how a command runs on a hosts.json host: ssh options, shell quoting and the
-// remote shell. host-prepare, host-sync-claude and any later host runner use it instead of carrying their own copy.
+// remote.mjs — the one place that holds how a command runs on a hosts.json host: ssh options, the output buffer, the
+// `rsync -e` value, shell quoting, the remote shell, the printable ssh line and the drop classifier. host-prepare,
+// host-run and host-sync-claude use it instead of carrying their own copy.
 
 // Never prompt for a password or host key, and give up on an unreachable host. Used by every ssh, scp and `rsync -e`.
 export const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
