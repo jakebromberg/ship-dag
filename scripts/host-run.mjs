@@ -9,16 +9,18 @@
 // <local stateDir>/state/. The engine's output is printed with a `[<host>] ` prefix and appended to
 // <local stateDir>/host-<host>.log. Exits 0 when a report was written, 1 when the engine exited with none, a step
 // failed or --max-wait (default 360 minutes) passed, and 255 when ssh dropped (the engine may still be running; the
-// message gives the commands to resume). `--collect-only` starts nothing and resumes the same wait on the recorded pid.
-// A `--plan` run only prints the read-only plan.
+// message gives the commands to resume). A run refuses to start on a host state dir that already holds a report (each
+// wave needs its own state dir). `--collect-only` starts nothing and resumes the same wait on the recorded pid. A
+// `--plan` run only prints the read-only plan.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadHosts } from './lib/hosts.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { SSH_OPTS, remoteCommand, shQuote } from './lib/remote.mjs';
 import { configStateDir } from './lib/host-prepare.mjs';
-import { DETACHED, LOG_CHUNK, PID_FILE, engineCommand, launchScript, outcome, parsePoll, pollDecision, pollScript, prefixLines, rsyncArgs } from './lib/host-run.mjs';
+import { DETACHED, LOG_CHUNK, PID_FILE, RSYNC_SAFE_PATH, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './lib/host-run.mjs';
 import { isMain } from './lib/is-main.mjs';
 
 const USAGE = 'usage: host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--collect-only]';
@@ -51,29 +53,41 @@ const broken = (r) => (r.status === 255 || r.error?.code === 'ETIMEDOUT' ? 'drop
  * hosts.json entry and `stateDir` the host's state dir. `run` is the injected runner, `emit(chunk)` receives the
  * engine's output (a string or the raw log bytes) and `log(message)` host-run's own messages; `sleep(ms)` and `now()`
  * pace the polls and the `maxWaitMs` deadline. `reattach` and `collect` are the commands a dropped connection or the
- * deadline prints. A report already in the host's state dir counts as this run's: each wave has its own state dir.
+ * deadline prints. A host state dir with a character outside `RSYNC_SAFE_PATH` is refused before any call. A run
+ * refuses to start when the host state dir already holds a report, since the wait could not tell it from this run's;
+ * `--collect-only` resumes the recorded launch whatever the dir holds.
  */
 export async function hostRun({ name, host, stateDir, localState, parallel, plan, collectOnly, maxWaitMs = MAX_WAIT_MINUTES * MINUTE, run, emit, log, sleep, now = Date.now, reattach, collect }) {
   const engineLog = `${host.ssh}:${stateDir}/state/logs/orchestrator.log`;
   const pidFile = `${stateDir}/${PID_FILE}`;
-  const finish = (kind, detail) => {
-    const o = outcome(name, kind, { engineLog, reattach, collect, detail, pidFile, minutes: maxWaitMs / MINUTE });
+  const finish = (kind, detail, step) => {
+    const o = outcome(name, kind, { engineLog, reattach, collect, detail, step, pidFile, minutes: maxWaitMs / MINUTE });
     if (o.message) log(o.message);
     return o.code;
   };
-  // The exit code for a call that did not run to completion, else undefined.
-  const halted = (step, r) => {
+  // The exit code for a call that did not run to completion, else undefined. A drop before the launch started nothing.
+  const halted = (step, r, unstarted = false) => {
     const why = broken(r);
-    return why === 'dropped' ? finish('dropped') : why ? finish('failed', `${step} failed: ${why}`) : undefined;
+    if (why === 'dropped') return unstarted ? finish('dropped-unstarted', undefined, step) : finish('dropped');
+    return why ? finish('failed', `${step} failed: ${why}`) : undefined;
   };
+  if (!RSYNC_SAFE_PATH.test(stateDir)) {
+    return finish('failed', `the host state dir ${stateDir} has a character outside [A-Za-z0-9._/@+-]; host-run passes it to rsync unquoted, since rsync versions disagree on a quoted remote path, so it starts nothing. Emit the config with a state dir made of those characters.`);
+  }
   const ssh = (command) => run.ssh(host.ssh, command);
   const show = (r) => emit(`${r.stdout ?? ''}${r.stderr ?? ''}`);
   if (plan) {
     const r = ssh(engineCommand(host, stateDir, 'plan'));
     show(r);
-    return halted('the plan', r) ?? finish(r.status === 0 ? 'done' : 'failed', `the plan exited ${r.status}`);
+    return halted('the plan', r, true) ?? finish(r.status === 0 ? 'done' : 'failed', `the plan exited ${r.status}`);
   }
   if (!collectOnly) {
+    const check = ssh(reportsScript(stateDir));
+    const reports = parseReports(check.stdout);
+    const refused = halted('the report check', check, true)
+      ?? (check.status !== 0 || !(reports >= 0) ? finish('failed', `the report check exited ${check.status}: ${check.stderr}`) : undefined)
+      ?? (reports > 0 ? finish('failed', `${host.ssh}:${stateDir} already holds a report, which the wait could not tell from this launch's; each wave needs its own state dir (e.g. a suffixed <runId>-w<N> one, emitted and prepared again), so host-run started nothing`) : undefined);
+    if (refused !== undefined) return refused;
     const r = ssh(launchScript(engineCommand(host, stateDir, 'run', parallel), pidFile));
     show(r);
     const stop = halted('the launch', r)
@@ -104,7 +118,8 @@ export async function hostRun({ name, host, stateDir, localState, parallel, plan
     reportSeen = p.reports > 0;
     await sleep(POLL_MS);
   }
-  const c = run.rsync(rsyncArgs(`${host.ssh}:${shQuote(`${stateDir}/state/`)}`, `${localState}/state/`));
+  // Unquoted: stateDir holds only RSYNC_SAFE_PATH characters, checked above.
+  const c = run.rsync(rsyncArgs(`${host.ssh}:${stateDir}/state/`, `${localState}/state/`));
   return halted('rsync', c) ?? (c.status === 0 ? finish(decision) : finish('failed', `rsync exited ${c.status}: ${c.stderr}`));
 }
 
@@ -130,7 +145,8 @@ export async function main(argv, { hosts, run = realRunner(), out = (s) => proce
   const plan = argv.includes('--plan');
   const logPath = `${state}/host-${name}.log`;
   if (!plan) mkdirSync(state, { recursive: true });
-  const here = `node ${shQuote(fileURLToPath(import.meta.url))} ${shQuote(name)} ${shQuote(configPath)} --state ${shQuote(state)}`;
+  // Absolute paths, so the printed command works from any directory, and the same --max-wait.
+  const here = `node ${shQuote(fileURLToPath(import.meta.url))} ${shQuote(name)} ${shQuote(resolve(configPath))} --state ${shQuote(resolve(state))} --max-wait ${maxWait}`;
   return hostRun({
     name, host, stateDir, localState: state, parallel, plan, collectOnly: argv.includes('--collect-only'), maxWaitMs: maxWait * MINUTE, run, sleep, now,
     // The host log keeps a run's and every resumed --collect-only's output; a --plan is not a run and leaves it alone.

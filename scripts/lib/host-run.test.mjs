@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { validateHosts } from './hosts.mjs';
-import { LOG_CHUNK, PID_FILE, engineCommand, launchScript, outcome, parsePoll, pollDecision, pollScript, prefixLines, rsyncArgs } from './host-run.mjs';
+import { LOG_CHUNK, PID_FILE, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './host-run.mjs';
 
 const { box, big } = validateHosts({
   box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' },
@@ -33,6 +33,7 @@ for (const [name, kind, ctx, expected] of [
   ['a report was written', 'done', {}, { code: 0, message: undefined }],
   ['no report', 'no-report', { engineLog: 'box:/l/orchestrator.log' }, { code: 1, message: /exited with no report; see box:\/l\/orchestrator\.log/ }],
   ['a dropped connection (255)', 'dropped', { reattach: 'RE', collect: 'COLLECT' }, { code: 255, message: /connection dropped.*may still be running.*RE.*COLLECT/s }],
+  ['a drop before any engine started', 'dropped-unstarted', { step: 'the plan', reattach: 'RE', collect: 'COLLECT' }, { code: 255, message: /connection dropped during the plan; no engine was started, so there is nothing to resume/ }],
   ['a failed step', 'failed', { detail: 'rsync exited 23' }, { code: 1, message: /rsync exited 23/ }],
   ['no pid file', 'no-pid', { pidFile: '/s/host-run.pid' }, { code: 1, message: /no \/s\/host-run\.pid.*cannot tell whether the engine is still running/s }],
   ['the deadline passed', 'timeout', { minutes: 360, collect: 'COLLECT' }, { code: 1, message: /still running after 360 minutes.*not an engine failure.*COLLECT/s }],
@@ -111,6 +112,20 @@ for (const [name, pid, logBytes, expected] of [
     assert.equal(r.status, 0, String(r.stderr));
     const p = parsePoll(r.stdout);
     assert.deepEqual({ alive: p.alive, reports: p.reports, size: p.log.length }, expected);
+  });
+}
+
+for (const [name, files, expected] of [
+  ['no reports dir', [], 0],
+  ['an empty reports dir', ['reports/.keep'], 0],
+  ['two reports', ['reports/a.json', 'reports/b.json'], 2],
+]) {
+  test(`reportsScript runs: ${name}`, () => {
+    const dir = scratch();
+    for (const f of files) put(`${dir}/state`, f, '{}');
+    const r = sh(reportsScript(dir));
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(parseReports(r.stdout), expected);
   });
 }
 
