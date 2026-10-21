@@ -7,9 +7,9 @@ import { promisify } from 'node:util';
 /** The default `gh`: run the CLI and return stdout. */
 export const ghCli = async (args) => (await promisify(execFile)('gh', args, { maxBuffer: 64 << 20 })).stdout;
 
-/** The sync counterpart of `ghCli`: run `gh` for real and return its stdout. */
-export function realRunGh(args) {
-  return execFileSync('gh', args, { encoding: 'utf8' });
+/** The sync counterpart of `ghCli`: run `gh` for real and return its stdout. `opts` are `execFileSync` options, such as a `timeout`. */
+export function realRunGh(args, opts = {}) {
+  return execFileSync('gh', args, { encoding: 'utf8', ...opts });
 }
 
 /**

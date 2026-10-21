@@ -25,3 +25,21 @@ for (const [n, phrase] of [
     assert.match(step(n), phrase);
   });
 }
+
+// `triagedAt` and `baseSha` come back from the Haiku subagent, but only the main agent builds the spec, so the
+// instruction to copy them has to sit in the main agent's own steps (3c and 4a), never in the pasted block.
+const stepLine = (marker) => skill.split('\n').find((l) => l.startsWith(marker));
+test('triage returns triagedAt and baseSha, and the block itself says nothing about the spec', () => {
+  const ret = block.split('\n').find((l) => l.startsWith('> **Return:**'));
+  assert.match(ret, /triagedAt: "[^"]*UTC[^"]*Z[^"]*"/);
+  assert.match(ret, /baseSha: "/);
+  assert.doesNotMatch(block, /spec entry|emit-config/i);
+});
+for (const [name, marker] of [['step 3c', '**c. Proceed.**'], ['step 4a', '**a. Emit the engine config.**']]) {
+  test(`${name} has the main agent carry triagedAt and baseSha into the spec`, () => {
+    const line = stepLine(marker);
+    assert.ok(line, `no line starting ${marker}`);
+    assert.match(line, /`triagedAt`/);
+    assert.match(line, /`baseSha`/);
+  });
+}
