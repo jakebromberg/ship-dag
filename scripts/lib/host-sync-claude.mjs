@@ -2,7 +2,7 @@
 // Never touches projects/, sessions/, history.jsonl, file-history/ or credentials. `run(cmd, args, input)` is injected
 // and returns { status, stdout, stderr }, so the steps are testable without ssh.
 import { coDistPathIn } from './co-home.mjs';
-import { RSYNC_SSH, SSH_OPTS, remoteCommand, shQuote as q } from './remote.mjs';
+import { RSYNC_SSH, SSH_OPTS, callFailure, remoteCommand, shQuote as q } from './remote.mjs';
 
 // A lease hook runs `node '<…>/cli-lease.js' hook` (claude-orchestrator's `hook --print-settings-entry` output) or the
 // installed `claude-orchestrator-lease hook`.
@@ -34,15 +34,28 @@ export function mergeSettings(hostSettings, entry) {
   return { ...hostSettings, hooks };
 }
 
-/** Sync `host` (a validated hosts.json entry: { ssh, home, coHome, … }); returns { changes, failures }, both lists of strings. Changes nothing when `dryRun`. */
+/**
+ * Sync `host` (a validated hosts.json entry: { ssh, home, coHome, … }); returns { changes, failures, unreachable }: the
+ * first two are lists of strings and `unreachable` is whether every failure was a dropped connection (ssh exit 255 or a
+ * timeout) and no call that changes the host (a put, a backup cp, the skills rsync) had run, so nothing changed there.
+ * Changes nothing when `dryRun`.
+ */
 export function syncClaude({ host, run, readFile, localHome, dryRun = false, now = () => new Date(), log = () => {} }) {
   const dir = `${host.home}/.claude`;
   const changes = [];
   const failures = [];
+  let drops = 0;
+  let changing = false;
+  // An error from a call that did not run to completion, marked `dropped` when the connection is what failed.
+  const callError = (r, message) => Object.assign(new Error(message), { dropped: callFailure(r) === 'dropped' });
   const ssh = (cmd, input) => {
     const r = run('ssh', [...SSH_OPTS, host.ssh, remoteCommand(cmd)], input);
-    if (r.status !== 0) throw new Error(`${cmd}: ${r.stderr || r.error?.message}`);
+    if (r.status !== 0) throw callError(r, `${cmd}: ${r.stderr || r.error?.message}`);
     return r.stdout;
+  };
+  const write = (cmd, input) => {
+    changing = true;
+    return ssh(cmd, input);
   };
   // '' only when the file is absent; any read error (permissions, a dangling symlink) fails the step.
   const get = (file) => ssh(`if [ -e ${q(file)} ] || [ -L ${q(file)} ]; then cat ${q(file)}; fi`);
@@ -50,12 +63,13 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
   // owner-only and removed whether or not the write succeeded.
   const put = (file, text) => {
     const tmp = q(`${file}.tmp`);
-    ssh(`mkdir -p ${q(dir)} && (umask 077 && cat > ${tmp}) && cat ${tmp} > ${q(file)}; s=$?; rm -f ${tmp}; exit $s`, text);
+    write(`mkdir -p ${q(dir)} && (umask 077 && cat > ${tmp}) && cat ${tmp} > ${q(file)}; s=$?; rm -f ${tmp}; exit $s`, text);
   };
   const step = (name, fn) => {
     try {
       fn();
     } catch (err) {
+      if (err.dropped) drops += 1;
       failures.push(`${name}: ${err.message}`);
       log(`FAILED ${name}: ${err.message}`);
     }
@@ -77,7 +91,7 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
     const backup = `${file}.bak-${now().toISOString().replace(/[-:.]/g, '')}`;
     change(`copy CLAUDE.md${hostText ? ` (backup ${backup})` : ''}`);
     if (dryRun) return;
-    if (hostText) ssh(`cp ${q(file)} ${q(backup)}`);
+    if (hostText) write(`cp ${q(file)} ${q(backup)}`);
     put(file, text);
   });
 
@@ -101,10 +115,11 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
     // synced/ belongs to Claude Code's claude.ai skill sync on each machine, manifest and markers included.
     const excludes = ['--exclude=/ship-dag', '--exclude=/synced', '--exclude=/.trash', '--exclude=.DS_Store', ...linked];
     const args = ['-aL', '--itemize-changes', '-e', RSYNC_SSH, ...excludes, ...(dryRun ? ['-n'] : []), `${localHome}/skills/`, `${host.ssh}:${skills}/`];
+    if (!dryRun) changing = true;
     const r = run('rsync', args);
-    if (r.status !== 0) throw new Error(r.stderr || r.error?.message);
+    if (r.status !== 0) throw callError(r, r.stderr || r.error?.message);
     for (const line of r.stdout.split('\n').filter((l) => l.trim())) change(`skills: ${line}`);
   });
 
-  return { changes, failures };
+  return { changes, failures, unreachable: failures.length > 0 && drops === failures.length && !changing };
 }

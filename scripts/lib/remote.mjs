@@ -26,8 +26,19 @@ export const remoteCommand = (cmd) => cmd;
 export const sshCommandLine = (alias, command) => `ssh ${SSH_OPTS.join(' ')} ${shQuote(alias)} ${shQuote(remoteCommand(command))}`;
 
 /**
- * How a spawnSync-shaped result `r` failed to run, or undefined: `dropped` for ssh's own exit 255 or a call that hit
- * its timeout (the connection, not the remote command), else the message of the error that stopped it (an overflowed
- * buffer, a missing binary).
+ * How a spawnSync-shaped result `r`, or an error execFileSync threw (`status` and `code` on the error itself), failed to
+ * run, or undefined: `dropped` for ssh's own exit 255 or a call that hit its timeout (the connection, not the remote
+ * command), else the message of the error that stopped it (an overflowed buffer, a missing binary).
  */
-export const callFailure = (r) => (r.status === 255 || r.error?.code === 'ETIMEDOUT' ? 'dropped' : r.error?.message);
+export const callFailure = (r) => {
+  const e = r.error ?? r;
+  return r.status === 255 || e.code === 'ETIMEDOUT' ? 'dropped' : e.message;
+};
+
+/**
+ * The exit codes of host-prepare, host-sync-claude and host-run. `unreachable` is a drop before the script's first call
+ * that changed the host, so nothing changed there; a later drop is `failure`, except host-run's, which is `dropped` (the
+ * engine may be running: resume with `--collect-only`). `waiting` is host-run's `--max-wait` passing with the engine
+ * still running; `pending` is host-sync-claude's `--dry-run` finding changes.
+ */
+export const EXIT = { ok: 0, failure: 1, usage: 2, unreachable: 3, waiting: 4, pending: 10, dropped: 255 };

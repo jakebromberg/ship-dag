@@ -59,13 +59,14 @@ test('an engine that exits with no report exits 1 naming the remote log, and sti
   assert.equal(r.rsync.length, 1);
 });
 
-for (const [name, replies, nextCalls] of [
+for (const [name, replies, nextCalls, opts] of [
   ['the launch', [FRESH, { status: 255, stdout: '', stderr: 'ssh: connect timed out' }], 2],
   ['a poll', [FRESH, LAUNCHED, { status: 255, stdout: '', stderr: '' }], 3],
   ['a poll that timed out', [FRESH, LAUNCHED, failedToRun('ETIMEDOUT')], 3],
+  ['--collect-only polling', [{ status: 255, stdout: '', stderr: '' }], 1, { collectOnly: true }],
 ]) {
   test(`ssh dropping at ${name} exits 255 with the re-attach and collect commands, not as an engine failure`, async () => {
-    const r = await go(replies);
+    const r = await go(replies, opts);
     assert.equal(r.code, 255);
     assert.equal(r.ssh.length, nextCalls);
     assert.match(r.logged.join('\n'), /connection dropped.*not an engine failure.*RE.*COLLECT/s);
@@ -77,9 +78,9 @@ for (const [name, replies, opts] of [
   ['the pre-launch report check', [{ status: 255, stdout: '', stderr: '' }], {}],
   ['--plan', [{ status: 255, stdout: '', stderr: '' }], { plan: true }],
 ]) {
-  test(`ssh dropping at ${name}, before any engine starts, exits 255 reporting only the drop`, async () => {
+  test(`ssh dropping at ${name}, before any engine starts, exits 3 reporting only the drop`, async () => {
     const r = await go(replies, opts);
-    assert.equal(r.code, 255);
+    assert.equal(r.code, 3);
     assert.equal(r.ssh.length, 1);
     assert.match(r.logged.join('\n'), /connection dropped.*no engine was started/s);
     assert.doesNotMatch(r.logged.join('\n'), /may still be running|re-attach|COLLECT|RE/);
@@ -88,6 +89,7 @@ for (const [name, replies, opts] of [
 }
 
 for (const [name, replies, rsyncReply, expected] of [
+  ['a report check whose ssh is missing', [failedToRun('ENOENT')], undefined, /report check.*ENOENT/],
   ['a report check whose output overflowed', [failedToRun('ENOBUFS')], undefined, /report check.*ENOBUFS/],
   ['a launch whose output overflowed', [FRESH, failedToRun('ENOBUFS')], undefined, /launch.*ENOBUFS/],
   ['a poll whose output overflowed', [FRESH, LAUNCHED, failedToRun('ENOBUFS')], undefined, /polling.*ENOBUFS/],
@@ -163,9 +165,9 @@ for (const [name, dir] of [['a space', '/h/run 1'], ['a quote', "/h/o'run"], ['a
   }
 }
 
-test('an engine still running at --max-wait stops the wait non-zero with the --collect-only command, collecting nothing', async () => {
+test('an engine still running at --max-wait stops the wait with exit 4 and the --collect-only command, collecting nothing', async () => {
   const r = await go([FRESH, LAUNCHED, poll(1, 0), poll(1, 0), poll(1, 0)], { maxWaitMs: 2 * MINUTE });
-  assert.equal(r.code, 1);
+  assert.equal(r.code, 4);
   assert.equal(r.ssh.length, 5);
   assert.match(r.logged.join('\n'), /still running after 2 minutes.*COLLECT/s);
   assert.equal(r.rsync.length, 0);

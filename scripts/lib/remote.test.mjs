@@ -1,7 +1,7 @@
 // Tests for the shared remote-host plumbing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RSYNC_SSH, SSH_MAX_BUFFER, SSH_OPTS, callFailure, remoteCommand, shQuote, sshCommandLine } from './remote.mjs';
+import { EXIT, RSYNC_SSH, SSH_MAX_BUFFER, SSH_OPTS, callFailure, remoteCommand, shQuote, sshCommandLine } from './remote.mjs';
 
 for (const [name, input, expected] of [
   ['a plain string', 'abc', "'abc'"],
@@ -39,6 +39,9 @@ for (const [name, result, expected] of [
   ['a call that timed out', { status: null, error: { code: 'ETIMEDOUT', message: 'spawnSync ssh ETIMEDOUT' } }, 'dropped'],
   ['an overflowed buffer', { status: null, error: { code: 'ENOBUFS', message: 'spawnSync ssh ENOBUFS' } }, 'spawnSync ssh ENOBUFS'],
   ['a missing binary', { status: null, error: { code: 'ENOENT', message: 'spawnSync rsync ENOENT' } }, 'spawnSync rsync ENOENT'],
+  ['an execFileSync error that timed out', Object.assign(new Error('spawnSync ssh ETIMEDOUT'), { code: 'ETIMEDOUT', status: null }), 'dropped'],
+  ['an execFileSync error for ssh exit 255', Object.assign(new Error('Command failed: ssh'), { status: 255 }), 'dropped'],
+  ['an execFileSync error for a missing binary', Object.assign(new Error('spawnSync ssh ENOENT'), { code: 'ENOENT', status: null }), 'spawnSync ssh ENOENT'],
   ['a normal non-zero status', { status: 1 }, undefined],
   ['status 0', { status: 0 }, undefined],
 ]) {
@@ -46,3 +49,8 @@ for (const [name, result, expected] of [
     assert.equal(callFailure(result), expected);
   });
 }
+
+test('the exit codes of host-prepare, host-sync-claude and host-run are fixed and distinct', () => {
+  assert.deepEqual(EXIT, { ok: 0, failure: 1, usage: 2, unreachable: 3, waiting: 4, pending: 10, dropped: 255 });
+  assert.equal(new Set(Object.values(EXIT)).size, Object.keys(EXIT).length);
+});
