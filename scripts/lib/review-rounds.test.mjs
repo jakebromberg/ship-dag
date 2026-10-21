@@ -84,3 +84,11 @@ for (const [name, review, rawSibling, want] of [
     assert.deepEqual({ unreadable: got.unreadable, verdict: got.verdict, ...(want.blocking && { blocking: got.blocking }) }, want);
   });
 }
+
+test('classifyRound: reads a merge-order note against the repo the round file is named for', () => {
+  const note = (w) => ({ category: 'contract', verdict: 'CONFIRMED', file: 'a.js', line: 3, summary: 's', mergeOrder: { with: w, obligation: 'o' } });
+  const dir = reviewsDir([]);
+  const path = join(dir, `${STEM}.r2.json`);
+  assert.equal(classifyRound({ path, review: { findings: [note('o/r#99')] } }, ['contract']).verdict, 'nits-only');
+  assert.equal(classifyRound({ path, review: { findings: [note('x/y#99')] } }, ['contract']).verdict, 'blocking');
+});

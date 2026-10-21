@@ -11,7 +11,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { artifactStem } from './failure.mjs';
-import { gateReview } from '../review-gate.mjs';
+import { gateReview, issueRefFromPath } from '../review-gate.mjs';
 
 /**
  * Every review round file for `ref` across `dirs`, oldest first. When every file has a name SKILL.md
@@ -67,5 +67,5 @@ export function isUnreadableEmpty(path, review) {
 export function classifyRound({ path, review }, blockOn) {
   const unreadable = (why) => ({ unreadable: why, verdict: 'blocking', blocking: [] });
   if (isUnreadableEmpty(path, review)) return unreadable('empty beside .raw');
-  try { return { unreadable: null, ...gateReview(review, blockOn) }; } catch (err) { return unreadable(err.message); }
+  try { return { unreadable: null, ...gateReview(review, blockOn, undefined, issueRefFromPath(path)) }; } catch (err) { return unreadable(err.message); }
 }

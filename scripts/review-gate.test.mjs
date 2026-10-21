@@ -13,6 +13,7 @@ import {
   gateReview,
   parseBlockOn,
   gateFile,
+  issueRefFromPath,
   normalizeCategory,
   renderUnusable,
   ALWAYS_BLOCK,
@@ -661,21 +662,66 @@ test('CLI: stderr names a self-cleared finding and an unusable blocking value wi
 // (#282). The field is validated, not coerced: it is merge-ward, so a value the
 // gate cannot read must leave the finding scored exactly as it was.
 
+// The ref the review file's name carries (`artifactStem`), which is the only
+// trusted source of the issue's repo: the gate reads a note's `with` against it.
+const REF = 'acme/widgets#100';
 const NOTE = { with: 'acme/widgets#2299', obligation: 'rewrite the new test table once #2299 lands' };
+const gateNoted = (findings) => gateReview({ issue: 100, findings }, DEFAULT_BLOCK_ON, undefined, REF);
 
-test('gateReview: a merge-order note never blocks, whatever its category', () => {
-  for (const category of [...DEFAULT_BLOCK_ON, 'vibes']) {
-    const bare = gateReview({ issue: 1, findings: [finding({ category, blocking: true })] });
+// A note keeps a finding from blocking only where `blocking: false` already could:
+// a CONFIRMED finding in a gated category outside ALWAYS_BLOCK.
+const CLEARABLE = DEFAULT_BLOCK_ON.filter((c) => !ALWAYS_BLOCK.includes(c));
+
+test('gateReview: a merge-order note clears only what blocking:false could clear, and says so', () => {
+  assert.ok(CLEARABLE.length > 0);
+  for (const category of CLEARABLE) {
+    const bare = gateNoted([finding({ category, blocking: true })]);
     assert.equal(bare.verdict, 'blocking', `${category}: the same finding without the note must block, or this test proves nothing`);
 
-    const g = gateReview({ issue: 1, findings: [finding({ category, blocking: true, mergeOrder: NOTE })] });
+    const g = gateNoted([finding({ category, blocking: true, mergeOrder: NOTE })]);
     assert.equal(g.verdict, 'nits-only', category);
     assert.equal(g.blockingCount, 0, category);
     assert.equal(g.nitCount, 0, `${category}: a merge-order note is listed apart, not folded into the nits`);
     assert.equal(g.mergeOrderCount, 1, category);
-    assert.deepEqual(g.mergeOrder, [{ category, file: 'src/a.ts', line: 42, summary: 'off-by-one drops the last row', ...NOTE }]);
-    // A coined category is still a taxonomy error the operator should hear about.
-    assert.deepEqual(g.unknownCategories, category === 'vibes' ? ['vibes'] : [], category);
+    assert.equal(g.mergeOrderClearedCount, 1, `${category}: the clearance is counted`);
+    assert.deepEqual(g.mergeOrder, [
+      { category, verdict: 'CONFIRMED', cleared: true, file: 'src/a.ts', line: 42, summary: 'off-by-one drops the last row', ...NOTE },
+    ]);
+    assert.deepEqual(g.malformedMergeOrder, [], category);
+  }
+});
+
+test('gateReview: a note on a finding that would not block is carried, not counted as a clearance', () => {
+  const g = gateNoted([finding({ category: 'efficiency', verdict: 'PLAUSIBLE', mergeOrder: NOTE })]);
+  assert.equal(g.verdict, 'nits-only');
+  assert.equal(g.nitCount, 0);
+  assert.equal(g.mergeOrderCount, 1);
+  assert.equal(g.mergeOrderClearedCount, 0);
+  assert.equal(g.mergeOrder[0].cleared, false);
+});
+
+test('gateReview: a note never clears a CONFIRMED correctness or security finding, or a blank or coined category', () => {
+  const cases = [
+    ...ALWAYS_BLOCK.map((category) => ({ category })),
+    { category: 'vibes' },
+    { category: '' },
+    { category: undefined },
+  ];
+  for (const over of cases) {
+    for (const blocking of [true, false, undefined]) {
+      const label = `${JSON.stringify(over)} blocking=${blocking}`;
+      const g = gateNoted([finding({ ...over, blocking, mergeOrder: NOTE })]);
+      assert.equal(g.verdict, 'blocking', label);
+      assert.equal(g.blockingCount, 1, label);
+      assert.equal(g.mergeOrderCount, 0, label);
+      assert.deepEqual(g.malformedMergeOrder, [renderUnusable(NOTE)], `${label}: the refused note is named`);
+    }
+  }
+  // Still a note where the finding was no blocker to begin with.
+  for (const category of ALWAYS_BLOCK) {
+    const g = gateNoted([finding({ category, verdict: 'PLAUSIBLE', mergeOrder: NOTE })]);
+    assert.equal(g.mergeOrderCount, 1, category);
+    assert.equal(g.mergeOrderClearedCount, 0, category);
   }
 });
 
@@ -692,50 +738,103 @@ test('gateReview: a value the gate cannot read as a merge-order note leaves the 
     { with: 'widgets#12', obligation: 'x' },
     { with: 'acme/widgets', obligation: 'x' },
     { with: 'acme/widgets#12 and more', obligation: 'x' },
+    // Well formed, but not a sibling this issue can wait on.
+    { with: 'other/widgets#12', obligation: 'x' },
+    { with: 'acme/gadgets#12', obligation: 'x' },
+    { with: REF, obligation: 'x' },
+    { with: REF.toUpperCase(), obligation: 'x' },
   ];
+  // On a clearable category, where a note read as a clearance changes the verdict.
   for (const mergeOrder of unreadable) {
-    const g = gateReview({ issue: 1, findings: [finding({ mergeOrder })] });
+    const g = gateNoted([finding({ category: 'contract', blocking: true, mergeOrder })]);
     const label = JSON.stringify(mergeOrder);
     assert.equal(g.verdict, 'blocking', label);
+    assert.equal(g.selfClearedCount, 0, label);
     assert.equal(g.mergeOrderCount, 0, label);
     assert.deepEqual(g.malformedMergeOrder, [renderUnusable(mergeOrder)], label);
   }
   // `null` is an absent value, the way a writer spells "none", not a malformed one.
-  const none = gateReview({ issue: 1, findings: [finding({ mergeOrder: null })] });
+  const none = gateNoted([finding({ category: 'contract', mergeOrder: null })]);
   assert.equal(none.verdict, 'blocking');
   assert.deepEqual(none.malformedMergeOrder, []);
 });
 
+test('gateReview: with no issue ref to read the repo against, no note is usable', () => {
+  for (const ref of [undefined, '', 'not a ref', 'acme/widgets', '#100']) {
+    const g = gateReview({ issue: 100, findings: [finding({ category: 'contract', mergeOrder: NOTE })] }, DEFAULT_BLOCK_ON, undefined, ref);
+    assert.equal(g.verdict, 'blocking', String(ref));
+    assert.equal(g.mergeOrderCount, 0, String(ref));
+    assert.deepEqual(g.malformedMergeOrder, [renderUnusable(NOTE)], String(ref));
+  }
+});
+
+test('issueRefFromPath: reads the ref out of a round file name, and nothing else', () => {
+  const ok = [
+    ['acme%2Fwidgets%23100.json', REF],
+    ['/x/y/acme%2Fwidgets%23100.r2.json', REF],
+    ['acme%2Fwidgets%23100-r3.json', REF],
+  ];
+  for (const [path, ref] of ok) assert.equal(issueRefFromPath(path), ref, path);
+  for (const path of ['review.json', 'acme%2Fwidgets.json', 'acme%2Fwidgets%23x.json', '%E0%A4%A.json', '']) {
+    assert.equal(issueRefFromPath(path), undefined, path);
+  }
+});
+
 test('gateReview: a review with a note and a real defect blocks on the defect alone; every finding is counted once', () => {
-  const g = gateReview({
-    issue: 1,
-    findings: [
-      finding({ summary: 'real defect' }),
-      finding({ category: 'efficiency', verdict: 'PLAUSIBLE', summary: 'a nit' }),
-      ...['a', 'b', 'c', 'd'].map((x) => finding({ summary: `note ${x}`, mergeOrder: { ...NOTE, with: `acme/widgets#${x.charCodeAt(0)}` } })),
-    ],
-  });
+  const g = gateNoted([
+    finding({ summary: 'real defect' }),
+    finding({ category: 'efficiency', verdict: 'PLAUSIBLE', summary: 'a nit' }),
+    ...['a', 'b', 'c', 'd'].map((x) => finding({ category: 'contract', summary: `note ${x}`, mergeOrder: { ...NOTE, with: `acme/widgets#${2000 + x.charCodeAt(0)}` } })),
+  ]);
   assert.equal(g.verdict, 'blocking');
   assert.deepEqual(g.blocking.map((b) => b.summary), ['real defect']);
   assert.equal(g.blockingCount + g.nitCount + g.mergeOrderCount, g.findingCount);
   // The count is exact; the listed window is capped like every other list.
   assert.equal(g.mergeOrderCount, 4);
+  assert.equal(g.mergeOrderClearedCount, 4);
   assert.equal(g.mergeOrder.length, MAX_LISTED);
 });
 
-test('CLI: stderr names the PRs a merge-order note waits on, and an unusable note, without the operator opening the review', () => {
-  const p = reviewFile({
-    issue: 620,
-    findings: [finding({ mergeOrder: NOTE }), finding({ category: 'contract', mergeOrder: 'acme/widgets#7' })],
-  });
+test('gateReview: the listed window puts clearances first, so a cap never hides one behind carried notes', () => {
+  const carried = ['a', 'b', 'c'].map((x) => finding({ category: 'efficiency', verdict: 'PLAUSIBLE', summary: `carried ${x}`, mergeOrder: NOTE }));
+  const g = gateNoted([...carried, finding({ category: 'contract', summary: 'cleared', mergeOrder: NOTE })]);
+  assert.equal(g.mergeOrder.length, MAX_LISTED);
+  assert.equal(g.mergeOrder[0].summary, 'cleared');
+  assert.equal(g.mergeOrderClearedCount, 1);
+});
+
+test('CLI: stderr names the PRs a merge-order note waits on, every clearance, and an unusable note', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ship-dag-review-'));
+  const p = join(dir, 'acme%2Fwidgets%23620.json');
+  writeFileSync(
+    p,
+    JSON.stringify({
+      issue: 620,
+      findings: [
+        finding({ category: 'contract', mergeOrder: NOTE }),
+        finding({ category: 'convention', mergeOrder: 'acme/widgets#7' }),
+        finding({ category: 'security', mergeOrder: NOTE }),
+      ],
+    }),
+  );
   const { code, stdout, stderr } = runCli([p]);
   assert.equal(code, 0);
   const out = JSON.parse(stdout);
   assert.equal(out.mergeOrderCount, 1);
+  assert.equal(out.mergeOrderClearedCount, 1);
   assert.equal(out.mergeOrder[0].with, 'acme/widgets#2299');
-  assert.deepEqual(out.malformedMergeOrder, ['"acme/widgets#7"']);
-  assert.match(stderr, /1 merge-order: acme\/widgets#2299/);
+  assert.equal(out.mergeOrder[0].cleared, true);
+  assert.equal(out.verdict, 'blocking');
+  assert.equal(out.malformedMergeOrder.length, 2);
+  assert.match(stderr, /1 merge-order \(1 cleared a blocking finding\): acme\/widgets#2299/);
   assert.match(stderr, /unusable mergeOrder: "acme\/widgets#7"/);
+});
+
+// A file whose name carries no ref gives the gate nothing to check a note's repo against.
+test('CLI: a review file not named for an issue ref reads every note as unusable', () => {
+  const { code, stdout } = runCli([reviewFile({ issue: 620, findings: [finding({ category: 'contract', mergeOrder: NOTE })] })]);
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(stdout).verdict, 'blocking');
 });
 
 // The notes reach a reviewer only through the prompt and the rebase gate only
@@ -743,7 +842,7 @@ test('CLI: stderr names the PRs a merge-order note waits on, and an unusable not
 // stopped naming the two tiers, leaves the gate change with no caller.
 const MERGE_ORDER_SITES = {
   // The Review block says when to use the field, and how the sibling is found.
-  'SKILL.md': [/`mergeOrder`/, /`git merge-tree`/, /range-diff quick check/, /`git range-diff </],
+  'SKILL.md': [/`mergeOrder`/, /`git merge-tree`/, /range-diff quick check/, /`git range-diff </, /--is-ancestor/, /info\.version/],
   'references/review-schema.md': [/`mergeOrder`/],
 };
 
