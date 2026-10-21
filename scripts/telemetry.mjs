@@ -61,9 +61,11 @@
 //                                            # unreadable reports, and sidecar entries and configs no report matches
 //   node telemetry.mjs tripwires [--escapes <file>] [--now ISO]
 //                                            # evaluate references/tripwires.json against the current tuningVersion's
-//                                            # records (T-retro-approval reads the retro records, outside that window): tripped, holding, insufficient-data or pending-instrumentation,
-//                                            # with past-due review dates; T-escapes reads a saved `escapes` run
-//                                            # (--escapes), never GitHub, and T-coverage runs `audit` per run family
+//                                            # records (T-retro-approval instead reads the `retro` context field, the
+//                                            # retro records outside that window): tripped, holding, insufficient-data
+//                                            # or pending-instrumentation, with past-due review dates; T-escapes
+//                                            # reads a saved `escapes` run (--escapes), never GitHub, and T-coverage
+//                                            # runs `audit` per run family
 //   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
