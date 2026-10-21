@@ -7,7 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkResource, parseArgs } from './resource-preflight.mjs';
 
-const status = (level, capacity = 4, live = []) => ({ level, capacity, live });
+const SESSIONS = { capacity: 6, live: [] };
+const STEP = { normal: 4, warning: 2, unknown: 4, critical: 0 };
+const status = (level, capacity = 4, live = [], sessions = { ...SESSIONS, capacity: [0, 1, 2, 4, 6][STEP[level]] }) =>
+  ({ level, capacity, step: STEP[level], live, sessions });
 const lease = (st, seen = []) => ({
   leaseOptionsFor: (env) => { seen.push(env); return { tag: 'opts' }; },
   leaseStatus: (opts) => { assert.deepEqual(opts, { tag: 'opts' }); return st; },
@@ -27,9 +30,15 @@ const TABLE = [
 for (const [st, flags, action, reason, recommendedParallel, recommendedHandoff] of TABLE) {
   test(`checkResource: ${st.level} ${JSON.stringify(flags)} → ${reason}`, async () => {
     const out = await checkResource({ parallel: 3, ...flags }, { env: {}, ...lease(st) });
-    assert.deepEqual(out, { action, reason, level: st.level, capacity: st.capacity, live: st.live, recommendedParallel, recommendedHandoff });
+    assert.deepEqual(out, { action, reason, level: st.level, capacity: st.capacity, step: st.step, sessions: st.sessions, live: st.live, recommendedParallel, recommendedHandoff });
   });
 }
+
+test('checkResource: a dist whose leaseStatus has no step or sessions (an older claude-orchestrator) leaves them absent', async () => {
+  const out = await checkResource({ parallel: 3 }, { env: {}, ...lease({ level: 'normal', capacity: 4, live: [] }) });
+  assert.deepEqual(out, { action: 'proceed', reason: 'normal', level: 'normal', capacity: 4, live: [], recommendedParallel: 3, recommendedHandoff: 4 });
+  assert.ok(!('step' in out) && !('sessions' in out));
+});
 
 test('checkResource: the env handed to leaseOptionsFor lacks CO_PRESSURE_OVERRIDE, and the caller\'s env is untouched', async () => {
   const seen = [];
