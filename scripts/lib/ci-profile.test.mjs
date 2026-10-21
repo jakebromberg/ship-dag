@@ -40,6 +40,13 @@ const field = (args, k) => args.find((a, i) => /^-[fF]$/.test(args[i - 1]) && a.
 const noSleep = async () => {};
 const probe = (answer, base) => repoCiScript(R, base, { gh: fakeGh(answer), sleep: noSleep });
 
+test('resolveCiProfile carries the entry\'s host and toolchains, and only when it sets them', () => {
+  const entry = { commands: ['npm test'], host: 'box', toolchains: ['node'] };
+  assert.deepEqual(resolveCiProfile(R, { [R]: entry }), { repo: R, baseBranch: 'main', commands: ['npm test'], source: 'registry', host: 'box', toolchains: ['node'] });
+  assert.deepEqual(resolveCiProfile(R, { [R]: { host: 'box' } }, { hasScript: true }), { repo: R, baseBranch: 'main', commands: ['scripts/ci'], source: 'repo', host: 'box' });
+  assert.deepEqual(resolveCiProfile(R, { [R]: { commands: ['npm test'] } }), { repo: R, baseBranch: 'main', commands: ['npm test'], source: 'registry' });
+});
+
 test('REPO_CI_COMMAND is the bare convention, run from the worktree root', () => {
   assert.equal(REPO_CI_COMMAND, 'scripts/ci');
 });
