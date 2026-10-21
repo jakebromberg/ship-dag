@@ -10,18 +10,18 @@ test('the shipped hosts.json loads, listing mini with the node toolchain', () =>
   assert.deepEqual(loadHosts().mini.toolchains, ['node']);
 });
 
-test('validateHosts accepts a full entry, defaulting toolchains to none', () => {
+test('validateHosts accepts a full entry, defaulting toolchains to none and coHome under home', () => {
   const full = { ...GOOD, coHome: '/c', sessionSlots: 2, leaseSlots: 1, toolchains: ['node', 'python'] };
-  assert.deepEqual(validateHosts({ a: full, b: GOOD }).a, full);
-  assert.deepEqual(validateHosts({ b: GOOD }).b.toolchains, []);
+  assert.deepEqual(validateHosts({ a: full, b: GOOD }), { a: full, b: { ...GOOD, coHome: '/Users/me/Developer/claude-orchestrator', toolchains: [] } });
 });
 
-for (const [name, coHome, expected] of [
-  ['defaults coHome to <home>/Developer/claude-orchestrator', undefined, '/Users/me/Developer/claude-orchestrator'],
-  ['keeps a coHome it is given', '/c', '/c'],
+// The default row uses a home other than this Mac's, so it shows coHome is derived from `home`, not a fixed path.
+for (const [name, home, coHome, expected] of [
+  ['defaults coHome to <home>/Developer/claude-orchestrator', '/h', undefined, '/h/Developer/claude-orchestrator'],
+  ['keeps a coHome it is given', '/h', '/c', '/c'],
 ]) {
   test(`validateHosts ${name}`, () => {
-    assert.equal(validateHosts({ a: { ...GOOD, coHome } }).a.coHome, expected);
+    assert.equal(validateHosts({ a: { ...GOOD, home, coHome } }).a.coHome, expected);
   });
 }
 
