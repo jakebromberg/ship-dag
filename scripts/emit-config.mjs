@@ -160,8 +160,10 @@ export function withDecisions(description, decisions) {
 // time with no zone as UTC, and anything else is ignored with a warning. Without a `triagedAt` or a reader,
 // or when nothing changed, the description comes back untouched.
 // Not refs worth a read: URLs; a bare `#N` that is a hex colour (6 or 8 digits, or one digit three times) or an
-// ordinal (one digit); and a bare `#N` that follows a repo-like word and a space ("dj-site #5", "LML #5"),
-// whose repo is not the issue's own. An `owner/repo#N` is always a ref, whatever its number looks like.
+// ordinal (one digit); and an owner-less `repo#N` with no space ("dj-site#5"), which the lookbehind skips. Every
+// other bare `#N` is read against the issue's own repo, whatever word precedes it ("follow-up #12", "CI #12",
+// "dj-site #12"), because a sibling ref is the case the note exists for. An `owner/repo#N` is always a ref,
+// whatever its number looks like.
 const REF_IN_TEXT = /(?<![\w#/])(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
 const NOT_A_REF = /^(\d)\1\1$|^(\d{6}|\d{8})$/;
 const ISO_TIME = /^(\d{4}-\d{2}-\d{2})(?:[Tt ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|z|[+-]\d{2}(?::?\d{2})?)?)?$/;
@@ -174,13 +176,6 @@ function parseTriagedAt(text) {
   return Date.parse(`${m[1]}T${m[2] ?? '00:00'}${zone}`);
 }
 
-/** True when the word before a bare `#N` names some other repo: a name with `-`, `.` or `_` inside, or an acronym, but not "PR" and not the issue's own repo. */
-function namesOtherRepo(before, repo) {
-  const word = /([\w.-]+) $/.exec(before)?.[1];
-  if (!word || /[.-]$/.test(word) || word.toLowerCase() === repo.split('/')[1]?.toLowerCase()) return false;
-  return /[._-]/.test(word) || (/^[A-Z]{2,}$/.test(word) && !/^(PRS?|MRS?)$/.test(word));
-}
-
 export function withMergedSinceTriage(description, { texts, repo, self, base, triagedAt, readRef, warn = () => {} }) {
   if (!triagedAt || !readRef) return description;
   const since = parseTriagedAt(triagedAt);
@@ -188,13 +183,16 @@ export function withMergedSinceTriage(description, { texts, repo, self, base, tr
     warn(`emit-config: WARNING — triagedAt "${triagedAt}" is not an ISO 8601 time; no since-triage note for #${self}`);
     return description;
   }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(triagedAt).trim())) {
+    warn(`emit-config: WARNING — triagedAt "${triagedAt}" is a date only; read as 00:00 UTC, so closes earlier that day count as since triage (#${self})`);
+  }
   const refs = new Map();
   const text = texts.join('\n').replace(/\bhttps?:\/\/\S+/g, ' ');
   for (const m of text.matchAll(REF_IN_TEXT)) {
     const r = m[1] ?? repo;
     const n = Number(m[2]);
     if (refKey(r) === refKey(repo) && n === self) continue;
-    if (!m[1] && (NOT_A_REF.test(m[2]) || m[2].length === 1 || namesOtherRepo(text.slice(0, m.index), repo))) continue;
+    if (!m[1] && (NOT_A_REF.test(m[2]) || m[2].length === 1)) continue;
     const key = `${refKey(r)}#${n}`;
     if (!refs.has(key)) refs.set(key, { r, n, label: m[1] ? `${m[1]}#${n}` : `#${n}` });
   }

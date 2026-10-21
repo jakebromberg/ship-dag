@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { realRunGh } from './lib/gh.mjs';
 import { deriveSlug, buildConfig, unknownCiRepos, unknownComplexities, validateSpec, ghReadRef } from './emit-config.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
 import { waveSidecar } from './lib/wave-sidecar.mjs';
@@ -592,16 +593,22 @@ for (const [what, text, repo, number] of [
   });
 }
 
-// A repo name or acronym, a space, then #N cannot be told from the issue's own repo cheaply, so it is skipped
-// (no read, no false fact), unless the word is the issue's own repo name or an ordinary word such as "PR".
+// Every bare #N is read against the issue's own repo, whatever word comes before it: a repo name, an acronym, or a
+// relation word like "follow-up" can each precede a sibling ref, and a skipped sibling is a silent miss. Only an
+// owner-less `repo#N` with no space is skipped (the lookbehind), as is a bare #N inside a URL or path anchor.
 for (const [text, reads] of [
-  ['After dj-site #2253 merges.', []],
-  ['Reuse LML #337 and wxyc-shared #12.', []],
-  ['Reuse BS #873.', []],
+  ['After dj-site #55 merges.', [`${R}#55`]],
+  ['Reuse the parser from follow-up #55.', [`${R}#55`]],
+  ['Tracked in the sub-issue #55.', [`${R}#55`]],
+  ['This is blocked-by #55.', [`${R}#55`]],
+  ['Wait for CI #55.', [`${R}#55`]],
+  ['The API #55 lands first.', [`${R}#55`]],
+  ['Ask the DJ #55.', [`${R}#55`]],
   ['After PR #55 merges.', [`${R}#55`]],
   ['After issue #55 merges.', [`${R}#55`]],
   ['See library-metadata-lookup #55.', [`${R}#55`]],
   ['Done in this sentence. #55 too.', [`${R}#55`]],
+  ['After dj-site#55 merges.', []],
 ]) {
   test(`a bare #N after a word: "${text}"`, () => {
     const { readRef, calls } = stubReader({ [`${R}#55`]: merged('Fifty-five') });
@@ -635,6 +642,8 @@ for (const [name, triagedAt, closedAt, notes] of [
   ['a space-separated zone-less time is read as UTC, so a close just before it does not', '2026-10-16 12:00:00', '2026-10-16T11:30:00Z', false],
   ['a space-separated time with a Z', '2026-10-16 12:00:00Z', '2026-10-16T11:30:00Z', false],
   ['an offset with no colon', '2026-10-16T05:00:00-0700', '2026-10-16T12:30:00Z', true],
+  ['an hour-only offset', '2026-10-16T17:00:00+05', '2026-10-16T12:30:00Z', true],
+  ['an hour-only offset puts a close just before it out of the note', '2026-10-16T17:00:00+05', '2026-10-16T11:30:00Z', false],
 ]) {
   test(`triagedAt: ${name}`, () => {
     const { readRef } = stubReader({ [`${R}#55`]: merged('x', closedAt) });
@@ -681,6 +690,14 @@ for (const tz of ['America/Los_Angeles', 'Pacific/Auckland']) {
   });
 }
 
+test('a date-only triagedAt is read as midnight UTC and warns that it is not a time', () => {
+  const { readRef } = stubReader({ [`${R}#55`]: merged('x', '2026-10-16T12:30:00Z') });
+  const warnings = [];
+  const d = buildConfig(sinceSpec('See #55.', { triagedAt: '2026-10-16' }), loadTuning(), { readRef, warn: (m) => warnings.push(m) }).issues[0].description;
+  assert.ok(d.startsWith('Since this plan was written: #55 merged (x)'));
+  assert.match(warnings.join(), /triagedAt.*2026-10-16.*date only/);
+});
+
 test('one read serves every issue in the wave that names the same ref, and a failed read is not retried', () => {
   const { readRef, calls } = stubReader({ [`${R}#55`]: merged('Fifty-five'), [`${R}#66`]: new Error('boom') });
   const s = spec({ issues: [1, 2, 3].map((n) => ({ number: n, repo: R, digest: 'See #55 and #66.', triagedAt: TRIAGED })) });
@@ -702,4 +719,13 @@ test('ghReadRef reads the issues endpoint with a timeout and parses the row', ()
   assert.deepEqual(ghReadRef('o/r', 12, run), { state: 'open', title: 'T' });
   assert.deepEqual(seen[0].args, ['api', 'repos/o/r/issues/12']);
   assert.ok(seen[0].opts.timeout > 0);
+});
+
+test('realRunGh forwards its options, so the timeout cuts off a stalled gh', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-gh-'));
+  writeFileSync(join(dir, 'gh'), '#!/bin/sh\nexec sleep 10\n');
+  chmodSync(join(dir, 'gh'), 0o755);
+  const started = Date.now();
+  assert.throws(() => realRunGh(['api', 'x'], { timeout: 200, env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } }), (err) => err.code === 'ETIMEDOUT');
+  assert.ok(Date.now() - started < 5000);
 });
