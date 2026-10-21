@@ -33,8 +33,8 @@ export { artifactStem };
 
 /** Reasons the engine stops a row for infrastructure rather than model failure (claude-orchestrator#87), beside `"rate-limited"` which ship-dag also reads from a transcript. */
 export const RESOURCE_STOPS = new Set(['memory-critical', 'lease-wait']);
-/** Every `failureReason` that marks infrastructure rather than model failure: `"rate-limited"` and the engine's `RESOURCE_STOPS`. */
-export const INFRA_REASONS = new Set(['rate-limited', ...RESOURCE_STOPS]);
+/** Every `failureReason` that marks infrastructure rather than model failure: `"rate-limited"`, `"engine-died"` (the engine process died, and the report was rebuilt from its state files) and the engine's `RESOURCE_STOPS`. */
+export const INFRA_REASONS = new Set(['rate-limited', 'engine-died', ...RESOURCE_STOPS]);
 
 /** JSON key present on every stream-json result record — a cheap prefilter that skips `JSON.parse` on the ~99% of transcript lines that cannot be one. */
 export const RESULT_TYPE_KEY = '"type":"result"';
@@ -238,8 +238,8 @@ export function ciStatusAfterProfile(exitCode, { noProfile = false } = {}) {
  * - `review-gate` — a PR is open (whatever the row's status). The implement
  *   work landed; gate it exactly like a `succeeded` row. Never retry it: the
  *   branch already exists and the work may already be merged.
- * - `resource` — no PR, and the engine stopped the row for memory pressure or a lease wait (`RESOURCE_STOPS`),
- *   which is infrastructure, not a model failure. Checked before `find-pr` so a stop is never read as a PR-less
+ * - `resource` — no PR, and the engine stopped the row for memory pressure or a lease wait (`RESOURCE_STOPS`), or
+ *   died under it (`"engine-died"`), which is infrastructure, not a model failure. Checked before `find-pr` so a stop is never read as a PR-less
  *   success; the worktree then decides the recovery (`resumeMode`). With a PR, the row is gated and
  *   `stopCiStatus` says what its CI is.
  * - `find-pr` — a `succeeded` row with no PR. The session finished but the
@@ -259,7 +259,7 @@ export function routeFailure(row) {
   // 0 can't read as "a PR exists" — routing a PR-less stall to a gate with
   // nothing to review is the expensive direction to be wrong in.
   if (isPr(prNumber)) return 'review-gate';
-  if (RESOURCE_STOPS.has(failureReason)) return 'resource';
+  if (RESOURCE_STOPS.has(failureReason) || failureReason === 'engine-died') return 'resource';
   if (status === 'succeeded') return 'find-pr';
   if (failureReason === 'rate-limited') return 'point-E';
   return 'point-B';

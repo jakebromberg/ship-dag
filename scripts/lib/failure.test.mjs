@@ -283,6 +283,12 @@ test('buildDiagnosis: an unrecognized structured failureReason is not passed thr
   assert.equal(d.route, 'point-B');
 });
 
+test('buildDiagnosis: an engine-died row is infrastructure — its reason passes through and it routes to resource, never point B', () => {
+  const d = buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed', failureReason: 'engine-died' }, terminal: null, rateLimited: false });
+  assert.deepEqual([d.failureReason, d.route, d.stopStage], ['engine-died', 'resource', null]);
+  assert.equal(routeFailure({ status: 'failed', prNumber: 7, failureReason: 'engine-died' }), 'review-gate');
+});
+
 test('buildDiagnosis: clips a long terminal reason — this lands in an agent context', () => {
   const d = buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed' }, terminal: { subtype: 's', isError: true, numTurns: 1, reason: 'x'.repeat(5000) }, rateLimited: false });
   assert.ok(d.terminal.reason.endsWith('…'));
