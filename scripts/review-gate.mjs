@@ -245,21 +245,13 @@ export function readPositional(argv, valueFlags = []) {
   return undefined;
 }
 
-/**
- * A PR in the form a merge-order note names it: `owner/repo#N`. No leading zero
- * and no `#0`: `#0100` names the same PR as `#100`, so it would slip past the
- * check that a note does not name the issue itself.
- */
+/** A PR as a merge-order note names it: `owner/repo#N`, with no leading zero (`#0100` would slip past the self check). */
 const PR_REF = /^[^\s/#]+\/[^\s/#]+#[1-9]\d*$/;
 
 /**
- * Whether a finding's `mergeOrder` is a usable merge-order note: an object
- * naming the open PR the finding waits on (`with`) and what that PR owes
- * (`obligation`). Validated rather than coerced, because the field is merge-ward
- * (a usable note keeps a finding from blocking), so a value the gate cannot read
- * must leave the finding scored as if the field were absent.
+ * Whether a finding's `mergeOrder` is a usable note: an object with a PR `with` and a non-blank
+ * `obligation`. Validated, not coerced, since a usable note is merge-ward.
  * @param {unknown} note
- * @returns {boolean}
  */
 export function isMergeOrder(note) {
   return (
@@ -272,25 +264,14 @@ export function isMergeOrder(note) {
   );
 }
 
-/**
- * Whether a note's `with` can be waited on by the issue: in its repo, and not
- * the issue itself. Without the issue's ref nothing is checkable, so it is no.
- * @param {string} withRef  a well-formed `owner/repo#N`
- * @param {string|undefined} issueRef
- */
+/** Whether `withRef` is in the issue's repo and not the issue itself; with no issue ref, never. */
 function siblingOf(withRef, issueRef) {
   const own = typeof issueRef === 'string' ? PR_REF.exec(issueRef) && issueRef.toLowerCase() : null;
   const other = withRef.toLowerCase();
   return Boolean(own) && other.split('#')[0] === own.split('#')[0] && other !== own;
 }
 
-/**
- * The issue ref a round file is named for (`artifactStem`: `owner%2Frepo%23N`,
- * then an optional round tag), which is the one source of the issue's repo the
- * gate trusts: the orchestrator picks the path, the reviewer writes the content.
- * @param {string} path
- * @returns {string|undefined}
- */
+/** The issue ref a round file is named for (`artifactStem`), the one source of the issue's repo the gate trusts. */
 export function issueRefFromPath(path) {
   try {
     const m = /^([^\s/#]+\/[^\s/#]+#\d+)(?:[.-][A-Za-z0-9-]+)?\.json$/.exec(decodeURIComponent(basename(String(path))));
@@ -424,7 +405,7 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
       line: f?.line ?? null,
       summary: f?.summary ?? null,
     };
-    // Before the `blocking` axis; what a note may clear is the schema's rule.
+    // What a note may clear is the schema's rule.
     const note = f?.mergeOrder;
     const wouldBlock = !known || (gate.has(category) && confirmed);
     if (isMergeOrder(note) && siblingOf(note.with, issueRef)) {
@@ -483,7 +464,7 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
     malformedBlocking: [...malformed].slice(0, MAX_LISTED),
     mergeOrderCount: mergeOrder.length,
     mergeOrderClearedCount: mergeOrder.filter((n) => n.cleared).length,
-    // Clearances first, so the cap never hides one behind carried notes.
+    // Clearances first, so the cap never hides one.
     mergeOrder: [...mergeOrder.filter((n) => n.cleared), ...mergeOrder.filter((n) => !n.cleared)].slice(0, MAX_LISTED),
     malformedMergeOrder: [...malformedMergeOrder].slice(0, MAX_LISTED),
   };
@@ -543,8 +524,7 @@ function main(argv) {
   // Already JSON text, so not re-quoted — `"false"` reads as the string the
   // reviewer wrote, `0` as the number.
   const malformed = out.malformedBlocking.length ? `; unusable blocking: ${out.malformedBlocking.join(', ')}` : '';
-  // Named by the PR each waits on: the note is not a nit, and the rebase gate
-  // of whichever PR lands second is where it is read again (SKILL.md step 6.2).
+  // Named by the PR each waits on (SKILL.md step 6.2 reads the files again).
   const notes = out.mergeOrderCount
     ? `; ${out.mergeOrderCount} merge-order${out.mergeOrderClearedCount ? ` (${out.mergeOrderClearedCount} cleared a blocking finding)` : ''}: ${out.mergeOrder.map((n) => n.with).join(', ')}`
     : '';
