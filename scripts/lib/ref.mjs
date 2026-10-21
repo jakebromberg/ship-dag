@@ -41,3 +41,21 @@ export function parsePr(value, homeRepo) {
   const m = PR_URL_RE.exec(value);
   return m && isPr(Number(m[2])) ? { repo: m[1], pr: Number(m[2]) } : null;
 }
+
+/** Each folded repo of `records` mapped to the spelling first written in the log, in file order. */
+export function repoSpellings(records) {
+  const names = new Map();
+  for (const r of records) if (!names.has(refKey(r.repo))) names.set(refKey(r.repo), r.repo);
+  return names;
+}
+
+/** `population` grouped by folded repo as a Map, each group keyed by the spelling first written in all of `records`. */
+export function groupByRepo(records, population) {
+  const names = repoSpellings(records);
+  const groups = new Map();
+  for (const r of population) {
+    const name = names.get(refKey(r.repo)) ?? r.repo;
+    groups.set(name, [...(groups.get(name) ?? []), r]);
+  }
+  return groups;
+}

@@ -1398,6 +1398,8 @@ describe('audit', () => {
     const death = logged({ reportId: 'w1', implStatus: 'error', finalState: 'deferred', failureReason: 'engine-died' });
     assert.deepEqual(audit_(base, [death]).engineDied, [REF]);
     assert.deepEqual(audit_(base, [death, logged({ ts: T2 })]).engineDied, []);
+    const upper = { repo: REF.split('#')[0].toUpperCase() };
+    assert.deepEqual(audit_(base, [logged({ ts: T0 }), logged({ ...upper, ts: T1, reportId: 'w1', implStatus: 'error', finalState: 'deferred', failureReason: 'engine-died' })]).engineDied, [REF]);
     assert.deepEqual(audit_(base, [logged({ reportId: 'w1', implStatus: 'error', finalState: 'error' })]).engineDied, []);
     // The last record is the latest by ts, not by place in the log, and a ref is matched whatever its case.
     assert.deepEqual(audit_(base, [logged({ ts: T2 }), death]).engineDied, []);
@@ -1753,6 +1755,18 @@ describe('report: byRepo', () => {
       minSample: 1,
       want: { 'WXYC/Site': { n: 4, yield: [3, 4], catchN: 1, miss: 1 } },
     },
+    {
+      name: 'the spelling is the first in the whole log, not the first reached row',
+      recs: [normalizeRecord(base({ repo: 'wxyc/site', issue: 50, implStatus: null, finalState: 'deferred' }), FIXED), ...rows('WXYC/Site', 2, 1)],
+      minSample: 1,
+      want: { 'wxyc/site': { n: 2, yield: [1, 2], catchN: 1, miss: 1 } },
+    },
+    {
+      name: 'a cleared row that never reached counts in its repo, whatever its casing',
+      recs: [...rows('a/one', 2, 0), normalizeRecord(base({ repo: 'A/One', issue: 60, implStatus: null, finalState: 'deferred' }), FIXED)],
+      minSample: 1,
+      want: { 'a/one': { n: 2, yield: [2, 2], catchN: 0, miss: 0, cleared: 3 } },
+    },
   ];
   for (const { name, recs, minSample, want } of cases) {
     test(name, () => {
@@ -1767,6 +1781,7 @@ describe('report: byRepo', () => {
         assert.deepEqual([got[repo].firstPassYield.pass, got[repo].firstPassYield.reached], w.yield);
         assert.equal(got[repo].reviewCatch.blocking, w.catchN);
         assert.equal(got[repo].triageMiss.miss, w.miss);
+        if (w.cleared != null) assert.equal(got[repo].triageMiss.cleared, w.cleared);
       }
     });
   }

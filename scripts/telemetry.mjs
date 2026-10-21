@@ -77,7 +77,7 @@ import { INFRA_REASONS, RESOURCE_ROUTE, ranOf } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
-import { formatRef, isPr, parseRef, refKey, sameRepo } from './lib/ref.mjs';
+import { formatRef, groupByRepo, isPr, parseRef, refKey, repoSpellings, sameRepo } from './lib/ref.mjs';
 import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
@@ -290,9 +290,9 @@ export function report(records, { minSample = 20 } = {}) {
   const miss = missOf(cleared);
   const blocking = blockingOf(reached);
   const byRepo = {};
-  for (const [key, rs] of groupBy((r) => refKey(r.repo), reached)) {
-    const repo = rs[0].repo;
-    const clearedHere = cleared.filter((r) => refKey(r.repo) === key);
+  const clearedByRepo = groupByRepo(records, cleared);
+  for (const [repo, rs] of groupByRepo(records, reached)) {
+    const clearedHere = clearedByRepo.get(repo) ?? [];
     byRepo[repo] = rs.length < minSample ? { n: rs.length } : {
       n: rs.length,
       firstPassYield: yieldOf(rs),
@@ -632,7 +632,8 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
   const byTs = logged.filter((r) => r.kind !== 'retro').sort((a, b) => (tsOf(a) === tsOf(b) ? 0 : tsOf(a) < tsOf(b) ? -1 : 1));
   const last = new Map(byTs.map((r) => [refKey(formatRef(r.repo, r.issue)), r]));
   const died = (r) => r.failureReason === 'engine-died' && r.implStatus === 'error' && r.finalState === 'deferred';
-  out.engineDied = [...last.values()].filter(died).map((r) => formatRef(r.repo, r.issue));
+  const spelled = repoSpellings(records);
+  out.engineDied = [...last.values()].filter(died).map((r) => formatRef(spelled.get(refKey(r.repo)), r.issue));
   return out;
 }
 
