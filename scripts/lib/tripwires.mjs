@@ -8,6 +8,7 @@
 // and `gh` is never called: T-escapes takes a saved `telemetry.mjs escapes` run.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { byTs } from './log-order.mjs';
 import { parsePr } from './ref.mjs';
 import { sameRun } from './run-id.mjs';
 import { bootstrapCI, groupBy, mean, wilson } from './stats.mjs';
@@ -87,7 +88,7 @@ const EVALUATORS = {
 
   // Not tuning-versioned (a retro record carries no tuningVersion): the newest records, taken whole, until their proposals reach minSample.
   'retro-approval': (t, { retro }) => {
-    const newest = retro.filter((r) => !LEGACY_RETRO.some((key) => key in r)).sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+    const newest = retro.filter((r) => !LEGACY_RETRO.some((key) => key in r)).sort((a, b) => byTs(b, a));
     let [k, n, records] = [0, 0, 0];
     for (const r of newest) {
       if (n >= t.minSample) break;
@@ -101,7 +102,7 @@ const EVALUATORS = {
   // A backfilled earlier report whose row lists no `sessionIds` can still absorb a later re-run's sessions, so a version's mean can read low.
   cost: (t, ctx) => gated(t, ctx, () => {
     const used = ctx.records.filter((r) => mergedPr(r) && r.reportId && typeof at(r, t.source) === 'number');
-    const first = (rs) => [...rs].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).slice(0, t.minSample).map((r) => at(r, t.source));
+    const first = (rs) => [...rs].sort(byTs).slice(0, t.minSample).map((r) => at(r, t.source));
     return byTier(used.filter((r) => ver(r) === ctx.version), (xs, tier) => {
       const earlier = used.filter((r) => known(r) && r.complexity === tier && ver(r) < ctx.version);
       const baselineVersion = Math.max(...earlier.map(ver));
