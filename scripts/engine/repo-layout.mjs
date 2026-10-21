@@ -210,6 +210,9 @@ function memo(cache, key, compute) {
   return cache.get(key);
 }
 
+/** The org root layoutWorktreeHooks resolves repos under when given no reposDir (hooks.mts passes reposDirFromEnv()). */
+export const DEFAULT_REPOS_DIR = path.join(os.homedir(), "Developer", "WXYC");
+
 /**
  * deriveWorktreeHooks with this module's layout, resolved once per repo for the
  * life of the process, so all four hooks agree on a path even if the disk
@@ -223,7 +226,7 @@ function memo(cache, key, compute) {
  * @param {{reposDir?: string, env?: object}} options
  */
 export function layoutWorktreeHooks(deriveWorktreeHooks, options = {}) {
-  const { reposDir = path.join(os.homedir(), "Developer", "WXYC"), env = process.env } = options;
+  const { reposDir = DEFAULT_REPOS_DIR, env = process.env } = options;
   const mode = worktreeModeOf(env);
   const dirNames = new Map();
   const roots = new Map();

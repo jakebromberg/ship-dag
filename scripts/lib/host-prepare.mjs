@@ -9,7 +9,7 @@ export const withCoHome = (host) => ({ ...host, coHome: host.coHome ?? `${host.h
 /**
  * `{ refusals, plan }`: a plan is ordered `{ step, ssh }` or `{ step, scp: [from, to] }` actions; any refusal empties it.
  * `repos` is `[{ repo, name, layoutDir }]` (`layoutDir` is where repo-layout.mjs puts it); `local` and `probe` hold
- * `{ sdSha, coSha, claudeHash }` (probe adds `distMtime`, `coCommitTime`, `configHash`, `freeGb`, `present` names).
+ * `{ sdSha, coSha, claudeHash }` (probe adds `distNewest`, `srcNewer`, `configHash`, `freeGb`, `present` names).
  */
 export function planHost({ name, host: raw, stateDir, configPath, repos, local, probe, minFreeGb = 10 }) {
   const host = withCoHome(raw);
@@ -20,7 +20,9 @@ export function planHost({ name, host: raw, stateDir, configPath, repos, local, 
       refusals.push(`${name}: ${label} is at ${probe[key] || 'unknown'}, this Mac at ${local[key]}; run: ssh ${host.ssh} 'git -C ${dir} pull --ff-only${build}'`);
     }
   }
-  if (!(probe.distMtime >= probe.coCommitTime)) refusals.push(`${name}: ${host.coHome}/dist is missing or older than its HEAD commit; run: ssh ${host.ssh} 'cd ${host.coHome} && npm ci && npm run build'`);
+  const build = `run: ssh ${host.ssh} 'cd ${host.coHome} && npm ci && npm run build'`;
+  if (!probe.distNewest) refusals.push(`${name}: ${host.coHome}/dist/src is missing; ${build}`);
+  else if (probe.srcNewer) refusals.push(`${name}: ${host.coHome}/dist/src is older than ${probe.srcNewer}; ${build}`);
   if (probe.claudeHash !== local.claudeHash) refusals.push(`${name}: ~/.claude/CLAUDE.md differs from this Mac's; run host-sync-claude (#342) for ${name}`);
   if (!(probe.freeGb >= minFreeGb)) refusals.push(`${name}: ${probe.freeGb ?? 'unknown'} GB free under ${host.home}, below ${minFreeGb} GB; free space or lower --min-free-gb`);
   for (const { repo, name: dir, layoutDir } of repos) {
@@ -38,19 +40,25 @@ export function planHost({ name, host: raw, stateDir, configPath, repos, local, 
   return { refusals, plan };
 }
 
-/** The key=value script the CLI runs on the host: the facts `planHost` needs, one per line (a failed command leaves its value empty). */
+/**
+ * The key=value script the CLI runs on the host: the facts `planHost` needs, one per line (a failed command leaves its
+ * value empty). Every line exits 0, so an absent repo or file never fails the probe. Dist freshness compares files, not
+ * the commit time: `tsc` (no clean) rewrites only outputs whose content changed and never touches `dist` itself, so
+ * `distNewest` is the newest file under dist/src and `srcNewer` the first src `.ts` newer than it (empty when fresh).
+ */
 export function probeScript(host, stateDir, repoNames) {
   const { home, sdHome, coHome, reposDir } = withCoHome(host);
   const hash = (f) => `$(shasum -a 256 ${q(f)} 2>/dev/null | cut -d' ' -f1)`;
   return [
     `echo sdSha=$(git -C ${q(sdHome)} rev-parse HEAD 2>/dev/null)`,
     `echo coSha=$(git -C ${q(coHome)} rev-parse HEAD 2>/dev/null)`,
-    `echo coCommitTime=$(git -C ${q(coHome)} log -1 --format=%ct 2>/dev/null)`,
-    `echo distMtime=$(stat -f %m ${q(`${coHome}/dist`)} 2>/dev/null)`,
+    `d=$(find ${q(`${coHome}/dist/src`)} -type f -exec ls -t {} + 2>/dev/null | head -1)`,
+    'echo distNewest=$d',
+    `echo srcNewer=$(if test -n "$d"; then find ${q(`${coHome}/src`)} -type f -name '*.ts' -newer "$d" 2>/dev/null | head -1; fi)`,
     `echo claudeHash=${hash(`${home}/.claude/CLAUDE.md`)}`,
     `echo configHash=${hash(`${stateDir}/config.json`)}`,
     `echo freeKb=$(df -Pk ${q(home)} | awk 'NR==2{print $4}')`,
-    ...repoNames.map((n) => `test -d ${q(`${reposDir}/${n}`)} && echo present=${n}`),
+    ...repoNames.map((n) => `if test -d ${q(`${reposDir}/${n}`)}; then echo present=${q(n)}; fi`),
   ].join('; ');
 }
 
@@ -61,7 +69,7 @@ export function parseProbe(out) {
     const [k, ...rest] = line.split('=');
     const v = rest.join('=');
     if (k === 'present') probe.present.push(v);
-    else if (k) probe[k] = ['coCommitTime', 'distMtime', 'freeKb'].includes(k) ? (v === '' ? undefined : Number(v)) : v;
+    else if (k) probe[k] = k === 'freeKb' ? (v === '' ? undefined : Number(v)) : v;
   }
   if (probe.freeKb !== undefined) probe.freeGb = probe.freeKb / 1048576;
   return probe;

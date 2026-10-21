@@ -2,10 +2,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { prepareHost } from './host-prepare.mjs';
+import { layoutReposDir, prepareHost } from './host-prepare.mjs';
 
 const dir = mkdtempSync(join(tmpdir(), 'host-prepare-'));
 const configPath = join(dir, 'config.box.json');
@@ -14,7 +14,7 @@ writeFileSync(configPath, body);
 const configHash = createHash('sha256').update(body).digest('hex');
 const hosts = { box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' } };
 const local = { sdSha: 'a', coSha: 'b', claudeHash: 'c' };
-const state = (over = {}) => ({ sdSha: 'a', coSha: 'b', coCommitTime: 1, distMtime: 2, claudeHash: 'c', configHash: '', freeKb: 99 * 1048576, present: ['app'], ...over });
+const state = (over = {}) => ({ sdSha: 'a', coSha: 'b', distNewest: '/co/dist/src/index.js', srcNewer: '', claudeHash: 'c', configHash: '', freeKb: 99 * 1048576, present: ['app'], ...over });
 const probeOut = (s) => [...Object.entries(s).filter(([k]) => k !== 'present').map(([k, v]) => `${k}=${v}`), ...s.present.map((n) => `present=${n}`)].join('\n');
 
 function exec(s, opts = {}) {
@@ -60,4 +60,10 @@ test('a failing call names the host and step', () => {
 
 test('an unknown host throws, naming the known ones', () => {
   assert.throws(() => prepareHost({ name: 'nope', hosts, config: {}, configPath, local, run: {}, log() {} }), /unknown host "nope"; known: box/);
+});
+
+test('the layout reposDir is the engine hooks\' own: the env override, else ~/Developer/WXYC, never undefined', () => {
+  assert.equal(layoutReposDir({}), join(homedir(), 'Developer', 'WXYC'));
+  assert.equal(layoutReposDir({ SHIP_DAG_PROJECT_ROOT: '/p' }), '/p');
+  assert.equal(layoutReposDir({ SHIP_DAG_REPOS_DIR: '/r', SHIP_DAG_PROJECT_ROOT: '/p' }), '/r');
 });

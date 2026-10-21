@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { reposDirFromEnv } from './engine/repos-dir.mjs';
-import { repoDirName } from './engine/repo-layout.mjs';
+import { DEFAULT_REPOS_DIR, repoDirName } from './engine/repo-layout.mjs';
 import { coHome } from './lib/co-home.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { loadHosts } from './lib/hosts.mjs';
@@ -29,6 +29,9 @@ export const realRunner = (timeoutMs = 120_000) => ({
   ssh: (alias, command) => execFileSync('ssh', [...SSH_OPTS, alias, command], { encoding: 'utf8', timeout: timeoutMs }),
   scp: (alias, from, to) => execFileSync('scp', [...SSH_OPTS, '-q', from, `${alias}:${to}`], { encoding: 'utf8', timeout: timeoutMs }),
 });
+
+/** The org root the engine's hooks resolve repo layout under (hooks.mts): the env override, else layoutWorktreeHooks' default. */
+export const layoutReposDir = (env = process.env) => reposDirFromEnv(env) ?? DEFAULT_REPOS_DIR;
 
 /** Probe, plan and (unless `dryRun`) run; returns the process exit code. `run` is the injected runner, `log` writes a stderr line. */
 export function prepareHost({ name, hosts, config, configPath, local, run, minFreeGb, dryRun, log, reposDir }) {
@@ -57,7 +60,7 @@ function main(argv) {
   const sdHome = fileURLToPath(new URL('..', import.meta.url));
   const local = { sdSha: git(sdHome, 'rev-parse', 'HEAD'), coSha: git(coHome(), 'rev-parse', 'HEAD'), claudeHash: sha256(`${homedir()}/.claude/CLAUDE.md`) };
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  return prepareHost({ name, hosts: loadHosts(), config, configPath, local, run: realRunner(), minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => process.stderr.write(`${m}\n`), reposDir: reposDirFromEnv() });
+  return prepareHost({ name, hosts: loadHosts(), config, configPath, local, run: realRunner(), minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => process.stderr.write(`${m}\n`), reposDir: layoutReposDir() });
 }
 
 if (isMain(import.meta.url)) {
