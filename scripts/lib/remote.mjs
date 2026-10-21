@@ -4,13 +4,13 @@
 // Never prompt for a password or host key, and give up on an unreachable host. Used by every ssh, scp and `rsync -e`.
 export const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
 
-/** `s` (coerced with String()) as one POSIX single-quoted shell word. */
 /** The output an ssh or rsync call may return: past the 1 MiB default for a large settings.json probe or a poll's log chunk. */
 export const SSH_MAX_BUFFER = 16 * 1024 * 1024;
 
 /** The `rsync -e` value: ssh with the same options as every other call. */
 export const RSYNC_SSH = ['ssh', ...SSH_OPTS].join(' ');
 
+/** `s` (coerced with String()) as one POSIX single-quoted shell word. */
 export const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 /**
