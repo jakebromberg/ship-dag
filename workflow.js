@@ -74,9 +74,9 @@ const REVIEW_SCHEMA = {
 }
 
 // Same heading and bullets as scripts/emit-config.mjs's withDecisions (workflow.js takes no imports;
-// lease-rules.test.mjs pins the two together). No decisions, or all blank, adds nothing.
+// lease-rules.test.mjs pins the two together). Non-string entries are skipped; no decisions, or all blank, adds nothing.
 function decisionLines(decisions) {
-  const lines = (decisions || []).map((d) => d.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ').trim()).filter(Boolean)
+  const lines = (decisions || []).filter((d) => typeof d === 'string').map((d) => d.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ').trim()).filter(Boolean)
   return lines.length ? ['Settled decisions (binding; they override the issue body where they differ):', ...lines.map((d) => `- ${d}`), ``] : []
 }
 
