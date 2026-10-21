@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildConfigsByHost } from '../emit-config.mjs';
 import { validateHosts } from './hosts.mjs';
+import { mergeSettings } from './host-sync-claude.mjs';
 import { configStateDir, planHost, probeScript, parseProbe } from './host-prepare.mjs';
 
 const hosts = validateHosts({ box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag', toolchains: ['node'] } });
@@ -22,7 +23,7 @@ const config = configs.box;
 const hostState = '/h/.local/state/ship-dag/engine/run1';
 const repos = [{ repo: 'o/app', name: 'app', layoutDir: 'app' }];
 const local = { sdSha: 'aaa', coSha: 'bbb', claudeHash: 'ccc', configHash: 'new' };
-const good = { sdSha: 'aaa', coSha: 'bbb', distNewest: '/co/dist/src/index.js', srcNewer: '', claudeHash: 'ccc', configHash: 'old', freeGb: 50, present: ['app'], origins: { app: 'git@github.com:O/app.git' } };
+const good = { sdSha: 'aaa', coSha: 'bbb', distNewest: '/co/dist/src/index.js', srcNewer: '', claudeHash: 'ccc', leaseHook: true, configHash: 'old', freeGb: 50, present: ['app'], origins: { app: 'git@github.com:O/app.git' } };
 const run = (over = {}, extra = {}) => planHost({ name: 'box', host, config, configPath: '/c.json', repos, local, probe: { ...good, ...over }, ...extra });
 const steps = (r) => r.plan.map((a) => a.step);
 
@@ -43,7 +44,8 @@ for (const [name, over, extra, message] of [
   ['the orchestrator differs', { coSha: 'zzz' }, {}, /claude-orchestrator is at zzz.*'cd \/h\/Developer\/claude-orchestrator && git pull --ff-only && npm ci && npm run build'/],
   ['dist is missing', { distNewest: '' }, {}, /dist\/src is missing; run: ssh box 'cd \/h\/Developer\/claude-orchestrator && npm ci && npm run build'/],
   ['a source is newer than dist', { srcNewer: '/co/src/a.ts' }, {}, /dist\/src is older than \/co\/src\/a\.ts; run: .*npm run build/],
-  ['CLAUDE.md differs', { claudeHash: 'zzz' }, {}, /CLAUDE\.md differs.*host-sync-claude \(#342\)/],
+  ['CLAUDE.md differs', { claudeHash: 'zzz' }, {}, /CLAUDE\.md differs.*run: node scripts\/host-sync-claude\.mjs box/],
+  ['the lease hook is absent', { leaseHook: false }, {}, /lease hook.*run: node scripts\/host-sync-claude\.mjs box/],
   ['disk is below the default threshold', { freeGb: 9.9 }, {}, /9\.9 GB free.*below 10 GB/],
   ['disk is below a raised threshold', { freeGb: 50 }, { minFreeGb: 60 }, /below 60 GB/],
   ['the repo is vendored elsewhere', {}, { repos: [{ repo: 'o/app', name: 'app', layoutDir: 'Shared/App' }] }, /o\/app lives at Shared\/App, not app.*submodule/],
@@ -89,7 +91,7 @@ test('a clone is marked slow, so the CLI gives it the long timeout', () => {
 });
 
 test('parseProbe reads key=value lines, freeKb as a number, and every present repo with its origin', () => {
-  assert.deepEqual(parseProbe('sdSha=a\ndistNewest=\nsrcNewer=x=y\nfreeKb=2097152\npresent=x\norigin=x=u=1\npresent=y\norigin=y=\n'), { present: ['x', 'y'], origins: { x: 'u=1', y: '' }, sdSha: 'a', distNewest: '', srcNewer: 'x=y', freeKb: 2097152, freeGb: 2 });
+  assert.deepEqual(parseProbe('sdSha=a\ndistNewest=\nsrcNewer=x=y\nfreeKb=2097152\npresent=x\norigin=x=u=1\npresent=y\norigin=y=\n'), { present: ['x', 'y'], origins: { x: 'u=1', y: '' }, sdSha: 'a', distNewest: '', srcNewer: 'x=y', freeKb: 2097152, freeGb: 2, leaseHook: false });
 });
 
 /** Run the generated probe with `sh` against a fake host in a temp dir: `app` cloned from o/app, `lib` (the last) absent; ages are seconds ago. */
@@ -131,3 +133,27 @@ for (const [name, opts, refused] of [
     else assert.deepEqual(r.refusals, []);
   });
 }
+
+const leaseEntry = { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: "exec node '/co/dist/src/cli-lease.js' hook" }] }] } };
+for (const [name, file, leaseHook] of [
+  ['settings.json with the lease hook', JSON.stringify(leaseEntry), true],
+  ['the lease hook on several lines', JSON.stringify(leaseEntry, null, 2), true],
+  ['settings.json without it', '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}', false],
+  ['settings.json with no hooks', '{"model":"x"}', false],
+  ['an absent settings.json', undefined, false],
+  ['settings.json that is not JSON', '{"hooks":', false],
+]) {
+  test(`the probe's lease hook: ${name}`, () => {
+    const home = mkdtempSync(join(tmpdir(), 'host-prepare-settings-'));
+    if (file !== undefined) { mkdirSync(join(home, '.claude')); writeFileSync(join(home, '.claude', 'settings.json'), file); }
+    const fake = validateHosts({ box: { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') } }).box;
+    const probe = parseProbe(execFileSync('sh', ['-c', probeScript(fake, undefined, [])], { encoding: 'utf8' }));
+    assert.equal(probe.leaseHook, leaseHook);
+    assert.equal(/lease hook/.test(run({ leaseHook: probe.leaseHook }).refusals.join('\n')), !leaseHook);
+  });
+}
+
+test("settings.json that mergeSettings wrote with a printed entry passes the lease hook check", () => {
+  const written = JSON.stringify(mergeSettings({ model: 'x' }, leaseEntry), null, 2);
+  assert.equal(parseProbe(`settings=${written.replace(/\n/g, '')}\n`).leaseHook, true);
+});

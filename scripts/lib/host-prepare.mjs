@@ -1,6 +1,7 @@
 // host-prepare.mjs — plan how to ready a remote host for a wave: version parity, repo clones, the per-host config.
 // Pure: the CLI (scripts/host-prepare.mjs) probes the host and runs the plan; this decides, and never touches a host.
 import { normalizeRepo } from '../engine/repo-layout.mjs';
+import { isLeaseHook } from './host-sync-claude.mjs';
 import { shQuote as q } from './remote.mjs';
 
 /**
@@ -20,7 +21,7 @@ export function configStateDir({ configDir, worktreeDir } = {}) {
  * its state dir (`configStateDir`) under the host's `home` and its `projectRoot` the host's `reposDir`; the plan makes
  * that dir and copies the config there as `config.json`. `repos` is `[{ repo, name, layoutDir }]` (`layoutDir` is
  * where repo-layout.mjs puts it); `local` and `probe` hold `{ sdSha, coSha, claudeHash }` (probe adds `distNewest`,
- * `srcNewer`, `configHash`, `freeGb`, `present` names and their `origins`).
+ * `srcNewer`, `configHash`, `freeGb`, `leaseHook`, `present` names and their `origins`).
  */
 export function planHost({ name, host, config, configPath, repos, local, probe, minFreeGb = 10 }) {
   const refusals = [];
@@ -33,7 +34,9 @@ export function planHost({ name, host, config, configPath, repos, local, probe, 
   const build = `run: ssh ${host.ssh} 'cd ${host.coHome} && npm ci && npm run build'`;
   if (!probe.distNewest) refusals.push(`${name}: ${host.coHome}/dist/src is missing; ${build}`);
   else if (probe.srcNewer) refusals.push(`${name}: ${host.coHome}/dist/src is older than ${probe.srcNewer}; ${build}`);
-  if (probe.claudeHash !== local.claudeHash) refusals.push(`${name}: ~/.claude/CLAUDE.md differs from this Mac's; run host-sync-claude (#342) for ${name}`);
+  const sync = `run: node scripts/host-sync-claude.mjs ${name}`;
+  if (probe.claudeHash !== local.claudeHash) refusals.push(`${name}: ~/.claude/CLAUDE.md differs from this Mac's; ${sync}`);
+  if (!probe.leaseHook) refusals.push(`${name}: ~/.claude/settings.json has no lease hook entry, so CO_LEASE_HOOK=on gates nothing; ${sync}`);
   if (!(probe.freeGb >= minFreeGb)) refusals.push(`${name}: ${probe.freeGb ?? 'unknown'} GB free under ${host.home}, below ${minFreeGb} GB; free space or lower --min-free-gb`);
   const wrongConfig = `pass the config emit-config --by-host wrote for ${name}`;
   const stateDir = configStateDir(config);
@@ -80,6 +83,7 @@ export function probeScript(host, stateDir, repoNames) {
     'echo distNewest=$d',
     `echo srcNewer=$(if test -n "$d"; then find ${q(`${coHome}/src`)} -type f -name '*.ts' -newer "$d" 2>/dev/null | head -1; fi)`,
     `echo claudeHash=${hash(`${home}/.claude/CLAUDE.md`)}`,
+    `echo settings=$(tr -d '\\n' < ${q(`${home}/.claude/settings.json`)} 2>/dev/null)`,
     ...(stateDir ? [`echo configHash=${hash(`${stateDir}/config.json`)}`] : []),
     `echo freeKb=$(df -Pk ${q(home)} | awk 'NR==2{print $4}')`,
     ...repoNames.map((n) => {
@@ -89,7 +93,7 @@ export function probeScript(host, stateDir, repoNames) {
   ].join('; ');
 }
 
-/** Parse `probeScript` output into the `probe` object of `planHost`. */
+/** Parse `probeScript` output into the `probe` object of `planHost`; `leaseHook` is whether the host's settings.json (absent or invalid JSON: no) holds a lease hook entry, by host-sync-claude's `isLeaseHook`. */
 export function parseProbe(out) {
   const probe = { present: [], origins: {} };
   for (const line of out.split('\n')) {
@@ -99,6 +103,10 @@ export function parseProbe(out) {
     else if (k === 'origin') probe.origins[rest[0]] = rest.slice(1).join('=');
     else if (k) probe[k] = k === 'freeKb' ? (v === '' ? undefined : Number(v)) : v;
   }
+  probe.leaseHook = Object.values(parseJson(probe.settings)?.hooks ?? {}).flat().some((g) => g?.hooks?.some?.(isLeaseHook));
+  delete probe.settings;
   if (probe.freeKb !== undefined) probe.freeGb = probe.freeKb / 1048576;
   return probe;
 }
+
+const parseJson = (text) => { try { return JSON.parse(text); } catch { return undefined; } };

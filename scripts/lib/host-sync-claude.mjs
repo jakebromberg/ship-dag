@@ -6,7 +6,7 @@ import { SSH_OPTS, remoteCommand, shQuote as q } from './remote.mjs';
 
 // A lease hook runs `node '<…>/cli-lease.js' hook` (claude-orchestrator's `hook --print-settings-entry` output) or the
 // installed `claude-orchestrator-lease hook`.
-const isLeaseHook = (h) => /cli-lease\.js'?\s+hook\b|claude-orchestrator-lease\s+hook\b/.test(h?.command ?? '');
+export const isLeaseHook = (h) => /cli-lease\.js'?\s+hook\b|claude-orchestrator-lease\s+hook\b/.test(h?.command ?? '');
 
 /**
  * `hostSettings` with its lease hooks replaced by `entry.hooks` (the freshly printed lease entries). On each event the
