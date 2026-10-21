@@ -79,7 +79,8 @@ test('latestRun picks the newest run by the start its id encodes, skipping wave 
 });
 
 test('latestRun skips a -w1aa dir and familyDirs includes it, so the two agree on every wave-dir name', async () => {
-  const { base } = fixture({ dirs: { [`${RUN}-w1aa`]: {} } });
+  // The wave dir holds a fetched DAG, so only the wave-dir rule, not a missing dag.json, keeps latestRun off it.
+  const { base } = fixture({ dirs: { [`${RUN}-w1aa`]: { files: { 'dag.json': { repo: 'o/r', nodes: [], edges: [], done: [] } } } } });
   assert.equal(await latestRun(fsIo, base), RUN);
   assert.ok((await familyDirs(fsIo, base, RUN)).includes(`${base}/${RUN}-w1aa`));
 });
