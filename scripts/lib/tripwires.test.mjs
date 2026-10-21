@@ -119,7 +119,7 @@ const TABLES = {
     ['100 proposals, 91 approved: the interval reaches 90%', retros(10, (i) => (i === 0 ? 1 : 10)), 'holding'],
     ['plan adjustments count with refactors', retros(10, () => 0).map((r) => ({ ...r, proposedRefactors: 5, approvedRefactors: 5, proposedAdjustments: 5, approvedAdjustments: 5 })), 'tripped'],
     ['records are taken whole, newest first, until 100 proposals: an older rejection is outside', [...retros(10, () => 10), retro(50, 0, { ts: '2026-09-01T00:00:00Z' })], 'tripped'],
-    ['a record with an unparseable ts is the oldest, so it stays outside the window', [...retros(10, () => 10), retro(50, 0, { ts: 'garbage' })], 'tripped'],
+    ['a record with an unparseable ts is the oldest, so it stays outside the window', [retro(50, 0, { ts: 'garbage' }), ...retros(10, () => 10)], 'tripped'],
     ['a record with 0 proposals adds nothing', [...retros(10, () => 10), retro(0, 0, { ts: '2026-10-30T00:00:00Z' })], 'tripped'],
     ['legacy-key records are left out', [...retros(9, () => 10), ...['refactorsProposed', 'adjustmentsProposed', 'proposedPlanAdjustments', 'approvedAll'].map((k) => retro(10, 0, { [k]: 10 }))], 'insufficient-data'],
   ],
