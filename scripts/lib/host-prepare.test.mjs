@@ -95,7 +95,7 @@ test('parseProbe reads key=value lines, freeKb as a number, and every present re
 /** Run the generated probe with `sh` against a fake host in a temp dir: `app` cloned from o/app, `lib` (the last) absent; ages are seconds ago. */
 function probeFakeHost({ dist = true, srcAge = 200, distAge = 100, junkAge } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'host-prepare-probe-'));
-  const fake = { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') };
+  const fake = validateHosts({ box: { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') } }).box;
   const co = join(home, 'Developer', 'claude-orchestrator');
   const now = Date.now() / 1000;
   const touch = (path, age) => { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, ''); utimesSync(path, now - age, now - age); };

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { main, runner } from './host-sync-claude.mjs';
 
-const box = { ssh: 'box', home: '/h' };
+const box = { ssh: 'box', home: '/h', coHome: '/h/Developer/claude-orchestrator' };
 
 for (const [name, argv, hosts] of [
   ['an unknown flag (a mistyped --dry-run)', ['box', '--dryrun'], { box }],

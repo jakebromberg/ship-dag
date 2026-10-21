@@ -1,11 +1,7 @@
 // host-prepare.mjs — plan how to ready a remote host for a wave: version parity, repo clones, the per-host config.
 // Pure: the CLI (scripts/host-prepare.mjs) probes the host and runs the plan; this decides, and never touches a host.
 import { normalizeRepo } from '../engine/repo-layout.mjs';
-
-const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-
-/** The host's entry with `coHome` defaulted, mirroring CO_HOME's default on the main Mac. */
-export const withCoHome = (host) => ({ ...host, coHome: host.coHome ?? `${host.home}/Developer/claude-orchestrator` });
+import { shQuote as q } from './remote.mjs';
 
 /**
  * The state dir an engine config was built for, or undefined when the config does not have emit-config's shape:
@@ -25,8 +21,7 @@ export function configStateDir({ configDir, worktreeDir } = {}) {
  * where repo-layout.mjs puts it); `local` and `probe` hold `{ sdSha, coSha, claudeHash }` (probe adds `distNewest`,
  * `srcNewer`, `configHash`, `freeGb`, `present` names and their `origins`).
  */
-export function planHost({ name, host: raw, config, configPath, repos, local, probe, minFreeGb = 10 }) {
-  const host = withCoHome(raw);
+export function planHost({ name, host, config, configPath, repos, local, probe, minFreeGb = 10 }) {
   const refusals = [];
   for (const [label, key, dir] of [['ship-dag', 'sdSha', host.sdHome], ['claude-orchestrator', 'coSha', host.coHome]]) {
     if (probe[key] !== local[key]) {
@@ -74,7 +69,7 @@ export function planHost({ name, host: raw, config, configPath, repos, local, pr
  * its `origin=<name>=<url>`. With no `stateDir` (a config planHost will refuse) there is no `configHash` line.
  */
 export function probeScript(host, stateDir, repoNames) {
-  const { home, sdHome, coHome, reposDir } = withCoHome(host);
+  const { home, sdHome, coHome, reposDir } = host;
   const hash = (f) => `$(shasum -a 256 ${q(f)} 2>/dev/null | cut -d' ' -f1)`;
   return [
     `echo sdSha=$(git -C ${q(sdHome)} rev-parse HEAD 2>/dev/null)`,
