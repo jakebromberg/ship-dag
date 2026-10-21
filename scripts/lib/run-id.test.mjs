@@ -41,6 +41,8 @@ for (const [a, b, expected] of [
   [BASE, BASE, true],
   [`${BASE}-w2`, BASE, true],
   [`${BASE}-w4b`, BASE, true],
+  [`${BASE}-w1aa`, BASE, true],
+  [`${BASE}-w37aa`, BASE, true],
   [`${BASE}-w10`, BASE, true],
   [`${BASE}-b`, BASE, true],
   [`${BASE}-c`, BASE, true],
@@ -75,7 +77,7 @@ test('canonicalRunId and runFamily are the plugin\'s single definitions, re-expo
 test('canonicalRunId and runFamily over the ETA parity ids', () => {
   const RUN = 'sd-20261017-080000';
   for (const [id, canon, family] of [
-    [RUN, RUN, RUN], [`${RUN}-w1`, RUN, RUN], [`${RUN}-w1b`, RUN, RUN], [`${RUN}-b`, `${RUN}-b`, RUN], [`${RUN}-b-c`, `${RUN}-b-c`, `${RUN}-b`],
+    [RUN, RUN, RUN], [`${RUN}-w1`, RUN, RUN], [`${RUN}-w1b`, RUN, RUN], [`${RUN}-w37aa`, RUN, RUN], [`${RUN}-b`, `${RUN}-b`, RUN], [`${RUN}-b-c`, `${RUN}-b-c`, `${RUN}-b`],
     [`${RUN}-r2`, RUN, RUN], [`${RUN}-resume`, RUN, RUN], [`${RUN}-wave3`, RUN, RUN], [`ship-dag-${RUN}-w2`, RUN, RUN],
     ['SD-20261017-080000-W2', RUN, RUN], [`${RUN.toUpperCase()}-B`, `${RUN}-b`, RUN], [`${RUN}-label`, `${RUN}-label`, `${RUN}-label`],
     [`${RUN}x`, `${RUN}x`, `${RUN}x`], ['', null, null], [null, null, null], [undefined, null, null], [7, null, null],
