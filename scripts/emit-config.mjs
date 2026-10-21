@@ -39,7 +39,7 @@
 //       { "number": 924, "repo": "owner/repo", "title": "...", "complexity": "normal",
 //         "model": "opus", "effort": "high", "digest": "2-3 sentence plan", "extraDirs": ["../wxyc-shared"],
 //         "reach": "repo",                         // optional; in-diff|repo|external (a key of tuning review.reachEffort; unknown exits 2) — recorded in the wave sidecar, not the engine config
-//         "decisions": ["use JSONL"] }             // optional; array of strings (anything else exits 2) — recorded in the wave sidecar, not the engine config
+//         "decisions": ["use JSONL"] }             // optional; array of strings (anything else exits 2) — recorded in the wave sidecar and folded into the engine description as a "Settled decisions" list
 //     ]
 //   }
 //
@@ -135,6 +135,17 @@ export function withLineBudget(description, sourceEstimate) {
   return `${description}\n\nSize budget: about ${Math.round(n)} added lines of production source. Tests, generated data, and docs sit outside the budget — do not trim them to fit. If the change runs more than half again past it, stop at the last green, coherent point and push that.`;
 }
 
+// Triage's `decisions` ride on the description for the same reason: the implementer reads
+// DESCRIPTION, and the review enforces these as binding, so the implementer must see them
+// (the wave sidecar still records them, unchanged). One decision per line, each kept verbatim
+// but for line breaks, which would split it; the engine enforces no description size limit,
+// so none is dropped. No decisions (absent, null, empty or all blank) returns the description untouched.
+export function withDecisions(description, decisions) {
+  const lines = (decisions ?? []).map((d) => d.replace(/\s*\n\s*/g, ' ')).filter((d) => d.trim());
+  if (lines.length === 0) return description;
+  return `${description}\n\nSettled decisions (binding; they override the issue body where they differ):\n${lines.map((d) => `- ${d}`).join('\n')}`;
+}
+
 /**
  * Refuse a spec the emitter must not run, throwing one error that lists every
  * problem at once (unknown complexity, reach or decisions, invalid blockOn). buildConfig calls this
@@ -190,7 +201,7 @@ export function buildConfig(spec, tuning = loadTuning()) {
       slug: issue.slug || deriveSlug(number, issue.title),
       repo: repoOfIssue(issue, spec),
       dependsOn: [], // every ready-wave issue is independent → one flat parallel wave
-      description: withLineBudget(issue.digest || 'See the GitHub issue for the canonical spec.', issue.sourceEstimate),
+      description: withLineBudget(withDecisions(issue.digest || 'See the GitHub issue for the canonical spec.', issue.decisions), issue.sourceEstimate),
     };
     // Optional per-issue routing — omitted fields fall back to engine defaults
     // (defaultModel sonnet). Effort is stamped from tuning.json's implement map when

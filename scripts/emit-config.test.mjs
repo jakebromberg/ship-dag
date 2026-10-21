@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { deriveSlug, buildConfig, unknownCiRepos, unknownComplexities, validateSpec } from './emit-config.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
+import { waveSidecar } from './lib/wave-sidecar.mjs';
 
 // A minimal well-formed spec the ready-wave hands the emitter.
 function spec(overrides = {}) {
@@ -137,6 +138,60 @@ test('sourceEstimate is folded into the description, never emitted as an engine 
     issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap it.', sourceEstimate: 120 }],
   }));
   assert.ok(!('sourceEstimate' in c.issues[0]));
+});
+
+// Triage's `decisions` ride on the description too, so the implementer gets the decisions the
+// review enforces. The heading, the digest before it and the line budget after it are all pinned.
+const DECISIONS_HEADING = 'Settled decisions (binding; they override the issue body where they differ):';
+
+test('decisions are folded into the description after the digest and before the line budget, one per line', () => {
+  const c = buildConfig(spec({
+    issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap the bulk concurrency env.', decisions: ['A', 'B'], sourceEstimate: 120 }],
+  }));
+  const d = c.issues[0].description;
+  assert.ok(d.startsWith(`Cap the bulk concurrency env.\n\n${DECISIONS_HEADING}\n- A\n- B\n\nSize budget: about 120 `), d);
+});
+
+test('decisions fold into the description when there is no line budget, and when triage produced no digest', () => {
+  const noBudget = buildConfig(spec({
+    issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap it.', decisions: ['A'] }],
+  }));
+  assert.equal(noBudget.issues[0].description, `Cap it.\n\n${DECISIONS_HEADING}\n- A`);
+  const noDigest = buildConfig(spec({
+    issues: [{ number: 7, repo: 'WXYC/library-metadata-lookup', decisions: ['A'] }],
+  }));
+  assert.match(noDigest.issues[0].description, /^See the GitHub issue .*\n\nSettled decisions/);
+});
+
+// Absent, null, empty and all-blank decisions leave the description byte-identical to the digest alone.
+for (const decisions of [undefined, null, [], ['', '  ']]) {
+  test(`decisions ${JSON.stringify(decisions) ?? 'absent'} leave the description exactly as today's`, () => {
+    for (const sourceEstimate of [undefined, 120]) {
+      const issue = { number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap it.', sourceEstimate };
+      const today = buildConfig(spec({ issues: [issue] })).issues[0].description;
+      const withDecisions = buildConfig(spec({ issues: [{ ...issue, decisions }] })).issues[0].description;
+      assert.equal(withDecisions, today);
+      assert.doesNotMatch(withDecisions, /Settled decisions/);
+    }
+  });
+}
+
+test('a decision with line breaks stays one line, and a decision is otherwise kept verbatim', () => {
+  const verbatim = 'The dialog line is "It goes on the review shelf." — not the body\'s older one (see #3382); 30 days, not all rows';
+  const c = buildConfig(spec({
+    issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'x', decisions: [verbatim, 'first\nsecond\r\n- third'] }],
+  }));
+  assert.equal(c.issues[0].description, `x\n\n${DECISIONS_HEADING}\n- ${verbatim}\n- first second - third`);
+});
+
+test('the sidecar records decisions exactly as the spec gave them, and the config carries them only in the description', () => {
+  const decisions = ['use JSONL', 'no new dep'];
+  const s = spec({ issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'x', decisions }] });
+  const c = buildConfig(s);
+  assert.ok(!('decisions' in c.issues[0]));
+  assert.deepEqual(waveSidecar(s, { config: c }).issues[0].decisions, decisions);
+  assert.deepEqual(s.issues[0].decisions, ['use JSONL', 'no new dep']); // the spec is not mutated
+  assert.doesNotMatch(JSON.stringify(waveSidecar(s, { config: c })), /Settled decisions/);
 });
 
 test('repos: map is assembled from the distinct issue repos with per-repo base + CI', () => {
