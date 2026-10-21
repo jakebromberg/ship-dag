@@ -36,18 +36,30 @@ export function launchScript(command, pidFile) {
 }
 
 /**
+ * The characters a host state dir may hold. host-run passes `<alias>:<stateDir>/state/` to rsync unquoted, because
+ * rsync implementations disagree on a quoted remote path (openrsync strips the quotes, rsync >= 3.2.4 keeps them as part
+ * of the path), so a dir with any other character is refused rather than quoted.
+ */
+export const RSYNC_SAFE_PATH = /^[A-Za-z0-9._/@+-]+$/;
+
+/** A shell line that prints `reports=<n>`, the number of reports in `<stateDir>/state/reports`. */
+export const reportsScript = (stateDir) => `echo reports=$(ls ${q(`${stateDir}/state/reports`)}/*.json 2>/dev/null | wc -l)`;
+
+/** The count `reportsScript` printed (in `out`, a Buffer or string), or NaN when it printed none. */
+export const parseReports = (out) => Number(/^reports=\s*(\d+)\s*$/m.exec(String(out))?.[1] ?? NaN);
+
+/**
  * One poll of a detached run: whether the pid in `<stateDir>/host-run.pid` is alive (`none` without the file), how many
  * reports exist, then `---` and at most `LOG_CHUNK` bytes of the engine log from byte `offset`. Alive is read before
  * the log, so an engine seen exited has had its whole log written; a chunk of `LOG_CHUNK` bytes means more may follow.
  */
 export function pollScript(stateDir, offset) {
-  const state = `${stateDir}/state`;
   return [
     `pid=$(cat ${q(`${stateDir}/${PID_FILE}`)} 2>/dev/null)`,
     'if [ -z "$pid" ]; then echo alive=none; elif kill -0 "$pid" 2>/dev/null; then echo alive=1; else echo alive=0; fi',
-    `echo reports=$(ls ${q(`${state}/reports`)}/*.json 2>/dev/null | wc -l)`,
+    reportsScript(stateDir),
     'echo ---',
-    `tail -c +${offset + 1} ${q(`${state}/logs/orchestrator.log`)} 2>/dev/null | head -c ${LOG_CHUNK}; true`,
+    `tail -c +${offset + 1} ${q(`${stateDir}/state/logs/orchestrator.log`)} 2>/dev/null | head -c ${LOG_CHUNK}; true`,
   ].join('; ');
 }
 
@@ -84,8 +96,9 @@ export const rsyncArgs = (src, dest) => [
 /**
  * `{ code, message }` for how a host run ended: `done` (a report was written; 0), `no-report` (the engine exited
  * without one; 1), `dropped` (the ssh connection dropped, 255, which says nothing about the engine, so the message gives
- * the re-attach and `--collect-only` commands in `ctx.reattach`/`ctx.collect`), `no-pid` (no `ctx.pidFile`, so whether the
- * engine runs is unknown; 1), `timeout` (still running after `ctx.minutes`; 1, with `ctx.collect` to resume) or `failed`
+ * the re-attach and `--collect-only` commands in `ctx.reattach`/`ctx.collect`), `dropped-unstarted` (the connection
+ * dropped during `ctx.step`, before any engine was started, so there is nothing to resume; 255), `no-pid` (no
+ * `ctx.pidFile`, so whether the engine runs is unknown; 1), `timeout` (still running after `ctx.minutes`; 1, with `ctx.collect` to resume) or `failed`
  * (a step failed; 1).
  */
 export function outcome(name, kind, ctx = {}) {
@@ -95,6 +108,7 @@ export function outcome(name, kind, ctx = {}) {
     'no-pid': { code: 1, message: `host-run: ${name}: there is no ${ctx.pidFile} (host-run writes it when it starts the engine), so host-run cannot tell whether the engine is still running; it collected what is there and found no report` },
     timeout: { code: 1, message: `host-run: ${name}: the engine is still running after ${ctx.minutes} minutes; host-run stopped waiting, which is not an engine failure.\n  resume: ${ctx.collect}` },
     dropped: { code: 255, message: `host-run: ${name}: the ssh connection dropped; the engine may still be running there, so this is not an engine failure.\n  re-attach: ${ctx.reattach}\n  collect:   ${ctx.collect}` },
+    'dropped-unstarted': { code: 255, message: `host-run: ${name}: the ssh connection dropped during ${ctx.step}; no engine was started, so there is nothing to resume.` },
     failed: { code: 1, message: `host-run: ${name}: ${ctx.detail}` },
   }[kind];
 }
