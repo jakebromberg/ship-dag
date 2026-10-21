@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { ghCli, ghJson, withBackoff } from './gh.mjs';
-import { formatRef, parsePr, parseRef, refKey, sameRepo } from './ref.mjs';
+import { formatRef, issueKey, parsePr, parseRef, refKey, sameRepo } from './ref.mjs';
 import { groupBy } from './stats.mjs';
 import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { readWaveReports, waveContextFor } from './wave-reports.mjs';
@@ -218,7 +218,7 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
   for (const r of records.toReversed()) {
     const p = r.kind === 'retro' ? null : parsePr(r.pr, r.repo);
     if (!p) continue;
-    covered.add(refKey(formatRef(r.repo, r.issue)));
+    covered.add(issueKey(r));
     add(p, r.tuningVersion ?? 0);
   }
   const sidecarRefs = new Map(); // refKey → [ref, tuningVersion, emittedAt] of its newest entry

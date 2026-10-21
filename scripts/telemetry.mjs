@@ -81,7 +81,7 @@ import { INFRA_REASONS, RESOURCE_ROUTE, ranOf } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
-import { formatRef, groupByRepo, isPr, parseRef, refKey, repoSpellings, sameRepo } from './lib/ref.mjs';
+import { formatRef, groupByRepo, isPr, issueKey, parseRef, refKey, repoSpellings, sameRepo } from './lib/ref.mjs';
 import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
@@ -312,8 +312,8 @@ export function report(records, { minSample = 20 } = {}) {
     };
   }
   const latest = latestByRef(records);
-  const attempts = groupBy((r) => refKey(formatRef(r.repo, r.issue)), modelIssues);
-  const mergedKeys = new Set(issues.filter((r) => r.finalState === 'merged').map((r) => refKey(formatRef(r.repo, r.issue))));
+  const attempts = groupBy(issueKey, modelIssues);
+  const mergedKeys = new Set(issues.filter((r) => r.finalState === 'merged').map(issueKey));
   const unresolved = [...latest.values()].filter((r) => r.finalState !== 'merged' && (r.finalState !== 'deferred' || INFRA_REASONS.has(r.failureReason)));
   const issueOutcomes = {
     distinct: latest.size,
