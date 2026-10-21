@@ -127,3 +127,20 @@ for (const name of ['prompt.md step 4', "SKILL.md's Implement block", "workflow.
     assert.match(copies[name], declaredCi);
   });
 }
+
+// Review blocks on the same three test gaps again and again, so the engine and inline implement copies both carry the pre-push checklist.
+const checklist = [
+  /every acceptance criterion and every settled decision has a test/,
+  /every failure path and boundary has a test/,
+  /revert the line under test, see the test fail, then restore it/,
+  /name any test you could not make fail in the PR body/,
+  /state in the PR body how each acceptance criterion is tested/,
+];
+for (const name of ['prompt.md step 3', "SKILL.md's Implement block", "workflow.js's implementPrompt"]) {
+  const text = name === 'prompt.md step 3'
+    ? read('scripts/engine/prompt.md').split('\n').find((l) => l.startsWith('3. '))
+    : copies[name];
+  test(`${name} carries the pre-push test checklist`, () => {
+    for (const rule of checklist) assert.match(text, rule);
+  });
+}
