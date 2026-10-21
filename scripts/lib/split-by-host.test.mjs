@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { splitByHost, toolchainsNeeded } from './split-by-host.mjs';
+import { testHost } from './test-host.mjs';
 
 for (const [commands, expected] of [
   [['npm ci', 'npx tsc --noEmit', 'node --test'], { toolchains: ['node'], unrecognized: [] }],
@@ -21,7 +22,7 @@ test('declared toolchains win over the commands', () => {
   assert.deepEqual(toolchainsNeeded({ commands: ['scripts/ci'], toolchains: ['python'] }), { toolchains: ['python'], unrecognized: [] });
 });
 
-const hosts = { box: { toolchains: ['node'], home: '/h', reposDir: '/h/r', sdHome: '/h/sd' } };
+const hosts = { box: testHost('/h', { toolchains: ['node'] }) };
 const base = { stateDir: '/s/ship-dag/engine/run1', projectRoot: '/p', promptTemplate: '/sd/scripts/engine/prompt.md', repo: 'o/r' };
 
 test('a spec with no host fields stays one local sub-spec with every issue', () => {
@@ -35,8 +36,8 @@ test('an issue on a remote host takes the host paths; its siblings stay local wi
   assert.deepEqual(Object.keys(split), ['box', 'local']);
   assert.deepEqual(split.local, { ...spec, issues: [spec.issues[1]] });
   assert.equal(split.box.stateDir, '/h/.local/state/ship-dag/engine/run1');
-  assert.equal(split.box.projectRoot, '/h/r');
-  assert.equal(split.box.promptTemplate, '/h/sd/scripts/engine/prompt.md');
+  assert.equal(split.box.projectRoot, '/h/D');
+  assert.equal(split.box.promptTemplate, '/h/D/ship-dag/scripts/engine/prompt.md');
   assert.deepEqual(split.box.issues, [spec.issues[0]]);
 });
 

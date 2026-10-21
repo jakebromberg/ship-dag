@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mergeSettings, syncClaude } from './host-sync-claude.mjs';
 import { RSYNC_SSH, SSH_OPTS as BATCH, remoteCommand } from './remote.mjs';
-import { validateHosts } from './hosts.mjs';
+import { testHost } from './test-host.mjs';
 
 // Lease entries are recognised by their command (it runs `cli-lease.js … hook`), as claude-orchestrator prints them.
 const lease = (path, extra = {}) => ({ matcher: 'Bash', hooks: [{ type: 'command', command: `grep -qE 'npm' || exit 0; exec node '${path}/cli-lease.js' hook`, ...extra }] });
@@ -36,9 +36,6 @@ for (const [name, host, expected] of [
   });
 }
 
-/** `box` with home `home` (and `extra`), passed through validateHosts as loadHosts would, so `coHome` is its default unless given. */
-const validHost = (home, extra = {}) => validateHosts({ box: { ssh: 'box', home, reposDir: `${home}/D`, sdHome: `${home}/D/ship-dag`, ...extra } }).box;
-
 /** A host whose home is a fresh temp dir (with `.claude/` unless `fresh`); `fail(cmd, args)` makes a call fail with 'boom'. */
 function shellHost({ fresh = false, fail = () => false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'ship-dag-host-sync-'));
@@ -52,7 +49,7 @@ function shellHost({ fresh = false, fail = () => false } = {}) {
     if (args.at(-1).includes('--print-settings-entry')) return { status: 0, stdout: JSON.stringify(entry) };
     return spawnSync('sh', ['-c', args.at(-1)], { encoding: 'utf8', input });
   };
-  return { home, dir, run, calls, host: validHost(home) };
+  return { home, dir, run, calls, host: testHost(home) };
 }
 const base = { readFile: () => 'GLOBAL\n', localHome: '/m/.claude', now: () => new Date('2026-10-21T12:00:00Z') };
 const read = (f) => readFileSync(f, 'utf8');
@@ -162,7 +159,7 @@ for (const [name, porcelain, warns] of [['a dirty synced path warns', ' M CLAUDE
     const logs = [];
     const calls = [];
     const run = (cmd, args) => (calls.push([cmd, ...args]), { status: 0, stdout: cmd === 'git' ? porcelain : cmd === 'ssh' && args.at(-1).includes('--print-settings-entry') ? '{}' : '' });
-    syncClaude({ ...base, host: validHost('/h'), run, log: (m) => logs.push(m) });
+    syncClaude({ ...base, host: testHost('/h'), run, log: (m) => logs.push(m) });
     assert.deepEqual(calls.find((c) => c[0] === 'git'), ['git', '-C', '/m/.claude', 'status', '--porcelain', '--', 'CLAUDE.md', 'skills']);
     assert.equal(logs.some((l) => l.startsWith('warning: ')), warns);
   });
@@ -171,14 +168,14 @@ for (const [name, porcelain, warns] of [['a dirty synced path warns', ' M CLAUDE
 test('the lease entries are printed on the host by a bare node run from its coHome', () => {
   const calls = [];
   const run = (cmd, args) => (calls.push([cmd, ...args]), { status: 0, stdout: cmd === 'ssh' && args.at(-1).includes('--print-settings-entry') ? '{}' : '' });
-  syncClaude({ ...base, host: validHost('/h', { coHome: '/co' }), run });
+  syncClaude({ ...base, host: testHost('/h', { coHome: '/co' }), run });
   const print = sshCmds(calls).find((c) => c.includes('--print-settings-entry'));
   assert.equal(print, `node '/co/dist/src/cli-lease.js' hook --print-settings-entry`);
 });
 
 test('a command that cannot be started is reported per step with its error, without throwing', () => {
   const run = () => ({ status: null, stdout: undefined, stderr: undefined, error: new Error('spawn ssh ENOENT') });
-  const { failures } = syncClaude({ ...base, host: validHost('/h'), run });
+  const { failures } = syncClaude({ ...base, host: testHost('/h'), run });
   assert.equal(failures.length, 3);
   assert.ok(failures.every((f) => f.endsWith('spawn ssh ENOENT')), failures.join('\n'));
 });
@@ -222,16 +219,23 @@ for (const [name, reply, unreachable] of [
   ['a failing command', { status: 23, stdout: '', stderr: 'boom' }, false],
 ]) {
   test(`every call failing with ${name} is ${unreachable ? '' : 'not '}an unreachable host`, () => {
-    const result = syncClaude({ ...base, host: validHost('/h'), run: (cmd) => (cmd === 'git' ? { status: 0, stdout: '' } : reply) });
+    const result = syncClaude({ ...base, host: testHost('/h'), run: (cmd) => (cmd === 'git' ? { status: 0, stdout: '' } : reply) });
     assert.equal(result.failures.length, 3);
     assert.equal(result.unreachable, unreachable);
   });
 }
 
-test('a drop before the first write is unreachable even when it is one of several failures, but a sync with no failure is not', () => {
-  const { run, host } = shellHost();
-  assert.equal(syncClaude({ ...base, host, run }).unreachable, false);
-});
+// Neither sync has a failure, so the `failures.length > 0 &&` guard is what keeps them from being "every failure was a drop, and nothing changed". A dry-run makes no host-changing call, so without the guard it is the case that reads as unreachable.
+for (const [name, dryRun] of [['a clean --dry-run sync', true], ['a clean sync', false]]) {
+  test(`${name} is not an unreachable host`, () => {
+    const { dir, run, host } = shellHost();
+    writeFileSync(join(dir, 'CLAUDE.md'), 'GLOBAL\n');
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify(entry));
+    const result = syncClaude({ ...base, host, run, dryRun });
+    assert.deepEqual(result.failures, []);
+    assert.equal(result.unreachable, false);
+  });
+}
 
 // Where the drop falls decides it: a drop at a put, a cp or the rsync may follow a write, so it is a failure. From the
 // first matching call on, every later call drops too, so only the call that changed the host can make it a failure.
@@ -260,7 +264,7 @@ for (const [name, matches, claude, settings] of [
 test('drops mixed with a failure that is not a drop are a failure, not an unreachable host', () => {
   let first = true;
   const run = (cmd) => (cmd === 'git' ? { status: 0, stdout: '' } : first ? ((first = false), { status: 23, stdout: '', stderr: 'boom' }) : droppedBy[255]);
-  const result = syncClaude({ ...base, host: validHost('/h'), run });
+  const result = syncClaude({ ...base, host: testHost('/h'), run });
   assert.equal(result.failures.length, 3);
   assert.equal(result.unreachable, false);
 });
