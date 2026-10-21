@@ -1636,7 +1636,7 @@ describe('SKILL.md telemetry wiring', () => {
   });
 
   test('has the Review block write meta.reportId beside meta.trigger', () => {
-    assert.ok(skill.includes('meta: { trigger: "{TRIGGER}", reportId: "{REPORT_ID}" }'));
+    assert.ok(skill.includes('meta: { trigger: "{TRIGGER}", reportId: "{REPORT_ID}", head: "<sha>" }'));
   });
 
   test('names the {REPORT_ID} stamp by the --owner command, and step 5\'s resource resume beside point E', () => {

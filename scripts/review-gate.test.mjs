@@ -848,8 +848,8 @@ const MERGE_ORDER_SITES = {
   // The Review block says when to use the field, and how the sibling is found.
   // Step 6.2 reads notes from the files' own `findings[]`, names the wxyc-shared exception by repo, and
   // the Review block says what `{CARRIED_NOTES}` holds.
-  'SKILL.md': [/`mergeOrder`/, /`git merge-tree`/, /range-diff quick check/, /`git range-diff </, /--is-ancestor/, /info\.version/, /findings\[\]\.mergeOrder/, /WXYC\/wxyc-shared/, /`tests\/api-spec\.test\.ts`/, /`\{CARRIED_NOTES\}` is `none`/],
-  'references/review-schema.md': [/`mergeOrder`/],
+  'SKILL.md': [/`mergeOrder`/, /`git merge-tree`/, /range-diff quick check/, /`git range-diff </, /info\.version/, /WXYC\/wxyc-shared/, /`tests\/api-spec\.test\.ts`/, /`\{CARRIED_NOTES\}` is `none`/, /`meta\.head`/],
+  'references/review-schema.md': [/`mergeOrder`/, /`meta\.head`/],
   'references/escalation-policy.md': [/merge-order/],
 };
 
@@ -859,6 +859,30 @@ test('the Review block, step 6.2 and the schema still name the merge-order note 
     // `assert.ok`, not `assert.match`: a miss would otherwise dump all of SKILL.md into the failure.
     for (const pattern of patterns) assert.ok(pattern.test(raw), `${site} no longer mentions ${pattern}`);
   }
+});
+
+// Step 6.2's escalation is one blunt rule, read from the round files: any
+// merge-order note that mentions the PR or its issue, or one in the PR's own
+// rounds, or a latest round that does not record the head the PR has now, runs
+// the full review. The machinery that tried to resolve siblings is gone, and
+// the reports path is the one the engine writes.
+test('step 6.2 states the fail-closed escalation rule and carries none of the sibling-resolution machinery', () => {
+  const raw = readFileSync(join(REPO_ROOT, 'SKILL.md'), 'utf8');
+  const step = raw.slice(raw.indexOf('**Escalation rule.**'), raw.indexOf('3. `gh pr merge --rebase`'));
+  assert.ok(step.length > 0, 'step 6.2 no longer has an **Escalation rule.** paragraph');
+  for (const needle of ['`mergeOrder`', '`meta.head`', 'whole digit run', 'in doubt', '`{CARRIED_NOTES}`', 'round file']) {
+    assert.ok(step.includes(needle), `step 6.2's escalation rule no longer says ${needle}`);
+  }
+  for (const gone of ['--is-ancestor', '--owner', 'meta.reportId', 'newly entered', 'unresolved', '$STATE/reports/', 'malformedMergeOrder']) {
+    assert.ok(!step.includes(gone), `step 6.2 still carries ${gone}`);
+  }
+});
+
+test('every round file records the head it reviewed: the Review block, the quick check and the schema say so', () => {
+  const skill = readFileSync(join(REPO_ROOT, 'SKILL.md'), 'utf8');
+  assert.ok(skill.includes('meta: { trigger: "{TRIGGER}", reportId: "{REPORT_ID}", head: "<sha>" }'), 'the Review block does not write meta.head');
+  assert.ok(skill.includes('method: "range-diff quick check", head: "<sha>" }'), 'the quick check does not write meta.head');
+  assert.match(skill, /missing `meta\.head`/, 'step 6.2 does not escalate on a missing meta.head');
 });
 
 // --- Cross-file enum sync ---------------------------------------------------
