@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { deriveSlug, buildConfig, unknownCiRepos, unknownComplexities, validateSpec } from './emit-config.mjs';
+import { deriveSlug, buildConfig, unknownCiRepos, unknownComplexities, validateSpec, ghReadRef } from './emit-config.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
 import { waveSidecar } from './lib/wave-sidecar.mjs';
 
@@ -507,59 +507,123 @@ const stubReader = (table) => {
   return { readRef, calls };
 };
 const merged = (title, at = '2026-10-17T00:00:00Z') => ({ state: 'closed', title, closed_at: at, pull_request: { merged_at: at } });
+const SETTLED = 'Conditionals in the plan that name a merged or closed one are settled. Read each file the plan names on `origin/main` before editing it.';
 
 test('a ref the digest names that merged or closed since triage is prepended as a fact; other refs and the digest stay as written', () => {
   const { readRef, calls } = stubReader({
     [`${R}#2299`]: merged('Add the thing'),
     [`${R}#2003`]: { state: 'closed', title: 'Old', closed_at: '2026-10-18T00:00:00Z' },
-    [`${R}#5`]: { state: 'open', title: 'Still open' },
+    [`${R}#55`]: { state: 'open', title: 'Still open' },
     'WXYC/dj-site#7': merged('Other repo'),
   });
-  const c = buildConfig(sinceSpec('Do X after #2299 (and #2299 again), if #2003 lands, see #5 and WXYC/dj-site#7.'), loadTuning(), { readRef });
+  const c = buildConfig(sinceSpec('Do X after #2299 (and #2299 again, and wxyc/library-metadata-lookup#2299), if #2003 lands, see #55 and WXYC/dj-site#7.'), loadTuning(), { readRef });
   assert.equal(c.issues[0].description, [
-    `Since this plan was written: #2299 merged (Add the thing); #2003 closed; WXYC/dj-site#7 merged (Other repo). Conditionals in the plan that name them are settled. Read each file the plan names on \`origin/main\` before editing it.`,
+    `Since this plan was written: #2299 merged (Add the thing); #2003 closed; WXYC/dj-site#7 merged (Other repo). ${SETTLED}`,
     '',
-    'Do X after #2299 (and #2299 again), if #2003 lands, see #5 and WXYC/dj-site#7.',
+    'Do X after #2299 (and #2299 again, and wxyc/library-metadata-lookup#2299), if #2003 lands, see #55 and WXYC/dj-site#7.',
   ].join('\n'));
-  assert.deepEqual(calls.sort(), [`${R}#2003`, `${R}#2299`, `${R}#5`, 'WXYC/dj-site#7'].sort());
+  assert.deepEqual(calls.sort(), [`${R}#2003`, `${R}#2299`, `${R}#55`, 'WXYC/dj-site#7'].sort());
+});
+
+test('a PR closed without merging is reported as closed, never merged', () => {
+  const { readRef } = stubReader({ [`${R}#66`]: { state: 'closed', title: 'Abandoned', closed_at: '2026-10-17T00:00:00Z', pull_request: { merged_at: null } } });
+  const d = buildConfig(sinceSpec('See #66.'), loadTuning(), { readRef }).issues[0].description;
+  assert.match(d, /^Since this plan was written: #66 closed\. /);
+  assert.ok(!d.includes('#66 merged'));
 });
 
 test('the issue\'s decisions are scanned too, and the block precedes the decisions and budget', () => {
-  const { readRef } = stubReader({ [`${R}#9`]: merged('Nine') });
-  const d = buildConfig(sinceSpec('Plan.', { decisions: ['Follow #9'], sourceEstimate: 50 }), loadTuning(), { readRef }).issues[0].description;
-  assert.match(d, /^Since this plan was written: #9 merged \(Nine\)\..*\n\nPlan\.\n\nSettled decisions/s);
+  const { readRef } = stubReader({ [`${R}#99`]: merged('Nine') });
+  const d = buildConfig(sinceSpec('Plan.', { decisions: ['Follow #99'], sourceEstimate: 50 }), loadTuning(), { readRef }).issues[0].description;
+  assert.match(d, /^Since this plan was written: #99 merged \(Nine\)\..*\n\nPlan\.\n\nSettled decisions/s);
 });
 
-// Each case must leave the description byte-identical to a build with no reader.
-for (const [name, digest, extra, table, withReader] of [
-  ['nothing changed since triage', 'See #5 and #6.', {}, { [`${R}#5`]: { state: 'open', title: 'a' }, [`${R}#6`]: merged('b', '2026-10-01T00:00:00Z') }, true],
-  ['the digest names no refs', 'No refs here, v1.2#x.', {}, {}, true],
-  ['the issue names only itself', 'Part of #924.', {}, {}, true],
-  ['triage recorded no triagedAt', 'See #5.', { triagedAt: undefined }, { [`${R}#5`]: merged('a') }, true],
-  ['no reader is supplied', 'See #5.', {}, {}, false],
-  ['a read fails', 'See #5.', {}, { [`${R}#5`]: new Error('boom') }, true],
+// Each case must leave the description exactly the digest, with no reader call where none is due.
+for (const [name, digest, extra, table, withReader, reads] of [
+  ['nothing changed since triage', 'See #55 and #66.', {}, { [`${R}#55`]: { state: 'open', title: 'a' }, [`${R}#66`]: merged('b', '2026-10-01T00:00:00Z') }, true, 2],
+  ['the digest names no refs', 'No refs here, v1.2#x.', {}, {}, true, 0],
+  ['the issue names only itself', 'Part of #924.', {}, {}, true, 0],
+  ['triage recorded no triagedAt', 'See #55.', { triagedAt: undefined }, { [`${R}#55`]: merged('a') }, true, 0],
+  ['no reader is supplied', 'See #55.', {}, {}, false, 0],
 ]) {
-  test(`byte-identical description when ${name}`, () => {
-    const s = sinceSpec(digest, extra);
+  test(`unchanged description when ${name}`, () => {
     const { readRef, calls } = stubReader(table);
-    const warnings = [];
-    const got = buildConfig(s, loadTuning(), withReader ? { readRef, warn: (m) => warnings.push(m) } : undefined);
-    assert.equal(got.issues[0].description, buildConfig(s).issues[0].description);
-    if (['the digest names no refs', 'the issue names only itself', 'triage recorded no triagedAt'].includes(name)) assert.deepEqual(calls, []);
-    if (name === 'a read fails') assert.match(warnings.join(), /WXYC\/library-metadata-lookup#5.*boom/);
+    const got = buildConfig(sinceSpec(digest, extra), loadTuning(), withReader ? { readRef } : undefined);
+    assert.equal(got.issues[0].description, digest);
+    assert.equal(calls.length, reads);
   });
 }
 
-test('a failed read drops only that ref\'s line', () => {
-  const { readRef } = stubReader({ [`${R}#5`]: new Error('boom'), [`${R}#6`]: merged('Six') });
-  const d = buildConfig(sinceSpec('#5 then #6'), loadTuning(), { readRef, warn: () => {} }).issues[0].description;
-  assert.match(d, /^Since this plan was written: #6 merged \(Six\)\. /);
-  assert.ok(!d.includes('#5 merged'));
+// Text that looks like a ref and is not one: no read, no note, even when such an issue number exists and closed.
+for (const [what, text] of [
+  ['a 3-digit hex colour', 'Set the border to #333.'],
+  ['a repeated-digit colour', 'Use #000 for text.'],
+  ['a 6-digit hex colour', 'Fill is #123456.'],
+  ['an 8-digit hex colour', 'Fill is #12345678.'],
+  ['a line anchor', 'See file.ts#L42.'],
+  ['a URL anchor', 'See https://example.com/page#42 for details.'],
+  ['a GitHub URL anchor', 'See https://github.com/o/r/pull/5#discussion_r1 and https://github.com/o/r/issues/7#42.'],
+  ['a path with an anchor', 'See docs/a/b/c#3.'],
+  ['an ordinal', 'That is the #1 cause.'],
+]) {
+  test(`${what} is not scanned as a ref`, () => {
+    const everything = new Proxy({}, { get: () => merged('Anything') });
+    const calls = [];
+    const readRef = (repo, number) => { calls.push(`${repo}#${number}`); return everything[`${repo}#${number}`]; };
+    assert.equal(buildConfig(sinceSpec(text), loadTuning(), { readRef }).issues[0].description, text);
+    assert.deepEqual(calls, []);
+  });
+}
+
+test('a failed read names the ref as state unknown, warns, and still emits', () => {
+  const { readRef } = stubReader({ [`${R}#55`]: new Error('boom') });
+  const warnings = [];
+  const d = buildConfig(sinceSpec('See #55.'), loadTuning(), { readRef, warn: (m) => warnings.push(m) }).issues[0].description;
+  assert.equal(d, `Since this plan was written: #55 state unknown. Read each file the plan names on \`origin/main\` before editing it.\n\nSee #55.`);
+  assert.match(warnings.join(), /WXYC\/library-metadata-lookup#55.*boom/);
+});
+
+test('a failed read does not hide the other refs', () => {
+  const { readRef } = stubReader({ [`${R}#55`]: new Error('boom'), [`${R}#66`]: merged('Six') });
+  const d = buildConfig(sinceSpec('#55 then #66'), loadTuning(), { readRef, warn: () => {} }).issues[0].description;
+  assert.match(d, new RegExp(`^Since this plan was written: #66 merged \\(Six\\); #55 state unknown\\. ${SETTLED.replace(/[.*+?^${}()|[\]\\`]/g, '\\$&')}`));
+});
+
+// triagedAt comes from a model's return, so its zone is not trusted: no zone means UTC, and an unreadable
+// value is ignored with a warning (the description stays unchanged).
+for (const [name, triagedAt, closedAt, notes] of [
+  ['a zoned UTC time', '2026-10-16T12:00:00Z', '2026-10-16T12:30:00Z', true],
+  ['a zone-less time is read as UTC, so a close just after it counts', '2026-10-16T12:00:00', '2026-10-16T12:30:00Z', true],
+  ['a zone-less time is read as UTC, so a close just before it does not', '2026-10-16T12:00:00', '2026-10-16T11:30:00Z', false],
+  ['a numeric offset', '2026-10-16T05:00:00-07:00', '2026-10-16T12:30:00Z', true],
+]) {
+  test(`triagedAt: ${name}`, () => {
+    const { readRef } = stubReader({ [`${R}#55`]: merged('x', closedAt) });
+    const d = buildConfig(sinceSpec('See #55.', { triagedAt }), loadTuning(), { readRef }).issues[0].description;
+    assert.equal(d.startsWith('Since this plan was written: #55 merged (x)'), notes);
+  });
+}
+
+test('an unreadable triagedAt is ignored with a warning and no reads', () => {
+  const { readRef, calls } = stubReader({ [`${R}#55`]: merged('x') });
+  const warnings = [];
+  const d = buildConfig(sinceSpec('See #55.', { triagedAt: 'yesterday' }), loadTuning(), { readRef, warn: (m) => warnings.push(m) }).issues[0].description;
+  assert.equal(d, 'See #55.');
+  assert.deepEqual(calls, []);
+  assert.match(warnings.join(), /triagedAt.*yesterday/);
 });
 
 test('the block names the repo\'s own base branch', () => {
-  const { readRef } = stubReader({ [`${R}#6`]: merged('Six') });
-  const s = sinceSpec('#6');
+  const { readRef } = stubReader({ [`${R}#66`]: merged('Six') });
+  const s = sinceSpec('#66');
   s.repos[R].baseBranch = 'develop';
   assert.match(buildConfig(s, loadTuning(), { readRef }).issues[0].description, /on `origin\/develop` before editing/);
+});
+
+test('ghReadRef reads the issues endpoint with a timeout and parses the row', () => {
+  const seen = [];
+  const run = (args, opts) => { seen.push({ args, opts }); return JSON.stringify({ state: 'open', title: 'T' }); };
+  assert.deepEqual(ghReadRef('o/r', 12, run), { state: 'open', title: 'T' });
+  assert.deepEqual(seen[0].args, ['api', 'repos/o/r/issues/12']);
+  assert.ok(seen[0].opts.timeout > 0);
 });

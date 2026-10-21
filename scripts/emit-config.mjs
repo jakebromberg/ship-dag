@@ -40,7 +40,8 @@
 //         "model": "opus", "effort": "high", "digest": "2-3 sentence plan", "extraDirs": ["../wxyc-shared"],
 //         "reach": "repo",                         // optional; in-diff|repo|external (a key of tuning review.reachEffort; unknown exits 2) — recorded in the wave sidecar, not the engine config
 //         "decisions": ["use JSONL"],           // optional; array of strings (anything else exits 2) — recorded in the wave sidecar and folded into the engine description as a "Settled decisions" list
-//         "triagedAt": "2026-10-16T12:00:00Z" }    // optional; when triage ran (ISO 8601) — the CLI reads each #N / owner/repo#N the digest and decisions name and prepends a note of those that merged or closed since; absent, the description is unchanged
+//         "triagedAt": "2026-10-16T12:00:00Z",  // optional; when triage ran (ISO 8601; no zone = UTC) — the CLI reads each #N / owner/repo#N the digest and decisions name and prepends a note of those that merged or closed since (a failed read: "state unknown"); absent, the description is unchanged
+//         "baseSha": "<sha>" }                  // optional; the base branch's SHA at triage time — carried for the base-commits follow-up, not read today
 //     ]
 //   }
 //
@@ -151,42 +152,53 @@ export function withDecisions(description, decisions) {
 
 // A triage digest is written once, but a wave can launch a day or more later, so the PRs and issues it
 // names as open or conditional may have landed. This collects every `#N` / `owner/repo#N` in the digest and
-// decisions (one read each, none when there are none) and, for those that closed since `triagedAt`, returns
-// a block of facts to prepend. It states facts only and never rewrites the digest. `readRef(repo, number)`
-// is injected and returns the GitHub issues-API row `{state, title, closed_at, pull_request}`; a read that
-// throws drops that ref's line and warns, so a failure never stops the emit. Without a `triagedAt` or a
-// reader, or when nothing changed, the description comes back untouched.
-const REF_IN_TEXT = /(?<![\w#])(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
+// decisions (one read each, none when there are none) and returns a block of facts to prepend: the refs that
+// merged or closed since `triagedAt`, and any whose read failed, named "state unknown" (a failed read warns and
+// never stops the emit). It states facts only and never rewrites the digest. `readRef(repo, number)` is
+// injected and returns the GitHub issues-API row `{state, title, closed_at, pull_request}`. `triagedAt` comes
+// from a model's return, so a time with no zone is read as UTC and an unreadable one is ignored with a warning.
+// Without a `triagedAt` or a reader, or when nothing changed, the description comes back untouched. URLs are
+// skipped, and so are hex colours (6 or 8 digits, or one digit three times) and a bare single-digit `#N` (an
+// ordinal), none of which is a ref worth a read.
+const REF_IN_TEXT = /(?<![\w#/])(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
+const NOT_A_REF = /^(\d)\1\1$|^(\d{6}|\d{8})$/;
 
 export function withMergedSinceTriage(description, { texts, repo, self, base, triagedAt, readRef, warn = () => {} }) {
   if (!triagedAt || !readRef) return description;
-  const since = Date.parse(triagedAt);
-  if (!Number.isFinite(since)) return description;
+  const since = Date.parse(/T[\d:.]+$/.test(triagedAt) ? `${triagedAt}Z` : triagedAt);
+  if (!Number.isFinite(since)) {
+    warn(`emit-config: WARNING — triagedAt "${triagedAt}" is not an ISO 8601 time; no since-triage note for #${self}`);
+    return description;
+  }
   const refs = new Map();
-  for (const m of texts.join('\n').matchAll(REF_IN_TEXT)) {
+  for (const m of texts.join('\n').replace(/\bhttps?:\/\/\S+/g, ' ').matchAll(REF_IN_TEXT)) {
     const r = m[1] ?? repo;
     const n = Number(m[2]);
-    if (refKey(r) === refKey(repo) && n === self) continue;
-    refs.set(`${refKey(r)}#${n}`, { r, n, label: m[1] ? `${m[1]}#${n}` : `#${n}` });
+    if ((refKey(r) === refKey(repo) && n === self) || NOT_A_REF.test(m[2]) || (!m[1] && m[2].length === 1)) continue;
+    const key = `${refKey(r)}#${n}`;
+    if (!refs.has(key)) refs.set(key, { r, n, label: m[1] ? `${m[1]}#${n}` : `#${n}` });
   }
-  const facts = [];
+  const changed = [], unknown = [];
   for (const { r, n, label } of refs.values()) {
     let row;
     try { row = readRef(r, n); } catch (err) {
-      warn(`emit-config: WARNING — could not read ${r}#${n}; left out of the since-triage note: ${err.message}`);
+      warn(`emit-config: WARNING — could not read ${r}#${n}; the since-triage note names its state unknown: ${err.message}`);
+      unknown.push(`${label} state unknown`);
       continue;
     }
     const mergedAt = row?.pull_request?.merged_at;
     const at = Date.parse(mergedAt ?? row?.closed_at);
     if (row?.state !== 'closed' || !(at > since)) continue;
-    facts.push(mergedAt ? `${label} merged (${row.title})` : `${label} closed`);
+    changed.push(mergedAt ? `${label} merged (${row.title})` : `${label} closed`);
   }
+  const facts = [...changed, ...unknown];
   if (facts.length === 0) return description;
-  return `Since this plan was written: ${facts.join('; ')}. Conditionals in the plan that name them are settled. Read each file the plan names on \`origin/${base}\` before editing it.\n\n${description}`;
+  const settled = changed.length > 0 ? ' Conditionals in the plan that name a merged or closed one are settled.' : '';
+  return `Since this plan was written: ${facts.join('; ')}.${settled} Read each file the plan names on \`origin/${base}\` before editing it.\n\n${description}`;
 }
 
-/** The real `readRef`: one `gh api` read of an issue or PR, via the issues endpoint that serves both. */
-export const ghReadRef = (repo, number) => JSON.parse(realRunGh(['api', `repos/${repo}/issues/${number}`]));
+/** The real `readRef`: one `gh api` read of an issue or PR, via the issues endpoint that serves both, cut off after 15 s so a stalled `gh` cannot hold the emit. */
+export const ghReadRef = (repo, number, run = realRunGh) => JSON.parse(run(['api', `repos/${repo}/issues/${number}`], { timeout: 15000 }));
 
 /**
  * Refuse a spec the emitter must not run, throwing one error that lists every
