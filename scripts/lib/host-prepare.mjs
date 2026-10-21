@@ -15,7 +15,8 @@ export function configStateDir({ configDir, worktreeDir } = {}) {
 
 /**
  * `{ refusals, plan }`: a plan is ordered `{ step, ssh, slow? }` or `{ step, scp: [from, to] }` actions (`slow` marks a
- * clone); any refusal empties it. `config` is the engine config emit-config --by-host wrote, which must be this host's:
+ * clone); any refusal empties it. `host` is a validated hosts.json entry (`validateHosts`/`loadHosts`), so its `coHome`
+ * is already defaulted. `config` is the engine config emit-config --by-host wrote, which must be this host's:
  * its state dir (`configStateDir`) under the host's `home` and its `projectRoot` the host's `reposDir`; the plan makes
  * that dir and copies the config there as `config.json`. `repos` is `[{ repo, name, layoutDir }]` (`layoutDir` is
  * where repo-layout.mjs puts it); `local` and `probe` hold `{ sdSha, coSha, claudeHash }` (probe adds `distNewest`,
@@ -66,7 +67,8 @@ export function planHost({ name, host, config, configPath, repos, local, probe, 
  * the commit time: `tsc` (no clean) rewrites every output under dist/src on each build but never touches `dist` itself,
  * so `distNewest` is the newest `.js` file under dist/src (a stray `.DS_Store` is not a build) and `srcNewer` the first
  * src `.ts` newer than it (empty when fresh), which also catches an uncommitted source edit. A present repo also reports
- * its `origin=<name>=<url>`. With no `stateDir` (a config planHost will refuse) there is no `configHash` line.
+ * its `origin=<name>=<url>`. With no `stateDir` (a config planHost will refuse) there is no `configHash` line. `host` is
+ * a validated hosts.json entry (`validateHosts`/`loadHosts`), so its `coHome` is already defaulted.
  */
 export function probeScript(host, stateDir, repoNames) {
   const { home, sdHome, coHome, reposDir } = host;
