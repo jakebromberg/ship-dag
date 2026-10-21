@@ -10,8 +10,9 @@ export const meta = {
 // args: {
 //   repo:    "owner/repo",
 //   blockOn: ["correctness","security","convention","contract"], // categories that block auto-merge
-//   issues:  [{ number, digest, complexity, implEffort, reviewEffort, sourceEstimate }]
+//   issues:  [{ number, digest, decisions, complexity, implEffort, reviewEffort, sourceEstimate }]
 //            sourceEstimate is triage's added-production-source budget (default 200).
+//            decisions is triage's settled decisions, a list of strings (optional).
 //            complexity ∈ "mechanical"|"normal"|"complex" (from triage); implEffort/
 //            reviewEffort optional explicit overrides.
 //   reviewDir: absolute dir the review subagents write their findings into
@@ -72,12 +73,20 @@ const REVIEW_SCHEMA = {
   },
 }
 
+// Same heading and bullets as scripts/emit-config.mjs's withDecisions (workflow.js takes no imports;
+// lease-rules.test.mjs pins the two together). No decisions, or all blank, adds nothing.
+function decisionLines(decisions) {
+  const lines = (decisions || []).map((d) => d.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ').trim()).filter(Boolean)
+  return lines.length ? ['Settled decisions (binding; they override the issue body where they differ):', ...lines.map((d) => `- ${d}`), ``] : []
+}
+
 function implementPrompt(iss) {
   return [
     `You are implementing GitHub issue ${repo}#${iss.number} in a fresh, disposable git worktree.`,
     ``,
     `Issue digest (from triage): ${iss.digest || '(read the issue)'}`,
     ``,
+    ...decisionLines(iss.decisions),
     `Steps:`,
     `1. Locate the repo checkout for ${repo} (sibling under /Users/me/Developer/, else \`gh repo clone\`). cd into it.`,
     `2. Read repo + package CLAUDE.md and the existing patterns in the module you're touching. Match them.`,
