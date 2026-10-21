@@ -1,6 +1,11 @@
-// Tests for mergeSettings and syncClaude (with a fake ssh/rsync runner).
+// Tests for mergeSettings and syncClaude. The "host" is a temp dir driven by a local `sh -c` in place of ssh; rsync,
+// git and the printed lease entry are stubbed, so nothing connects anywhere.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { mergeSettings, syncClaude } from './host-sync-claude.mjs';
 
 // Lease entries are recognised by their command (it runs `cli-lease.js … hook`), as claude-orchestrator prints them.
@@ -29,67 +34,127 @@ for (const [name, host, expected] of [
   });
 }
 
-function fakeHost(files) {
+/** A host whose home is a fresh temp dir (with `.claude/` unless `fresh`); `fail(cmd, args)` makes a call fail with 'boom'. */
+function shellHost({ fresh = false, fail = () => false } = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'ship-dag-host-sync-'));
+  const dir = join(home, '.claude');
+  if (!fresh) mkdirSync(dir);
   const calls = [];
   const run = (cmd, args, input) => {
     calls.push([cmd, ...args]);
-    if (cmd === 'git') return { status: 0, stdout: '' };
-    if (cmd === 'rsync') return { status: 0, stdout: files.skills ?? '' };
-    const c = args[1];
-    if (c.startsWith('cat >')) files[c.match(/mv '[^']+' '([^']+)'/)[1]] = input;
-    else if (c.startsWith('cat ')) return { status: 0, stdout: files[c.match(/cat '([^']+)'/)[1]] ?? '' };
-    else if (c.startsWith('node ')) return { status: 0, stdout: JSON.stringify(entry) };
-    else if (c.startsWith('cp ')) { const [, from, to] = c.match(/cp '([^']+)' '([^']+)'/); files[to] = files[from]; }
-    return { status: 0, stdout: '' };
+    if (fail(cmd, args)) return { status: 23, stdout: '', stderr: 'boom' };
+    if (cmd === 'git' || cmd === 'rsync') return { status: 0, stdout: '' };
+    if (args[1].includes('--print-settings-entry')) return { status: 0, stdout: JSON.stringify(entry) };
+    return spawnSync('sh', ['-c', args[1]], { encoding: 'utf8', input });
   };
-  return { run, calls };
+  return { home, dir, run, calls, host: { ssh: 'box', home } };
 }
-const base = { host: { ssh: 'box', home: '/h' }, readFile: () => 'GLOBAL\n', localHome: '/m/.claude', now: () => new Date('2026-10-21T12:00:00Z') };
+const base = { readFile: () => 'GLOBAL\n', localHome: '/m/.claude', now: () => new Date('2026-10-21T12:00:00Z') };
+const read = (f) => readFileSync(f, 'utf8');
+const sshCmds = (calls) => calls.filter((c) => c[0] === 'ssh').map((c) => c[2]);
 
 test('a sync writes CLAUDE.md with a backup, merges settings, and a second run changes nothing', () => {
-  const files = { '/h/.claude/CLAUDE.md': 'old\n', '/h/.claude/settings.json': '{"model":"x"}' };
-  const { run } = fakeHost(files);
-  const first = syncClaude({ ...base, run });
+  const { dir, run, host } = shellHost();
+  writeFileSync(join(dir, 'CLAUDE.md'), 'old\n');
+  writeFileSync(join(dir, 'settings.json'), '{"model":"x"}');
+  const first = syncClaude({ ...base, host, run });
   assert.deepEqual(first.failures, []);
-  assert.equal(files['/h/.claude/CLAUDE.md'], 'GLOBAL\n');
-  assert.equal(files['/h/.claude/CLAUDE.md.bak-20261021T120000000Z'], 'old\n');
-  assert.equal(JSON.parse(files['/h/.claude/settings.json']).model, 'x');
+  assert.equal(read(join(dir, 'CLAUDE.md')), 'GLOBAL\n');
+  assert.equal(read(join(dir, 'CLAUDE.md.bak-20261021T120000000Z')), 'old\n');
+  assert.deepEqual(JSON.parse(read(join(dir, 'settings.json'))), { model: 'x', ...entry });
   assert.equal(first.changes.length, 2);
-  assert.deepEqual(syncClaude({ ...base, run }).changes, []);
+  assert.deepEqual(syncClaude({ ...base, host, run }).changes, []);
+});
+
+test('a fresh host without ~/.claude gets CLAUDE.md and settings.json', () => {
+  const { dir, run, host } = shellHost({ fresh: true });
+  assert.deepEqual(syncClaude({ ...base, host, run }).failures, []);
+  assert.equal(read(join(dir, 'CLAUDE.md')), 'GLOBAL\n');
+  assert.deepEqual(JSON.parse(read(join(dir, 'settings.json'))), entry);
 });
 
 test('--dry-run reports the changes and writes nothing', () => {
-  const files = { '/h/.claude/CLAUDE.md': 'old\n' };
-  const { run, calls } = fakeHost(files);
-  const { changes } = syncClaude({ ...base, run, dryRun: true });
+  const { dir, run, calls, host } = shellHost();
+  writeFileSync(join(dir, 'CLAUDE.md'), 'old\n');
+  const { changes } = syncClaude({ ...base, host, run, dryRun: true });
   assert.equal(changes.length, 2);
-  assert.equal(files['/h/.claude/CLAUDE.md'], 'old\n');
-  assert.ok(!calls.some((c) => c[0] === 'ssh' && /^(cat >|cp )/.test(c[2])));
+  assert.equal(read(join(dir, 'CLAUDE.md')), 'old\n');
+  assert.ok(!existsSync(join(dir, 'settings.json')));
+  assert.ok(!sshCmds(calls).some((c) => /cat >|cp /.test(c)));
   assert.ok(calls.find((c) => c[0] === 'rsync').includes('-n'));
 });
 
-test('rsync adds without deleting and skips the ship-dag symlink', () => {
-  const { run, calls } = fakeHost({});
-  syncClaude({ ...base, run });
+for (const [file, old] of [['CLAUDE.md', 'old\n'], ['settings.json', '{"model":"x"}']]) {
+  // A read error must fail the step, not look like a missing file that is then overwritten.
+  test(`an unreadable host ${file} fails its step and is left as it was`, () => {
+    const { dir, run, host } = shellHost();
+    writeFileSync(join(dir, file), old);
+    chmodSync(join(dir, file), 0o000);
+    const { failures } = syncClaude({ ...base, host, run });
+    chmodSync(join(dir, file), 0o600);
+    assert.equal(failures.length, 1);
+    assert.ok(failures[0].startsWith(`${file}: `), failures[0]);
+    assert.equal(read(join(dir, file)), old);
+  });
+
+  test(`a symlinked host ${file} stays a symlink and keeps its mode`, () => {
+    const { home, dir, run, host } = shellHost();
+    const target = join(home, `dotfiles-${file}`);
+    writeFileSync(target, old, { mode: 0o600 });
+    symlinkSync(target, join(dir, file));
+    assert.deepEqual(syncClaude({ ...base, host, run }).failures, []);
+    assert.ok(lstatSync(join(dir, file)).isSymbolicLink());
+    assert.equal(statSync(target).mode & 0o777, 0o600);
+    assert.notEqual(read(target), old);
+  });
+}
+
+test('rsync adds without deleting and skips the ship-dag symlink, .trash, .DS_Store and every skill the host links', () => {
+  const { home, dir, run, calls, host } = shellHost();
+  mkdirSync(join(dir, 'skills', 'copied'), { recursive: true });
+  mkdirSync(join(home, 'checkout'));
+  symlinkSync(join(home, 'checkout'), join(dir, 'skills', 'linked'));
+  syncClaude({ ...base, host, run });
   const args = calls.find((c) => c[0] === 'rsync');
-  assert.ok(args.includes('--exclude=/ship-dag') && !args.some((a) => a.startsWith('--delete')));
+  for (const ex of ['--exclude=/ship-dag', '--exclude=/.trash', '--exclude=.DS_Store', '--exclude=/linked']) assert.ok(args.includes(ex), ex);
+  assert.ok(!args.includes('--exclude=/copied'));
+  assert.ok(!args.some((a) => a.startsWith('--delete')));
+});
+
+for (const [name, coHome, script] of [
+  ['the host coHome', '/co', '/co/dist/src/cli-lease.js'],
+  ['<home>/Developer/claude-orchestrator without one', undefined, '/h/Developer/claude-orchestrator/dist/src/cli-lease.js'],
+]) {
+  test(`the lease entries are printed on the host under a login shell from ${name}`, () => {
+    const calls = [];
+    const run = (cmd, args) => (calls.push([cmd, ...args]), { status: 0, stdout: cmd === 'ssh' && args[1].includes('--print-settings-entry') ? '{}' : '' });
+    syncClaude({ ...base, host: { ssh: 'box', home: '/h', coHome }, run });
+    const print = sshCmds(calls).find((c) => c.includes('--print-settings-entry'));
+    assert.equal(print, `exec "$SHELL" -lc 'node '\\''${script}'\\'' hook --print-settings-entry'`);
+  });
+}
+
+test('a command that cannot be started is reported per step with its error, without throwing', () => {
+  const run = () => ({ status: null, stdout: undefined, stderr: undefined, error: new Error('spawn ssh ENOENT') });
+  const { failures } = syncClaude({ ...base, host: { ssh: 'box', home: '/h' }, run });
+  assert.equal(failures.length, 3);
+  assert.ok(failures.every((f) => f.endsWith('spawn ssh ENOENT')), failures.join('\n'));
 });
 
 // Each step fails in turn; the steps after it must still run.
-for (const [name, fails, failure] of [
-  ['CLAUDE.md', (cmd, args) => cmd === 'ssh' && args[1].startsWith("cat '/h/.claude/CLAUDE.md'"), 'CLAUDE.md: '],
-  ['settings.json', (cmd, args) => cmd === 'ssh' && args[1].startsWith('node '), 'settings.json: '],
-  ['skills', (cmd) => cmd === 'rsync', 'skills: boom'],
+for (const [name, fails] of [
+  ['CLAUDE.md', (cmd, args) => cmd === 'ssh' && args[1].includes('/.claude/CLAUDE.md')],
+  ['settings.json', (cmd, args) => cmd === 'ssh' && args[1].includes('--print-settings-entry')],
+  ['skills', (cmd) => cmd === 'rsync'],
 ]) {
   test(`a failing ${name} step is reported and the other steps still run`, () => {
-    const files = { '/h/.claude/CLAUDE.md': 'old\n' };
-    const { run, calls } = fakeHost(files);
-    const failing = (cmd, args, input) => (fails(cmd, args) ? (calls.push([cmd, ...args]), { status: 23, stdout: '', stderr: 'boom' }) : run(cmd, args, input));
-    const { failures } = syncClaude({ ...base, run: failing });
+    const { dir, run, calls, host } = shellHost({ fail: fails });
+    writeFileSync(join(dir, 'CLAUDE.md'), 'old\n');
+    const { failures } = syncClaude({ ...base, host, run });
     assert.equal(failures.length, 1);
-    assert.ok(failures[0].startsWith(failure) && failures[0].endsWith('boom'), failures[0]);
-    assert.equal(name === 'CLAUDE.md' || files['/h/.claude/CLAUDE.md'] === 'GLOBAL\n', true, 'CLAUDE.md written');
-    assert.equal(name === 'settings.json' || Boolean(files['/h/.claude/settings.json']), true, 'settings.json written');
+    assert.ok(failures[0].startsWith(`${name}: `) && failures[0].endsWith('boom'), failures[0]);
+    assert.equal(name === 'CLAUDE.md' || read(join(dir, 'CLAUDE.md')) === 'GLOBAL\n', true, 'CLAUDE.md written');
+    assert.equal(name === 'settings.json' || existsSync(join(dir, 'settings.json')), true, 'settings.json written');
     assert.ok(calls.some((c) => c[0] === 'rsync'), 'rsync ran');
   });
 }
