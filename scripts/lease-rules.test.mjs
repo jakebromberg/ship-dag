@@ -149,10 +149,19 @@ for (const name of ['prompt.md step 3', "SKILL.md's Implement block", "workflow.
 // workflow.js has no imports, so its copy of the rendering is pinned to withDecisions here.
 const { withDecisions } = await import('./emit-config.mjs');
 const DECISIONS_HEADING = 'Settled decisions (binding; they override the issue body where they differ):';
-const implementPrompt = new Function('repo', `${read('workflow.js').split('function decisionLines')[1].split('function reviewPathFor')[0].replace(/^/, 'function decisionLines')}\nreturn implementPrompt`)('o/r');
+const promptFrom = (src) => new Function('repo', `${src.split('function decisionLines')[1].split('function reviewPathFor')[0].replace(/^/, 'function decisionLines')}\nreturn implementPrompt`)('o/r');
+const implementPrompt = promptFrom(read('workflow.js'));
+// The prompt as it was before decisions existed: the same source with the decisions spread taken out.
+const spread = '    ...decisionLines(iss.decisions),\n';
+const promptWithoutDecisions = promptFrom(read('workflow.js').replace(spread, ''));
 
 test("SKILL.md's Implement block has a {DECISIONS} slot beside {DIGEST}", () => {
   assert.match(copies["SKILL.md's Implement block"], /\{DIGEST\}[\s\S]*\{DECISIONS\}/);
+});
+
+test("SKILL.md's {DECISIONS} fill rule sits in the step text, outside the verbatim block, with withDecisions' heading", () => {
+  assert.ok(!copies["SKILL.md's Implement block"].includes('fill from triage'));
+  assert.ok(skill.split('### Implement (Sonnet, own worktree)')[0].includes(`\`{DECISIONS}\` with the line \`${DECISIONS_HEADING}\``));
 });
 
 test("SKILL.md's Workflow call passes each issue's decisions", () => {
@@ -167,10 +176,19 @@ test("workflow.js's implementPrompt renders decisions exactly as withDecisions d
   assert.match(implementPrompt({ number: 1, digest: 'd', decisions: ['use JSONL'] }), /\n- use JSONL\n/);
 });
 
+test("workflow.js's implementPrompt skips non-string decisions instead of throwing", () => {
+  assert.equal(implementPrompt({ number: 1, digest: 'd', decisions: [7, null, { a: 1 }, 'use JSONL'] }), implementPrompt({ number: 1, digest: 'd', decisions: ['use JSONL'] }));
+  assert.equal(implementPrompt({ number: 1, digest: 'd', decisions: [7, null] }), promptWithoutDecisions({ number: 1, digest: 'd' }));
+});
+
+test('the baseline prompt is built from a source that differs from workflow.js', () => {
+  assert.ok(read('workflow.js').includes(spread));
+});
+
 for (const decisions of [undefined, null, [], ['', '  ', '\n']]) {
   test(`workflow.js's implementPrompt is unchanged for decisions ${JSON.stringify(decisions)}`, () => {
-    const base = implementPrompt({ number: 1, digest: 'd' });
-    assert.equal(implementPrompt({ number: 1, digest: 'd', decisions }), base);
-    assert.ok(!base.includes('Settled decisions ('));
+    const prompt = implementPrompt({ number: 1, digest: 'd', decisions });
+    assert.equal(prompt, promptWithoutDecisions({ number: 1, digest: 'd' }));
+    assert.ok(prompt.includes('Issue digest (from triage): d\n\nSteps:\n'));
   });
 }
