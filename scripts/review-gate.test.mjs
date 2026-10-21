@@ -743,6 +743,10 @@ test('gateReview: a value the gate cannot read as a merge-order note leaves the 
     { with: 'acme/gadgets#12', obligation: 'x' },
     { with: REF, obligation: 'x' },
     { with: REF.toUpperCase(), obligation: 'x' },
+    // A leading zero names the same PR as its plain spelling, so it is no way round the self check.
+    { with: 'acme/widgets#0100', obligation: 'x' },
+    { with: 'acme/widgets#012', obligation: 'x' },
+    { with: 'acme/widgets#0', obligation: 'x' },
   ];
   // On a clearable category, where a note read as a clearance changes the verdict.
   for (const mergeOrder of unreadable) {
@@ -842,8 +846,11 @@ test('CLI: a review file not named for an issue ref reads every note as unusable
 // stopped naming the two tiers, leaves the gate change with no caller.
 const MERGE_ORDER_SITES = {
   // The Review block says when to use the field, and how the sibling is found.
-  'SKILL.md': [/`mergeOrder`/, /`git merge-tree`/, /range-diff quick check/, /`git range-diff </, /--is-ancestor/, /info\.version/],
+  // Step 6.2 reads notes from the files' own `findings[]`, names the wxyc-shared exception by repo, and
+  // the Review block says what `{CARRIED_NOTES}` holds.
+  'SKILL.md': [/`mergeOrder`/, /`git merge-tree`/, /range-diff quick check/, /`git range-diff </, /--is-ancestor/, /info\.version/, /findings\[\]\.mergeOrder/, /WXYC\/wxyc-shared/, /`tests\/api-spec\.test\.ts`/, /`\{CARRIED_NOTES\}` is `none`/],
   'references/review-schema.md': [/`mergeOrder`/],
+  'references/escalation-policy.md': [/merge-order/],
 };
 
 test('the Review block, step 6.2 and the schema still name the merge-order note and the range-diff quick check', () => {
