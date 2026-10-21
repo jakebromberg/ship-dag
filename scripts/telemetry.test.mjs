@@ -183,9 +183,9 @@ test('report: a rate-limited death record followed by the same issue merging is 
   assert.equal(rep.reviewCatch.reached, 1);
 });
 
-// An engine stop (memory pressure, a lease wait) is infrastructure, not a model-quality signal, so it is left out of
-// every indicator as rate-limited is, and tallied in `resourceStops` rather than `quotaFailures`.
-for (const failureReason of ['memory-critical', 'lease-wait']) {
+// An engine stop (memory pressure, a lease wait) or an engine death is infrastructure, not a model-quality signal, so
+// it is left out of every indicator as rate-limited is, and tallied in `resourceStops` rather than `quotaFailures`.
+for (const failureReason of ['memory-critical', 'lease-wait', 'engine-died']) {
   test(`report: a ${failureReason} record is excluded from model-quality indicators and tallied as a resource stop`, () => {
     const recs = [
       normalizeRecord(base({ issue: 5, finalState: 'deferred', implStatus: 'error', failureReason, reviewVerdict: null, ciStatus: null }), FIXED),

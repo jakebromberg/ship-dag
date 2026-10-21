@@ -287,6 +287,9 @@ test('buildDiagnosis: an engine-died row is infrastructure — its reason passes
   const d = buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed', failureReason: 'engine-died' }, terminal: null, rateLimited: false });
   assert.deepEqual([d.failureReason, d.route, d.stopStage], ['engine-died', 'resource', null]);
   assert.equal(routeFailure({ status: 'failed', prNumber: 7, failureReason: 'engine-died' }), 'review-gate');
+  // The engine died before any check ran, so the open PR is unverified, not passing.
+  assert.equal(stopCiStatus({ status: 'failed', prNumber: 7, failureReason: 'engine-died' }), 'none');
+  assert.equal(buildDiagnosis({ row: { ref: 'o/r#1', status: 'failed', prNumber: 7, failureReason: 'engine-died' }, terminal: null }).ciStatus, 'none');
 });
 
 test('buildDiagnosis: clips a long terminal reason — this lands in an agent context', () => {
