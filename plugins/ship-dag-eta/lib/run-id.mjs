@@ -1,9 +1,12 @@
 // run-id.mjs — the one definition of `canonicalRunId` and `runFamily`; scripts/lib/run-id.mjs re-exports them.
 // No Node imports: an installed plugin reaches nothing outside its folder.
 
+/** A wave's own dir suffix: `-w<N>` plus any letters (`-w1`, `-w1b`, `-w1aa`). `canonicalRunId` folds exactly these and more. */
+export const WAVE_DIR_RE = /-w\d+[a-z]*$/i;
+
 /**
  * Fold a runId to the form its spellings share, for *matching only*: lowercase,
- * no `ship-dag-` prefix, no per-wave suffix (`-w2`, `-w1b`, `-r2`, `-resume`).
+ * no `ship-dag-` prefix, no per-wave suffix (`-w2`, `-w1b`, `-w1aa`, `-r2`, `-resume`).
  * @param {string|null|undefined} runId
  * @returns {string|null}
  */
@@ -14,7 +17,7 @@ export function canonicalRunId(runId) {
   let prev;
   do {
     prev = out;
-    out = out.replace(/-(?:wave|resume|w|r)\d*[a-z]?$/, '');
+    out = out.replace(/-(?:(?:wave|resume|w|r)\d*[a-z]?|w\d+[a-z]+)$/, '');
   } while (out !== prev && out);
   return out || runId.trim().toLowerCase();
 }
