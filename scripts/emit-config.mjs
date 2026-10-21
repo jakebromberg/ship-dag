@@ -387,10 +387,10 @@ if (isMain(import.meta.url)) {
     }
   }
   // After the config is out, so a sidecar failure can never change or block it. A host's engine reports only its own
-  // issues, so each host gets its own line, all in the run's local stateDir.
-  for (const { spec: s, config } of built) {
+  // issues, so each host gets its own line, all in the run's local stateDir, and under --by-host the line names its host.
+  for (const { host, spec: s, config } of built) {
     try {
-      appendWave(spec.stateDir, waveSidecar(s, { config, tuning }));
+      appendWave(spec.stateDir, waveSidecar(s, { config, tuning, host: byHost === undefined ? undefined : host }));
     } catch (err) {
       console.error(`emit-config: WARNING — could not build the wave sidecar: ${err.message}`);
     }

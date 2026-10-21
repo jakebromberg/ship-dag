@@ -38,14 +38,16 @@ export function specBlockOn(blockOn) {
  * Build one sidecar entry from a ready-wave spec.
  * @param {object} spec the ready-wave spec emit-config was handed; `blockOn` may be
  *   the `--block-on` comma string or an array of categories (workflow.js's form)
- * @param {{config: object, now?: () => string, tuning?: {version: unknown}}} opts
+ * @param {{config: object, now?: () => string, tuning?: {version: unknown}, host?: string}} opts
  *   `config` is what buildConfig returned for `spec`; `tuning` is the object it was
- *   built from, and defaults to reading the shipped tuning.json
+ *   built from, and defaults to reading the shipped tuning.json; `host` names the
+ *   host that runs the entry's issues (emit-config --by-host only) and is left out otherwise
  */
-export function waveSidecar(spec, { config, now = () => new Date().toISOString(), tuning = loadTuning() } = {}) {
+export function waveSidecar(spec, { config, now = () => new Date().toISOString(), tuning = loadTuning(), host } = {}) {
   if (!config || !Array.isArray(config.issues)) throw new Error('waveSidecar needs the config buildConfig returned for this spec');
   return {
     runId: spec.runId || runIdFromConfigName(spec.name),
+    ...(host === undefined ? {} : { host }),
     wave: spec.wave ?? null,
     tuningVersion: tuning.version,
     blockOn: specBlockOn(spec.blockOn),

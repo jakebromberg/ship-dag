@@ -567,6 +567,19 @@ test('the CLI --by-host writes config.local.json byte-identical to the plain out
   assert.equal(readFileSync(join(stateDir, 'ship-dag-wave.jsonl'), 'utf-8').trim().split('\n').length, 2);
 });
 
+test('only --by-host sidecar lines carry the host that runs them', () => {
+  const sidecar = (...extra) => {
+    const stateDir = join(mkdtempSync(join(tmpdir(), 'emit-config-')), 'ship-dag', 'engine', 'run1');
+    const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
+    const input = JSON.stringify(hostSpec({}, [{ number: 1 }])).replace('/state/ship-dag/engine/run1', stateDir);
+    const r = spawnSync(process.execPath, [cli, '-', ...extra], { input, encoding: 'utf-8' });
+    assert.equal(r.status, 0, r.stderr);
+    return readFileSync(join(stateDir, 'ship-dag-wave.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+  };
+  assert.deepEqual(sidecar().map((e) => e.host), [undefined]);
+  assert.deepEqual(sidecar('--by-host', join(mkdtempSync(join(tmpdir(), 'emit-config-')), 'out')).map((e) => e.host), ['local']);
+});
+
 test('the CLI --by-host exits 2 on a host the registry does not list, naming the issue, and writes nothing', () => {
   const outDir = join(mkdtempSync(join(tmpdir(), 'emit-config-')), 'out');
   const cli = fileURLToPath(new URL('./emit-config.mjs', import.meta.url));
