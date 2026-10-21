@@ -6,13 +6,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { validateHosts } from './hosts.mjs';
-import { engineCommand, outcome, parsePoll, pollDecision, pollScript, prefixLines, rsyncArgs } from './host-run.mjs';
+import { LOG_CHUNK, PID_FILE, engineCommand, launchScript, outcome, parsePoll, pollDecision, pollScript, prefixLines, rsyncArgs } from './host-run.mjs';
 
 const { box, big } = validateHosts({
   box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag' },
   big: { ssh: 'big', home: '/b', reposDir: '/b/D', sdHome: '/b/D/ship-dag', coHome: '/b/co', sessionSlots: 3, leaseSlots: 5 },
 });
 const stateDir = '/h/.local/state/ship-dag/engine/run1';
+const put = (root, rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
 const env = (h, slots) => `SHIP_DAG_CONFIG='${stateDir}/config.json' SHIP_DAG_PROJECT_ROOT='${h.reposDir}' CO_HOME='${h.coHome}' CO_LEASE_HOOK='on' CO_LEASE_SESSION_SLOTS='${slots[0]}' CO_LEASE_SLOTS='${slots[1]}'`;
 const run = (h) => `npx --prefix '${h.coHome}' tsx '${h.sdHome}/scripts/engine/run.mts' wave`;
 
@@ -33,6 +34,8 @@ for (const [name, kind, ctx, expected] of [
   ['no report', 'no-report', { engineLog: 'box:/l/orchestrator.log' }, { code: 1, message: /exited with no report; see box:\/l\/orchestrator\.log/ }],
   ['a dropped connection (255)', 'dropped', { reattach: 'RE', collect: 'COLLECT' }, { code: 255, message: /connection dropped.*may still be running.*RE.*COLLECT/s }],
   ['a failed step', 'failed', { detail: 'rsync exited 23' }, { code: 1, message: /rsync exited 23/ }],
+  ['no pid file', 'no-pid', { pidFile: '/s/host-run.pid' }, { code: 1, message: /no \/s\/host-run\.pid.*cannot tell whether the engine is still running/s }],
+  ['the deadline passed', 'timeout', { minutes: 360, collect: 'COLLECT' }, { code: 1, message: /still running after 360 minutes.*not an engine failure.*COLLECT/s }],
 ]) {
   test(`outcome: ${name}`, () => {
     const o = outcome('box', kind, ctx);
@@ -44,30 +47,70 @@ for (const [name, kind, ctx, expected] of [
 for (const [name, out, expected] of [
   ['alive with a log chunk', 'alive=1\nreports=0\n---\nhello\n', { alive: true, reports: 0, log: 'hello\n' }],
   ['exited, padded count, empty log', 'alive=0\nreports=       2\n---\n', { alive: false, reports: 2, log: '' }],
+  ['no pid file', 'alive=none\nreports=0\n---\n', { alive: null, reports: 0, log: '' }],
   ['a log chunk containing the marker', 'alive=0\nreports=1\n---\na\n---\nb\n', { alive: false, reports: 1, log: 'a\n---\nb\n' }],
+  ['raw bytes stay raw', Buffer.concat([Buffer.from('alive=1\nreports=0\n---\n'), Buffer.from([0xff, 0x0a])]), { alive: true, reports: 0, log: Buffer.from([0xff, 0x0a]) }],
 ]) {
   test(`parsePoll: ${name}`, () => {
-    assert.deepEqual(parsePoll(out), expected);
+    assert.deepEqual(parsePoll(out), { ...expected, log: Buffer.from(expected.log) });
   });
 }
 
-for (const [name, p, expected] of [
-  ['the engine is alive', { alive: true, reports: 1 }, 'wait'],
-  ['it exited with a report', { alive: false, reports: 1 }, 'done'],
-  ['it exited without one', { alive: false, reports: 0 }, 'no-report'],
+for (const [name, p, reportSeen, expected] of [
+  ['the engine is alive with no report', { alive: true, reports: 0 }, false, 'wait'],
+  ['a report first seen while it is alive (its digests follow)', { alive: true, reports: 1 }, false, 'wait'],
+  ['a report seen a poll ago and it is still alive', { alive: true, reports: 1 }, true, 'done'],
+  ['it exited with a report', { alive: false, reports: 1 }, false, 'done'],
+  ['it exited without one', { alive: false, reports: 0 }, false, 'no-report'],
+  ['no pid file, a report', { alive: null, reports: 1 }, false, 'done'],
+  ['no pid file, no report', { alive: null, reports: 0 }, false, 'no-pid'],
 ]) {
   test(`pollDecision: ${name}`, () => {
-    assert.equal(pollDecision(p), expected);
+    assert.equal(pollDecision(p, reportSeen), expected);
   });
 }
 
-for (const [name, pid, offset, expected] of [
-  ['a pid and an offset', 42, 10, /kill -0 42 .*reports'\/\*\.json.*tail -c \+11 '\/h\/\.local\/state\/ship-dag\/engine\/run1\/state\/logs\/orchestrator\.log'/s],
-  ['no pid (--collect-only)', undefined, 0, /^echo alive=0; .*tail -c \+1 /s],
-  ['a pid that is not a number', '4; rm -rf /', 0, /^echo alive=0; /],
+for (const [name, offset, expected] of [
+  ['from the start', 0, /tail -c \+1 '\/h\/\.local\/state\/ship-dag\/engine\/run1\/state\/logs\/orchestrator\.log' 2>\/dev\/null \| head -c 262144/],
+  ['from an offset', 10, /tail -c \+11 /],
+  ['the pid comes from the pid file host-run wrote at launch', 0, /^pid=\$\(cat '\/h\/\.local\/state\/ship-dag\/engine\/run1\/host-run\.pid' 2>\/dev\/null\); .*kill -0 "\$pid".*reports'\/\*\.json/s],
 ]) {
   test(`pollScript: ${name}`, () => {
-    assert.match(pollScript(stateDir, pid, offset), expected);
+    assert.match(pollScript(stateDir, offset), expected);
+  });
+}
+
+const sh = (script) => spawnSync('/bin/sh', ['-c', script], { encoding: 'utf8' });
+const scratch = () => mkdtempSync(join(tmpdir(), 'host-run-sh-'));
+
+for (const [name, command, status, pid] of [
+  ['a started engine records its pid', `echo 'Detached orchestrator (PID 4242)'; echo 'Log: /x'`, 0, '4242\n'],
+  ['a launch that prints no pid records none', 'echo started', 0, undefined],
+  ['an engine already running records none and keeps its exit', `echo 'Detached orchestrator already running (PID 5)' >&2; exit 1`, 1, undefined],
+]) {
+  test(`launchScript: ${name}`, () => {
+    const dir = scratch();
+    const r = sh(launchScript(command, `${dir}/${PID_FILE}`));
+    assert.equal(r.status, status);
+    assert.match(r.stdout, /orchestrator|started/);
+    assert.equal(existsSync(`${dir}/${PID_FILE}`) ? readFileSync(`${dir}/${PID_FILE}`, 'utf8') : undefined, pid);
+  });
+}
+
+for (const [name, pid, logBytes, expected] of [
+  ['a live pid, a log over the cap: one chunk of LOG_CHUNK bytes', String(process.pid), LOG_CHUNK * 5, { alive: true, reports: 1, size: LOG_CHUNK }],
+  ['a dead pid, a short log', '999999', 3, { alive: false, reports: 1, size: 3 }],
+  ['no pid file', undefined, 0, { alive: null, reports: 1, size: 0 }],
+]) {
+  test(`pollScript runs: ${name}`, () => {
+    const dir = scratch();
+    put(`${dir}/state`, 'reports/r.json', '{}');
+    put(`${dir}/state`, 'logs/orchestrator.log', 'x'.repeat(logBytes));
+    if (pid) writeFileSync(`${dir}/${PID_FILE}`, `${pid}\n`);
+    const r = spawnSync('/bin/sh', ['-c', pollScript(dir, 0)], { maxBuffer: LOG_CHUNK * 2 });
+    assert.equal(r.status, 0, String(r.stderr));
+    const p = parsePoll(r.stdout);
+    assert.deepEqual({ alive: p.alive, reports: p.reports, size: p.log.length }, expected);
   });
 }
 
@@ -83,7 +126,6 @@ for (const [name, text, expected] of [
 }
 
 const REPORT = '{"rows":[{"ref":"o/app#1","number":1,"wave":"2","status":"succeeded","prUrl":"https://github.com/o/app/pull/9","prNumber":9,"ran":true,"sessionIds":["s1"]}]}\n';
-const put = (root, rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
 const HAVE_RSYNC = spawnSync('rsync', ['--version']).status === 0;
 
 test('rsyncArgs: collects the per-issue and per-report files byte-identical and never the local engine\'s own files', { skip: !HAVE_RSYNC }, () => {
