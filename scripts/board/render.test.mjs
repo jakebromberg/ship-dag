@@ -63,9 +63,28 @@ test('renderBoard shows counts, the in-flight stage and note, and the wave build
   assert.match(html, /<b>1\/6<\/b><span>shipped<\/span>/, 'dropped tickets are left out of the total');
   assert.match(html, /Reviewed<\/span>/);
   assert.match(html, /One nit left\./);
-  assert.match(html, /Wave 4b · building now/);
-  // Ticket #4 is ready and also projects to wave 5, so the match is bounded to #3's own node.
-  assert.match(html, /data-ref="o\/r#3"(?:(?!data-ref)[\s\S])*?Wave 5</, 'the ticket waiting on wave 4b projects to wave 5');
+  assert.match(html, /Wave 4b is building now/);
+  // Step 2 holds only #3, which projects to wave 5: the row label says so and the card does not repeat it.
+  assert.match(html, /<span class="wv">wave 5<\/span>1 ticket · waits/, 'the ticket waiting on wave 4b projects to wave 5');
+});
+
+/** The card for one ticket, cut from its node to the next. */
+const card = (html, n) => html.split(`data-ref="${R(n)}"`)[1].split('data-ref=')[0];
+
+test('renderBoard shows no wave line on any card; the node carries the wave as its title', () => {
+  const html = renderBoard(view());
+  assert.doesNotMatch(html, /class="wn/);
+  assert.match(html, /data-ref="o\/r#2" title="Wave 4b"/, 'no "building now" suffix: the status chip shows what is in flight');
+  assert.match(html, /data-ref="o\/r#4" title="Wave 5"/);
+});
+
+test('renderBoard titles a ticket of yours as not an engine wave', () => {
+  const v = view();
+  const waves = new Map(v.waves);
+  waves.set(R(4), { label: null, now: false });
+  const html = renderBoard({ ...v, waves });
+  assert.match(html, /data-ref="o\/r#4" title="Yours, not an engine wave"/);
+  assert.doesNotMatch(html, /class="wn/);
 });
 
 test('renderBoard ships each edge once and no per-node ancestor or descendant sets', () => {
