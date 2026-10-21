@@ -5,6 +5,12 @@
 export const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
 
 /** `s` (coerced with String()) as one POSIX single-quoted shell word. */
+/** The output an ssh or rsync call may return: past the 1 MiB default for a large settings.json probe or a poll's log chunk. */
+export const SSH_MAX_BUFFER = 16 * 1024 * 1024;
+
+/** The `rsync -e` value: ssh with the same options as every other call. */
+export const RSYNC_SSH = ['ssh', ...SSH_OPTS].join(' ');
+
 export const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 /**
@@ -14,3 +20,13 @@ export const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
  * shell (`$SHELL -lc`) is not needed there; a host whose .zshenv lacks the PATH would need it added here, once.
  */
 export const remoteCommand = (cmd) => cmd;
+
+/** The printable command line that runs `command` on `alias` over ssh. */
+export const sshCommandLine = (alias, command) => `ssh ${SSH_OPTS.join(' ')} ${shQuote(alias)} ${shQuote(remoteCommand(command))}`;
+
+/**
+ * How a spawnSync-shaped result `r` failed to run, or undefined: `dropped` for ssh's own exit 255 or a call that hit
+ * its timeout (the connection, not the remote command), else the message of the error that stopped it (an overflowed
+ * buffer, a missing binary).
+ */
+export const callFailure = (r) => (r.status === 255 || r.error?.code === 'ETIMEDOUT' ? 'dropped' : r.error?.message);
