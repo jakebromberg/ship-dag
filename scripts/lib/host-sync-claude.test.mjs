@@ -44,14 +44,15 @@ function shellHost({ fresh = false, fail = () => false } = {}) {
     calls.push([cmd, ...args]);
     if (fail(cmd, args)) return { status: 23, stdout: '', stderr: 'boom' };
     if (cmd === 'git' || cmd === 'rsync') return { status: 0, stdout: '' };
-    if (args[1].includes('--print-settings-entry')) return { status: 0, stdout: JSON.stringify(entry) };
-    return spawnSync('sh', ['-c', args[1]], { encoding: 'utf8', input });
+    if (args.at(-1).includes('--print-settings-entry')) return { status: 0, stdout: JSON.stringify(entry) };
+    return spawnSync('sh', ['-c', args.at(-1)], { encoding: 'utf8', input });
   };
   return { home, dir, run, calls, host: { ssh: 'box', home } };
 }
 const base = { readFile: () => 'GLOBAL\n', localHome: '/m/.claude', now: () => new Date('2026-10-21T12:00:00Z') };
 const read = (f) => readFileSync(f, 'utf8');
-const sshCmds = (calls) => calls.filter((c) => c[0] === 'ssh').map((c) => c[2]);
+const sshCmds = (calls) => calls.filter((c) => c[0] === 'ssh').map((c) => c.at(-1));
+const BATCH = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
 
 test('a sync writes CLAUDE.md with a backup, merges settings, and a second run changes nothing', () => {
   const { dir, run, host } = shellHost();
@@ -119,7 +120,49 @@ test('rsync adds without deleting and skips the ship-dag symlink, .trash, .DS_St
   for (const ex of ['--exclude=/ship-dag', '--exclude=/.trash', '--exclude=.DS_Store', '--exclude=/linked']) assert.ok(args.includes(ex), ex);
   assert.ok(!args.includes('--exclude=/copied'));
   assert.ok(!args.some((a) => a.startsWith('--delete')));
+  assert.equal(args[args.indexOf('-e') + 1], `ssh ${BATCH.join(' ')}`, 'rsync connects without prompting and with a connect timeout');
 });
+
+test('every ssh call runs without prompting and with a connect timeout', () => {
+  const { run, calls, host } = shellHost();
+  syncClaude({ ...base, host, run });
+  const ssh = calls.filter((c) => c[0] === 'ssh');
+  assert.ok(ssh.length >= 3);
+  for (const c of ssh) assert.deepEqual(c.slice(1, 6), [...BATCH, 'box'], c.join(' '));
+});
+
+test('a failed write leaves the host file as it was and no .tmp behind', () => {
+  const { dir, run, host } = shellHost();
+  writeFileSync(join(dir, 'CLAUDE.md'), 'old\n');
+  chmodSync(join(dir, 'CLAUDE.md'), 0o400);
+  const { failures } = syncClaude({ ...base, host, run });
+  chmodSync(join(dir, 'CLAUDE.md'), 0o600);
+  assert.equal(failures.length, 1);
+  assert.ok(failures[0].startsWith('CLAUDE.md: '), failures[0]);
+  assert.equal(read(join(dir, 'CLAUDE.md')), 'old\n');
+  assert.ok(!existsSync(join(dir, 'CLAUDE.md.tmp')));
+});
+
+test('the .tmp staging file is readable by its owner only, and a new host file keeps the default mode', () => {
+  const { dir, run, host } = shellHost({ fresh: true });
+  // Drop the cleanup so the staging file can be inspected.
+  const keepTmp = (cmd, args, input) => run(cmd, [...args.slice(0, -1), args.at(-1).replace(/; s=\$\?; rm -f .*$/, '')], input);
+  assert.deepEqual(syncClaude({ ...base, host, run: keepTmp }).failures, []);
+  assert.equal(statSync(join(dir, 'CLAUDE.md.tmp')).mode & 0o777, 0o600);
+  assert.equal(read(join(dir, 'CLAUDE.md')), 'GLOBAL\n');
+  assert.equal(statSync(join(dir, 'CLAUDE.md')).mode & 0o777, 0o666 & ~process.umask());
+});
+
+for (const [name, porcelain, warns] of [['a dirty synced path warns', ' M CLAUDE.md\n', true], ['a clean synced path does not warn', '', false]]) {
+  test(`uncommitted changes: ${name}, and only the synced paths are checked`, () => {
+    const logs = [];
+    const calls = [];
+    const run = (cmd, args) => (calls.push([cmd, ...args]), { status: 0, stdout: cmd === 'git' ? porcelain : cmd === 'ssh' && args.at(-1).includes('--print-settings-entry') ? '{}' : '' });
+    syncClaude({ ...base, host: { ssh: 'box', home: '/h' }, run, log: (m) => logs.push(m) });
+    assert.deepEqual(calls.find((c) => c[0] === 'git'), ['git', '-C', '/m/.claude', 'status', '--porcelain', '--', 'CLAUDE.md', 'skills']);
+    assert.equal(logs.some((l) => l.startsWith('warning: ')), warns);
+  });
+}
 
 for (const [name, coHome, script] of [
   ['the host coHome', '/co', '/co/dist/src/cli-lease.js'],
@@ -127,7 +170,7 @@ for (const [name, coHome, script] of [
 ]) {
   test(`the lease entries are printed on the host under a login shell from ${name}`, () => {
     const calls = [];
-    const run = (cmd, args) => (calls.push([cmd, ...args]), { status: 0, stdout: cmd === 'ssh' && args[1].includes('--print-settings-entry') ? '{}' : '' });
+    const run = (cmd, args) => (calls.push([cmd, ...args]), { status: 0, stdout: cmd === 'ssh' && args.at(-1).includes('--print-settings-entry') ? '{}' : '' });
     syncClaude({ ...base, host: { ssh: 'box', home: '/h', coHome }, run });
     const print = sshCmds(calls).find((c) => c.includes('--print-settings-entry'));
     assert.equal(print, `exec "$SHELL" -lc 'node '\\''${script}'\\'' hook --print-settings-entry'`);
@@ -143,8 +186,8 @@ test('a command that cannot be started is reported per step with its error, with
 
 // Each step fails in turn; the steps after it must still run.
 for (const [name, fails] of [
-  ['CLAUDE.md', (cmd, args) => cmd === 'ssh' && args[1].includes('/.claude/CLAUDE.md')],
-  ['settings.json', (cmd, args) => cmd === 'ssh' && args[1].includes('--print-settings-entry')],
+  ['CLAUDE.md', (cmd, args) => cmd === 'ssh' && args.at(-1).includes('/.claude/CLAUDE.md')],
+  ['settings.json', (cmd, args) => cmd === 'ssh' && args.at(-1).includes('--print-settings-entry')],
   ['skills', (cmd) => cmd === 'rsync'],
 ]) {
   test(`a failing ${name} step is reported and the other steps still run`, () => {

@@ -5,6 +5,9 @@ import { coDistPathIn } from './co-home.mjs';
 
 const q = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
 
+// Never prompt for a password or host key, and give up on an unreachable host.
+const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
+
 // A lease hook runs `node '<…>/cli-lease.js' hook` (claude-orchestrator's `hook --print-settings-entry` output) or the
 // installed `claude-orchestrator-lease hook`.
 const isLeaseHook = (h) => /cli-lease\.js'?\s+hook\b|claude-orchestrator-lease\s+hook\b/.test(h?.command ?? '');
@@ -41,14 +44,18 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
   const changes = [];
   const failures = [];
   const ssh = (cmd, input) => {
-    const r = run('ssh', [host.ssh, cmd], input);
+    const r = run('ssh', [...SSH_OPTS, host.ssh, cmd], input);
     if (r.status !== 0) throw new Error(`${cmd}: ${r.stderr || r.error?.message}`);
     return r.stdout;
   };
   // '' only when the file is absent; any read error (permissions, a dangling symlink) fails the step.
   const get = (file) => ssh(`if [ -e ${q(file)} ] || [ -L ${q(file)} ]; then cat ${q(file)}; fi`);
-  // Written through the existing file, so a symlink stays a symlink and the file keeps its mode.
-  const put = (file, text) => ssh(`mkdir -p ${q(dir)} && cat > ${q(`${file}.tmp`)} && cat ${q(`${file}.tmp`)} > ${q(file)} && rm ${q(`${file}.tmp`)}`, text);
+  // Written through the existing file, so a symlink stays a symlink and the file keeps its mode. The staging copy is
+  // owner-only and removed whether or not the write succeeded.
+  const put = (file, text) => {
+    const tmp = q(`${file}.tmp`);
+    ssh(`mkdir -p ${q(dir)} && (umask 077 && cat > ${tmp}) && cat ${tmp} > ${q(file)}; s=$?; rm -f ${tmp}; exit $s`, text);
+  };
   const step = (name, fn) => {
     try {
       fn();
@@ -62,7 +69,9 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
     log(`${dryRun ? 'would ' : ''}${msg}`);
   };
 
-  if (run('git', ['-C', localHome, 'status', '--porcelain']).stdout?.trim()) log(`warning: ${localHome} has uncommitted changes; syncing the working tree`);
+  // Only the paths copied from here: the local settings.json is not read, and projects/ is always dirty.
+  const synced = ['CLAUDE.md', 'skills'];
+  if (run('git', ['-C', localHome, 'status', '--porcelain', '--', ...synced]).stdout?.trim()) log(`warning: ${localHome} has uncommitted changes in ${synced.join(' or ')}; syncing the working tree`);
 
   step('CLAUDE.md', () => {
     const file = `${dir}/CLAUDE.md`;
@@ -96,7 +105,7 @@ export function syncClaude({ host, run, readFile, localHome, dryRun = false, now
     const linked = ssh(`if [ -d ${q(skills)} ]; then cd ${q(skills)} && find . -mindepth 1 -maxdepth 1 -type l; fi`)
       .split('\n').filter(Boolean).map((l) => `--exclude=/${l.replace(/^\.\//, '')}`);
     const excludes = ['--exclude=/ship-dag', '--exclude=/.trash', '--exclude=.DS_Store', ...linked];
-    const args = ['-aL', '--itemize-changes', ...excludes, ...(dryRun ? ['-n'] : []), `${localHome}/skills/`, `${host.ssh}:${skills}/`];
+    const args = ['-aL', '--itemize-changes', '-e', `ssh ${SSH_OPTS.join(' ')}`, ...excludes, ...(dryRun ? ['-n'] : []), `${localHome}/skills/`, `${host.ssh}:${skills}/`];
     const r = run('rsync', args);
     if (r.status !== 0) throw new Error(r.stderr || r.error?.message);
     for (const line of r.stdout.split('\n').filter((l) => l.trim())) change(`skills: ${line}`);
