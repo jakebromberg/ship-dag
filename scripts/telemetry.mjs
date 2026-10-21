@@ -45,7 +45,9 @@
 //   node telemetry.mjs append '<json>'      # append one record (validates + stamps ts)
 //   node telemetry.mjs append @rec.json      # ...from a file
 //   node telemetry.mjs append -              # ...from stdin
-//   node telemetry.mjs report [--since ISO]  # print leading indicators (JSON + table)
+//   node telemetry.mjs report [--since ISO] [--min-sample N]
+//                                            # print leading indicators (JSON + table), in total, by complexity and by repo;
+//                                            # a repo under N reached rows (positive integer, default 20, else exit 2) shows its count, no rates
 //   node telemetry.mjs ingest-wave <stateDir>/state/reports/<id>.json [--outcomes <json|@file|->]
 //                                            # append a wave's records, derived from its engine artifacts;
 //                                            # exit 2: bad invocation or --outcomes, or a half-supplied
@@ -59,7 +61,7 @@
 //                                            # unreadable reports, and sidecar entries and configs no report matches
 //   node telemetry.mjs tripwires [--escapes <file>] [--now ISO]
 //                                            # evaluate references/tripwires.json against the current tuningVersion's
-//                                            # records: tripped, holding, insufficient-data or pending-instrumentation,
+//                                            # records (T-retro-approval reads the retro records, outside that window): tripped, holding, insufficient-data or pending-instrumentation,
 //                                            # with past-due review dates; T-escapes reads a saved `escapes` run
 //                                            # (--escapes), never GitHub, and T-coverage runs `audit` per run family
 //   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
