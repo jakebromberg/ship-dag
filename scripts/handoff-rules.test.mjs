@@ -58,7 +58,7 @@ test('step 5 reads a lease give-up before it reads non-convergence as point B', 
 
 test('step 4 documents recommendedHandoff in the preflight output', () => {
   const step4 = lines.find((l) => l.startsWith('**Resource preflight (beside'));
-  assert.match(step4, /prints `\{ action, reason, level, capacity, live, recommendedParallel, recommendedHandoff \}`/);
+  assert.match(step4, /prints `\{ action, reason, level, capacity, step, sessions, live, recommendedParallel, recommendedHandoff \}`/);
 });
 
 const copies = {
