@@ -36,8 +36,10 @@
 // scripts/lib/rate-limit.mjs) identifies the five-hour window as the cause,
 // so the eval harness can separate quota failures from model failures. The
 // engine's own stops, "memory-critical" and "lease-wait" (RESOURCE_STOPS in
-// scripts/lib/failure.mjs), are likewise infrastructure: implStatus "error"
-// beside a death, null beside a launch stop that never started.
+// scripts/lib/failure.mjs), and "engine-died" (the engine process died and its
+// report was rebuilt from its state files) are likewise infrastructure:
+// implStatus "error" beside a death, null beside a launch stop that never
+// started. report() tallies all three in resourceStops.
 //
 // Usage:
 //   node telemetry.mjs append '<json>'      # append one record (validates + stamps ts)
@@ -71,7 +73,7 @@ import { parseArgs } from 'node:util';
 import { readArg } from './lib/read-arg.mjs';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { INFRA_REASONS, RESOURCE_STOPS, ranOf } from './lib/failure.mjs';
+import { INFRA_REASONS, isResourceStop, ranOf } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
@@ -257,7 +259,7 @@ export function readRecords(path = telemetryPath()) {
  * failure) is likewise excluded from yield/byComplexity/triage-miss/bounce/
  * review-catch — it still counts toward the record total and HITL, and is
  * tallied separately in `quotaFailures`. So is an engine stop (`RESOURCE_STOPS`:
- * memory-critical, lease-wait), tallied in `resourceStops`.
+ * memory-critical, lease-wait) or an engine death (engine-died), tallied in `resourceStops`.
  * kind:"retro" records are excluded from every per-issue indicator (they are
  * pass-scoped, not issue-scoped) and aggregated into their own `retro` section.
  * `byRepo` groups the same population by repo (casing folded by `sameRepo`, keyed as first written); a repo with
@@ -272,7 +274,7 @@ export function report(records, { minSample = 20 } = {}) {
   // byComplexity breakdown), triage-miss, bounce rate, review-catch — so a
   // quota outage never dilutes those; it's counted instead in quotaFailures.
   const quotaFailures = issues.filter((r) => r.failureReason === 'rate-limited');
-  const resourceStops = issues.filter((r) => RESOURCE_STOPS.has(r.failureReason));
+  const resourceStops = issues.filter((r) => isResourceStop(r.failureReason));
   const modelIssues = issues.filter((r) => !INFRA_REASONS.has(r.failureReason));
   const reached = modelIssues.filter((r) => r.implStatus != null);
   const cleared = modelIssues.filter((r) => r.triageStatus === 'clear');
