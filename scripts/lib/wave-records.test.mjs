@@ -335,25 +335,36 @@ const FOUR = [round('', [finding('correctness'), finding('security'), finding('c
 const HAND = { runId: 'sd-20261008-1', repo: 'WXYC/dj-site', issue: 1, implStatus: 'error', finalState: 'deferred', failureReason: 'rate-limited' };
 // The `--outcomes` shape, and the one hand-written records carry: `<category> <file>:<line> <summary>`.
 const line = (f) => `${f.category} ${f.file}:${f.line} ${f.summary}`;
+// A derived record's finding: the gate's summary line with the structured category and verdict beside it.
+const found = (f) => ({ category: f.category, verdict: f.verdict, summary: line(f) });
 const pick = (r) => [r.implStatus, r.failureReason, r.finalState, r.pr];
 const blockedNoPr = row({ status: 'blocked', prNumber: null, prUrl: null });
 // [name, derive() args, derive() opts, check(records)]
 const contractCases = [
-  ['1 findings: the worst round\'s blocking summaries as strings, at most 3', { entry: entry({ blockOn: DEFAULT_BLOCK_ON }), rounds: FOUR, outcomes: { [REF]: { finalState: 'merged' } } }, {},
-    ([r]) => assert.deepEqual(r.findings, FOUR[0].review.findings.slice(0, 3).map(line))],
+  ['1 findings: every blocking finding of the worst round as {category, verdict, summary}, uncapped', { entry: entry({ blockOn: DEFAULT_BLOCK_ON }), rounds: FOUR, outcomes: { [REF]: { finalState: 'merged' } } }, {},
+    ([r]) => assert.deepEqual(r.findings, FOUR[0].review.findings.map(found))],
+  ['1 findings: more blocking findings than the gate lists inline are all recorded', { entry: entry({ blockOn: DEFAULT_BLOCK_ON }), rounds: [round('', Array.from({ length: 5 }, (_, i) => finding('correctness', { summary: `s${i}` })))], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {},
+    ([r]) => assert.deepEqual(r.findings.map((f) => f.summary), [0, 1, 2, 3, 4].map((i) => `correctness a.js:1 s${i}`))],
+  ['1 findings: an unknown category and a non-CONFIRMED verdict are recorded as the reviewer wrote them',
+    { rounds: [round('', [finding('test quality', { verdict: 'PLAUSIBLE' }), finding('', { verdict: undefined, file: null, line: null })])], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {},
+    ([r]) => assert.deepEqual(r.findings, [{ category: 'test quality', verdict: 'PLAUSIBLE', summary: 'test quality a.js:1 s' }, { category: null, verdict: null, summary: '(blank) s' }])],
+  ['1 findings: a nits-only round records no blocking findings', { rounds: [round('', [finding('efficiency'), finding('convention', { verdict: 'PLAUSIBLE' })])] }, {},
+    ([r]) => assert.deepEqual(r.findings, [])],
+  ['1 findings: --outcomes strings stay strings', { rounds: BLOCKED, outcomes: { [REF]: { finalState: 'merged', findings: ['correctness a.js:1 s'] } } }, {},
+    ([r]) => assert.deepEqual(r.findings, ['correctness a.js:1 s'])],
   ['1 findings: outcomes.findings wins', { rounds: BLOCKED, outcomes: { [REF]: { finalState: 'merged', findings: ['x'] } } }, {},
     ([r]) => assert.deepEqual(r.findings, ['x'])],
   ['1 findings: nits only is []', { rounds: [round('', [finding('efficiency')])] }, {}, ([r]) => assert.deepEqual(r.findings, [])],
   ['1 findings: of two blocking rounds, the later one\'s are listed (review finding 5)',
     { rounds: [round('', [finding('correctness', { summary: 'A' })]), round('.r2', [finding('correctness', { summary: 'B' })])], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {},
-    ([r]) => assert.deepEqual(r.findings, ['correctness a.js:1 B'])],
+    ([r]) => assert.deepEqual(r.findings, [found(finding('correctness', { summary: 'B' }))])],
   ['1 findings: an unreadable round before a blocking one does not hide its findings', { rounds: [round('', null), round('.r2', [finding('correctness')]), round('.r3', [])] }, {},
-    ([r]) => assert.deepEqual([r.reviewVerdict, r.findings], ['blocking', ['correctness a.js:1 s']])],
+    ([r]) => assert.deepEqual([r.reviewVerdict, r.findings], ['blocking', [found(finding('correctness'))]])],
   ['1 findings: an unreadable round after a blocking one does not empty its findings', { rounds: [round('', [finding('correctness')]), round('.r2', null)], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {},
-    ([r]) => assert.deepEqual([r.reviewVerdict, r.findings], ['blocking', ['correctness a.js:1 s']])],
+    ([r]) => assert.deepEqual([r.reviewVerdict, r.findings], ['blocking', [found(finding('correctness'))]])],
   ['1 findings: a field the gate leaves null is left out, a blank category named as the gate names it',
     { rounds: [round('', [finding('correctness', { line: null }), finding('', { file: null, line: null })])], outcomes: { [REF]: { finalState: 'blocked-hitl' } } }, {},
-    ([r]) => assert.deepEqual(r.findings, ['correctness a.js s', '(blank) s'])],
+    ([r]) => assert.deepEqual(r.findings.map((f) => f.summary), ['correctness a.js s', '(blank) s'])],
   ['2a a rate-limit death is deferred', { report: report([noPr]), digests: DIGEST }, {}, ([r]) => assert.deepEqual(pick(r), ['error', 'rate-limited', 'deferred', null])],
   ['2a a hand-written deferred/error death is not duplicated (review finding 1)', { report: report([noPr]), digests: DIGEST }, { existing: [HAND], reportId: 'w1' }, (rs) => assert.equal(rs.length, 0)],
   // A clean round on disk for the continuation's PR, which the death must not read.

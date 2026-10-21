@@ -44,7 +44,7 @@ const stoppedAtLaunch = (row, outcome) => row?.status === 'pending' && RESOURCE_
 // saying it never merged: point B left a find-pr row without one.
 const NOT_MERGED = new Set(['blocked-hitl', 'deferred', 'error']);
 const supplied = (row, outcome) => isPr(row.prNumber) || isPr(outcome?.pr) || NOT_MERGED.has(outcome?.finalState);
-/** A gate `blocking` entry as one string, the shape `--outcomes` takes and hand-written records carry; a field the gate left null is left out. */
+/** A gate `blocking` entry as one string, the shape `--outcomes` takes and hand-written records carry, and the `summary` of a derived finding; a field the gate left null is left out. */
 const findingLine = ({ category, file, line, summary }) => [category ?? '(blank)', file && (line == null ? file : `${file}:${line}`), summary].filter(Boolean).join(' ');
 
 /** One round's `{verdict, blocking}` (`classifyRound`): an unreadable round is `blocking` with nothing to list, and is warned about. */
@@ -264,7 +264,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         reviewVerdict: verdicts.length ? worst.verdict : null,
         reviewPath: refRounds.at(-1)?.path ?? null,
         failureReason,
-        findings: outcome.findings ?? worst.blocking.map(findingLine),
+        findings: outcome.findings ?? worst.blocking.map((b) => ({ category: b.category, verdict: b.verdict, summary: findingLine(b) })),
         bounces: Math.max(outcome.bounces ?? 0, bounced.filter(Boolean).length),
         hitl: { pointA: false, pointB: !!outcome.hitl?.pointB },
         // A stop is deferred, not abandoned: point E resumes it in place, or a filtered re-run starts it afresh.

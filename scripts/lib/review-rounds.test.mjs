@@ -92,3 +92,9 @@ test('classifyRound: reads a merge-order note against the repo the round file is
   assert.equal(classifyRound({ path, review: { findings: [note('o/r#99')] } }, ['contract']).verdict, 'nits-only');
   assert.equal(classifyRound({ path, review: { findings: [note('x/y#99')] } }, ['contract']).verdict, 'blocking');
 });
+
+test('classifyRound: lists every blocking finding, not the gate\'s inline window of MAX_LISTED', () => {
+  const findings = Array.from({ length: 5 }, (_, i) => ({ category: 'correctness', verdict: 'CONFIRMED', file: 'a.js', line: i, summary: 's' }));
+  const got = classifyRound({ path: join(reviewsDir([]), `${STEM}.json`), review: { findings } }, ['correctness']);
+  assert.deepEqual(got.blocking.map((b) => b.line), [0, 1, 2, 3, 4]);
+});

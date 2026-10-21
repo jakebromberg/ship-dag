@@ -62,6 +62,11 @@ test('normalizeRecord: accepts a boolean ran, and a record without one stays val
   for (const ran of ['false', 0, [], {}]) assert.throws(() => normalizeRecord(base({ ran }), FIXED), /bad ran/);
 });
 
+test('normalizeRecord: findings keep a mix of hand-written strings and derived objects', () => {
+  const findings = ['correctness a.js:1 s', { category: 'security', verdict: 'CONFIRMED', summary: 'security b.js:2 t' }];
+  assert.deepEqual(normalizeRecord(base({ findings }), FIXED).findings, findings);
+});
+
 test('normalizeRecord: point-A defer record — nullable downstream fields default to null', () => {
   const r = normalizeRecord(
     { runId: 'r', repo: 'WXYC/x', issue: 2, complexity: 'complex', triageStatus: 'needs-decision', path: 'inline', finalState: 'blocked-hitl', hitl: { pointA: true } },

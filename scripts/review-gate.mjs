@@ -343,7 +343,7 @@ export function issueRefFromPath(path) {
  *   disagreement throws rather than yielding a verdict
  * @param {string} [issueRef]  the issue's `owner/repo#N`, from `issueRefFromPath`
  */
-export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = undefined, issueRef = undefined) {
+export function gateReviewAll(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = undefined, issueRef = undefined) {
   if (!review || !Array.isArray(review.findings)) {
     throw new Error('review has no findings array — refusing to treat an unreadable review as clean');
   }
@@ -401,6 +401,7 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
     // does, rather than two spellings of one finding.
     const entry = {
       category: category || null,
+      verdict: String(f?.verdict ?? '').toUpperCase() || null,
       file: f?.file ?? null,
       line: f?.line ?? null,
       summary: f?.summary ?? null,
@@ -410,8 +411,7 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
     const wouldBlock = !known || (gate.has(category) && confirmed);
     if (isMergeOrder(note) && siblingOf(note.with, issueRef)) {
       if (!wouldBlock || (known && !ALWAYS_BLOCK.includes(category))) {
-        const verdict = String(f?.verdict ?? '').toUpperCase() || null;
-        mergeOrder.push({ ...entry, verdict, cleared: wouldBlock, with: note.with, obligation: note.obligation });
+        mergeOrder.push({ ...entry, cleared: wouldBlock, with: note.with, obligation: note.obligation });
         continue;
       }
     }
@@ -459,6 +459,7 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
     selfClearedCount: selfCleared.length,
     findingCount: review.findings.length,
     blocking: [...byRule, ...byTaxonomy].slice(0, MAX_LISTED),
+    allBlocking: [...byRule, ...byTaxonomy],
     selfCleared: selfCleared.slice(0, MAX_LISTED),
     unknownCategories: [...unknown],
     malformedBlocking: [...malformed].slice(0, MAX_LISTED),
@@ -468,6 +469,12 @@ export function gateReview(review, blockOn = DEFAULT_BLOCK_ON, expectFindings = 
     mergeOrder: [...mergeOrder.filter((n) => n.cleared), ...mergeOrder.filter((n) => !n.cleared)].slice(0, MAX_LISTED),
     malformedMergeOrder: [...malformedMergeOrder].slice(0, MAX_LISTED),
   };
+}
+
+/** `gateReviewAll` without the uncapped `allBlocking` list, which the printed result and a caller's JSON never carry. */
+export function gateReview(...args) {
+  const { allBlocking, ...result } = gateReviewAll(...args);
+  return result;
 }
 
 /**
