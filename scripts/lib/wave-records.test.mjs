@@ -745,6 +745,23 @@ for (const [name, kind, go] of [
     });
   }
 
+  // A marker holds only the stamped death of the run its restart followed: the config's latest report to start before it.
+  for (const [name, earlier, want] of [
+    // The stamped run's relaunch wrote no marker (a failed write, no deathStore, or a pre-#315 engine), and died in turn.
+    ['a first marker after a later relaunch of the stamped config is a new death',
+      [at([stamped]), { configName: 'ship-dag-sd-1', startedAt: '2026-10-08T19:45:00Z', finishedAt: '2026-10-08T19:50:00Z', issues: [] }],
+      [DEATH(B), [R2_TS, 'pushed', 'merged', null, 11]]],
+    // A report rebuilt by hand after the relaunch, whose finishedAt is the rebuild time: its run started before the marker.
+    ['a stamped report rebuilt after its relaunch is still the marker\'s death',
+      [{ ...at([stamped]), startedAt: '2026-10-08T19:00:00Z', finishedAt: '2026-10-08T20:30:00Z' }],
+      [[R2_TS, 'pushed', 'merged', null, 11]]],
+  ]) {
+    test(`engineDeaths: relaunch: ${name}`, () => {
+      const logged = earlier.flatMap((r, i) => deriveWaveRecords(r, { runId: RUN, issues: [] }, {}, {}, {}, { reportId: `s${i}`, warn: () => {} }).records);
+      assert.deepEqual(shape(later([{ ...merged, ...died(B) }], logged, earlier)), want);
+    });
+  }
+
   test('engineDeaths: markers are read oldest first whatever their order', () => {
     // Two stamped reports, each the run that died before one of the markers.
     const reports = ['2026-10-08T16:00:00Z', '2026-10-08T18:30:00Z'].map((finishedAt) => ({ ...at([stamped]), finishedAt }));
