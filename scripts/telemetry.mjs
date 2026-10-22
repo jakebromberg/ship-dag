@@ -21,6 +21,10 @@
 // carries over derives none; a record from before ran, and a hand-written one, have none.
 // complexitySource is "entry" (the wave's routing named the complexity) or "default" (it did
 // not, and `complexity` is the "normal" ingest-wave assumed); absent on older records.
+// skipReason is absent, null or "dependency" (SKIP_REASON_DEPENDENCY in scripts/lib/failure.mjs, an engine's dependency
+// skip); findings[] holds strings or {category: string|null, verdict: string|null, summary: string} objects. normalizeRecord
+// refuses anything else with `bad skipReason` / `bad findings` (naming the failing entry's index); readRecords does not
+// normalize, so older rows with other findings shapes stay readable.
 //   retro: { kind, ts, runId, wave, mergedPrs[], proposedRefactors, approvedRefactors,
 //            declinedRefactors, proposedAdjustments, approvedAdjustments,
 //            declinedAdjustments, filed[], adjusted[], declinedTitles[], tokens }
@@ -167,7 +171,9 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   if (rec.skipReason != null && rec.skipReason !== SKIP_REASON_DEPENDENCY) throw new Error(`bad skipReason: ${JSON.stringify(rec.skipReason)}`);
   const strOrNull = (v) => v === null || typeof v === 'string';
   const finding = (f) => typeof f === 'string' || (f && typeof f === 'object' && strOrNull(f.category) && strOrNull(f.verdict) && typeof f.summary === 'string');
-  if (rec.findings != null && !(Array.isArray(rec.findings) && rec.findings.every(finding))) throw new Error(`bad findings: ${JSON.stringify(rec.findings)}`);
+  if (rec.findings != null && !Array.isArray(rec.findings)) throw new Error(`bad findings: not an array: ${JSON.stringify(rec.findings)}`);
+  const badFinding = (rec.findings ?? []).findIndex((f) => !finding(f));
+  if (badFinding >= 0) throw new Error(`bad findings: entry ${badFinding} is ${JSON.stringify(rec.findings[badFinding])}`);
   validateCost(rec.cost);
   return {
     ...rec,

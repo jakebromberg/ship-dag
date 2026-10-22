@@ -1,6 +1,6 @@
 // log-order.mjs — the one ordering of telemetry records by `ts`, and the one latest-record-per-ref fold built on it.
 import { issueKey } from './ref.mjs';
-import { INFRA_REASONS } from './failure.mjs';
+import { INFRA_REASONS, SKIP_REASON_DEPENDENCY } from './failure.mjs';
 
 const tsOf = (r) => { const t = Date.parse(r.ts); return Number.isNaN(t) ? -Infinity : t; };
 
@@ -11,13 +11,13 @@ export const byTs = (a, b) => (tsOf(a) === tsOf(b) ? 0 : tsOf(a) < tsOf(b) ? -1 
 export const latestByRef = (records) => new Map(records.filter((r) => r.kind !== 'retro').sort(byTs).map((r) => [issueKey(r), r]));
 
 /**
- * What a ref's latest record means, as one of `merged`, `skipped` (an engine skip of a dependent, `skipReason: "dependency"`, even when `--outcomes` marked it blocked-hitl),
+ * What a ref's latest record means, as one of `merged`, `skipped` (an engine skip of a dependent, `skipReason: SKIP_REASON_DEPENDENCY`, even when `--outcomes` marked it blocked-hitl),
  * `engine-died` (a deferral with `failureReason: "engine-died"` and `implStatus: "error"`; a point-F hold keeps the reason but not the status),
  * `infra-stopped` (any other `INFRA_REASONS` stop), `maintainer-deferred` (an unmarked deferral) or `failed`. Only `merged` and `maintainer-deferred` are resolved.
  */
 export const outcomeOf = (r) => {
   if (r.finalState === 'merged') return 'merged';
-  if (r.skipReason === 'dependency') return 'skipped';
+  if (r.skipReason === SKIP_REASON_DEPENDENCY) return 'skipped';
   if (r.failureReason === 'engine-died' && r.implStatus === 'error' && r.finalState === 'deferred') return 'engine-died';
   if (INFRA_REASONS.has(r.failureReason)) return 'infra-stopped';
   return r.finalState === 'deferred' && !r.skipReason ? 'maintainer-deferred' : 'failed';

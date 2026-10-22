@@ -20,14 +20,14 @@
 // The exception is a `pending` row the engine stopped at launch, or never launched before it died (a `RESOURCE_ROUTE` failureReason): it is
 // recorded only once `--outcomes` gives it a `finalState`, because the user deferred it or stopped the run.
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
-import { INFRA_REASONS, RESOURCE_ROUTE, ranOf, routeFailure } from './failure.mjs';
+import { INFRA_REASONS, RESOURCE_ROUTE, ranOf, routeFailure, SKIP_REASON_DEPENDENCY } from './failure.mjs';
 import { isPr, parsePr, parseRef, sameRepo } from './ref.mjs';
 import { classifyRound } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
-/** The one `skipReason` an engine stamps: it deferred the issue because a dependency had not merged. A closed set with absent and null; `normalizeRecord` refuses the rest. */
-export const SKIP_REASON_DEPENDENCY = 'dependency';
+/** `skipReason` for an engine's dependency skip, defined in `failure.mjs` beside `INFRA_REASONS` so `log-order.mjs` reads the same constant. */
+export { SKIP_REASON_DEPENDENCY };
 
 /**
  * A refusal to derive records from the artifacts handed in, as distinct from a bug. `kind` is the
