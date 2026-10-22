@@ -137,7 +137,7 @@ then run it:
 | | `2` | usage: fix the command |
 | | `3` | unreachable before any engine started: the same escalation-policy entry (run its issues locally / wait / defer) |
 | | `4` | `--max-wait` passed with the engine still running, not a failure: run the printed `--collect-only` command |
-| | `255` | ssh dropped after the launch, so the engine may still be running: run the printed `--collect-only` command |
+| | `255` | ssh dropped, or a local error (a full disk) threw, after the launch, so the engine may still be running: run the printed `--collect-only` command |
 
 On a `4` or `255` you never run that host's issues locally, which would race the remote engine for the same branches. Only `3` (and a refused or failed `host-sync-claude`/`host-prepare`, where nothing was launched) offers it.
 5. **Retries and the summary.** Step 5's retries and `resource` route re-run an issue on the host it first ran on, read from its wave sidecar line's `host` field (not inferred), unless the operator moves it. A filtered re-run of a remote row is a new `--by-host` emit into its own suffixed dir (a fresh `$WAVE_DIR`, such as `<RUN_ID>-w<W>b`), then item 3 for that host in full: the real `host-sync-claude.mjs`, `host-prepare.mjs` again (it places `config.json` in the host state dir), the host's `host-run.mjs --preflight`, then `host-run.mjs`. The run summary names the host for each issue.

@@ -3,7 +3,7 @@
 // origin, and place the host's config at <stateDir>/config.json, <stateDir> being the config's configDir less its
 // trailing /state (emit-config writes no stateDir field). Never updates ship-dag or the orchestrator, and never
 // touches an existing checkout's working tree. Refusals exit 1 naming the fix; a second run changes nothing. Exits 0
-// when the host is ready, 1 on a refusal or a failed call, 2 on usage and 3 when the host is unreachable at the probe,
+// when the host is ready, 1 on a refusal or a failed call, 2 on usage (an unknown option, a missing argument, an unknown host) and 3 when the host is unreachable at the probe,
 // before anything on it changed.
 //
 // Usage: node host-prepare.mjs <host> <config.<host>.json> [--dry-run] [--min-free-gb N]
@@ -22,7 +22,7 @@ import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { loadProfiles } from './lib/ci-profile.mjs';
 import { loadHosts } from './lib/hosts.mjs';
 import { configToolchains } from './lib/split-by-host.mjs';
-import { EXIT, SSH_MAX_BUFFER, SSH_OPTS, callFailure, remoteCommand } from './lib/remote.mjs';
+import { EXIT, SSH_MAX_BUFFER, SSH_OPTS, UsageError, asUsage, callFailure, remoteCommand, runCli } from './lib/remote.mjs';
 import { configStateDir, planHost, probeScript, parseProbe } from './lib/host-prepare.mjs';
 import { isMain } from './lib/is-main.mjs';
 
@@ -49,7 +49,7 @@ export const layoutReposDir = (env = process.env) => reposDirFromEnv(env) ?? DEF
  * read-only probe and `EXIT.failure` for anything else, a drop after the first plan action included.
  */
 export function prepareHost({ name, hosts, config, configPath, local, run, minFreeGb, dryRun, log, reposDir, profiles = {} }) {
-  if (!Object.hasOwn(hosts, name)) throw new Error(`unknown host ${JSON.stringify(name)}; known: ${Object.keys(hosts).join(', ') || 'none'}`);
+  if (!Object.hasOwn(hosts, name)) throw new UsageError(`unknown host ${JSON.stringify(name)}; known: ${Object.keys(hosts).join(', ') || 'none'}`);
   const host = hosts[name];
   let changing = false;
   const call = (step, fn, ...args) => {
@@ -73,22 +73,20 @@ export function prepareHost({ name, hosts, config, configPath, local, run, minFr
   return 0;
 }
 
-/** The CLI: returns the exit code, or throws an error whose `exitCode` is the one to exit with. `hosts` and `run` default to the registry (read after the arguments are checked) and the real runner. */
-export function main(argv, { hosts, run = realRunner() } = {}) {
+/** The CLI: returns the exit code, or throws (a `UsageError`, or an error whose `exitCode` is the one to exit with). `hosts` and `run` default to the registry (read after the arguments are checked) and the real runner; `err(text)` receives the progress log. */
+export function main(argv, { hosts, loadHosts: load = loadHosts, run = realRunner(), err = (s) => process.stderr.write(s) } = {}) {
   const unknown = argv.find((a) => a.startsWith('--') && !['--dry-run', '--min-free-gb'].includes(a));
-  if (unknown) throw new Error(`unknown option ${unknown}; ${USAGE}`);
+  if (unknown) throw new UsageError(`unknown option ${unknown}; ${USAGE}`);
   const [name, configPath] = argv.filter((a, i) => !a.startsWith('--') && !['--min-free-gb'].includes(argv[i - 1]));
-  if (!name || !configPath) throw new Error(USAGE);
-  const minFreeGb = stringOption(argv, '--min-free-gb') === undefined ? 10 : parseNumberOption('min-free-gb', stringOption(argv, '--min-free-gb'), { min: 0 });
+  if (!name || !configPath) throw new UsageError(USAGE);
+  const minFreeGb = asUsage(() => (stringOption(argv, '--min-free-gb') === undefined ? 10 : parseNumberOption('min-free-gb', stringOption(argv, '--min-free-gb'), { min: 0 })));
   const sdHome = fileURLToPath(new URL('..', import.meta.url));
   const local = { sdSha: git(sdHome, 'rev-parse', 'HEAD'), coSha: git(coHome(), 'rev-parse', 'HEAD'), claudeHash: sha256(`${homedir()}/.claude/CLAUDE.md`) };
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  return prepareHost({ name, hosts: hosts ?? loadHosts(), config, configPath, local, run, minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => process.stderr.write(`${m}\n`), reposDir: layoutReposDir(), profiles: loadProfiles() });
+  return prepareHost({ name, hosts: hosts ?? load(), config, configPath, local, run, minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => err(`${m}\n`), reposDir: layoutReposDir(), profiles: loadProfiles() });
 }
 
-/** `main`'s exit code for `argv`: its return, or a thrown error's `exitCode` (usage when it has none) after `err` writes the error's message. */
-export function cli(argv, deps, err = (m) => process.stderr.write(`${m}\n`)) {
-  try { return main(argv, deps); } catch (e) { err(e.message); return e.exitCode ?? EXIT.usage; }
-}
+/** `main` under the shared entry wrapper: the exit code for `argv`, errors written to `deps.err`. */
+export const cli = (argv, deps) => runCli(main, argv, deps);
 
 if (isMain(import.meta.url)) process.exitCode = cli(process.argv.slice(2));

@@ -147,13 +147,63 @@ for (const [name, error, expected] of [['ssh exit 255 (an unreachable host)', ex
     process.env.CO_HOME = fileURLToPath(new URL('..', import.meta.url));
     try {
       const lines = [];
-      assert.equal(cli(['box', configPath], { hosts, run: { ssh: () => { throw error; }, scp() {} } }, (m) => lines.push(m)), expected);
+      assert.equal(cli(['box', configPath], { hosts, run: { ssh: () => { throw error; }, scp() {} }, err: (m) => lines.push(m) }), expected);
       assert.match(lines.join('\n'), /host-prepare: box: probe failed/);
     } finally {
       if (coHomeWas === undefined) delete process.env.CO_HOME; else process.env.CO_HOME = coHomeWas;
     }
   });
 }
+
+// Usage errors exit 2 and anything else that throws without an exitCode exits 1; the progress log goes through `err`, so the test sees every line.
+const goodArgs = ['box', configPath];
+const bad = join(dir, 'bad.json');
+writeFileSync(bad, '{not json');
+for (const [name, argv, deps, expected, shown] of [
+  ['an unknown option', [...goodArgs, '--dryrun'], { hosts }, 2, /unknown option --dryrun/],
+  ['a missing host and config', [], { hosts }, 2, /^usage: host-prepare/],
+  ['a missing config', ['box'], { hosts }, 2, /^usage: host-prepare/],
+  ['--min-free-gb without a value', [...goodArgs, '--min-free-gb'], { hosts }, 2, /--min-free-gb/],
+  ['an unknown host', ['nope', configPath], { hosts }, 2, /unknown host "nope"; known: box/],
+  ['a missing config file', ['box', join(dir, 'absent.json')], { hosts }, 1, /ENOENT/],
+  ['a config that is not JSON', ['box', bad], { hosts }, 1, /JSON/],
+  ['an invalid hosts.json', goodArgs, { hosts: undefined, loadHosts: () => { throw new Error('hosts.json: bad'); } }, 1, /hosts\.json: bad/],
+  ['a runner that throws a plain Error', goodArgs, { hosts, run: { ssh: () => { throw new Error('plain'); }, scp() {} } }, 1, /probe failed: plain/],
+]) {
+  test(`the CLI exits ${expected} for ${name}`, () => {
+    const coHomeWas = process.env.CO_HOME;
+    process.env.CO_HOME = fileURLToPath(new URL('..', import.meta.url));
+    try {
+      const lines = [];
+      assert.equal(cli(argv, { ...deps, err: (m) => lines.push(m) }), expected);
+      assert.match(lines.join(''), shown);
+    } finally {
+      if (coHomeWas === undefined) delete process.env.CO_HOME; else process.env.CO_HOME = coHomeWas;
+    }
+  });
+}
+
+test('a failing local git rev-parse exits 1, not as a usage error', () => {
+  const coHomeWas = process.env.CO_HOME;
+  process.env.CO_HOME = dir;
+  try {
+    assert.equal(cli(goodArgs, { hosts, err() {} }), 1);
+  } finally {
+    if (coHomeWas === undefined) delete process.env.CO_HOME; else process.env.CO_HOME = coHomeWas;
+  }
+});
+
+test('the progress log writes through err', () => {
+  const coHomeWas = process.env.CO_HOME;
+  process.env.CO_HOME = fileURLToPath(new URL('..', import.meta.url));
+  try {
+    const lines = [];
+    cli(goodArgs, { hosts, run: { ssh: () => { throw execError({ status: 255 }); }, scp() {} }, err: (m) => lines.push(m) });
+    assert.ok(lines.includes('host-prepare: box: probe\n'), lines.join('|'));
+  } finally {
+    if (coHomeWas === undefined) delete process.env.CO_HOME; else process.env.CO_HOME = coHomeWas;
+  }
+});
 
 // A wave that needs xcode (declared by the repo's profile, since its command hides xcodebuild) probes Xcode on the host.
 const iosHosts = { box: testHost('/h', { toolchains: ['node', 'xcode'] }) };
