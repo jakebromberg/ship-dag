@@ -19,7 +19,9 @@ import { reposDirFromEnv } from './engine/repos-dir.mjs';
 import { DEFAULT_REPOS_DIR, repoDirName } from './engine/repo-layout.mjs';
 import { coHome } from './lib/co-home.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
+import { loadProfiles } from './lib/ci-profile.mjs';
 import { loadHosts } from './lib/hosts.mjs';
+import { toolchainsNeeded } from './lib/split-by-host.mjs';
 import { EXIT, SSH_MAX_BUFFER, SSH_OPTS, callFailure, remoteCommand } from './lib/remote.mjs';
 import { configStateDir, planHost, probeScript, parseProbe } from './lib/host-prepare.mjs';
 import { isMain } from './lib/is-main.mjs';
@@ -46,7 +48,7 @@ export const layoutReposDir = (env = process.env) => reposDirFromEnv(env) ?? DEF
  * line. A failed call throws an error naming the host and step, whose `exitCode` is `EXIT.unreachable` for a drop at the
  * read-only probe and `EXIT.failure` for anything else, a drop after the first plan action included.
  */
-export function prepareHost({ name, hosts, config, configPath, local, run, minFreeGb, dryRun, log, reposDir }) {
+export function prepareHost({ name, hosts, config, configPath, local, run, minFreeGb, dryRun, log, reposDir, profiles = {} }) {
   if (!Object.hasOwn(hosts, name)) throw new Error(`unknown host ${JSON.stringify(name)}; known: ${Object.keys(hosts).join(', ') || 'none'}`);
   const host = hosts[name];
   let changing = false;
@@ -57,8 +59,9 @@ export function prepareHost({ name, hosts, config, configPath, local, run, minFr
     }
   };
   const repos = Object.keys(config.repos ?? {}).map((repo) => ({ repo, name: repo.split('/').pop(), layoutDir: repoDirName(repo, { reposDir }) }));
-  const probe = parseProbe(call('probe', run.ssh, probeScript(host, configStateDir(config), repos.map((r) => r.name))));
-  const { refusals, plan } = planHost({ name, host, config, configPath, repos, local: { ...local, configHash: sha256(configPath) }, probe, minFreeGb });
+  const needs = [...new Set(repos.flatMap(({ repo }) => toolchainsNeeded({ commands: config.repos[repo]?.postSessionCheck?.commands, toolchains: profiles[repo]?.toolchains }).toolchains))];
+  const probe = parseProbe(call('probe', run.ssh, probeScript(host, configStateDir(config), repos.map((r) => r.name), { xcode: needs.includes('xcode') })));
+  const { refusals, plan } = planHost({ name, host, config, configPath, repos, local: { ...local, configHash: sha256(configPath) }, probe, minFreeGb, needs });
   for (const r of refusals) log(r);
   if (refusals.length) return 1;
   for (const a of plan) {
@@ -80,7 +83,7 @@ export function main(argv, { hosts, run = realRunner() } = {}) {
   const sdHome = fileURLToPath(new URL('..', import.meta.url));
   const local = { sdSha: git(sdHome, 'rev-parse', 'HEAD'), coSha: git(coHome(), 'rev-parse', 'HEAD'), claudeHash: sha256(`${homedir()}/.claude/CLAUDE.md`) };
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  return prepareHost({ name, hosts: hosts ?? loadHosts(), config, configPath, local, run, minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => process.stderr.write(`${m}\n`), reposDir: layoutReposDir() });
+  return prepareHost({ name, hosts: hosts ?? loadHosts(), config, configPath, local, run, minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => process.stderr.write(`${m}\n`), reposDir: layoutReposDir(), profiles: loadProfiles() });
 }
 
 /** `main`'s exit code for `argv`: its return, or a thrown error's `exitCode` (usage when it has none) after `err` writes the error's message. */
