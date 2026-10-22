@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resumeMode } from './failure.mjs';
 import { testHost } from './host-fixture.mjs';
-import { LOG_CHUNK, PID_FILE, engineCommand, mirrorArgs, mirrorRecord, launchScript, leaseEnv, preflightCommand, outcome, parsePoll, parseReports, parseWorktree, worktreeScript, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './host-run.mjs';
+import { LOG_CHUNK, PID_FILE, engineCommand, mirrorArgs, launchScript, leaseEnv, preflightCommand, outcome, parsePoll, parseReports, parseWorktree, worktreeScript, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './host-run.mjs';
 
 const box = testHost();
 const big = testHost('/b', { coHome: '/b/co', sessionSlots: 3, leaseSlots: 5 }, 'big');
@@ -241,15 +241,3 @@ test('mirrorArgs copies only status/ and metadata/, never reports, so a mirror i
   assert.deepEqual(args.filter((a) => a.startsWith('--include=')), ['--include=status/', '--include=status/**', '--include=metadata/', '--include=metadata/**']);
   assert.deepEqual(args.slice(-3), ['--exclude=*', 'a:/s/state/', '/l/state/']);
 });
-
-for (const [name, prev, ok, expected] of [
-  ['a read', null, true, { host: 'box', readAt: 'T2' }],
-  ['a read after a failure clears it', { host: 'box', readAt: 'T1', unreachableAt: 'T1b' }, true, { host: 'box', readAt: 'T2' }],
-  ['a failure keeps the last read', { host: 'box', readAt: 'T1' }, false, { host: 'box', readAt: 'T1', unreachableAt: 'T2' }],
-  ['a failure with no read yet', null, false, { host: 'box', readAt: null, unreachableAt: 'T2' }],
-  ['a failure after another host\'s record keeps none of it', { host: 'other', readAt: 'T1' }, false, { host: 'box', readAt: null, unreachableAt: 'T2' }],
-]) {
-  test(`mirrorRecord: ${name}`, () => {
-    assert.deepEqual(mirrorRecord(prev, 'box', ok, 'T2'), expected);
-  });
-}

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { cli as entry, hostRun, main, realRunner } from './host-run.mjs';
 import { readLatestUtilization } from './rate-limit-preflight.mjs';
 import { LOG_CHUNK, mirrorArgs, parsePoll, pollScript, preflightCommand, rsyncArgs, worktreeScript } from './lib/host-run.mjs';
+import { readMirror } from './lib/host-mirror.mjs';
 import { scopedEngineFixture } from './lib/engine-fixture.mjs';
 import { testHost } from './lib/host-fixture.mjs';
 
@@ -24,11 +25,11 @@ const MINUTE = 60_000;
 /** Run `hostRun` with `ssh` answering from `replies` in order (rsync with `rsyncReply`) on a clock only `sleep` moves; returns what it did. */
 async function go(replies, { rsyncReply = { status: 0, stderr: '' }, mirrorReply = { status: 0, stderr: '' }, ...opts } = {}) {
   // `rsync` holds the collects, `mirror` the waiting polls' copies of status/ and metadata/, `marks` each `record` call.
-  const calls = { ssh: [], rsync: [], mirror: [], marks: [], emitted: '', logged: [], slept: 0 };
+  const calls = { ssh: [], rsync: [], mirror: [], mirrorOpts: [], marks: [], emitted: '', logged: [], slept: 0 };
   let clock = 0;
   const run = {
     ssh: (alias, command) => (calls.ssh.push([alias, command]), replies.shift()),
-    rsync: (args) => (args.includes('--include=reports/') ? (calls.rsync.push(args), rsyncReply) : (calls.mirror.push(args), mirrorReply)),
+    rsync: (args, o) => (args.includes('--include=reports/') ? (calls.rsync.push(args), rsyncReply) : (calls.mirror.push(args), calls.mirrorOpts.push(o), mirrorReply)),
   };
   const code = await hostRun({
     name: 'box', host: box, stateDir, localState: '/l', run, emit: (t) => (calls.emitted += t), log: (m) => calls.logged.push(m),
@@ -58,6 +59,7 @@ test('each waiting poll mirrors the host\'s status/ and metadata/ into the local
   assert.equal(r.code, 0);
   assert.equal(r.mirror.length, 2);
   assert.deepEqual(r.mirror[0], mirrorArgs(`boxssh:${stateDir}/state/`, '/l/state/'));
+  assert.deepEqual(r.mirrorOpts[0], { timeout: 2 * MINUTE }, 'a best-effort copy never holds the wait for the collect\'s 10 minutes');
   assert.deepEqual(r.marks, [[true, '1970-01-01T00:00:00.000Z'], [true, '1970-01-01T00:01:00.000Z'], [true, '1970-01-01T00:02:00.000Z']]);
 });
 
@@ -66,6 +68,18 @@ test('a mirror that fails records the host as unreachable and logs it, but the w
   assert.equal(r.code, 0);
   assert.deepEqual(r.marks.map(([ok]) => ok), [false, true]);
   assert.match(r.logged.join('\n'), /could not copy the host's engine state for the board.*the wait goes on/);
+});
+
+test('a failed final collect records the read as failed, so the board does not show the last copy as current', async () => {
+  const r = await go([FRESH, LAUNCHED, poll(1, 0), poll(0, 1)], { rsyncReply: { status: 23, stderr: '' } });
+  assert.equal(r.code, 1);
+  assert.deepEqual(r.marks.map(([ok]) => ok), [true, false]);
+});
+
+test('a local throw after the launch records the read as failed before exiting 255', async () => {
+  const r = await go([FRESH, LAUNCHED, poll(1, 0)], { sleep: async () => { throw new Error('boom'); } });
+  assert.equal(r.code, 255);
+  assert.deepEqual(r.marks.map(([ok]) => ok), [true, false]);
 });
 
 test('a dropped poll records the host as unreachable before exiting 255', async () => {
@@ -280,7 +294,7 @@ async function cli(args, replies, { hosts = { box }, log, relativePaths = false,
   const path = (p) => (relativePaths ? relative(process.cwd(), p) : p);
   const code = await main(['box', path(config), '--state', path(state), ...args], { hosts, run, out: (s) => (out += s), err: (s) => (err += s), sleep: async () => {}, ...(profiles && { profiles }) });
   const logPath = join(state, 'host-box.log');
-  return { code, out, err, stateMade: existsSync(state), log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined };
+  return { code, out, err, state, stateMade: existsSync(state), log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined };
 }
 
 for (const [name, args, replies, log, expected] of [
@@ -295,6 +309,15 @@ for (const [name, args, replies, log, expected] of [
     assert.equal(r.log, expected);
   });
 }
+
+test('main: a waiting run leaves <state>/host-mirror.json as the board reads it, naming the host and the last copy', async () => {
+  const r = await cli([], [FRESH, LAUNCHED, poll(1, 0), poll(0, 1)]);
+  assert.equal(r.code, 0, r.err);
+  const m = readMirror(r.state);
+  assert.equal(m.host, 'box');
+  assert.ok(Number.isFinite(Date.parse(m.readAt)), JSON.stringify(m));
+  assert.equal(m.unreachableAt, undefined);
+});
 
 test('main: --preflight prints the JSON with no host prefix, so the caller can parse it', async () => {
   const r = await cli(['--preflight', '--parallel', '3'], [{ status: 0, stdout: '{"action":"proceed"}\n', stderr: '' }]);
