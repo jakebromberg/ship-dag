@@ -2,7 +2,7 @@
 // telemetry.mjs — append-only run log for /ship-dag + a leading-indicator report.
 //
 // Every issue that reaches a terminal-for-this-wave state emits one JSON record
-// (schema below). The log is append-only and lives OUTSIDE the ~/.claude repo
+// (schema in references/telemetry-schema.md). The log is append-only and lives OUTSIDE the ~/.claude repo
 // (under the XDG state dir) so collected run data can never be accidentally
 // committed. Pure aggregation math is imported from ./lib/stats.mjs; this file
 // owns only validation, the file I/O, and the CLI.
@@ -13,17 +13,6 @@
 // stamped when absent, so pre-existing logs stay valid) or "retro" (one run-scoped record per step-6.5 pass).
 // normalizeRecord refuses a bad `skipReason` / `findings` with `bad skipReason` / `bad findings`;
 // readRecords does not normalize, so older rows stay readable.
-// implStatus / ciStatus / reviewVerdict are nullable: an issue that stops at
-// HITL point A (needs-decision) never reaches implement, so it logs those null.
-// failureReason is also nullable — set to "rate-limited" alongside
-// implStatus: "error" when the wrapper (scripts/rate-limit-preflight.mjs /
-// scripts/lib/rate-limit.mjs) identifies the five-hour window as the cause,
-// so the eval harness can separate quota failures from model failures. The
-// engine's own stops, "memory-critical" and "lease-wait" (RESOURCE_STOPS in
-// scripts/lib/failure.mjs), and "engine-died" (the engine process died and its
-// report was rebuilt from its state files) are likewise infrastructure:
-// implStatus "error" beside a death, null beside a launch stop that never
-// started. report() tallies all three in resourceStops.
 //
 // Usage:
 //   node telemetry.mjs append '<json>'      # append one record (validates + stamps ts)
