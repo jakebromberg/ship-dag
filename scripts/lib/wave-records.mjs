@@ -122,22 +122,31 @@ const stopReasonOf = (row, digest) => {
 const legacyDeath = (r, event) => event.failureReason === 'engine-died' && Boolean(event.reportId) && r.reportId === event.reportId
   && sameRun(r.runId, event.runId) && sameRepo(r.repo, event.repo) && r.issue === event.issue
   && r.implStatus === 'error' && r.finalState === 'error' && r.failureReason == null;
-/** The `at` of each of `row`'s `engineDeaths` (claude-orchestrator#315), oldest first; an entry with no readable `at` is warned about and skipped. */
-const engineDeathsOf = (row, warn) => (Array.isArray(row.engineDeaths) ? row.engineDeaths : []).flatMap((d) => {
+/** The `at` of each of `row`'s `engineDeaths` (claude-orchestrator#315), sorted oldest first; an entry with no readable `at` is warned about and skipped. */
+const engineDeathsOf = (row, warn = () => {}) => (Array.isArray(row?.engineDeaths) ? row.engineDeaths : []).flatMap((d) => {
   if (Number.isFinite(Date.parse(d?.at))) return [d.at];
   warn(`${row.ref}: engineDeaths entry ${JSON.stringify(d)} has no readable at, not recorded`);
   return [];
-});
+}).sort((a, b) => Date.parse(a) - Date.parse(b));
+/**
+ * A predicate: whether a record is the death of one of `row`'s markers, an `engine-died` record dated by its `at`. That death
+ * is an earlier run's, never the row's own event, which sameEvent (blind to `ts`) cannot tell, nor its sessions.
+ */
+export const markerDeathOf = (row) => {
+  const times = new Set(engineDeathsOf(row).map(Date.parse));
+  return (rec) => rec.failureReason === 'engine-died' && times.has(Date.parse(rec.ts));
+};
 /**
  * Whether `records` already hold the death `rec` of a marker dated `rec.ts`, whose row's previous marker is dated `prevAt`
  * (undefined for the first). The engine writes a marker when it next starts, after the run that died, so the death is
  * a record of the same row dated by the same `at`, or a stamped `engine-died` record dated after the previous marker and
- * before this one: the report of the run that died. A later report re-lists every marker, so the same `at` recurs.
+ * before this one by a report of the same config (`stampTimes`, each report's `finishedAt || startedAt`): the report of
+ * the run that died. A later report re-lists every marker, so the same `at` recurs; another config keeps its own markers.
  */
-const deathHeld = (records, rec, prevAt) => {
+const deathHeld = (records, rec, prevAt, stampTimes) => {
   const at = Date.parse(rec.ts);
   const after = prevAt === undefined ? -Infinity : Date.parse(prevAt);
-  const dated = (t) => t === at || (t > after && t < at);
+  const dated = (t) => t === at || (t > after && t < at && stampTimes.has(t));
   return records.some((s) => s.failureReason === 'engine-died' && s.issue === rec.issue && sameRepo(s.repo, rec.repo) && sameRun(s.runId, rec.runId)
     && dated(Date.parse(s.ts)));
 };
@@ -170,7 +179,9 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest, earli
   const carried = carriedOver(row, earlier);
   // Whether a PR-less run of the row is the death of a stop (a row with a PR is gated, and reads its own PR).
   const dies = stopReason && implStatusOf(row, null) === 'error';
+  const markerDeath = markerDeathOf(row);
   return records.some((r) => {
+    if (markerDeath(r)) return false;
     const rp = isPr(row.prNumber) || !(findPr || (r.reportId === id && !dies)) ? null : parsePr(r.pr, repo);
     // A find-pr row's PR comes from --outcomes: a record whose PR value is no PR holds none of it, unless it is a merge, which
     // folds with any merge (sameEvent). Another repo's PR is told apart by sameEvent, which compares repos.
@@ -227,6 +238,8 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
 
   const seen = [...existing];
   const records = [];
+  // When each report of this config, this one and the earlier, was dated: a stamped death of one is what its relaunch's marker records.
+  const stampTimes = new Set([report, ...earlier].filter((r) => r?.configName === report?.configName).map((r) => Date.parse(r.finishedAt || r.startedAt)));
   for (const row of rows) {
     const m = parseRef(row.ref);
     const outcome = outcomes?.[row.ref] ?? {};
@@ -234,8 +247,6 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     const pr = isPr(row.prNumber) ? row.prNumber : isPr(outcome.pr) ? outcome.pr : null;
     const stopReason = stopReasonOf(row, digests?.[row.ref]);
     const skipped = row.status === 'skipped';
-    // A row a later report only carries over is its earlier report's event, which that report's ingest records, with its cost.
-    if (carriedOver(row, earlier)) continue;
     // One record of this row: `outcome` and `pr` are what the record reads, since a death resumed in place is the
     // row without them, and `reason` the stop (`stopReasonOf`) this record is the death of, if any. `diedAt` makes it
     // the death of an `engineDeaths` marker: whatever the row went on to do, a death never reached the gate.
@@ -301,6 +312,18 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       };
     };
 
+    // The engine's own record of each death (`engineDeaths`, claude-orchestrator#315) is the canonical death channel. Each
+    // marker is an earlier death than this report's own, so a stamped row's own death is recorded beside them, never folded in.
+    const ats = engineDeathsOf(row, warn);
+    ats.forEach((diedAt, i) => {
+      const rec = build({}, null, null, diedAt);
+      if (deathHeld(seen, rec, ats[i - 1], stampTimes)) return;
+      seen.push(rec);
+      records.push(rec);
+    });
+    const markerDeath = markerDeathOf(row);
+    // A row a later report only carries over is its earlier report's event, which that report's ingest records, with its cost.
+    if (carriedOver(row, earlier)) continue;
     // Point E emits the death at death time, apart from the continuation's record: when --outcomes shows a
     // continuation ran (its PR, or the point B it stalled at), the row is the death and the outcome is the
     // continuation, which carries no stop of its own. Without either, the outcome is the death's own, and
@@ -310,20 +333,9 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     // died; the continuation is a later resume (point E) started without CO_PRESSURE_OVERRIDE, so it never carries it.
     const death = resumed ? build({ pressureOverride: outcome.pressureOverride }, null, stopReason) : null;
     const { pressureOverride: _ranUnderOverride, ...continuation } = outcome;
-    // The engine's own record of each death (`engineDeaths`, claude-orchestrator#315) is the canonical death channel. Each
-    // marker is an earlier death than this report's own, so a stamped row's own death is recorded beside them, never folded in.
-    const ats = engineDeathsOf(row, warn);
-    ats.forEach((diedAt, i) => {
-      const rec = build({}, null, null, diedAt);
-      if (deathHeld(seen, rec, ats[i - 1])) return;
-      seen.push(rec);
-      records.push(rec);
-    });
-    // sameEvent is blind to ts, so a death dated by one of the row's markers is never the row's own event.
-    const marked = new Set(ats.map(Date.parse));
     const own = death?.failureReason ? [death, build(continuation, pr, null)] : [build(outcome, pr, stopReason)];
     for (const rec of own) {
-      if (seen.some((s) => !(s.failureReason === 'engine-died' && marked.has(Date.parse(s.ts))) && sameEvent(s, rec))) continue;
+      if (seen.some((s) => !markerDeath(s) && sameEvent(s, rec))) continue;
       seen.push(rec);
       records.push(rec);
     }
