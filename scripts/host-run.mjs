@@ -19,7 +19,7 @@
 // (commits ahead of origin/<base>, as SKILL.md step 5 reads them): 0 when it read (a missing worktree is `exists: false`), 3 when
 // ssh dropped, 1 when the read failed; it launches nothing, so no failure of it is a 255.
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadProfiles } from './lib/ci-profile.mjs';
@@ -28,8 +28,9 @@ import { configToolchains } from './lib/split-by-host.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { EXIT, SSH_MAX_BUFFER, SSH_OPTS, UsageError, asUsage, callFailure, remoteCommand, runCli, shQuote, sshCommandLine } from './lib/remote.mjs';
 import { configStateDir } from './lib/host-prepare.mjs';
-import { DETACHED, LOG_CHUNK, MIRROR_FILE, PID_FILE, RSYNC_SAFE_PATH, engineCommand, mirrorArgs, mirrorRecord, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, preflightCommand, prefixLines, reportsScript, rsyncArgs, parseWorktree, worktreeScript } from './lib/host-run.mjs';
+import { DETACHED, LOG_CHUNK, PID_FILE, RSYNC_SAFE_PATH, engineCommand, mirrorArgs, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, preflightCommand, prefixLines, reportsScript, rsyncArgs, parseWorktree, worktreeScript } from './lib/host-run.mjs';
 import { isMain } from './lib/is-main.mjs';
+import { writeMirror } from './lib/host-mirror.mjs';
 
 const USAGE = 'usage: host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan | --preflight | --collect-only | --worktree <path> --base <branch>]';
 const MINUTE = 60_000;
@@ -38,13 +39,13 @@ const CALL_MS = 2 * MINUTE;
 const MAX_WAIT_MINUTES = 360;
 
 /**
- * The real runner: `ssh(alias, command)` (stdout and stderr as Buffers) and `rsync(args)`, each returning spawnSync's
+ * The real runner: `ssh(alias, command)` (stdout and stderr as Buffers) and `rsync(args, {timeout})` (default 10 minutes), each returning spawnSync's
  * `{ status, stdout, stderr, error }` and never throwing. A call past its timeout or buffer has `status: null` and an
  * `error` whose `code` is `ETIMEDOUT` or `ENOBUFS`.
  */
 export const realRunner = () => ({
   ssh: (alias, command) => spawnSync('ssh', [...SSH_OPTS, alias, remoteCommand(command)], { timeout: CALL_MS, maxBuffer: SSH_MAX_BUFFER }),
-  rsync: (args) => spawnSync('rsync', args, { encoding: 'utf8', timeout: 10 * MINUTE, maxBuffer: SSH_MAX_BUFFER }),
+  rsync: (args, { timeout = 10 * MINUTE } = {}) => spawnSync('rsync', args, { encoding: 'utf8', timeout, maxBuffer: SSH_MAX_BUFFER }),
 });
 
 /**
@@ -57,7 +58,8 @@ export const realRunner = () => ({
  * refuses to start when the host state dir already holds a report, since the wait could not tell it from this run's;
  * `--collect-only` resumes the recorded launch whatever the dir holds. While it waits, each poll that finds the engine
  * running also copies the host's `status/` and `metadata/` into `<localState>/state/` (`mirrorArgs`), for the status
- * board; `record(ok, at)` is told of each copy, the final collect included, and of a poll that failed (`ok` false).
+ * board; `record(ok, at)` is told of each copy, the final collect included, and of a poll that failed or a throw after
+ * the launch (`ok` false).
  */
 export async function hostRun(args) {
   let launched = false;
@@ -65,6 +67,7 @@ export async function hostRun(args) {
     return await drive(args, () => { launched = true; });
   } catch (e) {
     if (!launched) throw e;
+    try { args.record?.(false, new Date((args.now ?? Date.now)()).toISOString()); } catch { /* the exit below matters more */ }
     // The engine may be running: never relaunch, resume with --collect-only.
     const o = outcome(args.name, 'stopped', { reattach: args.reattach, collect: args.collect, detail: e.message });
     args.log(o.message);
@@ -141,7 +144,8 @@ async function drive({ name, host, stateDir, localState, parallel, oneAtATime = 
     offset += chunk.length;
     if (more) continue;
     if (decision !== 'wait') break;
-    const m = run.rsync(mirrorArgs(`${host.ssh}:${stateDir}/state/`, `${localState}/state/`));
+    // A best-effort copy for the board: a short timeout, so a stalled link never holds the wait for long.
+    const m = run.rsync(mirrorArgs(`${host.ssh}:${stateDir}/state/`, `${localState}/state/`), { timeout: CALL_MS });
     const why = callFailure(m) ?? (m.status !== 0 ? `rsync exited ${m.status}: ${m.stderr}` : undefined);
     record(!why, new Date(now()).toISOString());
     if (why) log(`host-run: ${name}: could not copy the host's engine state for the board (${why}); the wait goes on`);
@@ -151,7 +155,7 @@ async function drive({ name, host, stateDir, localState, parallel, oneAtATime = 
   }
   // Unquoted: stateDir holds only RSYNC_SAFE_PATH characters, checked above.
   const c = run.rsync(rsyncArgs(`${host.ssh}:${stateDir}/state/`, `${localState}/state/`));
-  if (!callFailure(c) && c.status === 0) record(true, new Date(now()).toISOString());
+  record(!callFailure(c) && c.status === 0, new Date(now()).toISOString());
   return halted('rsync', c) ?? (c.status === 0 ? finish(decision) : finish('failed', `rsync exited ${c.status}: ${c.stderr}`));
 }
 
@@ -194,8 +198,6 @@ export async function main(argv, { hosts, loadHosts: load = loadHosts, run = rea
   const plan = mode === 'plan';
   const readOnly = ['plan', 'preflight', 'worktree'].includes(mode);
   const logPath = `${state}/host-${name}.log`;
-  const mirrorPath = `${state}/${MIRROR_FILE}`;
-  const prevMirror = () => { try { return JSON.parse(readFileSync(mirrorPath, 'utf8')); } catch { return null; } };
   if (!readOnly) mkdirSync(state, { recursive: true });
   // Before hostRun: nothing is launched, so a failed read exits 1 through runCli and never routes to --collect-only.
   if (mode === 'worktree') return readWorktree(host, worktree, base, run, out, err);
@@ -211,7 +213,8 @@ export async function main(argv, { hosts, loadHosts: load = loadHosts, run = rea
     // For the board (board/remote.mjs): which host the collected dir's state/ came from, and how fresh it is.
     // A record that cannot be written costs the board its freshness note, never the wait.
     record: (ok, at) => {
-      try { writeFileSync(mirrorPath, `${JSON.stringify(mirrorRecord(prevMirror(), name, ok, at))}\n`); } catch (e) { err(`host-run: ${name}: could not write ${mirrorPath}: ${e.message}\n`); }
+      try { writeMirror(state, name, ok, at); } catch (e) { err(`host-run: ${name}: could not write the board's copy record in ${state}: ${e.message}
+`); }
     },
   });
 }

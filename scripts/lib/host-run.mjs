@@ -131,19 +131,6 @@ export const mirrorArgs = (src, dest) => [
   '--exclude=*', src, dest,
 ];
 
-/** The file, in the local collected dir, that says which host its `state/` was copied from and when (`mirrorRecord`). */
-export const MIRROR_FILE = 'host-mirror.json';
-
-/**
- * The `MIRROR_FILE` record after a copy at `at` (an ISO string) from host `name` that succeeded (`ok`) or failed:
- * `{host, readAt}`, the last successful copy (null before any), plus `unreachableAt` when the latest copy failed.
- * `prev` is the record before it, or null; a record of another host's is not carried over.
- */
-export function mirrorRecord(prev, name, ok, at) {
-  if (ok) return { host: name, readAt: at };
-  return { host: name, readAt: prev?.host === name ? prev.readAt ?? null : null, unreachableAt: at };
-}
-
 /**
  * `{ code, message }` for how a host run ended (codes are `EXIT`'s): `done` (a report was written; 0), `no-report` (the
  * engine exited without one; 1), `dropped` (the ssh connection dropped, 255, which says nothing about the engine, so the

@@ -328,6 +328,8 @@ for (const [name, letter, want] of [
     { mirror: { host: 'funland', readAt: READ_AT } }, { chip: /c-ready">Ready</, host: /on funland · read Oct 8, 1:25 PM PDT/ }],
   ['a remote row before the first copy stays queued, naming its host',
     {}, { chip: /c-ready">Ready</, host: /on funland · not read yet/ }],
+  ['a remote row collected with no mirror record still takes its stage from the collected status',
+    { status: 'failed' }, { chip: />Stalled</, host: /on funland · read time unknown/ }],
   ['a remote row on an unreachable host stays queued with the note, whatever its last copy said',
     { mirror: { host: 'funland', readAt: READ_AT, unreachableAt: '2026-10-08T20:26:00.000Z' }, status: 'running' }, { chip: /c-ready">Ready</, host: /on funland · host unreachable; stage unknown \(last read Oct 8, 1:25 PM PDT\)/ }],
 ]) {

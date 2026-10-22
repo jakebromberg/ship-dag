@@ -62,7 +62,8 @@ const chip = (status, stage) => {
 export const hostLine = (remote) => {
   if (!remote) return '';
   const last = remote.readAt ? formatPacific(remote.readAt) : '';
-  const read = remote.unreachable ? `host unreachable; stage unknown${last && ` (last read ${last})`}` : last ? `read ${last}` : 'not read yet';
+  const read = remote.unreachable ? `host unreachable; stage unknown${last && ` (last read ${last})`}`
+    : last ? `read ${last}` : remote.dir ? 'read time unknown' : 'not read yet';
   return html`<div class="host">on ${remote.host} · ${read}</div>`;
 };
 
