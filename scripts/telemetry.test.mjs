@@ -1867,7 +1867,6 @@ describe('report: byRepo', () => {
 describe('report: byRepo by complexity and finding category', () => {
   const rec = (repo, issue, over = {}) => normalizeRecord(base({ repo, issue, ...over }), FIXED);
   const block = (repo, issue, findings, over = {}) => rec(repo, issue, { finalState: 'blocked-hitl', reviewVerdict: 'blocking', bounces: 1, findings, ...over });
-  const f = (category) => ({ category, verdict: 'CONFIRMED', summary: `${category} s` });
 
   test('per-tier yield and catch, a thin tier keeps its count, infra rows are left out', () => {
     const recs = [
@@ -1891,20 +1890,47 @@ describe('report: byRepo by complexity and finding category', () => {
 
   test('counts object findings by category, (blank) and (other), and unstructured blocking records', () => {
     const recs = [
-      block('a/one', 1, [f('correctness'), f('correctness'), 'a string finding', f(null)]),
-      block('a/one', 2, [f('correctness'), f('made-up')]),
+      block('a/one', 1, [obj({ category: 'correctness' }), obj({ category: 'correctness' }), 'a string finding', obj({ category: null })]),
+      block('a/one', 2, [obj({ category: 'correctness' }), obj({ category: 'made-up' })]),
       block('a/one', 3, ['only a string']),
       block('a/one', 4, []),
-      rec('a/one', 5, { findings: [f('security')] }),
-      block('a/one', 6, [f('contract')], { failureReason: 'rate-limited', finalState: 'error', implStatus: 'error' }),
+      rec('a/one', 5, { findings: [obj({ category: 'security' })] }),
+      block('a/one', 6, [obj({ category: 'contract' })], { failureReason: 'rate-limited', finalState: 'error', implStatus: 'error' }),
     ];
     const e = report(recs, { minSample: 1 }).byRepo['a/one'];
     assert.deepEqual(e.findingCategories, { correctness: 3, '(blank)': 1, '(other)': 1 });
     assert.equal(e.unstructured, 2);
   });
 
+  // One row per finding-entry shape: whether `normalizeRecord` accepts it, and what `report()` counts for a blocking row holding only it.
+  const ENTRY_CASES = [
+    ['a string', 'a', true, {}, 1],
+    ['a full object', obj({ category: 'security' }), true, { security: 1 }, 0],
+    ['a null-category object', obj({ category: null, verdict: null }), true, { '(blank)': 1 }, 0],
+    ['a category outside the enum', obj({ category: 'made-up' }), true, { '(other)': 1 }, 0],
+    ['{category, verdict} without summary', noSummary, false, {}, 1],
+    ['{category, file, line, summary} without verdict', { category: 'security', file: 'a.js', line: 1, summary: 's' }, false, {}, 1],
+    ['null', null, false, {}, 1],
+    ['a number', 7, false, {}, 1],
+  ];
+  for (const [label, entry, accepted, counted, unstructured] of ENTRY_CASES) {
+    test(`entry ${label}: ${accepted ? 'accepted' : 'refused'}, counts ${JSON.stringify(counted)}, unstructured ${unstructured}`, () => {
+      assert.equal(accepted ? !!normalizeRecord(base({ findings: [entry] }), FIXED) : !!assert.throws(() => normalizeRecord(base({ findings: [entry] }), FIXED), /bad findings/), accepted);
+      const e = report([{ ...block('a/one', 1, []), findings: [entry] }], { minSample: 1 }).byRepo['a/one'];
+      assert.deepEqual(e.findingCategories, counted);
+      assert.equal(e.unstructured, unstructured);
+    });
+  }
+
+  test('a raw blocking row with no findings key is unstructured, not a throw', () => {
+    const { findings, ...raw } = block('a/one', 1, []);
+    const e = report([raw], { minSample: 1 }).byRepo['a/one'];
+    assert.deepEqual(e.findingCategories, {});
+    assert.equal(e.unstructured, 1);
+  });
+
   test('a repo under the minimum carries neither', () => {
-    assert.deepEqual(report([block('a/one', 1, [f('security')])], { minSample: 2 }).byRepo['a/one'], { n: 1 });
+    assert.deepEqual(report([block('a/one', 1, [obj({ category: 'security' })])], { minSample: 2 }).byRepo['a/one'], { n: 1 });
   });
 
   test('the table pads its columns and shows each tier', () => {
