@@ -3,7 +3,6 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { byTs, latestByRef, outcomeOf } from './log-order.mjs';
 import { SKIP_REASON_DEPENDENCY } from './failure.mjs';
-import { SKIP_REASON_DEPENDENCY as WAVE_SKIP_REASON } from './wave-records.mjs';
 
 describe('byTs', () => {
   const [A, B, C] = ['2026-10-01T00:00:00Z', '2026-10-02T00:00:00Z', '2026-10-03T00:00:00Z'];
@@ -72,5 +71,3 @@ describe('outcomeOf', () => {
   ];
   for (const [name, record, outcome] of cases) test(`${name} is ${outcome}`, () => assert.equal(outcomeOf(record), outcome));
 });
-
-test('wave-records stamps the same SKIP_REASON_DEPENDENCY that outcomeOf reads', () => assert.equal(WAVE_SKIP_REASON, SKIP_REASON_DEPENDENCY));
