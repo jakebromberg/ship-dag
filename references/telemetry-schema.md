@@ -46,7 +46,7 @@ Required (`normalizeRecord` refuses a record without them): `runId`, `repo`, `is
 - a plain string: what a hand-written or `--outcomes` record holds;
 - `{category: string|null, verdict: string|null, summary: string}`: what `ingest-wave` derives, one per blocking finding with no cap, `summary` being `<category> <file>:<line> <summary>` (`(blank)` for a null category; `<file>` alone when the line is null, and no location when there is no file).
 
-Anything else is refused with `bad findings`, naming the failing entry's index (or, for a non-array, the value). `readRecords` does not normalize, so log rows written before that check stay readable: those with other object shapes (for instance a non-string `summary`, or a missing `verdict`) are legacy, readable but refused by `append`. Readers accept a mix of strings and objects.
+Anything else is refused with `bad findings`, naming the failing entry's index (or, for a non-array, the value). `readRecords` does not normalize, so log rows written before that check stay readable: those with other object shapes (for instance a non-string `summary`, or a missing `verdict`) are legacy, readable but refused by `append`. Readers accept a mix of strings and objects. The one rule for the object shape is `isFindingObject` in `scripts/lib/finding.mjs`: `append` and `report()` both use it. `report()` counts a legacy object by no category: only an `isFindingObject` entry feeds `findingCategories`, and a blocking row with none (strings, legacy objects, or no `findings` key at all) counts under `unstructured`.
 
 ## Retro record (`kind: "retro"`)
 
