@@ -80,7 +80,7 @@ import { isMain } from './lib/is-main.mjs';
 import { INFRA_REASONS, RESOURCE_ROUTE, ranOf } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
-import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
+import { deriveWaveRecords, rowCovered, SKIP_REASON_DEPENDENCY, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
 import { formatRef, groupByRepo, isPr, issueKey, parseRef, refKey, repoSpellings, sameRepo } from './lib/ref.mjs';
 import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
@@ -164,6 +164,10 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   if (!CI_STATUSES.has(ciStatus)) throw new Error(`bad ciStatus: ${rec.ciStatus}`);
   const failureReason = rec.failureReason ?? null;
   if (!FAILURE_REASONS.has(failureReason)) throw new Error(`bad failureReason: ${rec.failureReason}`);
+  if (rec.skipReason != null && rec.skipReason !== SKIP_REASON_DEPENDENCY) throw new Error(`bad skipReason: ${JSON.stringify(rec.skipReason)}`);
+  const strOrNull = (v) => v === null || typeof v === 'string';
+  const finding = (f) => typeof f === 'string' || (f && typeof f === 'object' && strOrNull(f.category) && strOrNull(f.verdict) && typeof f.summary === 'string');
+  if (rec.findings != null && !(Array.isArray(rec.findings) && rec.findings.every(finding))) throw new Error(`bad findings: ${JSON.stringify(rec.findings)}`);
   validateCost(rec.cost);
   return {
     ...rec,
