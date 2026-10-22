@@ -563,15 +563,22 @@ test('ingest-wave: re-ingest is a no-op, and a hand-written record for the same 
   assert.equal(readRecords(hand).length, 1);
 }));
 
+// The stamped report w1 (an engine-died row) and its relaunch w2, whose row lists the stamped run's death as the marker `at`. The
+// sessionIds option gives each report's row its dead and relaunched run sessions.
+const stampedReports = ({ at, sessionIds } = {}) => {
+  const ids = (id) => (sessionIds ? { sessionIds: [id] } : {});
+  return {
+    'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason: 'engine-died', ran: true, ...ids(sessionIds?.[0]) })]),
+    'w2.json': stateReport([stateRow(REF, { ran: true, ...ids(sessionIds?.[1]), engineDeaths: [{ at }] })], { startedAt: T1, finishedAt: T2 }),
+  };
+};
+
 // A log appended before a marker deferred to its stamped run holds the relaunch's marker death: ingesting the stamped run adds
 // nothing, but only when ingest hands deriveWaveRecords the later reports (`later`), which list the marker.
 test('ingest-wave: a stamped run adds no death when a later report\'s marker death is already logged', () => {
   const M = '2026-10-08T19:45:00.000Z';
   withStateDir({
-    reports: {
-      'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason: 'engine-died', ran: true })]),
-      'w2.json': stateReport([stateRow(REF, { ran: true, engineDeaths: [{ at: M }] })], { startedAt: T1, finishedAt: T2 }),
-    },
+    reports: stampedReports({ at: M }),
     sidecar: [sidecarEntry()],
   }, (dir) => {
     const path = join(dir, 'runs.jsonl');
@@ -1241,10 +1248,7 @@ test('ingest-wave: a marker\'s death, an earlier run, takes none of the row\'s s
 // deriveWaveRecords): the stamped report's own record, with its id and the dead run's sessions, and the relaunch's continuation.
 for (const order of [['w1.json', 'w2.json'], ['w2.json', 'w1.json']]) {
   test(`ingest-wave: a stamped death and the marker that lists it are one record, with the dead run's cost, ingested ${order.join(' then ')}`, () => withStateDir({
-    reports: {
-      'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason: 'engine-died', ran: true, sessionIds: ['a'] })]),
-      'w2.json': stateReport([stateRow(REF, { ran: true, sessionIds: ['b'], engineDeaths: [{ at: '2026-10-08T20:00:00.000Z' }] })], { startedAt: T1, finishedAt: T2 }),
-    },
+    reports: stampedReports({ at: '2026-10-08T20:00:00.000Z', sessionIds: ['a', 'b'] }),
     sidecar: [sidecarEntry()],
     files: logOf(REF, sess('a', 1), sess('b', 0.5)),
   }, (dir) => {
@@ -1513,10 +1517,7 @@ describe('audit', () => {
   // adds nothing (heldByMarker): audit takes that record as the stamped row's death, so it never names a wave re-ingest cannot fill.
   test('a stamped row is covered by its relaunch\'s marker death, logged before the marker deferred to it', () => family({
     [RUN_A]: {
-      reports: {
-        'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason: 'engine-died', ran: true })]),
-        'w2.json': stateReport([stateRow(REF, { ran: true, engineDeaths: [{ at: '2026-10-08T19:45:00.000Z' }] })], { startedAt: T1, finishedAt: T2 }),
-      },
+      reports: stampedReports({ at: '2026-10-08T19:45:00.000Z' }),
       sidecar: [sidecarEntry([REF])],
     },
   }, (base) => {
