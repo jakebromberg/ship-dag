@@ -520,7 +520,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
     // A sidecar entry carries its wave's tuningVersion; a wave without one ran before the sidecar
     // did, and epic #64 reads a missing version as 0, never as today's.
     ({ records } = deriveWaveRecords(report, entry, digests, rounds, outcomes, {
-      existing, warn, tuningVersion: 0, reportId: basename(file, '.json'), earlier: ownership.earlierOf(own),
+      existing, warn, tuningVersion: 0, reportId: basename(file, '.json'), earlier: ownership.earlierOf(own), later: ownership.laterOf(own),
       // The engine (resolveRepoSettings) runs a repo's own postSessionCheck, else the config's top-level one, else none.
       noCheckRepos: [...new Set((config?.issues ?? []).map((i) => i.repo))].filter((repo) => !(config.repos?.[repo]?.postSessionCheck ?? config.postSessionCheck)),
     }));

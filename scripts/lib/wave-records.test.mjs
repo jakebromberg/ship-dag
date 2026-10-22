@@ -762,6 +762,47 @@ for (const [name, kind, go] of [
     });
   }
 
+  // A report as the ingest hands it to another's `earlier` or `later`: tagged with its id (`earlierReports`).
+  const tagged = (report, reportId) => ({ ...report, reportId });
+  const ingestAs = (report, existing, { earlier = [], later: after = [] } = {}) => deriveWaveRecords(report, { runId: RUN, issues: [] }, {}, {}, {}, { existing, reportId: report.reportId, earlier, later: after, warn: () => {} }).records;
+  const diedAtOf = (records) => records.filter((r) => r.failureReason === 'engine-died').map((r) => r.ts);
+
+  // The stamped report R1 and its relaunch R2, whose row lists R1's death as a marker: one death record, whichever is ingested first.
+  const R1_START = '2026-10-08T16:00:00Z';
+  for (const [name, r1Row, r2Row, want] of [
+    ['a stamped death and the marker that lists it', stamped, { ...merged, ...died(B) }, 1],
+    ['a stamped death that lists an earlier one: both deaths, each once', { ...stamped, ...died(D1) }, { ...merged, ...died(D1, B) }, 2],
+    ['a marker that is not the stamped run\'s death stays a death', { ...merged, ...died(D1) }, { ...failedRow, ...died(D1, B) }, 2],
+  ]) {
+    const r1 = tagged(at([r1Row]), 'w1');
+    const r2 = tagged({ ...at([r2Row]), finishedAt: R2_TS }, 'w2');
+    test(`engineDeaths: ingest order: ${name}`, () => {
+      const r1First = ingestAs(r1, [], { later: [r2] });
+      assert.equal(diedAtOf([...r1First, ...ingestAs(r2, r1First, { earlier: [r1] })]).length, want, 'R1 first');
+      const r2First = ingestAs(r2, [], { earlier: [r1] });
+      assert.equal(diedAtOf([...r2First, ...ingestAs(r1, r2First, { later: [r2] })]).length, want, 'R2 first');
+    });
+  }
+
+  // A marker holds a legacy model-error record (pre-#286) only as the stamped death of the run it followed (legacyDeath): a record of that report.
+  for (const [name, r1Row, logged, want] of [
+    ['the legacy record of the stamped run', stamped, wave([stamped]).map((r) => ({ ...r, failureReason: null, finalState: 'error' })), []],
+    ['a model error of a run that was not stamped', failedRow, wave([failedRow]), [B]],
+    ['a legacy-shaped record of another report', stamped, wave([stamped], [], 'w0').map((r) => ({ ...r, failureReason: null, finalState: 'error' })), [B]],
+    ['a hand-written model error, with no report to prove it', stamped, wave([stamped]).map(({ reportId, ...r }) => ({ ...r, failureReason: null, finalState: 'error' })), [B]],
+  ]) {
+    test(`engineDeaths: legacy: ${name}`, () => {
+      const r1 = tagged(at([r1Row]), 'w1');
+      assert.deepEqual(diedAtOf(ingestAs(tagged({ ...at([{ ...merged, ...died(B) }]), finishedAt: R2_TS }, 'w2'), logged, { earlier: [r1] })), want);
+    });
+  }
+
+  // The relaunch of a stamped run died without writing a report; the report after it lists both deaths. Only the first is the stamped run's.
+  test('engineDeaths: a relaunch that wrote no report: its death is a new one, since the stamped run started before the marker before it', () => {
+    const r1 = tagged({ ...at([stamped]), startedAt: R1_START, finishedAt: '2026-10-08T16:30:00Z' }, 'w1');
+    assert.deepEqual(diedAtOf(ingestAs(tagged({ ...at([{ ...merged, ...died(D1, D2) }]), finishedAt: R2_TS }, 'w2'), ingestAs(r1, []), { earlier: [r1] })), [D2]);
+  });
+
   test('engineDeaths: markers are read oldest first whatever their order', () => {
     // Two stamped reports, each the run that died before one of the markers.
     const reports = ['2026-10-08T16:00:00Z', '2026-10-08T18:30:00Z'].map((finishedAt) => ({ ...at([stamped]), finishedAt }));
