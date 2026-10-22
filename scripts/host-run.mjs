@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // host-run.mjs — run a wave's engine on a remote host and collect its reports and logs into the local stateDir.
 //
-// Usage: node host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--preflight] [--collect-only]
+// Usage: node host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--preflight] [--collect-only] [--worktree <path> --base <branch>]
 //
 // Starts the engine detached over ssh (a detached engine outlives the ssh session; an attached one dies with it) and
 // records its pid in <host stateDir>/host-run.pid, polls once a minute until the engine has exited or its report has
@@ -13,7 +13,10 @@
 // running; the message gives the commands to resume). A run refuses to start on a host state dir that already holds a report (each
 // wave needs its own state dir). `--collect-only` starts nothing and resumes the same wait on the recorded pid. A
 // `--plan` run only prints the read-only plan. A `--preflight` run prints the host's resource-preflight JSON (run under the
-// engine's lease env, `--parallel` capped at the host's sessionSlots) and nothing else; it exits 3 when ssh dropped.
+// engine's lease env, `--parallel` capped at the host's sessionSlots) and nothing else; it exits 3 when ssh dropped. A
+// `--worktree <path> --base <branch>` run makes one read of that host worktree and prints `{"exists":..,"commits":..,"dirty":..}`
+// (commits ahead of origin/<base>, as SKILL.md step 5 reads them): 0 when it read (a missing worktree is `exists: false`), 3 when
+// ssh dropped, 1 when the read failed; it launches nothing, so no failure of it is a 255.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -22,12 +25,12 @@ import { loadProfiles } from './lib/ci-profile.mjs';
 import { loadHosts } from './lib/hosts.mjs';
 import { configToolchains } from './lib/split-by-host.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
-import { SSH_MAX_BUFFER, SSH_OPTS, UsageError, asUsage, callFailure, remoteCommand, runCli, shQuote, sshCommandLine } from './lib/remote.mjs';
+import { EXIT, SSH_MAX_BUFFER, SSH_OPTS, UsageError, asUsage, callFailure, remoteCommand, runCli, shQuote, sshCommandLine } from './lib/remote.mjs';
 import { configStateDir } from './lib/host-prepare.mjs';
-import { DETACHED, LOG_CHUNK, PID_FILE, RSYNC_SAFE_PATH, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, preflightCommand, prefixLines, reportsScript, rsyncArgs } from './lib/host-run.mjs';
+import { DETACHED, LOG_CHUNK, PID_FILE, RSYNC_SAFE_PATH, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, preflightCommand, prefixLines, reportsScript, rsyncArgs, parseWorktree, worktreeScript } from './lib/host-run.mjs';
 import { isMain } from './lib/is-main.mjs';
 
-const USAGE = 'usage: host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--preflight] [--collect-only]';
+const USAGE = 'usage: host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--preflight] [--collect-only] [--worktree <path> --base <branch>]';
 const MINUTE = 60_000;
 const POLL_MS = MINUTE;
 const CALL_MS = 2 * MINUTE;
@@ -143,12 +146,22 @@ async function drive({ name, host, stateDir, localState, parallel, oneAtATime = 
   return halted('rsync', c) ?? (c.status === 0 ? finish(decision) : finish('failed', `rsync exited ${c.status}: ${c.stderr}`));
 }
 
+/** One read of `host`'s worktree at `path` against `origin/<base>`: prints its state JSON to `out` and returns the exit code (a drop is `EXIT.unreachable`, a failed read `EXIT.failure`), `err(text)` getting the reason. */
+function readWorktree(host, path, base, run, out, err) {
+  const r = run.ssh(host.ssh, worktreeScript(path, base));
+  const why = callFailure(r);
+  const state = why || r.status !== 0 ? undefined : parseWorktree(r.stdout);
+  if (state) out(`${JSON.stringify(state)}\n`);
+  else err(`host-run: ${host.ssh}: ${why === 'dropped' ? 'the ssh connection dropped' : why ?? (r.status !== 0 ? `the worktree read exited ${r.status}: ${r.stderr}` : 'the worktree read printed no worktree state')}\n`);
+  return state ? EXIT.ok : why === 'dropped' ? EXIT.unreachable : EXIT.failure;
+}
+
 /**
  * The CLI: parse `argv` (as in USAGE) and run `hostRun`; resolves to the exit code. `hosts`, `run`, `out`, `err`,
  * `sleep`, `now` and `profiles` default to the registry, the real runner, the process's streams and the real clock.
  */
 export async function main(argv, { hosts, loadHosts: load = loadHosts, run = realRunner(), out = (s) => process.stdout.write(s), err = (s) => process.stderr.write(s), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, profiles = loadProfiles() } = {}) {
-  const flags = ['--state', '--parallel', '--max-wait'];
+  const flags = ['--state', '--parallel', '--max-wait', '--worktree', '--base'];
   const unknown = argv.find((a) => a.startsWith('--') && ![...flags, '--plan', '--preflight', '--collect-only'].includes(a));
   if (unknown) throw new UsageError(`unknown option ${unknown}; ${USAGE}`);
   const [name, configPath, ...extra] = argv.filter((a, i) => !a.startsWith('--') && !flags.includes(argv[i - 1]));
@@ -162,6 +175,10 @@ export async function main(argv, { hosts, loadHosts: load = loadHosts, run = rea
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const stateDir = configStateDir(config);
   if (!stateDir) throw new UsageError(`${configPath}: configDir and worktreeDir are not <dir>/state and a path under <dir>; pass the config emit-config --by-host wrote for ${name}`);
+  const [worktree, base] = asUsage(() => [stringOption(argv, '--worktree'), stringOption(argv, '--base')]);
+  if ((worktree === undefined) !== (base === undefined)) throw new UsageError(`--worktree and --base go together; ${USAGE}`);
+  // Before hostRun: nothing is launched, so a failed read exits 1 through runCli and never routes to --collect-only.
+  if (worktree !== undefined) return readWorktree(host, worktree, base, run, out, err);
   const preflight = argv.includes('--preflight');
   const plan = argv.includes('--plan');
   const readOnly = plan || preflight;

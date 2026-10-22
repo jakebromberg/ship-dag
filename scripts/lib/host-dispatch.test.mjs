@@ -89,6 +89,12 @@ for (const [name, rule] of [
 const policy = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../references/escalation-policy.md'), 'utf8');
 const step5 = skill.split('### 5. Reconcile each result')[1].split('\n### ')[0];
 
+test('step 5 holds no hand-written ssh line, and names the exists: false case in the escalation policy', () => {
+  assert.doesNotMatch(step5, /ssh <alias>|rev-list --count/);
+  assert.match(step5, /`exists: false` is a worktree that no longer exists/);
+  assert.match(policy, /host-run\.mjs --worktree <path> --base <branch>.*If the host worktree no longer exists \(`exists: false`\)/s);
+});
+
 test('escalation-policy.md offers run locally / wait / defer for an unreachable host, and the three point-E choices for a remote row', () => {
   assert.match(policy, /## A remote host that cannot run its sub-wave, and remote rows/);
   assert.match(policy, /\*\*run its issues locally\*\*.*\*\*wait\*\*.*\*\*defer\*\*/s);
@@ -96,9 +102,9 @@ test('escalation-policy.md offers run locally / wait / defer for an unreachable 
   assert.match(policy, /re-run it on the host\*\* \(a filtered re-run: .*host-sync-claude.*host-prepare.*host-run --preflight/);
 });
 
-test('SKILL.md step 5 sends a remote row that would resume in place to point E, reading its commit count and dirty flag over ssh', () => {
+test('SKILL.md step 5 sends a remote row that would resume in place to point E, reading its commit count and dirty flag with host-run --worktree', () => {
   assert.match(step5, /resource preflight \(step 4\) first, for a remote row the host's own \(`host-run\.mjs --preflight`/);
-  assert.match(step5, /remote row.*over ssh.*rev-list --count.*HITL point E.*re-run it on the host, continue locally from the pushed branch, or defer.*nothing runs a continuation session on the host/s);
+  assert.match(step5, /remote row.*host-run\.mjs" <host> .*--worktree <worktree> --base <base>.*exit 3 means ssh dropped.*exit 1 means the read failed.*HITL point E.*re-run it on the host, continue locally from the pushed branch, or defer.*nothing runs a continuation session on the host/s);
 });
 
 // The table in step 4b item 4 and routeHostExit are two copies of one rule; each row is checked against routeHostExit.
