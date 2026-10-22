@@ -1937,3 +1937,35 @@ describe('report: issues block', () => {
     assert.match(renderReport(report([at(1, death)])), /1 distinct, 0 merged, 1 unresolved, — attempts per merged/);
   });
 });
+
+// references/telemetry-schema.md is the one authored issue-record schema: every key of a record ingest-wave appends
+// (derived keys, `cost`, and the `kind` and `ts` that append stamps) must be named in the first cell of a row of its
+// issue-record table. The intro and the retro section name some of the same keys, so only that table counts.
+const SCHEMA = readFileSync(new URL('../references/telemetry-schema.md', import.meta.url), 'utf-8');
+const issueTableKeys = (schema) => {
+  const section = schema.split(/^## Issue record/m)[1]?.split(/^#/m)[0] ?? '';
+  const firstCells = section.split('\n').filter((l) => l.startsWith('| `')).map((l) => l.split('|')[1]);
+  return new Set(firstCells.flatMap((cell) => [...cell.matchAll(/`([A-Za-z]+)`/g)].map((m) => m[1])));
+};
+
+test('every key of a record ingest-wave appends is named in the issue-record table of references/telemetry-schema.md', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF, { ran: true }), stateRow(REF2, { status: 'skipped', prUrl: null, prNumber: null })]) },
+  sidecar: [sidecarEntry([REF, REF2])],
+  files: logOf(REF, sess('a', 1)),
+}, (dir) => {
+  const { log } = ingest(dir, { [REF]: { pressureOverride: true } });
+  const emitted = new Set(log.flatMap((r) => Object.keys(r)));
+  for (const k of ['ran', 'skipReason', 'pressureOverride', 'cost', 'kind', 'ts']) assert.ok(emitted.has(k), `the sample must cover \`${k}\``);
+  const named = issueTableKeys(SCHEMA);
+  assert.deepEqual([...emitted].filter((k) => !named.has(k)), []);
+}));
+
+for (const key of ['ts', 'runId', 'tokens', 'kind']) {
+  test(`the schema guard misses \`${key}\` once its issue-table row is deleted, although the prose still names it`, () => {
+    const rowLine = SCHEMA.split('\n').find((l) => l.startsWith(`| \`${key}\` |`));
+    assert.ok(rowLine, `the table has a \`${key}\` row`);
+    const mutated = SCHEMA.replace(`${rowLine}\n`, '');
+    assert.ok(mutated.includes(`\`${key}\``), 'the prose outside the table still names the key');
+    assert.equal(issueTableKeys(mutated).has(key), false);
+  });
+}
