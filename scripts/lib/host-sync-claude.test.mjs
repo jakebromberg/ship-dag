@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mergeSettings, syncClaude } from './host-sync-claude.mjs';
 import { RSYNC_SSH, SSH_OPTS as BATCH, remoteCommand } from './remote.mjs';
-import { testHost } from './test-host.mjs';
+import { testHost } from './host-fixture.mjs';
 
 // Lease entries are recognised by their command (it runs `cli-lease.js … hook`), as claude-orchestrator prints them.
 const lease = (path, extra = {}) => ({ matcher: 'Bash', hooks: [{ type: 'command', command: `grep -qE 'npm' || exit 0; exec node '${path}/cli-lease.js' hook`, ...extra }] });

@@ -8,8 +8,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { buildConfigsByHost } from './emit-config.mjs';
-import { CLONE_TIMEOUT_MS, layoutReposDir, main, prepareHost } from './host-prepare.mjs';
-import { testHost } from './lib/test-host.mjs';
+import { CLONE_TIMEOUT_MS, cli, layoutReposDir, prepareHost } from './host-prepare.mjs';
+import { testHost } from './lib/host-fixture.mjs';
 
 const hosts = { box: testHost('/h', { toolchains: ['node'] }) };
 // The config emit-config --by-host writes for box, whose state dir is box's ~/.local/state/ship-dag/engine/run1.
@@ -146,7 +146,9 @@ for (const [name, error, expected] of [['ssh exit 255 (an unreachable host)', ex
     const coHomeWas = process.env.CO_HOME;
     process.env.CO_HOME = fileURLToPath(new URL('..', import.meta.url));
     try {
-      assert.throws(() => main(['box', configPath], { hosts, run: { ssh: () => { throw error; }, scp() {} } }), (e) => e.exitCode === expected && /host-prepare: box: probe failed/.test(e.message));
+      const lines = [];
+      assert.equal(cli(['box', configPath], { hosts, run: { ssh: () => { throw error; }, scp() {} } }, (m) => lines.push(m)), expected);
+      assert.match(lines.join('\n'), /host-prepare: box: probe failed/);
     } finally {
       if (coHomeWas === undefined) delete process.env.CO_HOME; else process.env.CO_HOME = coHomeWas;
     }
