@@ -693,8 +693,9 @@ for (const [name, kind, go] of [
     ['a later report that re-lists the death adds only the continuation', [{ ...merged, ...died(D1) }], [{ ...failedRow, ...died(D1) }], [[REPORT_TS, 'error', 'error', null, null]]],
     ['a later report that re-lists one death and adds another records the new one', [{ ...merged, ...died(D1) }], [{ ...failedRow, ...died(D1, D2) }], [DEATH(D2), [REPORT_TS, 'error', 'error', null, null]]],
     ['a death then an engine skip: the death carries no skipReason', [{ ref: 'a/b#1', status: 'skipped', prNumber: null, ...died(D1) }], null, [DEATH(D1), [REPORT_TS, null, 'deferred', null, null]]],
-    ['a hand-stamped engine-died row with its engineDeaths entry is one death record', [{ ...stamped, ...died(D1) }], null, [DEATH(D1)]],
-    ['a hand-stamped row with two engineDeaths entries is two', [{ ...stamped, ...died(D1, D2) }], null, [DEATH(D1), DEATH(D2)]],
+    // A marker is written at the engine's next start, so it is always an earlier death than a stamped report's own.
+    ['a hand-stamped row that also lists an earlier death keeps its own death', [{ ...stamped, ...died(D1) }], null, [DEATH(D1), DEATH(REPORT_TS)]],
+    ['a hand-stamped row with two earlier deaths is three deaths', [{ ...stamped, ...died(D1, D2) }], null, [DEATH(D1), DEATH(D2), DEATH(REPORT_TS)]],
   ]) {
     test(`engineDeaths: ${name}`, () => {
       const logged = second ? wave(first) : [];
@@ -706,20 +707,41 @@ for (const [name, kind, go] of [
     });
   }
 
-  // The same report ingested again once its row lists the death: the hand-stamped record, or a legacy model error, already holds it.
-  for (const [name, logged] of [
-    ['a hand-stamped death', wave([stamped])],
-    ['a legacy model error', wave([stamped]).map((r) => ({ ...r, failureReason: null, finalState: 'error' }))],
+  // The same report ingested again once its row lists an earlier death: the death is new, and the row's own record is already held.
+  for (const [name, logged, want] of [
+    ['a hand-stamped death', wave([stamped]), [DEATH(D1)]],
+    // As without engineDeaths, the legacy model error is superseded by the death it was (legacyDeath).
+    ['a legacy model error', wave([stamped]).map((r) => ({ ...r, failureReason: null, finalState: 'error' })), [DEATH(D1), DEATH(REPORT_TS)]],
   ]) {
-    test(`engineDeaths: ${name} already logged for the same report covers the death its entry lists`, () => {
-      assert.deepEqual(shape(wave([{ ...stamped, ...died(D1) }], logged)), []);
+    test(`engineDeaths: ${name} already logged for the same report is not the earlier death its row lists`, () => {
+      assert.deepEqual(shape(wave([{ ...stamped, ...died(D1) }], logged)), want);
     });
   }
 
-  test('engineDeaths: a hand-stamped record covers only the last death, and only for a stamped row', () => {
+  // A relaunch of the same config: the stamped report's death is the marker the relaunch writes, dated by the relaunch.
+  const B = '2026-10-08T20:00:00.000Z';
+  const R2_TS = '2026-10-08T21:00:00Z';
+  const later = (rows, existing) => deriveWaveRecords({ ...at(rows), finishedAt: R2_TS }, { runId: RUN, issues: [] }, {}, {}, {}, { existing, reportId: 'w2', warn: () => {} }).records;
+  for (const [name, first, second, want] of [
+    ['a stamped death is the marker its relaunch lists', [stamped], [{ ...merged, ...died(B) }], [[R2_TS, 'pushed', 'merged', null, 11]]],
+    ['a stamped death with an earlier one is the marker after it', [{ ...stamped, ...died(D1) }], [{ ...merged, ...died(D1, B) }], [[R2_TS, 'pushed', 'merged', null, 11]]],
+    ['a marker after a death the log holds by its at is a new death', [{ ...merged, ...died(D1) }], [{ ...failedRow, ...died(D1, B) }], [DEATH(B), [R2_TS, 'error', 'error', null, null]]],
+    ['a stamped death is held by one marker only', [stamped], [{ ...merged, ...died(D1, D2, B) }], [DEATH(D1), DEATH(D2), [R2_TS, 'pushed', 'merged', null, 11]]],
+  ]) {
+    test(`engineDeaths: relaunch: ${name}`, () => {
+      assert.deepEqual(shape(later(second, wave(first))), want);
+    });
+  }
+
+  test('engineDeaths: a death re-listed after a re-ingest of its stamped report is recorded once', () => {
     const logged = wave([stamped]);
-    assert.deepEqual(shape(wave([{ ...stamped, ...died(D1, D2) }], logged)), [DEATH(D1)]);
-    assert.deepEqual(shape(wave([{ ...failedRow, ...died(D1) }], logged)), [DEATH(D1), [REPORT_TS, 'error', 'error', null, null]]);
+    const reIngested = [...logged, ...wave([{ ...stamped, ...died(D1) }], logged)];
+    assert.deepEqual(shape(later([{ ...merged, ...died(D1, B) }], reIngested)), [[R2_TS, 'pushed', 'merged', null, 11]]);
+  });
+
+  test('engineDeaths: a stamped row keeps its own outcome fields beside its earlier deaths', () => {
+    const { records } = deriveWaveRecords(at([{ ...stamped, ...died(D1) }]), { runId: RUN, issues: [] }, {}, {}, { 'a/b#1': { pressureOverride: true, tokens: 7 } }, { reportId: 'w1', warn: () => {} });
+    assert.deepEqual(records.map((r) => [r.ts, r.pressureOverride ?? false, r.tokens]), [[D1, false, null], [REPORT_TS, true, 7]]);
   });
 
   test('engineDeaths: a death derived earlier from the same report does not cover a later one', () => {

@@ -122,6 +122,25 @@ const stopReasonOf = (row, digest) => {
 const legacyDeath = (r, event) => event.failureReason === 'engine-died' && Boolean(event.reportId) && r.reportId === event.reportId
   && sameRun(r.runId, event.runId) && sameRepo(r.repo, event.repo) && r.issue === event.issue
   && r.implStatus === 'error' && r.finalState === 'error' && r.failureReason == null;
+/** The `at` of each of `row`'s `engineDeaths` (claude-orchestrator#315), oldest first; an entry with no readable `at` is warned about and skipped. */
+const engineDeathsOf = (row, warn) => (Array.isArray(row.engineDeaths) ? row.engineDeaths : []).flatMap((d) => {
+  if (Number.isFinite(Date.parse(d?.at))) return [d.at];
+  warn(`${row.ref}: engineDeaths entry ${JSON.stringify(d)} has no readable at, not recorded`);
+  return [];
+});
+/**
+ * Whether `records` already hold the death `rec` of a marker dated `rec.ts`, whose row's previous marker is dated `prevAt`
+ * (undefined for the first). The engine writes a marker when it next starts, after the run that died, so the death is
+ * a record of the same row dated by the same `at`, or a stamped `engine-died` record dated after the previous marker and
+ * before this one: the report of the run that died. A later report re-lists every marker, so the same `at` recurs.
+ */
+const deathHeld = (records, rec, prevAt) => {
+  const at = Date.parse(rec.ts);
+  const after = prevAt === undefined ? -Infinity : Date.parse(prevAt);
+  const dated = (t) => t === at || (t > after && t < at);
+  return records.some((s) => s.failureReason === 'engine-died' && s.issue === rec.issue && sameRepo(s.repo, rec.repo) && sameRun(s.runId, rec.runId)
+    && dated(Date.parse(s.ts)));
+};
 /** Whether a row with `implStatus` carries its stop as the record's `failureReason`: a death, or a launch stop that never started. */
 const diesWith = (row, implStatus) => implStatus === 'error' || row.status === 'pending';
 
@@ -291,19 +310,20 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     // died; the continuation is a later resume (point E) started without CO_PRESSURE_OVERRIDE, so it never carries it.
     const death = resumed ? build({ pressureOverride: outcome.pressureOverride }, null, stopReason) : null;
     const { pressureOverride: _ranUnderOverride, ...continuation } = outcome;
-    // The engine's own record of each death (`engineDeaths`, claude-orchestrator#315) is the canonical death channel: a
-    // row stamped engine-died by hand is the last of them. The store is never cleared, so a later report re-lists a death
-    // already recorded: it is told apart by its `at` (sameEvent cannot), and a hand-stamped record of the same report covers the last.
-    const deaths = (Array.isArray(row.engineDeaths) ? row.engineDeaths : []).filter((d) => Number.isFinite(Date.parse(d?.at)) || (warn(`${row.ref}: engineDeaths entry ${JSON.stringify(d)} has no readable at, not recorded`), false));
-    const diedAts = new Set(deaths.map((d) => Date.parse(d.at)));
-    const deathRecs = deaths.map((d) => build({}, null, null, d.at));
-    const covered = (rec, last) => seen.some((s) => s.failureReason === 'engine-died' && Date.parse(s.ts) === Date.parse(rec.ts) && s.issue === rec.issue && sameRepo(s.repo, rec.repo) && sameRun(s.runId, rec.runId))
-      || (last && existing.some((s) => !diedAts.has(Date.parse(s.ts)) && (sameEvent(s, rec) || legacyDeath(s, rec))));
+    // The engine's own record of each death (`engineDeaths`, claude-orchestrator#315) is the canonical death channel. Each
+    // marker is an earlier death than this report's own, so a stamped row's own death is recorded beside them, never folded in.
+    const ats = engineDeathsOf(row, warn);
+    ats.forEach((diedAt, i) => {
+      const rec = build({}, null, null, diedAt);
+      if (deathHeld(seen, rec, ats[i - 1])) return;
+      seen.push(rec);
+      records.push(rec);
+    });
+    // sameEvent is blind to ts, so a death dated by one of the row's markers is never the row's own event.
+    const marked = new Set(ats.map(Date.parse));
     const own = death?.failureReason ? [death, build(continuation, pr, null)] : [build(outcome, pr, stopReason)];
-    // The hand-stamped row's own record is its last death, which `engineDeaths` already lists.
-    const recs = [...deathRecs, ...(deaths.length && stopReason === 'engine-died' ? own.slice(1) : own)];
-    for (const rec of recs) {
-      if (deathRecs.includes(rec) ? covered(rec, rec === deathRecs.at(-1) && stopReason === 'engine-died') : seen.some((s) => sameEvent(s, rec))) continue;
+    for (const rec of own) {
+      if (seen.some((s) => !(s.failureReason === 'engine-died' && marked.has(Date.parse(s.ts))) && sameEvent(s, rec))) continue;
       seen.push(rec);
       records.push(rec);
     }
