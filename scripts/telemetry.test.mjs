@@ -563,6 +563,23 @@ test('ingest-wave: re-ingest is a no-op, and a hand-written record for the same 
   assert.equal(readRecords(hand).length, 1);
 }));
 
+// A log appended before a marker deferred to its stamped run holds the relaunch's marker death: ingesting the stamped run adds
+// nothing, but only when ingest hands deriveWaveRecords the later reports (`later`), which list the marker.
+test('ingest-wave: a stamped run adds no death when a later report\'s marker death is already logged', () => {
+  const M = '2026-10-08T19:45:00.000Z';
+  withStateDir({
+    reports: {
+      'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason: 'engine-died', ran: true })]),
+      'w2.json': stateReport([stateRow(REF, { ran: true, engineDeaths: [{ at: M }] })], { startedAt: T1, finishedAt: T2 }),
+    },
+    sidecar: [sidecarEntry()],
+  }, (dir) => {
+    const path = join(dir, 'runs.jsonl');
+    appendRecord(base({ runId: RUN, repo: 'WXYC/dj-site', issue: 1, reportId: 'w2', ts: M, ran: true, implStatus: 'error', finalState: 'deferred', failureReason: 'engine-died', pr: null }), { path });
+    assert.equal(ingestWave(reportPath(dir), {}, { path, warn: () => {} }).appended, 0);
+  });
+});
+
 // sd-20261002-211445's pair: a --retry-failed report re-lists Backend-Service#3042 succeeded with PR 3044,
 // as it stood, beside the wxyc-shared#612 it re-ran; the carried-over row is one event, not two.
 test('ingest-wave: a row a retry report only carries over is recorded once; the row it re-ran is recorded again', () => {
@@ -1507,6 +1524,18 @@ describe('audit', () => {
     const continuation = logged({ reportId: 'w2', ts: T2, ran: true, pr: 11 });
     assert.deepEqual(audit_(base, [markerDeath, continuation]).notIngested, []);
     assert.deepEqual(audit_(base, [continuation]).notIngested.map((w) => [w.id, w.refs]), [['w1', [REF]]]);
+  }));
+
+  test('names a report whose row lists an engineDeaths marker no record holds, and stops once a re-ingest records it', () => family({
+    [RUN_A]: {
+      reports: { 'w1.json': stateReport([stateRow(REF, { ran: true, engineDeaths: [{ at: T0 }] })]) },
+      sidecar: [sidecarEntry([REF])],
+    },
+  }, (base) => {
+    const own = logged({ reportId: 'w1', ran: true });
+    const death = logged({ reportId: 'w1', ts: T0, ran: true, implStatus: 'error', finalState: 'deferred', failureReason: 'engine-died', pr: null });
+    assert.deepEqual(audit_(base, [own]).notIngested.map((w) => [w.id, w.refs]), [['w1', [REF]]]);
+    assert.deepEqual(audit_(base, [death, own]).notIngested, []);
   }));
 
   test('an engine-died row logged before engine-died was an infra reason is covered by its record with no reason', () => family({
