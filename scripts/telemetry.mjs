@@ -7,32 +7,12 @@
 // committed. Pure aggregation math is imported from ./lib/stats.mjs; this file
 // owns only validation, the file I/O, and the CLI.
 //
-// Record schema (see references/ for the authored version). Records carry a
-// `kind` discriminator — "issue" (default; stamped when absent, so pre-existing
-// logs stay valid) or "retro" (one run-scoped record per step-6.5 pass):
-//   issue: { kind, ts, runId, reportId, repo, issue, complexity, complexitySource, triageStatus,
-//            assignment, path, implStatus, ciStatus, reviewVerdict, failureReason, findings[],
-//            bounces, hitl:{pointA,pointB}, finalState, pr, tokens, ran?, cost? }
-// reportId (ingest-wave only) is the stem of the report a record was derived from: two PR-less
-// failures (implStatus "error", the rows a retry re-runs) are one event only if their reportIds
-// match, while any other record a later report re-lists unchanged stays one; hand-written records have none.
-// ran (ingest-wave only, from a report row that carries it) is whether the engine launched a session for the row:
-// once either record carries it, records of different reports are two events, since a row a later report only
-// carries over derives none; a record from before ran, and a hand-written one, have none.
-// complexitySource is "entry" (the wave's routing named the complexity) or "default" (it did
-// not, and `complexity` is the "normal" ingest-wave assumed); absent on older records.
-// skipReason is absent, null or "dependency" (SKIP_REASON_DEPENDENCY in scripts/lib/failure.mjs, an engine's dependency
-// skip); findings[] holds strings or {category: string|null, verdict: string|null, summary: string} objects. normalizeRecord
-// refuses anything else with `bad skipReason` / `bad findings` (naming the failing entry's index); readRecords does not
-// normalize, so older rows with other findings shapes stay readable.
-//   retro: { kind, ts, runId, wave, mergedPrs[], proposedRefactors, approvedRefactors,
-//            declinedRefactors, proposedAdjustments, approvedAdjustments,
-//            declinedAdjustments, filed[], adjusted[], declinedTitles[], tokens }
-// cost is optional (null reads as absent): { implement: {costUsd, input, output, cacheRead, cacheCreate,
-// sessions, sessionIds[]} }, summed from the ref's transcript over the sessions that wrote a result
-// record and that no earlier record of the ref's run family (sameRun) lists. A session killed before
-// writing one (a stall, a hard death) is not counted, so the figure can fall short of the real spend.
-// A skipped row's record (implStatus null) never reached implement and carries no cost.
+// Record schema: references/telemetry-schema.md is the one authored description of the issue and retro
+// records (every key, the closed `skipReason` set, both accepted `findings` shapes and the legacy ones
+// that stay readable but that `append` refuses). Records carry a `kind` discriminator — "issue" (default;
+// stamped when absent, so pre-existing logs stay valid) or "retro" (one run-scoped record per step-6.5 pass).
+// normalizeRecord refuses a bad `skipReason` / `findings` with `bad skipReason` / `bad findings`;
+// readRecords does not normalize, so older rows stay readable.
 // implStatus / ciStatus / reviewVerdict are nullable: an issue that stops at
 // HITL point A (needs-decision) never reaches implement, so it logs those null.
 // failureReason is also nullable — set to "rate-limited" alongside
