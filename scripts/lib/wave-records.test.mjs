@@ -766,6 +766,11 @@ for (const [name, kind, go] of [
   const tagged = (report, reportId) => ({ ...report, reportId });
   const ingestAs = (report, existing, { earlier = [], later: after = [] } = {}) => deriveWaveRecords(report, { runId: RUN, issues: [] }, {}, {}, {}, { existing, reportId: report.reportId, earlier, later: after, warn: () => {} }).records;
   const diedAtOf = (records) => records.filter((r) => r.failureReason === 'engine-died').map((r) => r.ts);
+  // The relaunch report R2 of a row, and the pair of the stamped report R1 with the relaunch whose row lists its death as the marker B.
+  const relaunchReport = (row) => tagged({ ...at([row]), finishedAt: R2_TS }, 'w2');
+  const stampedPair = (r1Row = stamped, r2Row = { ...merged, ...died(B) }) => ({ r1: tagged(at([r1Row]), 'w1'), r2: relaunchReport(r2Row) });
+  // The record a log holds when the marker death was ingested before the stamped run's own report.
+  const loggedMarkerDeath = () => ({ ...wave([stamped], [], 'w2')[0], ts: B });
 
   // The stamped report R1 and its relaunch R2, whose row lists R1's death as a marker: one death record, whichever is ingested first.
   const R1_START = '2026-10-08T16:00:00Z';
@@ -776,8 +781,7 @@ for (const [name, kind, go] of [
     // A stamped row that kept a PR is gated: its report derives no death of its own, so the marker records it, not defers to it.
     ['a stamped row that kept a PR: the marker is the death', { ...stamped, prNumber: 12 }, { ...merged, ...died(B) }, 1],
   ]) {
-    const r1 = tagged(at([r1Row]), 'w1');
-    const r2 = tagged({ ...at([r2Row]), finishedAt: R2_TS }, 'w2');
+    const { r1, r2 } = stampedPair(r1Row, r2Row);
     test(`engineDeaths: ingest order: ${name}`, () => {
       const r1First = ingestAs(r1, [], { later: [r2] });
       assert.equal(diedAtOf([...r1First, ...ingestAs(r2, r1First, { earlier: [r1] })]).length, want, 'R1 first');
@@ -788,17 +792,15 @@ for (const [name, kind, go] of [
 
   // A log appended before a marker deferred to its stamped run already holds the marker's death: the stamped run adds no second one.
   test('engineDeaths: ingest order: a marker death already in the log holds the stamped run\'s own', () => {
-    const r1 = tagged(at([stamped]), 'w1');
-    const r2 = tagged({ ...at([{ ...merged, ...died(B) }]), finishedAt: R2_TS }, 'w2');
-    const logged = [{ ...wave([stamped], [], 'w2')[0], ts: B }];
+    const { r1, r2 } = stampedPair();
+    const logged = [loggedMarkerDeath()];
     assert.deepEqual(diedAtOf(ingestAs(r1, logged, { later: [r2] })), []);
   });
 
   // Audit agrees: the marker death that holds the stamped run's own death covers its row, and only beside the report that listed it.
   test('engineDeaths: rowCovered takes a marker death already in the log for the stamped row it holds', () => {
-    const r1 = tagged(at([stamped]), 'w1');
-    const r2 = tagged({ ...at([{ ...merged, ...died(B) }]), finishedAt: R2_TS }, 'w2');
-    const logged = [{ ...wave([stamped], [], 'w2')[0], ts: B }];
+    const { r1, r2 } = stampedPair();
+    const logged = [loggedMarkerDeath()];
     const covers = (records, later) => rowCovered(stamped, { id: 'w1', startedAt: 0, report: r1 }, records, RUN, undefined, [], later);
     assert.deepEqual([covers(logged, [r2]), covers(logged, []), covers([], [r2])], [true, false, false]);
   });
@@ -815,8 +817,7 @@ for (const [name, kind, go] of [
     ['a hand-written model error, with no report to prove it', stamped, legacy(wave([stamped]).map(({ reportId, ...r }) => r)), [R1_TS]],
   ]) {
     test(`engineDeaths: legacy: ${name}`, () => {
-      const r1 = tagged(at([r1Row]), 'w1');
-      const r2 = tagged({ ...at([{ ...merged, ...died(B) }]), finishedAt: R2_TS }, 'w2');
+      const { r1, r2 } = stampedPair(r1Row);
       const r2Records = ingestAs(r2, logged, { earlier: [r1] });
       const r1Records = ingestAs(r1, [...logged, ...r2Records], { later: [r2] });
       assert.deepEqual(diedAtOf([...r2Records, ...r1Records]), want);
@@ -826,7 +827,7 @@ for (const [name, kind, go] of [
   // The relaunch of a stamped run died without writing a report; the report after it lists both deaths. Only the first is the stamped run's.
   test('engineDeaths: a relaunch that wrote no report: its death is a new one, since the stamped run started before the marker before it', () => {
     const r1 = tagged({ ...at([stamped]), startedAt: R1_START, finishedAt: '2026-10-08T16:30:00Z' }, 'w1');
-    assert.deepEqual(diedAtOf(ingestAs(tagged({ ...at([{ ...merged, ...died(D1, D2) }]), finishedAt: R2_TS }, 'w2'), ingestAs(r1, []), { earlier: [r1] })), [D2]);
+    assert.deepEqual(diedAtOf(ingestAs(relaunchReport({ ...merged, ...died(D1, D2) }), ingestAs(r1, []), { earlier: [r1] })), [D2]);
   });
 
   test('engineDeaths: markers are read oldest first whatever their order', () => {
@@ -871,7 +872,7 @@ for (const [name, kind, go] of [
   test('engineDeaths: rowCovered checks the marker deaths of a carried-over row', () => {
     const sk = { ref: 'a/b#1', status: 'skipped', prNumber: null, ran: false };
     const row = { ...sk, ...died(B) };
-    const report = tagged({ ...at([row]), finishedAt: R2_TS }, 'w2');
+    const report = relaunchReport(row);
     const logged = wave([sk]);
     const covers = (records) => rowCovered(row, { id: 'w2', startedAt: 0, report }, records, RUN, undefined, [tagged(at([sk]), 'w1')], []);
     assert.deepEqual([covers(logged), covers([...logged, ...later([row], logged, [at([sk])])])], [false, true]);
@@ -880,15 +881,14 @@ for (const [name, kind, go] of [
   test('engineDeaths: rowCovered takes a marker held by the stamped report of the run it followed as covered', () => {
     const r1 = tagged(at([stamped]), 'w1');
     const row = { ...merged, ...died(B) };
-    const report = tagged({ ...at([row]), finishedAt: R2_TS }, 'w2');
+    const report = relaunchReport(row);
     assert.equal(rowCovered(row, { id: 'w2', startedAt: 0, report }, wave([merged], [], 'w2'), RUN, undefined, [r1], []), true);
   });
 
   // A marker defers only to a TERMINAL row that did not succeed: a succeeded find-pr row or an interrupted one derives no death.
   for (const status of ['succeeded', 'interrupted']) {
     test(`engineDeaths: a marker does not defer to a ${status} row stamped engine-died, which derives no death`, () => {
-      const r1 = tagged(at([{ ...stamped, status }]), 'w1');
-      const r2 = tagged({ ...at([{ ...merged, ...died(B) }]), finishedAt: R2_TS }, 'w2');
+      const { r1, r2 } = stampedPair({ ...stamped, status });
       assert.deepEqual(diedAtOf(ingestAs(r2, [], { earlier: [r1] })), [B]);
     });
   }
@@ -915,9 +915,8 @@ for (const [name, kind, go] of [
     ['a stamped row', stamped, true],
   ]) {
     test(`engineDeaths: a marker death in the log ${covered ? 'covers' : 'does not cover'} ${name}`, () => {
-      const r1 = tagged(at([row]), 'w1');
-      const r2 = tagged({ ...at([{ ...merged, ...died(B) }]), finishedAt: R2_TS }, 'w2');
-      const markerDeath = { ...wave([stamped], [], 'w2')[0], ts: B };
+      const { r1, r2 } = stampedPair(row);
+      const markerDeath = loggedMarkerDeath();
       assert.equal(rowCovered(row, { id: 'w1', startedAt: 0, report: r1 }, [markerDeath], RUN, undefined, [], [r2]), covered);
       assert.equal(ingestAs(r1, [markerDeath], { later: [r2] }).length, covered ? 0 : 1);
     });
