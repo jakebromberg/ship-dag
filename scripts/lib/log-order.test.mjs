@@ -2,6 +2,8 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { byTs, latestByRef, outcomeOf } from './log-order.mjs';
+import { SKIP_REASON_DEPENDENCY } from './failure.mjs';
+import { SKIP_REASON_DEPENDENCY as WAVE_SKIP_REASON } from './wave-records.mjs';
 
 describe('byTs', () => {
   const [A, B, C] = ['2026-10-01T00:00:00Z', '2026-10-02T00:00:00Z', '2026-10-03T00:00:00Z'];
@@ -63,9 +65,12 @@ describe('outcomeOf', () => {
     ['a memory-critical stop', { finalState: 'deferred', failureReason: 'memory-critical' }, 'infra-stopped'],
     ['a rate-limited stop', { finalState: 'deferred', failureReason: 'rate-limited' }, 'infra-stopped'],
     ['a dependency skip', { finalState: 'deferred', skipReason: 'dependency' }, 'skipped'],
+    ['a skip stamped from SKIP_REASON_DEPENDENCY', { finalState: 'deferred', skipReason: SKIP_REASON_DEPENDENCY }, 'skipped'],
     ['a dependency skip marked blocked-hitl by --outcomes', { finalState: 'blocked-hitl', skipReason: 'dependency' }, 'skipped'],
     ['a model error', { finalState: 'failed', failureReason: null, implStatus: 'error' }, 'failed'],
     ['a blocked-hitl ref', { finalState: 'blocked-hitl' }, 'failed'],
   ];
   for (const [name, record, outcome] of cases) test(`${name} is ${outcome}`, () => assert.equal(outcomeOf(record), outcome));
 });
+
+test('wave-records stamps the same SKIP_REASON_DEPENDENCY that outcomeOf reads', () => assert.equal(WAVE_SKIP_REASON, SKIP_REASON_DEPENDENCY));

@@ -38,6 +38,9 @@ export const RESOURCE_ROUTE = new Set([...RESOURCE_STOPS, 'engine-died']);
 /** Every `failureReason` that marks infrastructure rather than model failure: `"rate-limited"` and `RESOURCE_ROUTE`. */
 export const INFRA_REASONS = new Set(['rate-limited', ...RESOURCE_ROUTE]);
 
+/** The one `skipReason` an engine stamps: it deferred the issue because a dependency had not merged. A closed set with absent and null; `normalizeRecord` refuses the rest, `wave-records.mjs` stamps it and `log-order.mjs`'s `outcomeOf` reads it. */
+export const SKIP_REASON_DEPENDENCY = 'dependency';
+
 /** JSON key present on every stream-json result record — a cheap prefilter that skips `JSON.parse` on the ~99% of transcript lines that cannot be one. */
 export const RESULT_TYPE_KEY = '"type":"result"';
 
