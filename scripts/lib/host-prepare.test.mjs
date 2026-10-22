@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildConfigsByHost } from '../emit-config.mjs';
-import { testHost } from './test-host.mjs';
+import { testHost } from './host-fixture.mjs';
 import { mergeSettings } from './host-sync-claude.mjs';
 import { configStateDir, planHost, probeScript, parseProbe } from './host-prepare.mjs';
 

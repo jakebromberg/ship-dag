@@ -10,7 +10,7 @@ import { hostRun, main, realRunner } from './host-run.mjs';
 import { readLatestUtilization } from './rate-limit-preflight.mjs';
 import { LOG_CHUNK, parsePoll, pollScript, rsyncArgs } from './lib/host-run.mjs';
 import { scopedEngineFixture } from './lib/engine-fixture.mjs';
-import { testHost } from './lib/test-host.mjs';
+import { testHost } from './lib/host-fixture.mjs';
 
 const box = testHost('/h', {}, 'boxssh');
 const stateDir = '/h/.local/state/ship-dag/engine/run1';

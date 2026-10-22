@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { main, runner } from './host-sync-claude.mjs';
-import { testHost } from './lib/test-host.mjs';
+import { testHost } from './lib/host-fixture.mjs';
 
 const box = testHost();
 

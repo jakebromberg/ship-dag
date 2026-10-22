@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { testHost } from './test-host.mjs';
+import { testHost } from './host-fixture.mjs';
 import { LOG_CHUNK, PID_FILE, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './host-run.mjs';
 
 const box = testHost();

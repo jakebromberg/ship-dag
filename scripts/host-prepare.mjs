@@ -70,8 +70,8 @@ export function prepareHost({ name, hosts, config, configPath, local, run, minFr
   return 0;
 }
 
-/** The CLI: returns the exit code, or throws an error whose `exitCode` is the one to exit with. `hosts` and `run` default to the registry and the real runner. */
-export function main(argv, { hosts = loadHosts(), run = realRunner() } = {}) {
+/** The CLI: returns the exit code, or throws an error whose `exitCode` is the one to exit with. `hosts` and `run` default to the registry (read after the arguments are checked) and the real runner. */
+export function main(argv, { hosts, run = realRunner() } = {}) {
   const unknown = argv.find((a) => a.startsWith('--') && !['--dry-run', '--min-free-gb'].includes(a));
   if (unknown) throw new Error(`unknown option ${unknown}; ${USAGE}`);
   const [name, configPath] = argv.filter((a, i) => !a.startsWith('--') && !['--min-free-gb'].includes(argv[i - 1]));
@@ -80,9 +80,12 @@ export function main(argv, { hosts = loadHosts(), run = realRunner() } = {}) {
   const sdHome = fileURLToPath(new URL('..', import.meta.url));
   const local = { sdSha: git(sdHome, 'rev-parse', 'HEAD'), coSha: git(coHome(), 'rev-parse', 'HEAD'), claudeHash: sha256(`${homedir()}/.claude/CLAUDE.md`) };
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  return prepareHost({ name, hosts, config, configPath, local, run, minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => process.stderr.write(`${m}\n`), reposDir: layoutReposDir() });
+  return prepareHost({ name, hosts: hosts ?? loadHosts(), config, configPath, local, run, minFreeGb, dryRun: argv.includes('--dry-run'), log: (m) => process.stderr.write(`${m}\n`), reposDir: layoutReposDir() });
 }
 
-if (isMain(import.meta.url)) {
-  try { process.exitCode = main(process.argv.slice(2)); } catch (e) { process.stderr.write(`${e.message}\n`); process.exitCode = e.exitCode ?? EXIT.usage; }
+/** `main`'s exit code for `argv`: its return, or a thrown error's `exitCode` (usage when it has none) after `err` writes the error's message. */
+export function cli(argv, deps, err = (m) => process.stderr.write(`${m}\n`)) {
+  try { return main(argv, deps); } catch (e) { err(e.message); return e.exitCode ?? EXIT.usage; }
 }
+
+if (isMain(import.meta.url)) process.exitCode = cli(process.argv.slice(2));
