@@ -749,3 +749,16 @@ for (const [name, kind, go] of [
     });
   }
 }
+
+// references/telemetry-schema.md is the one authored issue-record schema: a key deriveWaveRecords emits must be named in it, in backticks.
+test('every key deriveWaveRecords emits is named in references/telemetry-schema.md', () => {
+  const schema = readFileSync(new URL('../../references/telemetry-schema.md', import.meta.url), 'utf-8');
+  const emitted = new Set();
+  for (const rec of [
+    derive({ report: report([row({ ran: true })]), outcomes: { [REF]: { pressureOverride: true } } }).records[0],
+    derive({ report: report([row({ status: 'skipped', prNumber: null, prUrl: null })]) }).records[0],
+  ]) for (const k of Object.keys(rec)) emitted.add(k);
+  assert.ok(emitted.has('ran') && emitted.has('skipReason') && emitted.has('pressureOverride'), 'the sample must cover the conditional keys');
+  const missing = [...emitted].filter((k) => !schema.includes(`\`${k}\``));
+  assert.deepEqual(missing, []);
+});
