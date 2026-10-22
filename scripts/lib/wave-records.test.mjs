@@ -794,6 +794,15 @@ for (const [name, kind, go] of [
     assert.deepEqual(diedAtOf(ingestAs(r1, logged, { later: [r2] })), []);
   });
 
+  // Audit agrees: the marker death that holds the stamped run's own death covers its row, and only beside the report that listed it.
+  test('engineDeaths: rowCovered takes a marker death already in the log for the stamped row it holds', () => {
+    const r1 = tagged(at([stamped]), 'w1');
+    const r2 = tagged({ ...at([{ ...merged, ...died(B) }]), finishedAt: R2_TS }, 'w2');
+    const logged = [{ ...wave([stamped], [], 'w2')[0], ts: B }];
+    const covers = (records, later) => rowCovered(stamped, { id: 'w1', startedAt: 0, report: r1 }, records, RUN, undefined, [], later);
+    assert.deepEqual([covers(logged, [r2]), covers(logged, []), covers([], [r2])], [true, false, false]);
+  });
+
   // The deferral to the stamped run, not legacyDeath, is what holds a legacy model-error record (pre-#286): whatever legacy-shaped
   // record the log holds, a marker after a stamped run records nothing, and that run's ingest records its own death once. A
   // model error of a run that was not stamped is no death, so the marker records it.
