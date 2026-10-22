@@ -156,7 +156,7 @@ for (const [name, error, expected] of [['ssh exit 255 (an unreachable host)', ex
 }
 
 // A wave that needs xcode (declared by the repo's profile, since its command hides xcodebuild) probes Xcode on the host.
-const iosHosts = validateHosts({ box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag', toolchains: ['node', 'xcode'] } });
+const iosHosts = { box: testHost('/h', { toolchains: ['node', 'xcode'] }) };
 const [{ config: iosConfig }] = buildConfigsByHost({
   name: 'ship-dag-run1', repo: 'o/ios', stateDir: '/m/.local/state/ship-dag/engine/run1', projectRoot: '/m/D', promptTemplate: '/m/p.md',
   repos: { 'o/ios': { baseBranch: 'main', commands: ['scripts/test-affected.sh'], toolchains: ['xcode'], host: 'box' } },
@@ -185,4 +185,11 @@ test('a working Xcode passes the gate', () => {
 test('a wave with no xcode repo never runs an Xcode tool on the host', () => {
   const { calls } = exec(state());
   assert.doesNotMatch(calls[0][2], /xcode/);
+});
+
+test('an unlicensed Xcode that blanks the git probes is reported as the license, not as stale ship-dag or a repo to move aside', () => {
+  const { code, logs } = exec(state({ sdSha: '', coSha: '', present: ['app'], gitError: 'You have not agreed to the Xcode license agreements.' }));
+  assert.equal(code, 1);
+  assert.deepEqual(logs.filter((l) => l.startsWith('box:')), [logs.find((l) => /license is not accepted/.test(l))]);
+  assert.doesNotMatch(logs.join('\n'), /unknown|move it aside/);
 });

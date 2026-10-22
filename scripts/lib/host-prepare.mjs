@@ -14,6 +14,9 @@ export function configStateDir({ configDir, worktreeDir } = {}) {
   return stateDir && String(worktreeDir).startsWith(`${stateDir}/`) ? stateDir : undefined;
 }
 
+/** The shell filter that keeps a tool's first non-blank output line (xcodebuild may print a blank one first). */
+const FIRST_LINE = "grep -m1 '[^[:space:]]'";
+
 /**
  * Why a host cannot run Xcode work, or undefined when it can. `probe.xcodeError` is the first line `xcodebuild -version`
  * printed when it failed: a host with only the Command Line Tools has no xcodebuild at all, and an Xcode whose license
@@ -24,8 +27,8 @@ export function xcodeRefusal(probe, ssh = '<host>') {
   const error = probe.xcodeError;
   const path = probe.xcodePath || 'none';
   if (/license/i.test(error ?? '')) return `the Xcode license is not accepted (${error}); run: ssh -t ${ssh} 'sudo xcodebuild -license accept'`;
-  if (/command line tools/i.test(error ?? '') || /CommandLineTools/.test(path) || !error) return `xcodebuild is not available and the active developer directory is ${path} (Command Line Tools only, or none); install Xcode.app and run: ssh -t ${ssh} 'sudo xcode-select -s /Applications/Xcode.app/Contents/Developer'`;
-  return `xcodebuild -version failed (${error}); active developer directory ${path}`;
+  if (/command line tools/i.test(error ?? '') || /CommandLineTools/.test(path) || path === 'none') return `xcodebuild is not available and the active developer directory is ${path} (Command Line Tools only, or none); install Xcode.app and run: ssh -t ${ssh} 'sudo xcode-select -s /Applications/Xcode.app/Contents/Developer'`;
+  return `xcodebuild -version failed (${error || 'no output'}); active developer directory ${path}`;
 }
 
 /**
@@ -39,12 +42,14 @@ export function xcodeRefusal(probe, ssh = '<host>') {
  */
 export function planHost({ name, host, config, configPath, repos, local, probe, minFreeGb = 10, needs = [] }) {
   const refusals = [];
-  if (needs.includes('xcode')) {
-    const why = xcodeRefusal(probe, host.ssh);
-    if (why) refusals.push(`${name}: ${why}`);
-  }
+  // /usr/bin/git is an xcrun shim: with an Xcode selected whose license is not accepted every git call fails, so each
+  // git-derived fact (HEADs, origins) comes back empty. That is one fact, the license, and it is reported alone, for a
+  // node-only wave too, instead of as "ship-dag is at unknown" and "origin is unset; move it aside".
+  const gitBlocked = /license/i.test(probe.gitError ?? '');
+  const why = (needs.includes('xcode') ? xcodeRefusal(probe, host.ssh) : undefined) ?? (gitBlocked ? xcodeRefusal({ xcodeError: probe.gitError }, host.ssh) : undefined);
+  if (why) refusals.push(`${name}: ${why}`);
   for (const [label, key, dir] of [['ship-dag', 'sdSha', host.sdHome], ['claude-orchestrator', 'coSha', host.coHome]]) {
-    if (probe[key] !== local[key]) {
+    if (!gitBlocked && probe[key] !== local[key]) {
       const build = key === 'coSha' ? ' && npm ci && npm run build' : '';
       refusals.push(`${name}: ${label} is at ${probe[key] || 'unknown'}, this Mac at ${local[key]}; run: ssh ${host.ssh} 'cd ${dir} && git pull --ff-only${build}'`);
     }
@@ -68,7 +73,7 @@ export function planHost({ name, host, config, configPath, repos, local, probe, 
     if (owners.has(dir)) refusals.push(`${name}: ${owners.get(dir)} and ${repo} both clone to ${at}; not supported`);
     owners.set(dir, repo);
     const origin = probe.origins?.[dir];
-    if (probe.present.includes(dir) && normalizeRepo(origin) !== normalizeRepo(repo)) refusals.push(`${name}: ${at} exists but its origin is ${origin || 'unset'}, not ${repo}; move it aside`);
+    if (!gitBlocked && probe.present.includes(dir) && normalizeRepo(origin) !== normalizeRepo(repo)) refusals.push(`${name}: ${at} exists but its origin is ${origin || 'unset'}, not ${repo}; move it aside`);
   }
   if (refusals.length) return { refusals, plan: [] };
   const plan = [];
@@ -89,9 +94,9 @@ export function planHost({ name, host, config, configPath, repos, local, probe, 
  * so `distNewest` is the newest `.js` file under dist/src (a stray `.DS_Store` is not a build) and `srcNewer` the first
  * src `.ts` newer than it (empty when fresh), which also catches an uncommitted source edit. A present repo also reports
  * its `origin=<name>=<url>`. With no `stateDir` (a config planHost will refuse) there is no `configHash` line. `host` is
- * a validated hosts.json entry (`validateHosts`/`loadHosts`), so its `coHome` is already defaulted. With `xcode` the
- * script also reports `xcodePath` (`xcode-select -p`) and either `xcodeVersion` (the first line of `xcodebuild -version`)
- * or, when that fails, `xcodeError` (its first output line); without it no Xcode tool runs, so a node-only wave never
+ * a validated hosts.json entry (`validateHosts`/`loadHosts`), so its `coHome` is already defaulted. When `git --version` fails the script also reports `gitError`, its first non-blank line, which `planHost` reads as an unaccepted Xcode license (git is an xcrun shim) and reports instead of the empty git facts. With `xcode` the
+ * script also reports `xcodePath` (`xcode-select -p`) and either `xcodeVersion` (the first non-blank line of `xcodebuild -version`)
+ * or, when that fails, `xcodeError` (its first non-blank output line); without it no Xcode tool runs, so a node-only wave never
  * waits on one.
  */
 export function probeScript(host, stateDir, repoNames, { xcode = false } = {}) {
@@ -107,7 +112,8 @@ export function probeScript(host, stateDir, repoNames, { xcode = false } = {}) {
     `printf 'settingsBase64=%s\\n' "$(base64 2>/dev/null < ${q(`${home}/.claude/settings.json`)} | tr -d '\\n')"`,
     ...(stateDir ? [`echo configHash=${hash(`${stateDir}/config.json`)}`] : []),
     `echo freeKb=$(df -Pk ${q(home)} | awk 'NR==2{print $4}')`,
-    ...(xcode ? ['echo xcodePath=$(xcode-select -p 2>/dev/null)', 'if x=$(xcodebuild -version 2>&1); then echo xcodeVersion=$(printf %s "$x" | head -n 1); else echo xcodeError=$(printf %s "$x" | head -n 1); fi'] : []),
+    `if g=$(git --version 2>&1); then :; else printf 'gitError=%s\\n' "$(printf %s "$g" | ${FIRST_LINE})"; fi`,
+    ...(xcode ? ["printf 'xcodePath=%s\\n' \"$(xcode-select -p 2>/dev/null)\"", `if x=$(xcodebuild -version 2>&1); then printf 'xcodeVersion=%s\\n' "$(printf %s "$x" | ${FIRST_LINE})"; else printf 'xcodeError=%s\\n' "$(printf %s "$x" | ${FIRST_LINE})"; fi`] : []),
     ...repoNames.map((n) => {
       const at = q(`${reposDir}/${n}`);
       return `if test -d ${at}; then echo present=${q(n)}; echo origin=${q(n)}=$(git -C ${at} remote get-url origin 2>/dev/null); fi`;

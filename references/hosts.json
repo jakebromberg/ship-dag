@@ -13,7 +13,7 @@
         "node",
         "xcode"
       ],
-      "_note": "M1 Mac mini, 8 GB RAM, about 13 GB of disk, Xcode.app selected with its license accepted, iOS simulator runtimes installed. sessionSlots stays 2 for node work, but ship-dag has no per-toolchain session cap, so an Xcode session shares those two slots: run any wave that holds an Xcode repo (wxyc-ios-64, wxyc-dj-ios) on this host with --parallel 1, because two xcodebuild runs do not fit in 8 GB or on the disk."
+      "_note": "M1 Mac mini, 8 GB RAM, about 13 GB of disk, Xcode.app selected with its license accepted, iOS simulator runtimes installed. sessionSlots stays 2 for node work. host-run runs one session at a time (and logs the clamp) for any wave that holds an Xcode repo, because two xcodebuild runs do not fit in 8 GB or on the disk; a mixed wave is serialized with it."
     }
   }
 }
