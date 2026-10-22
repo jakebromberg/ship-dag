@@ -56,6 +56,26 @@ export const reportsScript = (stateDir) => `echo reports=$(ls ${q(`${stateDir}/s
 export const parseReports = (out) => Number(/^reports=\s*(\d+)\s*$/m.exec(String(out))?.[1] ?? NaN);
 
 /**
+ * A shell line that prints `exists=0`, or (for a worktree at `path` that exists) `exists=1`, `commits=<n>` (ahead of
+ * `origin/<base>`) and `dirty=<0|1>`. A git command that fails exits non-zero with no `exists=1`, so a missing worktree
+ * is told from a failed read.
+ */
+export const worktreeScript = (path, base) => [
+  `[ -d ${q(path)} ] || { echo exists=0; exit 0; }`,
+  `c=$(git -C ${q(path)} rev-list --count ${q(`origin/${base}..HEAD`)}) || exit 1`,
+  `d=$(git -C ${q(path)} status --porcelain) || exit 1`,
+  `printf 'exists=1\\ncommits=%s\\ndirty=%s\\n' "$c" "$([ -n "$d" ] && echo 1 || echo 0)"`,
+].join('; ');
+
+/** `{ exists, commits, dirty }` (the shape `resumeMode` reads) from `worktreeScript` output (a Buffer or string), or undefined when it holds no recognizable state. */
+export function parseWorktree(out) {
+  const field = (k) => /^\s*(\d+)\s*$/.exec(new RegExp(`^${k}=(.*)$`, 'm').exec(String(out))?.[1] ?? '')?.[1];
+  if (field('exists') === '0') return { exists: false, commits: 0, dirty: false };
+  const [exists, commits, dirty] = ['exists', 'commits', 'dirty'].map(field);
+  return exists === '1' && commits !== undefined && dirty !== undefined ? { exists: true, commits: Number(commits), dirty: dirty === '1' } : undefined;
+}
+
+/**
  * One poll of a detached run: whether the pid in `<stateDir>/host-run.pid` is alive (`none` without the file), how many
  * reports exist, then `---` and at most `LOG_CHUNK` bytes of the engine log from byte `offset`. Alive is read before
  * the log, so an engine seen exited has had its whole log written; a chunk of `LOG_CHUNK` bytes means more may follow.

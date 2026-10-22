@@ -8,7 +8,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cli as entry, hostRun, main, realRunner } from './host-run.mjs';
 import { readLatestUtilization } from './rate-limit-preflight.mjs';
-import { LOG_CHUNK, parsePoll, pollScript, preflightCommand, rsyncArgs } from './lib/host-run.mjs';
+import { LOG_CHUNK, parsePoll, pollScript, preflightCommand, rsyncArgs, worktreeScript } from './lib/host-run.mjs';
 import { scopedEngineFixture } from './lib/engine-fixture.mjs';
 import { testHost } from './lib/host-fixture.mjs';
 
@@ -257,7 +257,7 @@ async function cli(args, replies, { hosts = { box }, log, relativePaths = false,
   const path = (p) => (relativePaths ? relative(process.cwd(), p) : p);
   const code = await main(['box', path(config), '--state', path(state), ...args], { hosts, run, out: (s) => (out += s), err: (s) => (err += s), sleep: async () => {}, ...(profiles && { profiles }) });
   const logPath = join(state, 'host-box.log');
-  return { code, out, err, log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined };
+  return { code, out, err, stateMade: existsSync(state), log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined };
 }
 
 for (const [name, args, replies, log, expected] of [
@@ -390,3 +390,59 @@ for (const [name, args, repos, profiles, parallel, clamped] of [
     assert.equal(/clamping --parallel from 2 to 1/.test(r.err), clamped, r.err);
   });
 }
+
+// --worktree/--base: one read of a host worktree through the runner, before anything is launched.
+const WORKTREE = ['--worktree', '/h/wt/app-1', '--base', 'main'];
+for (const [name, reply, code, out, err] of [
+  ['a worktree with commits and a dirty tree', { status: 0, stdout: 'exists=1\ncommits=2\ndirty=1\n', stderr: '' }, 0, '{"exists":true,"commits":2,"dirty":true}\n', ''],
+  ['a missing worktree is a successful read', { status: 0, stdout: 'exists=0\n', stderr: '' }, 0, '{"exists":false,"commits":0,"dirty":false}\n', ''],
+  ['ssh exiting 255 is a drop', { status: 255, stdout: '', stderr: '' }, 3, '', /ssh connection dropped/],
+  ['a timed-out call is a drop', failedToRun('ETIMEDOUT'), 3, '', /ssh connection dropped/],
+  ['a failing remote command', { status: 1, stdout: 'exists=1\ncommits=2\ndirty=0\n', stderr: 'fatal: bad revision' }, 1, '', /the worktree read exited 1.*bad revision/s],
+  ['output with no recognizable lines', { status: 0, stdout: 'hello\n', stderr: '' }, 1, '', /no worktree state/],
+  ['an overflowed buffer', failedToRun('ENOBUFS'), 1, '', /ENOBUFS/],
+]) {
+  test(`main --worktree: ${name}`, async () => {
+    const calls = [];
+    const r = await cli(WORKTREE, [reply], { calls });
+    assert.equal(r.code, code, r.err);
+    assert.equal(r.out, out);
+    if (err) assert.match(r.err, err); else assert.equal(r.err, '');
+    assert.deepEqual(calls, [worktreeScript('/h/wt/app-1', 'main')]);
+  });
+}
+
+test('main --worktree is read-only: no state dir, no host log, an existing host log untouched', async () => {
+  const fresh = await cli(WORKTREE, [{ status: 0, stdout: 'exists=1\ncommits=0\ndirty=0\n', stderr: '' }]);
+  assert.equal(fresh.stateMade, false);
+  assert.equal(fresh.log, undefined);
+  const kept = await cli(WORKTREE, [{ status: 0, stdout: 'exists=0\n', stderr: '' }], { log: 'earlier\n' });
+  assert.equal(kept.log, 'earlier\n');
+});
+
+for (const [name, args, shown] of [
+  ['--worktree without --base', ['--worktree', '/w'], /--worktree and --base/],
+  ['--base without --worktree', ['--base', 'main'], /--worktree and --base/],
+  ['--worktree without a value', ['--worktree', '--base', 'main'], /--worktree/],
+  ['--base without a value', ['--worktree', '/w', '--base'], /--base/],
+]) {
+  test(`the CLI exits 2 for ${name}`, async () => {
+    const lines = [];
+    const config = join(mkdtempSync(join(tmpdir(), 'host-run-wt-')), 'c.json');
+    writeFileSync(config, JSON.stringify({ configDir: `${stateDir}/state`, worktreeDir: `${stateDir}/wt` }));
+    assert.equal(await entry(['box', config, '--state', 's', ...args], { hosts: { box }, run: { ssh: boom, rsync: boom }, err: (m) => lines.push(m) }), 2);
+    assert.match(lines.join(''), shown);
+  });
+}
+
+test('the CLI exits 1, never 255 or a --collect-only resume, when the worktree read throws', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'host-run-wt-'));
+  const config = join(dir, 'config.box.json');
+  writeFileSync(config, JSON.stringify({ configDir: `${stateDir}/state`, worktreeDir: `${stateDir}/wt` }));
+  const lines = [];
+  const ssh = () => { throw new Error('spawn exploded'); };
+  assert.equal(await entry(['box', config, '--state', join(dir, 'l'), ...WORKTREE], { hosts: { box }, run: { ssh, rsync: boom }, err: (m) => lines.push(m), out() {} }), 1);
+  assert.match(lines.join(''), /spawn exploded/);
+  assert.doesNotMatch(lines.join(''), /collect-only/);
+  assert.equal(existsSync(join(dir, 'l')), false);
+});

@@ -5,8 +5,9 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { resumeMode } from './failure.mjs';
 import { testHost } from './host-fixture.mjs';
-import { LOG_CHUNK, PID_FILE, engineCommand, launchScript, leaseEnv, preflightCommand, outcome, parsePoll, parseReports, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './host-run.mjs';
+import { LOG_CHUNK, PID_FILE, engineCommand, launchScript, leaseEnv, preflightCommand, outcome, parsePoll, parseReports, parseWorktree, worktreeScript, pollDecision, pollScript, prefixLines, reportsScript, rsyncArgs } from './host-run.mjs';
 
 const box = testHost();
 const big = testHost('/b', { coHome: '/b/co', sessionSlots: 3, leaseSlots: 5 }, 'big');
@@ -180,3 +181,57 @@ test('rsyncArgs: goes over ssh with the shared options', () => {
   assert.equal(args[args.indexOf('-e') + 1], 'ssh -o BatchMode=yes -o ConnectTimeout=10');
   assert.deepEqual(args.slice(-2), ['box:/s/state/', '/l/state/']);
 });
+
+for (const [name, out, expected] of [
+  ['commits and a dirty tree', 'exists=1\ncommits=3\ndirty=1\n', { exists: true, commits: 3, dirty: true }],
+  ['clean with no commits', 'exists=1\ncommits=0\ndirty=0\n', { exists: true, commits: 0, dirty: false }],
+  ['a missing worktree', 'exists=0\n', { exists: false, commits: 0, dirty: false }],
+  ['padded counts (wc-style)', 'exists=1\ncommits=      2\ndirty=0\n', { exists: true, commits: 2, dirty: false }],
+  ['no recognizable lines', 'fatal: not a git repository\n', undefined],
+  ['empty output', '', undefined],
+  ['an existing worktree with no commit count', 'exists=1\ndirty=0\n', undefined],
+  ['a Buffer', Buffer.from('exists=1\ncommits=1\ndirty=0\n'), { exists: true, commits: 1, dirty: false }],
+]) {
+  test(`parseWorktree: ${name}`, () => {
+    assert.deepEqual(parseWorktree(out), expected);
+  });
+}
+
+test('worktreeScript quotes the path and the base, so neither is word-split or expanded', () => {
+  const script = worktreeScript("/h/w t/it's", 'feat/$x');
+  assert.match(script, /'\/h\/w t\/it'\\''s'/);
+  assert.match(script, /'origin\/feat\/\$x\.\.HEAD'/);
+});
+
+// The script runs against a real repository: a clone one commit behind a local branch, then dirty.
+const git = (cwd, ...args) => spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+test('worktreeScript runs: missing, clean, one commit ahead, dirty, and an unknown base', () => {
+  const dir = scratch();
+  const origin = `${dir}/origin`;
+  const wt = `${dir}/wt`;
+  mkdirSync(origin);
+  git(origin, 'init', '-q', '-b', 'main');
+  git(origin, 'commit', '-q', '--allow-empty', '-m', 'one');
+  git(dir, 'clone', '-q', origin, wt);
+  const read = (base = 'main', path = wt) => ({ ...sh(worktreeScript(path, base)) });
+  const parsed = (base) => parseWorktree(read(base).stdout);
+  assert.deepEqual(parseWorktree(read('main', `${dir}/gone`).stdout), { exists: false, commits: 0, dirty: false });
+  assert.deepEqual(parsed('main'), { exists: true, commits: 0, dirty: false });
+  git(wt, 'commit', '-q', '--allow-empty', '-m', 'two');
+  assert.deepEqual(parsed('main'), { exists: true, commits: 1, dirty: false });
+  writeFileSync(`${wt}/new.txt`, 'x');
+  assert.deepEqual(parsed('main'), { exists: true, commits: 1, dirty: true });
+  const bad = read('nope');
+  assert.notEqual(bad.status, 0);
+  assert.equal(parseWorktree(bad.stdout), undefined);
+});
+
+for (const [name, out, mode] of [
+  ['commits', 'exists=1\ncommits=2\ndirty=0\n', 'resume'],
+  ['a dirty tree', 'exists=1\ncommits=0\ndirty=1\n', 'resume'],
+  ['a clean tree with no commits', 'exists=1\ncommits=0\ndirty=0\n', 'filtered-rerun'],
+]) {
+  test(`parseWorktree feeds resumeMode directly: ${name} is ${mode}`, () => {
+    assert.equal(resumeMode(parseWorktree(out)), mode);
+  });
+}
