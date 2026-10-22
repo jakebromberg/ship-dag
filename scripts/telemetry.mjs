@@ -50,7 +50,7 @@ import { parseArgs } from 'node:util';
 import { readArg } from './lib/read-arg.mjs';
 import { mean, rate, groupBy } from './lib/stats.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { INFRA_REASONS, RESOURCE_ROUTE, ranOf, SKIP_REASON_DEPENDENCY } from './lib/failure.mjs';
+import { ENGINE_DIED, INFRA_REASONS, RESOURCE_ROUTE, ranOf, SKIP_REASON_DEPENDENCY } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
 import { deriveWaveRecords, markerDeathOf, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
@@ -658,7 +658,7 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
   // that keeps the reason (a point-F hold) is not. A ref deferred at point F stays named: its deferral is the death.
   const last = latestByRef(logged);
   const spelled = repoSpellings(records);
-  out.engineDied = [...last.values()].filter((r) => outcomeOf(r) === 'engine-died').map((r) => formatRef(spelled.get(refKey(r.repo)), r.issue));
+  out.engineDied = [...last.values()].filter((r) => outcomeOf(r) === ENGINE_DIED).map((r) => formatRef(spelled.get(refKey(r.repo)), r.issue));
   return out;
 }
 

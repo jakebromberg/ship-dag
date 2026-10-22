@@ -33,8 +33,10 @@ export { artifactStem };
 
 /** Reasons the engine stops a row for infrastructure rather than model failure (claude-orchestrator#87), beside `"rate-limited"` which ship-dag also reads from a transcript. */
 export const RESOURCE_STOPS = new Set(['memory-critical', 'lease-wait']);
-/** Every `failureReason` that takes the `resource` route: the engine's `RESOURCE_STOPS` and `"engine-died"` (the engine process died, and the report was rebuilt from its state files). */
-export const RESOURCE_ROUTE = new Set([...RESOURCE_STOPS, 'engine-died']);
+/** The `failureReason` (and `outcomeOf` label) of an engine death. Stamped by `wave-records.mjs`'s `build` and by the hand-rebuilt engine report row; read by `outcomeOf`, `stopReasonOf`, `runsOf` and `telemetry.mjs`'s `audit`. */
+export const ENGINE_DIED = 'engine-died';
+/** Every `failureReason` that takes the `resource` route: the engine's `RESOURCE_STOPS` and `ENGINE_DIED` (the engine process died, and the report was rebuilt from its state files). */
+export const RESOURCE_ROUTE = new Set([...RESOURCE_STOPS, ENGINE_DIED]);
 /** Every `failureReason` that marks infrastructure rather than model failure: `"rate-limited"` and `RESOURCE_ROUTE`. */
 export const INFRA_REASONS = new Set(['rate-limited', ...RESOURCE_ROUTE]);
 
