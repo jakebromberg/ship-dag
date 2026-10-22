@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { configDirs, readRunFamilyReports, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, waveContextFor } from './wave-reports.mjs';
+import { configDirs, readRunFamilyReports, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, waveContextFor, waveDirOf } from './wave-reports.mjs';
 import { appendWave } from './wave-sidecar.mjs';
 import { scopedEngineFixture, putReport } from './engine-fixture.mjs';
 
@@ -66,6 +66,13 @@ test('waveContextFor finds the config a --by-host emit wrote under hosts/, one p
     assert.equal(ctx.configFile, join(d, 'hosts', file));
   }
   assert.deepEqual(configDirs(d), [d, join(d, 'hosts'), join(d, 'state')]);
+});
+
+test('waveDirOf names the wave dir a collected or re-run dir (<wave dir><letter>) falls back to, and null for any other dir', () => {
+  for (const [dir, want] of [
+    ['/e/sd-1-w5z', '/e/sd-1-w5'], ['/e/sd-1-w12y/', '/e/sd-1-w12'], ['/e/sd-1-w5b', '/e/sd-1-w5'], ['/e/sd-1-w5bz', '/e/sd-1-w5b'],
+    ['/e/sd-1-w5', null], ['/e/sd-1', null], ['/e/sd-1-board', null], ['/e/sd-1-b', null],
+  ]) assert.equal(waveDirOf(dir), want, dir);
 });
 
 test('readWaveReport reads any path, and keeps the rows of a report whose startedAt does not parse', () => {
