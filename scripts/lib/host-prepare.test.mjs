@@ -41,7 +41,7 @@ for (const [name, over, extra, expected] of [
 }
 
 for (const [name, over, extra, message] of [
-  ['ship-dag differs', { sdSha: 'zzz' }, {}, /ship-dag is at zzz, this Mac at aaa; run: ssh box 'cd \/h\/D\/ship-dag && git pull --ff-only'/],
+  ['ship-dag differs', { sdSha: 'zzz' }, {}, /ship-dag is at zzz, this Mac at aaa; run: ssh box 'cd \/h\/sd && git pull --ff-only'/],
   ['the orchestrator differs', { coSha: 'zzz' }, {}, /claude-orchestrator is at zzz.*'cd \/h\/Developer\/claude-orchestrator && git pull --ff-only && npm ci && npm run build'/],
   ['dist is missing', { distNewest: '' }, {}, /dist\/src is missing; run: ssh box 'cd \/h\/Developer\/claude-orchestrator && npm ci && npm run build'/],
   ['a source is newer than dist', { srcNewer: '/co/src/a.ts' }, {}, /dist\/src is older than \/co\/src\/a\.ts; run: .*npm run build/],
