@@ -629,8 +629,9 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
   const reads = out.dirs.map((dir) => readWaveReports(dir, { warn: () => {} }));
   const family = reads.flat();
   const ownership = reportOwnership(family);
+  // Family-wide: a remote host's collected dir matches the sidecar lines and configs in its wave dir (`waveContextFor`).
+  const matched = new Set();
   for (const [i, dir] of out.dirs.entries()) {
-    const matched = new Set();
     for (const read of reads[i]) {
       if (read.error) { out.unreadable.push({ path: read.path, error: read.error }); continue; }
       // Quiet: the sidecar is read once more below, so a torn line is warned about once per dir, not per report.
@@ -648,6 +649,8 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
       const refs = uncovered.map((r) => r.ref);
       if (refs.length) out.notIngested.push({ dir, id: read.id, source, refs });
     }
+  }
+  for (const dir of out.dirs) {
     for (const e of readSidecar(join(dir, SIDECAR_NAME), { warn })) {
       if (!matched.has(JSON.stringify(e))) out.neverReported.sidecar.push({ dir, refs: (e.issues ?? []).map((i) => i?.ref) });
     }
