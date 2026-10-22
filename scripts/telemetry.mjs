@@ -61,6 +61,7 @@ import { defaultBaseDir } from './rate-limit-preflight.mjs';
 import { latestByRef, outcomeOf } from './lib/log-order.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { CATEGORIES } from './review-gate.mjs';
+import { isFindingObject } from './lib/finding.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
 import { evaluateAll, loadTripwires, tripwireContext } from './lib/tripwires.mjs';
@@ -138,10 +139,8 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   const failureReason = rec.failureReason ?? null;
   if (!FAILURE_REASONS.has(failureReason)) throw new Error(`bad failureReason: ${rec.failureReason}`);
   if (rec.skipReason != null && rec.skipReason !== SKIP_REASON_DEPENDENCY) throw new Error(`bad skipReason: ${JSON.stringify(rec.skipReason)}`);
-  const strOrNull = (v) => v === null || typeof v === 'string';
-  const finding = (f) => typeof f === 'string' || (f && typeof f === 'object' && strOrNull(f.category) && strOrNull(f.verdict) && typeof f.summary === 'string');
   if (rec.findings != null && !Array.isArray(rec.findings)) throw new Error(`bad findings: not an array: ${JSON.stringify(rec.findings)}`);
-  const badFinding = (rec.findings ?? []).findIndex((f) => !finding(f));
+  const badFinding = (rec.findings ?? []).findIndex((f) => typeof f !== 'string' && !isFindingObject(f));
   if (badFinding >= 0) throw new Error(`bad findings: entry ${badFinding} is ${JSON.stringify(rec.findings[badFinding])}`);
   validateCost(rec.cost);
   return {
@@ -249,8 +248,8 @@ export function readRecords(path = telemetryPath()) {
  * pass-scoped, not issue-scoped) and aggregated into their own `retro` section.
  * `byRepo` groups the same population by repo (casing folded by `sameRepo`, keyed as first written); a repo with
  * fewer than `minSample` reached rows carries `n` and no rates. Each entry splits yield and review catch by tier (a tier
- * under `minSample` keeps `n` only), counts the object `findings` of its blocking rows by category in `findingCategories`
- * (a null category as `(blank)`, one outside `CATEGORIES` as `(other)`) and the blocking rows with no object finding in `unstructured`.
+ * under `minSample` keeps `n` only), counts the `isFindingObject` `findings` of its blocking rows by category in `findingCategories`
+ * (a null category as `(blank)`, one outside `CATEGORIES` as `(other)`) and the blocking rows with none (a string, a legacy object or no `findings`) in `unstructured`.
  * `issues` counts distinct issues (`latestByRef`, casing folded), those merged in the window, the mean non-infra rows
  * that reached implement per merged issue (`null` with none), and those whose latest record is no merge and no maintainer deferral. A
  * deferral with an infra reason (`INFRA_REASONS`: an engine death, a lease-wait, memory-critical or rate-limited stop)
@@ -294,7 +293,7 @@ export function report(records, { minSample = 20 } = {}) {
     const findingCategories = {};
     let unstructured = 0;
     for (const r of rs.filter((x) => x.reviewVerdict === 'blocking')) {
-      const objs = r.findings.filter((x) => x !== null && typeof x === 'object');
+      const objs = (r.findings ?? []).filter(isFindingObject);
       if (!objs.length) unstructured++;
       for (const { category } of objs) {
         const key = category == null ? '(blank)' : CATEGORIES.includes(category) ? category : '(other)';
