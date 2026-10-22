@@ -8,19 +8,23 @@
 // plan-waves.mjs's `fetchSpec` in-process (the equivalent of `plan-waves.mjs fetch --repo R --epic N --members`, or `--label L
 // --members`; an epic's cross-repo sub-issues come back unioned by the walk), writes it to `<runBaseDir>/spec-board.json`
 // (atomically, so concurrent refreshes are safe) and renders from it. If the fetch fails the render is skipped and the old
-// board.html stays. An `issueSet` of `{}` (an explicit set) has nothing to fetch: refresh warns and renders from dag.json.
-// Cost: the fetch is one `gh` call per issue in scope (a view, plus a dependency read), a few more per epic level; the render is
-// one GraphQL query per 40 tickets, plus closure and predecessor rounds. A 20-ticket run is roughly 60 `gh` calls and 1-2 queries.
+// board.html stays. An `issueSet` of `{}` (an explicit set) has nothing to fetch: refresh warns and renders from dag.json,
+// and exits 1 when there is no dag.json either (pass `--spec` to `render`, or `init` with --epic/--label).
+// Cost of one refresh: about L+2 GraphQL queries and L REST calls for L open leaves, plus ceil(T/40) GraphQL queries to render T tickets
+// (the fetch is a `gh issue view` and a `dependencies/blocked_by` read per leaf, one sub-issues query per epic and one list per label
+// state; each sub-epic or out-of-set blocker adds one more; the render adds closure and predecessor rounds).
 // Exit codes: 0 = done; 1 = failed (stderr says why; the old board.html is untouched); 64 = usage.
 //
 // Usage: board.mjs init   (--state-dir <dir> | --run-id <id>) [--title T] [--epic owner/repo#N | --label L --repo owner/repo]
 //                         [--block-on a,b] [--out path] [--abbreviations <json|@file|->] [--predecessors a,b]
 //        board.mjs render [--state-dir <dir> | --run-id <id>] [--spec path] [--board-config path] [--out path]
-//        board.mjs refresh (--state-dir <dir> | --run-id <id>) [--board-config path] [--out path]
+//        board.mjs refresh [--state-dir <dir> | --run-id <id>] [--board-config path] [--out path]
+// (render and refresh fall back to $SHIP_DAG_RUN_ID when neither --state-dir nor --run-id is given; init needs one of them.)
 
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fetchSpec as planWavesFetchSpec } from './plan-waves.mjs';
 import { renderBoard } from './board/render.mjs';
 import { buildGraph, classify, makeRepoLabel, makeShortRef, projectWaves, shippedBefore } from './board/model.mjs';
 import { fetchPredecessors } from './board/predecessors.mjs';
@@ -158,8 +162,8 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   };
 }
 
-/** The default `fetchSpec(repo, {epic|label, members, warn})`: plan-waves', loaded on first use so `render` never needs the topo core. A replacement may be sync or async. */
-const planWavesFetch = (runGhSync) => async (repo, opts) => (await import('./plan-waves.mjs')).fetchSpec(repo, opts, runGhSync);
+/** The default `fetchSpec(repo, {epic|label, members, warn})`: plan-waves', driven by `runGhSync`. A replacement may be sync or async. */
+const planWavesFetch = (runGhSync) => (repo, opts) => planWavesFetchSpec(repo, opts, runGhSync);
 
 /**
  * `refresh`'s fetch: the run's graph spec for board.json's `issueSet`, written atomically to `<dir>/spec-board.json`.
@@ -171,6 +175,9 @@ async function refreshSpec({ dir, flag, fetchSpec, warn }) {
   if (!board) throw new Error(`${join(dir, 'board.json')} absent: run \`board.mjs init\` first`);
   const { epic, label, repo } = board.issueSet ?? {};
   if (!epic && !label) {
+    if (!readJson(join(dir, 'dag.json'))) {
+      throw new Error(`board.json names neither an epic nor a label (an explicit issue set) and ${join(dir, 'dag.json')} is absent, so there is no graph to render: write the graph spec there, pass \`--spec\` to \`board.mjs render\`, or re-init with --epic or --label`);
+    }
     warn('board.json names neither an epic nor a label: the spec is not re-fetched; rendering from dag.json (or write the graph there first)');
     return null;
   }
