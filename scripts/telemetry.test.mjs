@@ -1492,6 +1492,23 @@ describe('audit', () => {
     assert.deepEqual(report(derived).issues, { distinct: 1, merged: 0, unresolved: 1, attemptsPerMerged: null });
   }));
 
+  // A log appended before a marker deferred to its stamped run holds the relaunch's marker death, and ingest of the stamped run
+  // adds nothing (heldByMarker): audit takes that record as the stamped row's death, so it never names a wave re-ingest cannot fill.
+  test('a stamped row is covered by its relaunch\'s marker death, logged before the marker deferred to it', () => family({
+    [RUN_A]: {
+      reports: {
+        'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason: 'engine-died', ran: true })]),
+        'w2.json': stateReport([stateRow(REF, { ran: true, engineDeaths: [{ at: '2026-10-08T19:45:00.000Z' }] })], { startedAt: T1, finishedAt: T2 }),
+      },
+      sidecar: [sidecarEntry([REF])],
+    },
+  }, (base) => {
+    const markerDeath = logged({ reportId: 'w2', ts: '2026-10-08T19:45:00.000Z', ran: true, implStatus: 'error', finalState: 'deferred', failureReason: 'engine-died', pr: null });
+    const continuation = logged({ reportId: 'w2', ts: T2, ran: true, pr: 11 });
+    assert.deepEqual(audit_(base, [markerDeath, continuation]).notIngested, []);
+    assert.deepEqual(audit_(base, [continuation]).notIngested.map((w) => [w.id, w.refs]), [['w1', [REF]]]);
+  }));
+
   test('an engine-died row logged before engine-died was an infra reason is covered by its record with no reason', () => family({
     [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prNumber: null, failureReason: 'engine-died' })]) }, sidecar: [sidecarEntry([REF])] },
   }, (base) => {
