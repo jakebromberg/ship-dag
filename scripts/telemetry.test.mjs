@@ -1220,18 +1220,21 @@ test('ingest-wave: a marker\'s death, an earlier run, takes none of the row\'s s
   assert.deepEqual(records.map((r) => [r.failureReason ?? null, r.cost?.implement?.sessionIds ?? null]), [['engine-died', null], [null, ['b']]]);
 }));
 
-// A stamped report and its relaunch's marker are one death, whichever is ingested first (the ids and the later reports reach deriveWaveRecords).
+// A stamped report and its relaunch's marker are one death, whichever is ingested first (the ids and the later reports reach
+// deriveWaveRecords): the stamped report's own record, with its id and the dead run's sessions, and the relaunch's continuation.
 for (const order of [['w1.json', 'w2.json'], ['w2.json', 'w1.json']]) {
-  test(`ingest-wave: a stamped death and the marker that lists it are one record, ingested ${order.join(' then ')}`, () => withStateDir({
+  test(`ingest-wave: a stamped death and the marker that lists it are one record, with the dead run's cost, ingested ${order.join(' then ')}`, () => withStateDir({
     reports: {
-      'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason: 'engine-died' })]),
-      'w2.json': stateReport([stateRow(REF, { ran: true, engineDeaths: [{ at: '2026-10-08T20:00:00.000Z' }] })], { startedAt: T1, finishedAt: T2 }),
+      'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, failureReason: 'engine-died', ran: true, sessionIds: ['a'] })]),
+      'w2.json': stateReport([stateRow(REF, { ran: true, sessionIds: ['b'], engineDeaths: [{ at: '2026-10-08T20:00:00.000Z' }] })], { startedAt: T1, finishedAt: T2 }),
     },
     sidecar: [sidecarEntry()],
+    files: logOf(REF, sess('a', 1), sess('b', 0.5)),
   }, (dir) => {
     const log = join(dir, 'runs.jsonl');
     for (const name of order) ingestWave(reportPath(dir, name), {}, { path: log, warn: () => {} });
-    assert.equal(readRecords(log).filter((r) => r.failureReason === 'engine-died').length, 1);
+    const got = readRecords(log).map((r) => [r.reportId, r.failureReason ?? null, r.cost?.implement?.sessionIds ?? null]);
+    assert.deepEqual(got.sort(([a], [b]) => a.localeCompare(b)), [['w1', 'engine-died', ['a']], ['w2', null, ['b']]]);
   }));
 }
 
