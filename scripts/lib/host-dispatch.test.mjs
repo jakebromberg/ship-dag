@@ -100,3 +100,50 @@ test('SKILL.md step 5 sends a remote row that would resume in place to point E, 
   assert.match(step5, /resource preflight \(step 4\) first, for a remote row the host's own \(`host-run\.mjs --preflight`/);
   assert.match(step5, /remote row.*over ssh.*rev-list --count.*HITL point E.*re-run it on the host, continue locally from the pushed branch, or defer.*nothing runs a continuation session on the host/s);
 });
+
+// The table in step 4b item 4 and routeHostExit are two copies of one rule; each row is checked against routeHostExit.
+const ROUTE_WORDS = {
+  'host-prepare': /^the next step/,
+  'host-run': /^the next step/,
+  'read-reports': /read the reports/,
+  'collect-only': /--collect-only/,
+  unreachable: /^unreachable/,
+  'fix-command': /^usage: fix the command/,
+  hitl: /^a failed sync/,
+};
+
+// The first script cell lists several scripts and continuation rows leave it blank, so the script carries down.
+function exitRouteRows() {
+  const rows = [];
+  let scripts = [];
+  for (const line of step4b.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| script') && !l.startsWith('|---'))) {
+    const [scriptCell, exitCell, ...routeCells] = line.slice(1, -1).split('|').map((c) => c.trim());
+    if (scriptCell) scripts = [...scriptCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    const code = Number(exitCell.replaceAll('`', ''));
+    for (const script of scripts) rows.push({ script, code, route: routeCells.join('|') });
+  }
+  return rows;
+}
+
+test('SKILL.md step 4b exit-route table agrees with routeHostExit, row by row', () => {
+  const rows = exitRouteRows();
+  assert.ok(rows.length > 0);
+  for (const { script, code, route } of rows) {
+    const words = ROUTE_WORDS[routeHostExit(script, code)];
+    const matching = new Set(Object.values(ROUTE_WORDS).filter((w) => w.test(route)).map(String));
+    assert.deepEqual([...matching], [String(words)], `${script} exit ${code}: "${route}"`);
+  }
+});
+
+// Every code step 4b can receive has a row. host-sync-claude's EXIT.pending (10) is returned only under --dry-run, and
+// step 4b always runs the real sync, so it never sees 10 and the table has no row for it.
+test('SKILL.md step 4b exit-route table has a row for every code each script returns to it', () => {
+  const returned = {
+    'host-sync-claude': [EXIT.ok, EXIT.failure, EXIT.usage, EXIT.unreachable],
+    'host-prepare': [EXIT.ok, EXIT.failure, EXIT.usage, EXIT.unreachable],
+    'host-run': [EXIT.ok, EXIT.failure, EXIT.usage, EXIT.unreachable, EXIT.waiting, EXIT.dropped],
+  };
+  const have = exitRouteRows().map((r) => `${r.script} ${r.code}`).sort();
+  const want = Object.entries(returned).flatMap(([s, codes]) => codes.map((c) => `${s} ${c}`)).sort();
+  assert.deepEqual(have, want);
+});
