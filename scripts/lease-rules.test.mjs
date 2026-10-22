@@ -15,6 +15,8 @@ const read = (p) => readFileSync(join(root, p), 'utf8');
 const unescaped = (src) => src.replaceAll('\\`', '`');
 const skill = read('SKILL.md');
 const block = (heading) => skill.split(heading)[1].split(/\n### |\n## /)[0];
+// The three copies of the implement prompt, which share the rules below.
+const implementCopies = ['prompt.md step 4', "SKILL.md's Implement block", "workflow.js's implementPrompt"];
 const copies = {
   'prompt.md step 4': read('scripts/engine/prompt.md').split('\n').find((l) => l.startsWith('4. ')),
   "SKILL.md's Implement block": block('### Implement (Sonnet, own worktree)'),
@@ -122,7 +124,7 @@ test("claude-orchestrator's heavy-command matcher matches a repo's declared scri
 // Implementers run local CI themselves before pushing, so each implement copy points them at a repo's declared
 // scripts/ci, run directly (the matcher reads `sh scripts/ci` as `sh` and would not lease it).
 const declaredCi = /When the repo has an executable `scripts\/ci`, run it as `scripts\/ci` \(not `sh scripts\/ci`\): it is the repo's declared local CI\./;
-for (const name of ['prompt.md step 4', "SKILL.md's Implement block", "workflow.js's implementPrompt"]) {
+for (const name of implementCopies) {
   test(`${name} points implementers at a repo's declared scripts/ci`, () => {
     assert.match(copies[name], declaredCi);
   });
@@ -133,7 +135,7 @@ const foregroundRules = [
   'Run long commands in the foreground with an explicit timeout** (Bash `timeout` parameter, up to 600000 ms) — a command that outlives the default foreground window gets auto-backgrounded, and **ending your turn to "wait for the notification" ends your session**: the orchestrator treats a returned turn as completion and reaps you, stranding uncommitted work in the worktree. If something does land in the background, poll it to completion (TaskOutput) within the same turn; never end a turn while a test run, install, or push is still pending.',
   '**Never launch or drive a browser** — no Playwright/e2e runs (headed or headless), no `gh … --web`, no `open <url>`, no browser tools: browser windows disrupt the machine\'s human user, and e2e suites are out of scope for engine sessions. Verification is terminal-only; if a check seems to need a browser, note it as unverified instead.',
 ];
-for (const name of ['prompt.md step 4', "SKILL.md's Implement block", "workflow.js's implementPrompt"]) {
+for (const name of implementCopies) {
   test(`${name} carries the foreground-timeout and no-browser rules after the lease rules`, () => {
     for (const rule of foregroundRules) assert.ok(copies[name].includes(rule), rule.slice(0, 40));
     assert.ok(copies[name].includes(`alone in its own Bash call. **${foregroundRules[0]} ${foregroundRules[1]}`));
@@ -202,5 +204,22 @@ for (const decisions of [undefined, null, [], ['', '  ', '\n']]) {
     const prompt = implementPrompt({ number: 1, digest: 'd', decisions });
     assert.equal(prompt, promptWithoutDecisions({ number: 1, digest: 'd' }));
     assert.ok(prompt.includes('Issue digest (from triage): d\n\nSteps:\n'));
+  });
+}
+
+// Two rules from blocking reviews: a changed instruction left stale in another copy, and fakes that differ from the real CLI.
+const testFirstRules = [
+  'Before you commit, find every other copy of an instruction, field list or contract you changed and update each one in this PR; that is scope, not a drive-by. Search for the old wording and the changed symbol in SKILL.md, `workflow.js`, `scripts/engine/prompt.md`, README, `references/`, served API mirrors, registries, ADRs and doc comments. If copies are meant to stay in sync, add or extend a test that compares them. List what you updated on a `Mirrors:` line in the PR body, or write `Mirrors: none found`.',
+  'When code drives `gh` or another CLI, build each fake from one recorded real response per call shape (read-only commands only), kept as a fixture; a fake must never return a shape the real tool does not produce.',
+];
+for (const name of implementCopies) {
+  const text = name === 'prompt.md step 4'
+    ? read('scripts/engine/prompt.md').split('\n').find((l) => l.startsWith('3. '))
+    : copies[name];
+  test(`${name} carries the every-copy and recorded-fake rules in its test-first step, ahead of the lease rules`, () => {
+    for (const rule of testFirstRules) assert.ok(text.includes(rule), rule.slice(0, 40));
+    const lease = text.indexOf('Heavy commands are leased');
+    assert.ok(lease === -1 || text.indexOf(testFirstRules[0]) < lease);
+    assert.ok(text.includes(`${testFirstRules[0]} ${testFirstRules[1]}`));
   });
 }
