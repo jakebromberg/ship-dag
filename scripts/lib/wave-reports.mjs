@@ -72,7 +72,9 @@ export const laterReports = (reads, startedAt) => reads.filter((r) => r.report &
 /**
  * The routing a report ran under, given as the `{report, startedAt}` `readWaveReport` returns for it:
  * the sidecar entry as of its start, else the entry `entryFromConfig` builds from the config that
- * matches its refs (in the first of `configDirs(stateDir)` that has one). `config` is that matching config
+ * matches its refs (in the first of `configDirs(stateDir)` that has one). Each is looked for in `stateDir`, then in
+ * `waveDirOf(stateDir)`: a remote host's collected dir holds only its report, and the emit wrote the wave's sidecar
+ * lines and `hosts/` configs in the wave dir. `config` is that matching config
  * whichever `source` won, since only a config says which repos run no post-session check; `configFile`
  * is its path (`config.configFile`, null with no config), which tells a caller which config files some report matched.
  * @returns {{entry: object|null, config: object|null, configFile: string|null, source: 'sidecar'|'config'|null}}
@@ -80,9 +82,10 @@ export const laterReports = (reads, startedAt) => reads.filter((r) => r.report &
 export function waveContextFor(stateDir, { report, startedAt: asOf }, { warn } = {}) {
   if (!Number.isFinite(asOf)) throw new TypeError(`waveContextFor: startedAt must be epoch ms, not ${JSON.stringify(asOf)}`);
   const refs = report.issues.map((r) => r?.ref);
-  const sidecar = findWaveContext(stateDir, refs, { asOf, warn });
+  const dirs = [stateDir, waveDirOf(stateDir)].filter(Boolean);
+  const sidecar = dirs.reduce((found, dir) => found ?? findWaveContext(dir, refs, { asOf, warn }), null);
   let config = null;
-  for (const dir of configDirs(stateDir)) if ((config = findWaveConfig(dir, refs, { asOf }))) break;
+  for (const dir of dirs.flatMap(configDirs)) if ((config = findWaveConfig(dir, refs, { asOf }))) break;
   const configFile = config?.configFile ?? null;
   if (sidecar) return { entry: sidecar, config, configFile, source: 'sidecar' };
   return config ? { entry: entryFromConfig(config), config, configFile, source: 'config' } : { entry: null, config, configFile, source: null };
@@ -90,6 +93,12 @@ export function waveContextFor(stateDir, { report, startedAt: asOf }, { warn } =
 
 /** Where a state dir keeps its wave configs, in the order they are searched: the dir, a `--by-host` emit's `hosts/` (one `config.<host>.json` each), then the older layout's `state/`. */
 export const configDirs = (stateDir) => [stateDir, join(stateDir, 'hosts'), join(stateDir, 'state')];
+
+/** The wave dir a dir named `<wave dir><letter>` sits beside (a remote host's collected dir `<id>-w<W>z` → `<id>-w<W>`, or a re-run's `<id>-w<W>bz` → `<id>-w<W>b`), or null for a dir with no letter after its `-w<W>`. */
+export function waveDirOf(stateDir) {
+  const m = /^(.+-w\d+[a-z]*)[a-z]$/i.exec(basename(stateDir));
+  return m ? join(dirname(stateDir), m[1]) : null;
+}
 
 /**
  * The dirs under `baseDir` that hold waves of `runId`'s run family: every one whose name is `sameRun`

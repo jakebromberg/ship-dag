@@ -74,7 +74,9 @@ for (const [name, rule] of [
   ['the real sync before host-prepare', /host-sync-claude\.mjs <host>.*before `host-prepare\.mjs`/s],
   ['the exit-code table names every route', /\| `3` \|.*unreachable.*\| `4` \|.*--collect-only.*\| `255` \|.*--collect-only/s],
   ['a post-launch drop is never run locally', /never run (that host's|its) issues locally/],
-  ['the remote preflight goes through host-run --preflight', /host-run\.mjs"? <host> <config\.<host>\.json> --state <dir> --preflight/],
+  ['the remote preflight goes through host-run --preflight', /host-run\.mjs" <host> "\$WAVE_DIR\/hosts\/config\.<host>\.json" --state "\$WAVE_DIR<letter>" --preflight/],
+  ['every command uses the wave dir, never the run dir $STATE', /`\$WAVE_DIR` = `<engine base>\/<RUN_ID>-w<W>`/],
+  ['a remote re-run syncs, prepares and preflights the host before host-run', /filtered re-run of a remote row.*host-sync-claude\.mjs.*host-prepare\.mjs.*host-run\.mjs --preflight.*then `host-run\.mjs`/s],
   ['each host collects into its own dir', /<RUN_ID>-w<W><letter>/],
   ['the rate-limit preflight waits for every host to be collected', /every host's sub-wave .* collected/s],
   ['no hosts configured follows today\'s path', /no hosts configured.*(today's|exactly the) path/is],
@@ -91,8 +93,10 @@ test('escalation-policy.md offers run locally / wait / defer for an unreachable 
   assert.match(policy, /## A remote host that cannot run its sub-wave, and remote rows/);
   assert.match(policy, /\*\*run its issues locally\*\*.*\*\*wait\*\*.*\*\*defer\*\*/s);
   assert.match(policy, /\*\*re-run it on the host\*\*.*\*\*continue locally from the pushed branch\*\*.*\*\*defer\*\*.*Nothing runs a continuation session on the host/s);
+  assert.match(policy, /re-run it on the host\*\* \(a filtered re-run: .*host-sync-claude.*host-prepare.*host-run --preflight/);
 });
 
 test('SKILL.md step 5 sends a remote row that would resume in place to point E, reading its commit count and dirty flag over ssh', () => {
+  assert.match(step5, /resource preflight \(step 4\) first, for a remote row the host's own \(`host-run\.mjs --preflight`/);
   assert.match(step5, /remote row.*over ssh.*rev-list --count.*HITL point E.*re-run it on the host, continue locally from the pushed branch, or defer.*nothing runs a continuation session on the host/s);
 });
