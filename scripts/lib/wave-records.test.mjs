@@ -721,7 +721,7 @@ for (const [name, kind, go] of [
   // A relaunch of the same config: the stamped report's death is the marker the relaunch writes, dated by the relaunch.
   const B = '2026-10-08T20:00:00.000Z';
   const R2_TS = '2026-10-08T21:00:00Z';
-  const later = (rows, existing) => deriveWaveRecords({ ...at(rows), finishedAt: R2_TS }, { runId: RUN, issues: [] }, {}, {}, {}, { existing, reportId: 'w2', warn: () => {} }).records;
+  const later = (rows, existing, earlier) => deriveWaveRecords({ ...at(rows), finishedAt: R2_TS }, { runId: RUN, issues: [] }, {}, {}, {}, { existing, reportId: 'w2', earlier, warn: () => {} }).records;
   for (const [name, first, second, want] of [
     ['a stamped death is the marker its relaunch lists', [stamped], [{ ...merged, ...died(B) }], [[R2_TS, 'pushed', 'merged', null, 11]]],
     ['a stamped death with an earlier one is the marker after it', [{ ...stamped, ...died(D1) }], [{ ...merged, ...died(D1, B) }], [[R2_TS, 'pushed', 'merged', null, 11]]],
@@ -729,14 +729,47 @@ for (const [name, kind, go] of [
     ['a stamped death is held by one marker only', [stamped], [{ ...merged, ...died(D1, D2, B) }], [DEATH(D1), DEATH(D2), [R2_TS, 'pushed', 'merged', null, 11]]],
   ]) {
     test(`engineDeaths: relaunch: ${name}`, () => {
-      assert.deepEqual(shape(later(second, wave(first))), want);
+      assert.deepEqual(shape(later(second, wave(first), [at(first)])), want);
     });
   }
+
+  // The relaunch fold needs the stamped report among `earlier`, of the same config: another config of the run family keeps its own death store.
+  for (const [name, firstReport, second, want] of [
+    ['a first marker after another config\'s death is a new death', { ...at([{ ...merged, ...died(D1) }]), configName: 'ship-dag-sd-1-r2' }, [{ ...failedRow, ...died(B) }], [DEATH(B), [R2_TS, 'error', 'error', null, null]]],
+    ['a first marker after another config\'s stamped death is a new death', { ...at([stamped]), configName: 'ship-dag-sd-1-r2' }, [{ ...failedRow, ...died(B) }], [DEATH(B), [R2_TS, 'error', 'error', null, null]]],
+    ['a first marker after a hand-written death no report holds is a new death', null, [{ ...failedRow, ...died(B) }], [DEATH(B), [R2_TS, 'error', 'error', null, null]]],
+  ]) {
+    test(`engineDeaths: relaunch: ${name}`, () => {
+      const logged = firstReport ? deriveWaveRecords(firstReport, { runId: RUN, issues: [] }, {}, {}, {}, { reportId: 'w1', warn: () => {} }).records : wave([stamped]).map(({ reportId, ...r }) => r);
+      assert.deepEqual(shape(later(second, logged, firstReport ? [firstReport] : [])), want);
+    });
+  }
+
+  test('engineDeaths: markers are read oldest first whatever their order', () => {
+    // Two stamped reports, each the run that died before one of the markers.
+    const reports = ['2026-10-08T16:00:00Z', '2026-10-08T18:30:00Z'].map((finishedAt) => ({ ...at([stamped]), finishedAt }));
+    const logged = reports.flatMap((r, i) => deriveWaveRecords(r, { runId: RUN, issues: [] }, {}, {}, {}, { reportId: `s${i}`, warn: () => {} }).records);
+    assert.deepEqual(shape(later([{ ...merged, ...died(B, D1) }], logged, reports)), [[R2_TS, 'pushed', 'merged', null, 11]]);
+  });
+
+  test('engineDeaths: a carried-over row still records a new death its marker lists', () => {
+    const skipped = { ref: 'a/b#1', status: 'skipped', prNumber: null };
+    const earlier = [at([{ ...skipped, ran: false }])];
+    const logged = wave([{ ...skipped, ran: false }]);
+    assert.deepEqual(shape(later([{ ...skipped, ran: false, ...died(B) }], logged, earlier)), [DEATH(B)]);
+  });
+
+  test('engineDeaths: rowCovered does not take a marker\'s death for a stamped row\'s own', () => {
+    const row = { ...stamped, ...died(D1) };
+    const [markerDeath, own] = wave([row]);
+    assert.equal(rowCovered(row, { id: 'w1', startedAt: 0 }, [markerDeath], RUN, undefined), false);
+    assert.equal(rowCovered(row, { id: 'w1', startedAt: 0 }, [markerDeath, own], RUN, undefined), true);
+  });
 
   test('engineDeaths: a death re-listed after a re-ingest of its stamped report is recorded once', () => {
     const logged = wave([stamped]);
     const reIngested = [...logged, ...wave([{ ...stamped, ...died(D1) }], logged)];
-    assert.deepEqual(shape(later([{ ...merged, ...died(D1, B) }], reIngested)), [[R2_TS, 'pushed', 'merged', null, 11]]);
+    assert.deepEqual(shape(later([{ ...merged, ...died(D1, B) }], reIngested, [at([stamped])])), [[R2_TS, 'pushed', 'merged', null, 11]]);
   });
 
   test('engineDeaths: a stamped row keeps its own outcome fields beside its earlier deaths', () => {

@@ -1212,6 +1212,14 @@ test('ingest-wave: a row that lists sessionIds takes only those sessions, and a 
   assert.deepEqual(records.map((r) => r.cost), [{ implement: costOf(['b', 'c'], 2.5) }, undefined]);
 }));
 
+test('ingest-wave: a marker\'s death, an earlier run, takes none of the row\'s sessions: its continuation does', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF, { ran: true, sessionIds: ['b'], engineDeaths: [{ at: '2026-10-01T00:00:00.000Z' }] })]) }, sidecar: [sidecarEntry()],
+  files: logOf(REF, sess('b', 0.5)),
+}, (dir) => {
+  const { records } = ingest(dir);
+  assert.deepEqual(records.map((r) => [r.failureReason ?? null, r.cost?.implement?.sessionIds ?? null]), [['engine-died', null], [null, ['b']]]);
+}));
+
 test('ingest-wave: a backfilled earlier report takes only its own sessions, not the later re-run\'s', () => withStateDir({
   reports: {
     'w1.json': stateReport([stateRow(REF, { status: 'failed', prUrl: null, prNumber: null, ran: true, sessionIds: ['a'] })]),
