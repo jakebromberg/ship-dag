@@ -103,7 +103,7 @@ export const rsyncArgs = (src, dest) => [
 /**
  * `{ code, message }` for how a host run ended (codes are `EXIT`'s): `done` (a report was written; 0), `no-report` (the
  * engine exited without one; 1), `dropped` (the ssh connection dropped, 255, which says nothing about the engine, so the
- * message gives the re-attach and `--collect-only` commands in `ctx.reattach`/`ctx.collect`), `dropped-unstarted` (the
+ * message gives the re-attach and `--collect-only` commands in `ctx.reattach`/`ctx.collect`), `stopped` (a local error after the launch, `ctx.detail`; 255 like `dropped`, with the same commands), `dropped-unstarted` (the
  * connection dropped during `ctx.step`, before any engine was started, so there is nothing to resume; 3), `no-pid` (no
  * `ctx.pidFile`, so whether the engine runs is unknown; 1), `timeout` (still running after `ctx.minutes`; 4, with
  * `ctx.collect` to resume) or `failed` (a step failed; 1).
@@ -115,6 +115,7 @@ export function outcome(name, kind, ctx = {}) {
     'no-pid': { code: EXIT.failure, message: `host-run: ${name}: there is no ${ctx.pidFile} (host-run writes it when it starts the engine), so host-run cannot tell whether the engine is still running; it collected what is there and found no report` },
     timeout: { code: EXIT.waiting, message: `host-run: ${name}: the engine is still running after ${ctx.minutes} minutes; host-run stopped waiting, which is not an engine failure.\n  resume: ${ctx.collect}` },
     dropped: { code: EXIT.dropped, message: `host-run: ${name}: the ssh connection dropped; the engine may still be running there, so this is not an engine failure.\n  re-attach: ${ctx.reattach}\n  collect:   ${ctx.collect}` },
+    stopped: { code: EXIT.dropped, message: `host-run: ${name}: ${ctx.detail}; the engine may still be running there, so this is not an engine failure.\n  re-attach: ${ctx.reattach}\n  collect:   ${ctx.collect}` },
     'dropped-unstarted': { code: EXIT.unreachable, message: `host-run: ${name}: the ssh connection dropped during ${ctx.step}; no engine was started, so there is nothing to resume.` },
     failed: { code: EXIT.failure, message: `host-run: ${name}: ${ctx.detail}` },
   }[kind];

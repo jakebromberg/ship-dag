@@ -42,3 +42,30 @@ export const callFailure = (r) => {
  * still running; `pending` is host-sync-claude's `--dry-run` finding changes.
  */
 export const EXIT = { ok: 0, failure: 1, usage: 2, unreachable: 3, waiting: 4, pending: 10, dropped: 255 };
+
+/** An error for a command line the user must fix (an unknown option, a missing argument, an unknown host, the wrong config): `runCli` exits `EXIT.usage` for it. */
+export class UsageError extends Error {}
+
+/** `fn()`, with any error it throws made a `UsageError` (for argument parsing, which throws plain errors). */
+export const asUsage = (fn) => {
+  try { return fn(); } catch (e) { throw new UsageError(e.message); }
+};
+
+/**
+ * The one entry wrapper of host-prepare, host-sync-claude and host-run: runs `main(argv, deps)` (sync or async) and
+ * returns its exit code, or, for an error it throws, writes the message to `deps.err(text)` and returns `EXIT.usage` for
+ * a `UsageError`, else the error's own `exitCode`, else `EXIT.failure`. A sync `main` gives the code, an async one a promise.
+ */
+export function runCli(main, argv, deps = {}) {
+  const { err = (s) => process.stderr.write(s) } = deps;
+  const fail = (e) => {
+    err(`${e.message}\n`);
+    return e instanceof UsageError ? EXIT.usage : e.exitCode ?? EXIT.failure;
+  };
+  try {
+    const code = main(argv, deps);
+    return code instanceof Promise ? code.catch(fail) : code;
+  } catch (e) {
+    return fail(e);
+  }
+}

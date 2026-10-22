@@ -1,7 +1,7 @@
 // Tests for the host-sync-claude CLI's argument handling; the sync itself is tested in scripts/lib.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { main, runner } from './host-sync-claude.mjs';
+import { cli, main, runner } from './host-sync-claude.mjs';
 import { testHost } from './lib/host-fixture.mjs';
 
 const box = testHost();
@@ -21,10 +21,31 @@ for (const [name, argv, hosts] of [
 ]) {
   test(`${name} exits 2 and runs nothing`, () => {
     const calls = [];
-    assert.equal(main(argv, { hosts, run: (...c) => (calls.push(c), { status: 0, stdout: '' }) }), 2);
+    const lines = [];
+    assert.equal(cli(argv, { hosts, run: (...c) => (calls.push(c), { status: 0, stdout: '' }), err: (m) => lines.push(m) }), 2);
     assert.deepEqual(calls, []);
+    assert.match(lines.join(''), /^usage: host-sync-claude\.mjs <host> \[--dry-run\]; /);
   });
 }
+
+test('a usage error with --dry-run still exits 2', () => {
+  assert.equal(cli(['--dry-run'], { hosts: { box }, err() {} }), 2);
+});
+
+// A registry that cannot be loaded is not a usage error (no command line fixes it) and never an uncaught exception; it is read only after the arguments pass.
+for (const [name, argv, expected] of [['a valid command line', ['box'], 1], ['--dry-run', ['box', '--dry-run'], 1], ['no host', [], 2], ['two hosts', ['box', 'box'], 2]]) {
+  test(`an unloadable registry with ${name} exits ${expected}`, () => {
+    let loaded = 0;
+    const lines = [];
+    assert.equal(cli(argv, { loadHosts: () => { loaded += 1; throw new Error('hosts.json: bad'); }, err: (m) => lines.push(m) }), expected);
+    assert.equal(loaded, expected === 1 ? 1 : 0);
+    assert.match(lines.join(''), expected === 1 ? /hosts\.json: bad/ : /usage:/);
+  });
+}
+
+test('an unexpected throw during the sync exits 1', () => {
+  assert.equal(cli(['box'], { hosts: { box }, run: () => { throw new Error('spawn exploded'); }, readFile: () => '', localHome: '/m/.claude', err() {} }), 1);
+});
 
 test('a known host with --dry-run is synced as a dry run and exits 0', () => {
   const calls = [];
@@ -38,7 +59,7 @@ test('a known host with --dry-run is synced as a dry run and exits 0', () => {
 const clean = (cmd, args) => ({ status: 0, stderr: '', stdout: cmd === 'ssh' && /CLAUDE\.md/.test(args.at(-1)) ? 'GLOBAL\n' : args.at(-1).includes('--print-settings-entry') ? '{}' : '' });
 const pending = (cmd, args) => ({ ...clean(cmd, args), stdout: cmd === 'rsync' ? '>f+++++++++ a\n' : clean(cmd, args).stdout });
 const fails = (props) => () => ({ status: null, stdout: '', stderr: '', ...props });
-const sync = (argv, run) => main(argv, { hosts: { box }, run, readFile: () => 'GLOBAL\n', localHome: '/m/.claude' });
+const sync = (argv, run) => cli(argv, { hosts: { box }, run, readFile: () => 'GLOBAL\n', localHome: '/m/.claude' });
 
 for (const [name, argv, run, expected] of [
   ['a sync with nothing to do', ['box'], clean, 0],
