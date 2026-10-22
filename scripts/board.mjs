@@ -23,7 +23,7 @@
 //        board.mjs refresh [--state-dir <dir> | --run-id <id>] [--board-config path] [--out path]
 // (render and refresh fall back to $SHIP_DAG_RUN_ID when neither --state-dir nor --run-id is given; init needs one of them.)
 
-import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchSpec as planWavesFetchSpec } from './plan-waves.mjs';
@@ -36,6 +36,7 @@ import { remoteSource } from './board/remote.mjs';
 import { stringOption } from './lib/cli-args.mjs';
 import { ghCli, ghErrorBody, ghFailure, ghNotFound, realRunGh, withBackoff } from './lib/gh.mjs';
 import { isMain } from './lib/is-main.mjs';
+import { writeAtomic } from './lib/write-atomic.mjs';
 import { readArg } from './lib/read-arg.mjs';
 import { REPO_RE, formatRef, parseRef, refKey } from './lib/ref.mjs';
 import { parseBlockOn } from './review-gate.mjs';
@@ -197,7 +198,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     const wave = issue.state === 'OPEN' && latest.get(ref);
     // A remote host's ticket reads the copy host-run keeps of its engine files; with none yet, or a stale one from an
     // unreachable host, it reads the wave dir, where only the run's own review files can say anything.
-    const remote = wave && remoteSource(wave, family.dirs);
+    const remote = wave && remoteSource(wave, family.dirs, ref);
     const engineDir = remote?.dir && !remote.unreachable ? remote.dir : wave?.dir;
     const derived = wave && deriveStage({ dir: engineDir, ref, waveTs: wave.mtimeMs, family, blockOn: board.blockOn, prOpen: !!open, openPr: open?.number });
     return { ref, title: issue.title, url: issue.url, status, stage: derived || item.stage, note: item.note, prs, createdAt: issue.createdAt, closedAt: issue.closedAt, shippedWave: latest.get(ref)?.id, ...(remote && { remote }) };
@@ -245,18 +246,6 @@ async function refreshSpec({ dir, flag, fetchSpec, warn }) {
   const path = join(dir, 'spec-board.json');
   writeAtomic(path, `${JSON.stringify(spec, null, 2)}\n`);
   return path;
-}
-
-/** Write `text` to `path` through a temp file beside it, so a failure leaves the old file byte-identical. */
-function writeAtomic(path, text) {
-  const tmp = `${path}.tmp-${process.pid}`;
-  try {
-    writeFileSync(tmp, text);
-    renameSync(tmp, path);
-  } catch (err) {
-    rmSync(tmp, { force: true });
-    throw err;
-  }
 }
 
 /**
