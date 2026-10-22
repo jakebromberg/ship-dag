@@ -63,9 +63,43 @@ test('normalizeRecord: accepts a boolean ran, and a record without one stays val
 });
 
 test('normalizeRecord: findings keep a mix of hand-written strings and derived objects', () => {
-  const findings = ['correctness a.js:1 s', { category: 'security', verdict: 'CONFIRMED', summary: 'security b.js:2 t' }];
+  const findings = ['correctness a.js:1 s', { category: 'security', verdict: 'CONFIRMED', summary: 'security b.js:2 t' }, { category: null, verdict: null, summary: 's' }];
   assert.deepEqual(normalizeRecord(base({ findings }), FIXED).findings, findings);
 });
+
+// skipReason is a closed set ({absent, null, 'dependency'}) and findings an array of strings or {category, verdict, summary} objects.
+const obj = (o) => ({ category: 'c', verdict: 'CONFIRMED', summary: 's', ...o });
+const noSummary = { category: 'c', verdict: null };
+const FIELD_CASES = [
+  ['skipReason', 'absent', undefined, true],
+  ['skipReason', 'null', null, true],
+  ['skipReason', 'dependency', 'dependency', true],
+  ['skipReason', 'true', true, false],
+  ['skipReason', 'empty string', '', false],
+  ['skipReason', 'maintainer', 'maintainer', false],
+  ['findings', 'absent', undefined, true],
+  ['findings', 'strings', ['a', 'b'], true],
+  ['findings', 'objects', [obj(), obj({ category: null, verdict: null })], true],
+  ['findings', 'a mix', ['a', obj()], true],
+  ['findings', 'a number', 7, false],
+  ['findings', 'a string', 'a', false],
+  ['findings', 'an object', obj(), false],
+  ['findings', 'a number entry', ['a', 7], false],
+  ['findings', 'null entry', [null], false],
+  ['findings', 'an empty object', [{}], false],
+  ['findings', 'an object without summary', [noSummary], false],
+  ['findings', 'a non-string summary', [obj({ summary: 3 })], false],
+  ['findings', 'a non-string category', [obj({ category: 3 })], false],
+  ['findings', 'a missing category', [{ verdict: null, summary: 's' }], false],
+  ['findings', 'a non-string verdict', [obj({ verdict: false })], false],
+];
+for (const [field, label, value, ok] of FIELD_CASES) {
+  test(`normalizeRecord: ${field} ${label} is ${ok ? 'accepted' : 'refused'}`, () => {
+    const rec = base(value === undefined ? {} : { [field]: value });
+    if (ok) normalizeRecord(rec, FIXED);
+    else assert.throws(() => normalizeRecord(rec, FIXED), new RegExp(`bad ${field}`));
+  });
+}
 
 test('normalizeRecord: point-A defer record — nullable downstream fields default to null', () => {
   const r = normalizeRecord(
