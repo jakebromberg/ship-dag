@@ -97,3 +97,17 @@ test('a leaf under two epics belongs to the one whose walk reaches it first, bre
   const [a, b] = await fetchPredecessors([R(1), R(2)], ask);
   assert.deepEqual([leafRefs(a), leafRefs(b)], [[], [R(9)]]);
 });
+
+test('an epic transferred to another repo is read at its new home and kept under the ref it was named by', async () => {
+  const { ask, calls } = fakeAsk({ 'x/y#70': { kids: [R(3)] }, [R(3)]: { kids: [] } });
+  const asked = [];
+  const transferredTo = async (ref) => { asked.push(ref); return ref === R(50) ? 'x/y#70' : null; };
+  const [g] = await fetchPredecessors([R(50)], ask, { transferredTo });
+  assert.deepEqual([g.ref, g.url, g.title, leafRefs(g)], [R(50), 'https://github.com/x/y/issues/70', 'Epic x/y#70', [R(3)]]);
+  assert.deepEqual(calls, [[R(50)], ['x/y#70']]);
+  assert.deepEqual(asked, [R(50)]);
+});
+
+test('an epic GitHub has nowhere, even through REST, still throws, naming it', async () => {
+  await assert.rejects(fetchPredecessors([R(404)], fakeAsk({}).ask, { transferredTo: async () => null }), new RegExp(`^Error: ${R(404)}: GitHub has no such issue$`));
+});

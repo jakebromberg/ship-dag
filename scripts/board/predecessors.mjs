@@ -24,23 +24,28 @@ function alias(item, i) {
  * walk reaches it first, breadth first (a leaf listed directly under a later epic beats one nested deeper under an
  * earlier). Leaves are returned as GitHub has them, open ones included; the model decides what shipped.
  *
+ * An epic GraphQL has no issue for is asked of `transferredTo` (its new ref, or null): one transferred to another repo
+ * is read there, and its group keeps the ref it was named by, with the new home's url and title.
+ *
  * @param {string[]} epics  `owner/repo#N` refs
  * @param {(query:string) => Promise<{data?:object}>} ask
+ * @param {{transferredTo?: (ref:string) => Promise<string|null>}} [opts]
  * @returns {Promise<Array<{ref:string, url:string, title:string, leaves:Array<{ref:string,title:string,url:string,state:string,stateReason:string|null,closedAt:string|null}>}>>}
- * @throws when GitHub has no such epic, or a listing holds sub-issues the token cannot read (null nodes), so a
- *   half-read epic is never shown as one that shipped less
+ * @throws when GitHub has no such epic (and `transferredTo` finds it nowhere else), or a listing holds sub-issues the
+ *   token cannot read (null nodes), so a half-read epic is never shown as one that shipped less
  */
-export async function fetchPredecessors(epics, ask) {
+export async function fetchPredecessors(epics, ask, { transferredTo = async () => null } = {}) {
   const groups = epics.map((ref) => ({ ref, url: '', title: '', leaves: [] }));
   const seen = new Set(epics);
-  const queue = groups.map((g) => ({ ref: g.ref, group: g, cursor: null }));
+  const queue = groups.map((g) => ({ ref: g.ref, group: g, cursor: null, head: true }));
   while (queue.length) {
     const batch = queue.splice(0, BATCH);
     const { data } = await ask(`query{${batch.map(alias).join(' ')}}`);
+    const lost = [];
     batch.forEach((item, i) => {
       const issue = data?.[`e${i}`]?.issue;
-      if (!issue) { throw new Error(`${item.ref}: GitHub has no such issue`); }
-      if (item.ref === item.group.ref) { Object.assign(item.group, { url: issue.url, title: issue.title }); }
+      if (!issue) { lost.push(item); return; }
+      if (item.head) { Object.assign(item.group, { url: issue.url, title: issue.title }); }
       const nodes = issue.subIssues?.nodes ?? [];
       const unreadable = nodes.filter((n) => !n).length;
       if (unreadable) { throw new Error(`${item.ref}: ${unreadable} sub-issue${unreadable === 1 ? '' : 's'} could not be read`); }
@@ -59,6 +64,11 @@ export async function fetchPredecessors(epics, ask) {
       const page = issue.subIssues?.pageInfo;
       if (page?.hasNextPage) { queue.push({ ...item, cursor: page.endCursor }); }
     });
+    for (const item of lost) {
+      const to = await transferredTo(item.ref);
+      if (!to) { throw new Error(`${item.ref}: GitHub has no such issue`); }
+      queue.push({ ...item, ref: to });
+    }
   }
   return groups;
 }
