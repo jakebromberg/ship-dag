@@ -35,7 +35,7 @@ const WIRE = /repository\(owner:"([^"]+)",name:"([^"]+)"\)\{issue\(number:(\d+)\
 
 /**
  * A fake `gh api graphql` over `table` (ref → `{state, stateReason, closedAt, prs, blockers}`, a blocker being a ref;
- * `{missing: true}` for an issue GitHub does not have, or `{missing: 410}` for a deleted one; `{moved: ref}` for one
+ * `{missing: true}` for an issue GitHub does not have, or `{missing: 410}` for a deleted one (403: one the token cannot read); `{moved: ref}` for one
  * transferred to `ref`; `{pull: true}` for a number that is a pull request): answers each aliased lookup as gh 2.102.0
  * does (`graphqlAnswer`: a NOT_FOUND alias makes gh exit 1 with the body on stdout), answers the REST
  * `repos/<repo>/issues/<n>` read of a missing, moved or pull row as GitHub does (a 404 or 410, or the issue at its
@@ -52,7 +52,10 @@ function fakeGh(table) {
       const ref = `${path[1]}#${path[2]}`;
       const row = table[ref] ?? {};
       rest.push(ref);
-      if (row.missing) throw restFailure(row.missing === 410 ? 410 : 404, row.missing === 410 ? 'This issue was deleted' : 'Not Found', args);
+      if (row.missing) {
+        const status = row.missing === true ? 404 : row.missing;
+        throw restFailure(status, { 403: 'Resource not accessible by integration', 410: 'This issue was deleted' }[status] ?? 'Not Found', args);
+      }
       if (row.moved) { const to = parseRef(row.moved); return JSON.stringify({ number: to.number, html_url: `https://github.com/${to.repo}/issues/${to.number}` }); }
       if (row.pull) return JSON.stringify({ number: Number(path[2]), html_url: `https://github.com/${path[1]}/pull/${path[2]}` });
       throw new Error(`unexpected REST read of ${ref}`);
@@ -199,6 +202,7 @@ for (const [name, missing, want, row = { missing: true }] of [
   ['two issues, named together', [R(1), R(2)], `${R(1)}, ${R(2)}: GitHub has no such issue`],
   ['a deleted issue (REST 410)', [R(2)], `${R(2)}: GitHub has no such issue`, { missing: 410 }],
   ['a pull request, which REST reads as an issue', [R(2)], `${R(2)}: GitHub has no such issue`, { pull: true }],
+  ['an issue the token cannot read (REST 403), named with the others', [R(1), R(2)], `${R(1)}, ${R(2)}: GitHub has no such issue`, { missing: 403 }],
 ]) {
   test(`render names a ref GitHub answers NOT_FOUND for, not gh's message: ${name}`, async () => {
     const s = setUp();
@@ -207,7 +211,7 @@ for (const [name, missing, want, row = { missing: true }] of [
     const { code, err, html } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
     assert.equal(code, 1);
     assert.ok(err.includes(`[board] ${want}`), err.join('\n'));
-    assert.doesNotMatch(err.join('\n'), /Could not resolve|Not Found|deleted/);
+    assert.doesNotMatch(err.join('\n'), /Could not resolve|Not Found|deleted|not accessible/);
     assert.deepEqual(gh.rest.sort(), missing, 'each missing ref is asked of REST once');
     assert.equal(html, null);
   });
@@ -238,6 +242,24 @@ for (const [name, files, table, retro, check] of [
     check(html, gh);
   });
 }
+
+test('a transferred issue the spec names by its new ref and the waves by its old is one ticket, and spec edges naming the new ref attach to it', async () => {
+  const s = setUp({ files: { 'dag.json': { nodes: [{ ref: 'x/y#5' }, { ref: R(2) }], edges: [{ blocked: R(2), blockedBy: 'x/y#5' }], done: [] } } });
+  const { code, err, html } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, [R(1)]: { moved: 'x/y#5' }, 'x/y#5': {} }).runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.ok(err.some((m) => m.endsWith('(2 tickets)')), err.join('\n'));
+  assert.doesNotMatch(html, />y#5</, 'not listed under its new ref too');
+  assert.doesNotMatch(html, /Can't be ordered/, 'r#2 waits on a ticket the board shows');
+});
+
+test('two transferred issues keep their own state when one new home is itself read through a second hop', async () => {
+  const s = setUp();
+  const table = { ...TABLE, [R(1)]: { moved: 'x/y#5' }, 'x/y#5': { moved: 'z/w#6' }, 'z/w#6': {}, [R(2)]: { moved: 'x/y#7' }, 'x/y#7': { state: 'CLOSED' } };
+  const { code, err, html } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh(table).runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(html, /href="https:\/\/github\.com\/z\/w\/issues\/6">[^<]*r#1</);
+  assert.match(html, /href="https:\/\/github\.com\/x\/y\/issues\/7">[^<]*r#2</);
+});
 
 test('the page names the command it was built with: the script\'s absolute path and the flags given, or the run read from the environment', async () => {
   const s = setUp();
