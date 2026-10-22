@@ -26,6 +26,9 @@ import { classifyRound } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
+/** The one `skipReason` an engine stamps: it deferred the issue because a dependency had not merged. A closed set with absent and null; `normalizeRecord` refuses the rest. */
+export const SKIP_REASON_DEPENDENCY = 'dependency';
+
 /**
  * A refusal to derive records from the artifacts handed in, as distinct from a bug. `kind` is the
  * contract callers dispatch on (`half-supplied`, `no-run-id`, `malformed-row`); the message is for
@@ -271,7 +274,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         finalState: outcome.finalState ?? (skipped || failureReason ? 'deferred' : pr ? 'merged' : 'error'),
         pr,
         // Names the engine as the one that deferred it (checkDeps); an unmarked deferral is a maintainer's.
-        ...(skipped && { skipReason: 'dependency' }),
+        ...(skipped && { skipReason: SKIP_REASON_DEPENDENCY }),
         tokens: outcome.tokens ?? null,
         // Stamped when the user chose point F's "start anyway" for this wave's engine invocation.
         ...(outcome.pressureOverride === true && { pressureOverride: true }),
