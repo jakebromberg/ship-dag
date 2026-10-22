@@ -20,7 +20,7 @@
 // The exception is a `pending` row the engine stopped at launch, or never launched before it died (a `RESOURCE_ROUTE` failureReason): it is
 // recorded only once `--outcomes` gives it a `finalState`, because the user deferred it or stopped the run.
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
-import { INFRA_REASONS, RESOURCE_ROUTE, ranOf, routeFailure, SKIP_REASON_DEPENDENCY } from './failure.mjs';
+import { ENGINE_DIED, INFRA_REASONS, RESOURCE_ROUTE, ranOf, routeFailure, SKIP_REASON_DEPENDENCY } from './failure.mjs';
 import { isPr, parsePr, parseRef, sameRepo } from './ref.mjs';
 import { classifyRound } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
@@ -119,7 +119,7 @@ const stopReasonOf = (row, digest) => {
  * error (`error`/`error`, no reason) of the same report. The log is never rewritten (#286), so audit takes it as the death;
  * ingest still derives the death, a superseding record appended only with the maintainer's approval.
  */
-const legacyDeath = (r, event) => event.failureReason === 'engine-died' && Boolean(event.reportId) && r.reportId === event.reportId
+const legacyDeath = (r, event) => event.failureReason === ENGINE_DIED && Boolean(event.reportId) && r.reportId === event.reportId
   && sameRun(r.runId, event.runId) && sameRepo(r.repo, event.repo) && r.issue === event.issue
   && r.implStatus === 'error' && r.finalState === 'error' && r.failureReason == null;
 /** The `at` of each of `row`'s `engineDeaths` (claude-orchestrator#315), sorted oldest first; an entry with no readable `at` is warned about and skipped. */
@@ -134,7 +134,7 @@ const engineDeathsOf = (row, warn = () => {}) => (Array.isArray(row?.engineDeath
  */
 export const markerDeathOf = (row) => {
   const times = new Set(engineDeathsOf(row).map(Date.parse));
-  return (rec) => rec.failureReason === 'engine-died' && times.has(Date.parse(rec.ts));
+  return (rec) => rec.failureReason === ENGINE_DIED && times.has(Date.parse(rec.ts));
 };
 /**
  * The run a marker dated `at` followed, of `runs` (the config's reports for a row, as `runsOf` builds them): the latest to
@@ -148,7 +148,7 @@ const diedBefore = (runs, at, prevAt) => {
   return died && died.start > (prevAt === undefined ? -Infinity : Date.parse(prevAt)) ? died : undefined;
 };
 /** Whether `s` is an `engine-died` record of the row of `rec`, dated `t`. */
-const diedAtOf = (s, rec, t) => s.failureReason === 'engine-died' && s.issue === rec.issue && sameRepo(s.repo, rec.repo) && sameRun(s.runId, rec.runId) && Date.parse(s.ts) === t;
+const diedAtOf = (s, rec, t) => s.failureReason === ENGINE_DIED && s.issue === rec.issue && sameRepo(s.repo, rec.repo) && sameRun(s.runId, rec.runId) && Date.parse(s.ts) === t;
 /**
  * Whether the death `rec` of a marker dated `rec.ts`, whose row's previous marker is dated `prevAt`, is held elsewhere.
  * The engine writes a marker when it next starts, after the run that died (`diedBefore`). When that run's report stamped
@@ -164,7 +164,7 @@ const deathHeld = (records, rec, prevAt, runs) => Boolean(diedBefore(runs, Date.
  * the log is never rewritten, so the death stays that one record. Ingest derives no record of `rec` then, and `rowCovered`
  * takes the marker death as covering its row, by this one predicate, so audit never names a row whose ingest adds nothing.
  */
-const heldByMarker = (records, rec, runs) => rec.failureReason === 'engine-died' && runs.some((l) => l.markers.some((at, i) => diedBefore(runs, Date.parse(at), l.markers[i - 1]) === runs[0]
+const heldByMarker = (records, rec, runs) => rec.failureReason === ENGINE_DIED && runs.some((l) => l.markers.some((at, i) => diedBefore(runs, Date.parse(at), l.markers[i - 1]) === runs[0]
   && records.some((s) => diedAtOf(s, rec, Date.parse(at)))));
 /**
  * Each run of `report`'s config, `report` (stem `reportId`) first, then `earlier`'s and `later`'s (parsed reports, each with its
@@ -173,7 +173,7 @@ const heldByMarker = (records, rec, runs) => rec.failureReason === 'engine-died'
  */
 const runsOf = (report, reportId, earlier, later, ref) => [{ ...report, reportId }, ...earlier, ...later].filter((r) => r?.configName === report?.configName).map((r) => {
   const row = (Array.isArray(r.issues) ? r.issues : []).find((i) => i?.ref === ref);
-  return { id: r.reportId, start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt), stamped: TERMINAL.has(row?.status) && row.status !== 'succeeded' && row.failureReason === 'engine-died' && implStatusOf(row, isPr(row.prNumber) ? row.prNumber : null) === 'error', markers: engineDeathsOf(row) };
+  return { id: r.reportId, start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt), stamped: TERMINAL.has(row?.status) && row.status !== 'succeeded' && row.failureReason === ENGINE_DIED && implStatusOf(row, isPr(row.prNumber) ? row.prNumber : null) === 'error', markers: engineDeathsOf(row) };
 });
 /** Whether a row with `implStatus` carries its stop as the record's `failureReason`: a death, or a launch stop that never started. */
 const diesWith = (row, implStatus) => implStatus === 'error' || row.status === 'pending';
@@ -309,7 +309,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       }, { verdict: 'clean', blocking: [] });
       // Telemetry reads a stop as an infra death beside implStatus "error" (or a launch stop that never started); a
       // stopped row that still opened a PR (backend#620) is gated, not dead.
-      const failureReason = diedAt ? 'engine-died' : reason && diesWith(row, implStatus) ? reason : null;
+      const failureReason = diedAt ? ENGINE_DIED : reason && diesWith(row, implStatus) ? reason : null;
 
       return {
         runId,

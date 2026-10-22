@@ -17,7 +17,12 @@ import {
   stopCiStatus,
   resumeMode,
   ciStatusAfterProfile,
+  ENGINE_DIED,
 } from './failure.mjs';
+
+test('ENGINE_DIED is the spelling the log on disk already holds', () => {
+  assert.equal(ENGINE_DIED, 'engine-died');
+});
 
 const line = (obj) => `${JSON.stringify(obj)}\n`;
 
