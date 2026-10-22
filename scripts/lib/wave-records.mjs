@@ -139,14 +139,18 @@ export const markerDeathOf = (row) => {
 /**
  * Whether `records` already hold the death `rec` of a marker dated `rec.ts`, whose row's previous marker is dated `prevAt`
  * (undefined for the first). The engine writes a marker when it next starts, after the run that died, so the death is
- * a record of the same row dated by the same `at`, or a stamped `engine-died` record dated after the previous marker and
- * before this one by a report of the same config (`stampTimes`, each report's `finishedAt || startedAt`): the report of
- * the run that died. A later report re-lists every marker, so the same `at` recurs; another config keeps its own markers.
+ * a record of the same row dated by the same `at`, or a stamped `engine-died` record of the run that died: of `runs` (the
+ * config's reports as `{start, ts}`), the latest to start before this marker, if it started after the previous one. A
+ * run starts after the engine writes the markers it finds, so its `startedAt` bounds it whatever a rebuild set `finishedAt`
+ * to, and a later relaunch that wrote no marker is still the run this one followed. A later report re-lists every
+ * marker, so the same `at` recurs; another config keeps its own markers.
  */
-const deathHeld = (records, rec, prevAt, stampTimes) => {
+const deathHeld = (records, rec, prevAt, runs) => {
   const at = Date.parse(rec.ts);
   const after = prevAt === undefined ? -Infinity : Date.parse(prevAt);
-  const dated = (t) => t === at || (t > after && t < at && stampTimes.has(t));
+  const died = runs.filter((r) => r.start < at).reduce((a, r) => (a && a.start >= r.start ? a : r), null);
+  const stampedAt = died && died.start > after ? died.ts : NaN;
+  const dated = (t) => t === at || t === stampedAt;
   return records.some((s) => s.failureReason === 'engine-died' && s.issue === rec.issue && sameRepo(s.repo, rec.repo) && sameRun(s.runId, rec.runId)
     && dated(Date.parse(s.ts)));
 };
@@ -238,8 +242,10 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
 
   const seen = [...existing];
   const records = [];
-  // When each report of this config, this one and the earlier, was dated: a stamped death of one is what its relaunch's marker records.
-  const stampTimes = new Set([report, ...earlier].filter((r) => r?.configName === report?.configName).map((r) => Date.parse(r.finishedAt || r.startedAt)));
+  // Each run of this config, this report's and the earlier ones': when it started, and how its records are dated. A
+  // stamped death of one is what its relaunch's marker records.
+  const runs = [report, ...earlier].filter((r) => r?.configName === report?.configName)
+    .map((r) => ({ start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt) }));
   for (const row of rows) {
     const m = parseRef(row.ref);
     const outcome = outcomes?.[row.ref] ?? {};
@@ -317,7 +323,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     const ats = engineDeathsOf(row, warn);
     ats.forEach((diedAt, i) => {
       const rec = build({}, null, null, diedAt);
-      if (deathHeld(seen, rec, ats[i - 1], stampTimes)) return;
+      if (deathHeld(seen, rec, ats[i - 1], runs)) return;
       seen.push(rec);
       records.push(rec);
     });
