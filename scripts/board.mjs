@@ -32,6 +32,7 @@ import { buildGraph, classify, makeRepoLabel, makeShortRef, projectWaves, shippe
 import { fetchPredecessors } from './board/predecessors.mjs';
 import { readBoard, readJson, readNotes, readRetros, resolveRun, runBaseDir, runWaves } from './board/run.mjs';
 import { deriveStage, readFamily } from './board/stage.mjs';
+import { remoteSource } from './board/remote.mjs';
 import { stringOption } from './lib/cli-args.mjs';
 import { ghCli, ghErrorBody, ghFailure, ghNotFound, realRunGh, withBackoff } from './lib/gh.mjs';
 import { isMain } from './lib/is-main.mjs';
@@ -194,8 +195,12 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
       openBlockers: allEdges.filter((e) => e.blocked === ref && state.get(e.blockedBy) === 'OPEN').length,
     });
     const wave = issue.state === 'OPEN' && latest.get(ref);
-    const derived = wave && deriveStage({ dir: wave.dir, ref, waveTs: wave.mtimeMs, family, blockOn: board.blockOn, prOpen: !!open, openPr: open?.number });
-    return { ref, title: issue.title, url: issue.url, status, stage: derived || item.stage, note: item.note, prs, createdAt: issue.createdAt, closedAt: issue.closedAt, shippedWave: latest.get(ref)?.id };
+    // A remote host's ticket reads the copy host-run keeps of its engine files; with none yet, or a stale one from an
+    // unreachable host, it reads the wave dir, where only the run's own review files can say anything.
+    const remote = wave && remoteSource(wave, family.dirs);
+    const engineDir = remote?.dir && !remote.unreachable ? remote.dir : wave?.dir;
+    const derived = wave && deriveStage({ dir: engineDir, ref, waveTs: wave.mtimeMs, family, blockOn: board.blockOn, prOpen: !!open, openPr: open?.number });
+    return { ref, title: issue.title, url: issue.url, status, stage: derived || item.stage, note: item.note, prs, createdAt: issue.createdAt, closedAt: issue.closedAt, shippedWave: latest.get(ref)?.id, ...(remote && { remote }) };
   });
 
   const openRefs = tickets.filter((t) => t.status !== 'shipped' && t.status !== 'dropped').map((t) => t.ref);
