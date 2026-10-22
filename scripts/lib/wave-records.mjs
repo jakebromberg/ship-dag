@@ -137,23 +137,36 @@ export const markerDeathOf = (row) => {
   return (rec) => rec.failureReason === 'engine-died' && times.has(Date.parse(rec.ts));
 };
 /**
- * Whether `records` already hold the death `rec` of a marker dated `rec.ts`, whose row's previous marker is dated `prevAt`
- * (undefined for the first). The engine writes a marker when it next starts, after the run that died, so the death is
- * a record of the same row dated by the same `at`, or a stamped `engine-died` record of the run that died: of `runs` (the
- * config's reports as `{start, ts}`), the latest to start before this marker, if it started after the previous one. A
+ * The run a marker dated `at` followed, of `runs` (the config's reports for a row, as `runsOf` builds them): the latest to
+ * start before the marker, if it started after the row's previous marker `prevAt` (undefined for the first); else undefined. A
  * run starts after the engine writes the markers it finds, so its `startedAt` bounds it whatever a rebuild set `finishedAt`
- * to, and a later relaunch that wrote no marker is still the run this one followed. A later report re-lists every
- * marker, so the same `at` recurs; another config keeps its own markers.
+ * to, and a later relaunch that wrote no marker is still the run this one followed. A relaunch that wrote no report at all
+ * is no run here: a marker that lists only its death, not the one before, is taken for the earlier run's (a known limit).
+ */
+const diedBefore = (runs, at, prevAt) => {
+  const died = runs.filter((r) => r.start < at).reduce((a, r) => (a && a.start >= r.start ? a : r), null);
+  return died && died.start > (prevAt === undefined ? -Infinity : Date.parse(prevAt)) ? died : undefined;
+};
+/** Whether `s` is an `engine-died` record of the row of `rec`, dated `t`. */
+const diedAtOf = (s, rec, t) => s.failureReason === 'engine-died' && s.issue === rec.issue && sameRepo(s.repo, rec.repo) && sameRun(s.runId, rec.runId) && Date.parse(s.ts) === t;
+/**
+ * Whether `records` already hold the death `rec` of a marker dated `rec.ts`, whose row's previous marker is dated `prevAt`.
+ * The engine writes a marker when it next starts, after the run that died, so the death is a record of the same row dated
+ * by the same `at`, or the run that died's (`diedBefore`) own: its stamped `engine-died` record, or the model error that was
+ * the record of a stamped row before #286 (`legacyDeath`, by the report's id: any other model error is a real one). A later
+ * report re-lists every marker, so the same `at` recurs; another config keeps its own markers.
  */
 const deathHeld = (records, rec, prevAt, runs) => {
-  const at = Date.parse(rec.ts);
-  const after = prevAt === undefined ? -Infinity : Date.parse(prevAt);
-  const died = runs.filter((r) => r.start < at).reduce((a, r) => (a && a.start >= r.start ? a : r), null);
-  const stampedAt = died && died.start > after ? died.ts : NaN;
-  const dated = (t) => t === at || t === stampedAt;
-  return records.some((s) => s.failureReason === 'engine-died' && s.issue === rec.issue && sameRepo(s.repo, rec.repo) && sameRun(s.runId, rec.runId)
-    && dated(Date.parse(s.ts)));
+  const died = diedBefore(runs, Date.parse(rec.ts), prevAt);
+  return records.some((s) => diedAtOf(s, rec, Date.parse(rec.ts)) || (died && diedAtOf(s, rec, died.ts))
+    || (died?.stamped && legacyDeath(s, { ...rec, reportId: died.id })));
 };
+/**
+ * Whether `records` hold the marker death of `rec`, a stamped death of the report `runs[0]`: a later report ingested first
+ * listed it as a marker, dated by its `at`. The death is the one record, whichever report is ingested first.
+ */
+const heldByMarker = (records, rec, runs) => runs.some((l) => l.markers.some((at, i) => diedBefore(runs, Date.parse(at), l.markers[i - 1]) === runs[0]
+  && records.some((s) => diedAtOf(s, rec, Date.parse(at)))));
 /** Whether a row with `implStatus` carries its stop as the record's `failureReason`: a death, or a launch stop that never started. */
 const diesWith = (row, implStatus) => implStatus === 'error' || row.status === 'pending';
 
@@ -212,9 +225,9 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest, earli
  * @param {Record<string, Array<{path: string, review: object|null}>>} rounds each ref's rounds, oldest first
  *   as `reviewRoundFiles` returns them; `review` is the parsed file, null when unparseable
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl, finalState, bounces, findings, tokens, pressureOverride}`
- * @param {{existing?: object[], warn?: (m: string) => void, tuningVersion?: unknown, reportId?: string, noCheckRepos?: Iterable<string>, earlier?: object[]}} [opts]
+ * @param {{existing?: object[], warn?: (m: string) => void, tuningVersion?: unknown, reportId?: string, noCheckRepos?: Iterable<string>, earlier?: object[], later?: object[]}} [opts]
  *   a record that is the same event as an `existing` one (or an earlier row's), by `sameEvent`, is dropped; `reportId` (the report's file stem) is stamped on each record;
- *   a row `carriedOver` by an `earlier` report (the run family's earlier parsed reports) derives none; each record carries its row's `ran` when it is a boolean;
+ *   a row `carriedOver` by an `earlier` report (the run family's earlier parsed reports, each with its `reportId`) derives none, and `later` (the later ones) tells a stamped death a later report's marker already recorded; each record carries its row's `ran` when it is a boolean;
  *   a succeeded row in a `noCheckRepos` repo (no `postSessionCheck`, so the engine ran none) records `ciStatus: "none"`
  * @returns {{records: object[]}}
  * @throws when a terminal row has no `owner/repo#N` ref (`malformed report row`), or exists but no run
@@ -223,7 +236,7 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest, earli
  *   the report or the outcomes and no outcome `finalState` of `blocked-hitl`, `deferred` or `error`, or a row
  *   with a PR and no outcome `finalState` has a blocking last round
  */
-export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing = [], warn = (m) => console.error(m), tuningVersion, reportId = null, noCheckRepos = [], earlier = [] } = {}) {
+export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { existing = [], warn = (m) => console.error(m), tuningVersion, reportId = null, noCheckRepos = [], earlier = [], later = [] } = {}) {
   const all = Array.isArray(report?.issues) ? report.issues : [];
   for (const r of all) if (!TERMINAL.has(r?.status) && !NOT_YET.has(r?.status)) warn(`${r?.ref}: unknown status ${JSON.stringify(r?.status)}, not recorded`);
   const rows = all.filter((r) => TERMINAL.has(r?.status) || stoppedAtLaunch(r, outcomes?.[r?.ref]));
@@ -242,11 +255,14 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
 
   const seen = [...existing];
   const records = [];
-  // Each run of this config, this report's and the earlier ones': when it started, and how its records are dated. A
-  // stamped death of one is what its relaunch's marker records.
-  const runs = [report, ...earlier].filter((r) => r?.configName === report?.configName)
-    .map((r) => ({ start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt) }));
+  // Each run of this config, this report's first, then the earlier and later ones': its id, when it started, how its records are
+  // dated, whether it stamped `ref`'s row engine-died, and the markers that row lists. A stamped death of one is what a marker records.
+  const runsOf = (ref) => [{ ...report, reportId }, ...earlier, ...later].filter((r) => r?.configName === report?.configName).map((r) => {
+    const row = (Array.isArray(r.issues) ? r.issues : []).find((i) => i?.ref === ref);
+    return { id: r.reportId, start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt), stamped: row?.failureReason === 'engine-died', markers: engineDeathsOf(row) };
+  });
   for (const row of rows) {
+    const runs = runsOf(row.ref);
     const m = parseRef(row.ref);
     const outcome = outcomes?.[row.ref] ?? {};
     const planned = (entry?.issues ?? []).find((i) => i.ref === row.ref);
@@ -342,7 +358,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     const { pressureOverride: _ranUnderOverride, ...continuation } = outcome;
     const own = death?.failureReason ? [death, build(continuation, pr, null)] : [build(outcome, pr, stopReason)];
     for (const rec of own) {
-      if (seen.some((s) => !markerDeath(s) && sameEvent(s, rec))) continue;
+      if (seen.some((s) => !markerDeath(s) && sameEvent(s, rec)) || (rec.failureReason === 'engine-died' && heldByMarker(seen, rec, runs))) continue;
       seen.push(rec);
       records.push(rec);
     }

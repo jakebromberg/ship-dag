@@ -58,12 +58,16 @@ export const readWaveReports = (stateDir, opts) => readReportsDir(join(stateDir,
 
 /**
  * The parsed reports of `reads` (`readWaveReports`' reads) that started before `startedAt`: what `carriedOver`
- * compares a row to. A report with no parseable `startedAt`, or none at all, is no earlier report.
+ * compares a row to. A report with no parseable `startedAt`, or none at all, is no earlier report. Each carries its id
+ * (the file stem) as `reportId`, which a record of its rows is stamped with.
  * @param {ReturnType<typeof readWaveReport>[]} reads
  * @param {number} startedAt epoch ms
  * @returns {object[]}
  */
-export const earlierReports = (reads, startedAt) => reads.filter((r) => r.report && Number.isFinite(r.startedAt) && r.startedAt < startedAt).map((r) => r.report);
+export const earlierReports = (reads, startedAt) => reads.filter((r) => r.report && Number.isFinite(r.startedAt) && r.startedAt < startedAt).map((r) => ({ ...r.report, reportId: r.id }));
+
+/** The parsed reports of `reads` that started after `startedAt`, as `earlierReports` returns them: those whose markers can list a death of a report that started then. */
+export const laterReports = (reads, startedAt) => reads.filter((r) => r.report && Number.isFinite(r.startedAt) && r.startedAt > startedAt).map((r) => ({ ...r.report, reportId: r.id }));
 
 /**
  * The routing a report ran under, given as the `{report, startedAt}` `readWaveReport` returns for it:
@@ -139,6 +143,7 @@ export function readRunFamilyReports(stateDir, opts) {
  * malformed row still started when it says, and ingest and audit have always read it so; a read without either is
  * no report here. Returns `reads` (those that count, oldest `startedAt` first, a tie by id) and:
  * - `earlierOf(read)`: the reports that started before `read` (`earlierReports`), computed once per read;
+ * - `laterOf(read)`: the reports that started after `read` (`laterReports`);
  * - `owns(read, row)`: whether `row` of `read` is its own event, not one it `carriedOver` from `earlierOf(read)`;
  * - `listing`: by read id, the refs each of `reads` (counted or not) lists as its own row, built once on first use;
  * - `ownerOf(ref)`: the latest of `reads` whose row for `ref` it `owns`, as `{...read, row}`, or null;
@@ -149,6 +154,7 @@ export function reportOwnership(reads) {
   const counted = reads.filter((r) => r.report && Number.isFinite(r.startedAt)).sort((x, y) => x.startedAt - y.startedAt || (x.id < y.id ? -1 : 1));
   const memo = new Map();
   const earlierOf = (read) => memo.get(read) ?? memo.set(read, earlierReports(counted, read.startedAt)).get(read);
+  const laterOf = (read) => laterReports(counted, read.startedAt);
   const owns = (read, row) => !carriedOver(row, earlierOf(read));
   const ownerOf = (ref) => {
     const rowIn = (r) => r.report.issues.find((row) => row?.ref === ref);
@@ -159,7 +165,7 @@ export function reportOwnership(reads) {
   const rowOf = (id, ref) => byId.get(id)?.report?.issues?.find((row) => row?.ref === ref) ?? null;
   let listing;
   return {
-    reads: counted, earlierOf, owns, ownerOf, rowOf,
+    reads: counted, earlierOf, laterOf, owns, ownerOf, rowOf,
     get listing() { return (listing ??= new Map(reads.map((r) => [r.id, new Set((r.report?.issues ?? []).filter((row) => row && owns(r, row)).map((row) => row.ref))]))); },
   };
 }
