@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { main } from './board.mjs';
-import { ghExecError, graphqlAnswer } from './lib/gh-fixture.mjs';
+import { ghExecError, graphqlAnswer, restFailure } from './lib/gh-fixture.mjs';
 import { RUN, T0, engineConfig, scopedEngineFixture, stamped } from './lib/engine-fixture.mjs';
 import { parseRef } from './lib/ref.mjs';
 import { artifactStem } from './lib/failure.mjs';
@@ -34,15 +34,29 @@ function setUp({ files = {}, siblings = {}, reviews = [] } = {}) {
 const WIRE = /repository\(owner:"([^"]+)",name:"([^"]+)"\)\{issue\(number:(\d+)\)/g;
 
 /**
- * A fake `gh api graphql` over `table` (ref → `{state, stateReason, closedAt, prs, blockers}`, a blocker being a ref,
- * or `{missing: true}` for an issue GitHub does not have): answers each aliased lookup as gh 2.102.0 does
- * (`graphqlAnswer`: a NOT_FOUND alias makes gh exit 1 with the body on stdout), throws on a ref the table lacks,
- * and records each query's refs in `calls`.
+ * A fake `gh api graphql` over `table` (ref → `{state, stateReason, closedAt, prs, blockers}`, a blocker being a ref;
+ * `{missing: true}` for an issue GitHub does not have, or `{missing: 410}` for a deleted one; `{moved: ref}` for one
+ * transferred to `ref`; `{pull: true}` for a number that is a pull request): answers each aliased lookup as gh 2.102.0
+ * does (`graphqlAnswer`: a NOT_FOUND alias makes gh exit 1 with the body on stdout), answers the REST
+ * `repos/<repo>/issues/<n>` read of a missing, moved or pull row as GitHub does (a 404 or 410, or the issue at its
+ * new `html_url`), throws on a ref the table lacks, and records each GraphQL query's refs in `calls` and each REST
+ * ref in `rest`.
  */
 function fakeGh(table) {
   const calls = [];
+  const rest = [];
   const stateOf = (ref) => table[ref]?.state ?? 'OPEN';
   const runGh = async (args) => {
+    const path = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/.exec(args[1]);
+    if (args[0] === 'api' && path) {
+      const ref = `${path[1]}#${path[2]}`;
+      const row = table[ref] ?? {};
+      rest.push(ref);
+      if (row.missing) throw restFailure(row.missing === 410 ? 410 : 404, row.missing === 410 ? 'This issue was deleted' : 'Not Found', args);
+      if (row.moved) { const to = parseRef(row.moved); return JSON.stringify({ number: to.number, html_url: `https://github.com/${to.repo}/issues/${to.number}` }); }
+      if (row.pull) return JSON.stringify({ number: Number(path[2]), html_url: `https://github.com/${path[1]}/pull/${path[2]}` });
+      throw new Error(`unexpected REST read of ${ref}`);
+    }
     assert.deepEqual(args.slice(0, 2), ['api', 'graphql']);
     const refs = [...args.find((a) => a.startsWith('query=')).matchAll(WIRE)].map(([, owner, name, n]) => `${owner}/${name}#${n}`);
     calls.push(refs);
@@ -51,7 +65,7 @@ function fakeGh(table) {
       const row = table[ref];
       if (!row) throw new Error(`unexpected lookup of ${ref}`);
       const { number, repo } = parseRef(ref);
-      if (row.missing) {
+      if (row.missing || row.moved || row.pull) {
         errors.push({ type: 'NOT_FOUND', path: [`r${i}`, 'issue'], message: `Could not resolve to an Issue with the number of ${number}.` });
         return [`r${i}`, { issue: null }];
       }
@@ -64,7 +78,7 @@ function fakeGh(table) {
     }));
     return graphqlAnswer(errors.length ? { data, errors } : { data });
   };
-  return { runGh, calls };
+  return { runGh, calls, rest };
 }
 
 /** Run the CLI; returns `{code, err, html}` (`html` is `board.html` in `dir`, or null). */
@@ -180,18 +194,48 @@ test('a rename that fails leaves the target untouched and no temp file behind', 
   assert.deepEqual(readdirSync(s.base).filter((f) => f.includes('.tmp')), []);
 });
 
-for (const [name, missing, want] of [
+for (const [name, missing, want, row = { missing: true }] of [
   ['one issue', [R(2)], `${R(2)}: GitHub has no such issue`],
   ['two issues, named together', [R(1), R(2)], `${R(1)}, ${R(2)}: GitHub has no such issue`],
+  ['a deleted issue (REST 410)', [R(2)], `${R(2)}: GitHub has no such issue`, { missing: 410 }],
+  ['a pull request, which REST reads as an issue', [R(2)], `${R(2)}: GitHub has no such issue`, { pull: true }],
 ]) {
   test(`render names a ref GitHub answers NOT_FOUND for, not gh's message: ${name}`, async () => {
     const s = setUp();
-    const table = { ...TABLE, ...Object.fromEntries(missing.map((ref) => [ref, { missing: true }])) };
-    const { code, err, html } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh(table).runGh });
+    const table = { ...TABLE, ...Object.fromEntries(missing.map((ref) => [ref, row])) };
+    const gh = fakeGh(table);
+    const { code, err, html } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
     assert.equal(code, 1);
     assert.ok(err.includes(`[board] ${want}`), err.join('\n'));
-    assert.doesNotMatch(err.join('\n'), /Could not resolve/);
+    assert.doesNotMatch(err.join('\n'), /Could not resolve|Not Found|deleted/);
+    assert.deepEqual(gh.rest.sort(), missing, 'each missing ref is asked of REST once');
     assert.equal(html, null);
+  });
+}
+
+// A transferred issue: GraphQL's repository(owner,name){issue} does not follow the move, REST does. The board keeps
+// the ref the run knows it by and links it to the issue's new home.
+for (const [name, files, table, retro, check] of [
+  ['a retro-filed ref', {}, { [R(3)]: { moved: 'x/y#5' }, 'x/y#5': {} }, [R(3)], (html) => {
+    assert.ok(html.includes('href="https://github.com/x/y/issues/5"'), 'links the new home');
+    assert.ok(html.includes('o/r#3'), 'under the ref the run knows');
+  }],
+  ['a spec member another ticket names as its blocker by the new ref', { 'dag.json': { nodes: [{ ref: R(1) }, { ref: R(2) }], edges: [], done: [] } },
+    { [R(1)]: { moved: 'x/y#5' }, 'x/y#5': {}, [R(2)]: { blockers: ['x/y#5'] } }, [], (html, gh) => {
+      assert.equal(gh.calls.flat().filter((r) => r === 'x/y#5').length, 1, 'the new ref is the moved ticket, not an outside blocker to look up again');
+      assert.doesNotMatch(html, /Can't be ordered/);
+    }],
+]) {
+  test(`render shows a transferred issue under its old ref and renders the rest: ${name}`, async () => {
+    const s = setUp({ files });
+    if (retro.length) appendRecord({ kind: 'retro', runId: RUN, wave: 1, mergedPrs: [], filed: retro }, { path: s.env.SHIP_DAG_TELEMETRY });
+    const gh = fakeGh({ ...TABLE, ...table });
+    const { code, err, html } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+    assert.equal(code, 0, err.join('\n'));
+    const [from, { moved }] = Object.entries(table).find(([, row]) => row.moved);
+    assert.ok(err.includes(`[board] ${from} was transferred to ${moved}; shown under ${from}`), err.join('\n'));
+    assert.deepEqual(gh.rest, [from]);
+    check(html, gh);
   });
 }
 
@@ -347,9 +391,9 @@ test('render counts a predecessor leaf that blocks a run ticket as shipped befor
   assert.equal(html.split('<summary>Shipped before this run').length - 1, 1, 'a predecessor named twice is one section');
 });
 
-test('render with a predecessor GitHub does not have exits 1 and names it', async () => {
+test('render with a predecessor GitHub does not have, through GraphQL or REST, exits 1 and names it', async () => {
   const s = setUp({ files: { 'board.json': { ...BOARD, predecessors: [R(50)] } } });
-  const runGh = async (args) => (args.find((a) => a.startsWith('query=')).includes('subIssues(') ? graphqlAnswer({ data: { e0: { issue: null } }, errors: [{ type: 'NOT_FOUND', path: ['e0', 'issue'], message: 'x' }] }) : fakeGh(TABLE).runGh(args));
+  const runGh = async (args) => (args.find((a) => a.startsWith('query='))?.includes('subIssues(') ? graphqlAnswer({ data: { e0: { issue: null } }, errors: [{ type: 'NOT_FOUND', path: ['e0', 'issue'], message: 'x' }] }) : fakeGh({ ...TABLE, [R(50)]: { missing: true } }).runGh(args));
   const { code, err, html } = await run(['render', '--run-id', RUN], { ...s, runGh });
   assert.equal(code, 1);
   assert.ok(err.includes(`[board] ${R(50)}: GitHub has no such issue`), err.join('\n'));
