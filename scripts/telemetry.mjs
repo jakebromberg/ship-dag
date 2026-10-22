@@ -608,7 +608,7 @@ function waveWindow(stateDir, { report, startedAt, id }, familyReports, { owns, 
 /**
  * Audit a run family against the log. Every dir of `runFamilyDirs(runId, baseDir)` is read for its
  * reports; a readable one with a terminal row `rowCovered` finds no record for (handed the row's digest as
- * `waveWindow` reads it for ingest) is `notIngested`
+ * `waveWindow` reads it for ingest) is `notIngested`, as is a terminal row listing an `engineDeaths` marker no record holds (`rowCovered`'s marker check)
  * (`{dir, id, source (where its routing label came from), refs (the uncovered rows')}`; one with no
  * terminal row is not named), and one with an `error` is `unreadable` (`{path, error}`). `terminalRows`
  * is the number of terminal rows examined (a row a retry carries over counts once per report that lists it,

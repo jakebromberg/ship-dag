@@ -837,6 +837,11 @@ for (const [name, kind, go] of [
     assert.deepEqual(shape(later([{ ...merged, ...died(B, D1) }], logged, reports)), [[R2_TS, 'pushed', 'merged', null, 11]]);
   });
 
+  // Ingest holds each marker against the records it has already derived, so a row listing one `at` twice records one death.
+  test('engineDeaths: a row whose engineDeaths lists the same at twice records one death', () => {
+    assert.deepEqual(shape(wave([{ ...merged, ...died(D1, D1) }])).filter((r) => r[0] === D1), [DEATH(D1)]);
+  });
+
   test('engineDeaths: a carried-over row still records a new death its marker lists', () => {
     const skipped = { ref: 'a/b#1', status: 'skipped', prNumber: null };
     const earlier = [at([{ ...skipped, ran: false }])];

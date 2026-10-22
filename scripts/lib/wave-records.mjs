@@ -177,6 +177,16 @@ const runsOf = (report, reportId, earlier, later, ref) => [{ ...report, reportId
 });
 /** Whether a row with `implStatus` carries its stop as the record's `failureReason`: a death, or a launch stop that never started. */
 const diesWith = (row, implStatus) => implStatus === 'error' || row.status === 'pending';
+/** The `failureReason` of a record of `row` with PR `pr`: its `stopReason` (`stopReasonOf`) when the row dies with it, else null. */
+const ownFailureReason = (row, stopReason, pr) => (stopReason && diesWith(row, implStatusOf(row, pr)) ? stopReason : null);
+/**
+ * Walk `row`'s markers oldest first, `mk(at)` the record of each one's death, and return the records `records` does not hold
+ * (`deathHeld`), calling `onUnheld` on each as it is found, so ingest's `records` can grow and hold a duplicate `at`. Ingest and audit walk here.
+ */
+const unheldMarkerDeaths = (records, row, runs, mk, onUnheld = () => {}, warn) => {
+  const ats = engineDeathsOf(row, warn);
+  return ats.map(mk).filter((rec, i) => !deathHeld(records, rec, ats[i - 1], runs) && (onUnheld(rec), true));
+};
 
 /**
  * Whether `records` (the telemetry log) cover terminal `row` of the report `{id, startedAt (epoch ms)}`, as run
@@ -196,6 +206,7 @@ const diesWith = (row, implStatus) => implStatus === 'error' || row.status === '
  * - `--outcomes`: a row covered by a record of another finalState (a point-B hold of its PR, an operator's
  *   `deferred`) appends under other --outcomes, as the merge that followed the hold does; and a PR-less row whose
  *   PR came from --outcomes is named unless a record carrying `id` holds that PR (or, on a death, the death's record).
+ * A terminal row is uncovered while one of its marker deaths is held by no record (`unheldMarkerDeaths`, ingest's walk).
  * A row's `engine-died` death is also covered by a later report's marker death of it that a log appended before markers
  * deferred to the stamped report holds (`heldByMarker`, which ingest reads too), so this needs the report's `report` (its
  * parsed body, as `readWaveReport` reads it) and `later` (the run family's later parsed reports, each with its `reportId`).
@@ -209,11 +220,11 @@ export function rowCovered(row, { id, startedAt, report }, records, runId, diges
   const dies = stopReason && implStatusOf(row, null) === 'error';
   // The row's own death as ingest derives it with no --outcomes, held when a marker death of it is logged.
   const ownPr = isPr(row.prNumber) ? row.prNumber : null;
-  const ownDeath = { runId, repo, issue: number, failureReason: stopReason && diesWith(row, implStatusOf(row, ownPr)) ? stopReason : null };
+  const ownDeath = { runId, repo, issue: number, failureReason: ownFailureReason(row, stopReason, ownPr) };
   const runs = runsOf(report, id, earlier, later, row.ref);
-  // Each marker death is held as ingest holds it (`deathHeld`); a terminal row with one that is not is uncovered, a carried-over row too.
-  const ats = TERMINAL.has(row.status) ? engineDeathsOf(row) : [];
-  if (ats.some((ts, i) => !deathHeld(records, { runId, repo, issue: number, ts }, ats[i - 1], runs))) return false;
+  // Each marker death is held as ingest holds it; a terminal row with one that is not is uncovered, a carried-over row too. Only terminal
+  // rows: audit reads no --outcomes, so it cannot tell whether ingest reads a pending row (`stoppedAtLaunch` needs them).
+  if (TERMINAL.has(row.status) && unheldMarkerDeaths(records, row, runs, (ts) => ({ runId, repo, issue: number, ts })).length) return false;
   if (!carried && ownDeath.failureReason && heldByMarker(records, ownDeath, runs)) return true;
   const markerDeath = markerDeathOf(row);
   return records.some((r) => {
@@ -226,7 +237,7 @@ export function rowCovered(row, { id, startedAt, report }, records, runId, diges
     const { finalState } = r;
     // A find-pr row's merge has a PR --outcomes supplied, whether or not the record names it.
     const implStatus = findPr && finalState === 'merged' ? 'pushed' : implStatusOf(row, pr);
-    const failureReason = stopReason && diesWith(row, implStatus) ? stopReason : null;
+    const failureReason = ownFailureReason(row, stopReason, pr);
     // Every finalState a record can hold is one --outcomes may give a find-pr row.
     const derivable = pr !== null || row.status === 'skipped' || findPr || finalState !== 'merged';
     const event = { runId, repo, issue: number, reportId: carried ? null : id, ran: ranOf(row), implStatus, finalState, failureReason, pr };
@@ -309,7 +320,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
       }, { verdict: 'clean', blocking: [] });
       // Telemetry reads a stop as an infra death beside implStatus "error" (or a launch stop that never started); a
       // stopped row that still opened a PR (backend#620) is gated, not dead.
-      const failureReason = diedAt ? ENGINE_DIED : reason && diesWith(row, implStatus) ? reason : null;
+      const failureReason = diedAt ? ENGINE_DIED : ownFailureReason(row, reason, pr);
 
       return {
         runId,
@@ -350,13 +361,10 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
 
     // The engine's own record of each death (`engineDeaths`, claude-orchestrator#315) is the canonical death channel. Each
     // marker is an earlier death than this report's own, so a stamped row's own death is recorded beside them, never folded in.
-    const ats = engineDeathsOf(row, warn);
-    ats.forEach((diedAt, i) => {
-      const rec = build({}, null, null, diedAt);
-      if (deathHeld(seen, rec, ats[i - 1], runs)) return;
+    unheldMarkerDeaths(seen, row, runs, (diedAt) => build({}, null, null, diedAt), (rec) => {
       seen.push(rec);
       records.push(rec);
-    });
+    }, warn);
     const markerDeath = markerDeathOf(row);
     // A row a later report only carries over is its earlier report's event, which that report's ingest records, with its cost.
     if (carriedOver(row, earlier)) continue;
