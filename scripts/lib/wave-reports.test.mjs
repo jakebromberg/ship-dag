@@ -113,6 +113,15 @@ test('reportOwnership: earlierOf is each report\'s earlier parsed reports, compu
   assert.deepEqual(own.earlierOf(w1), []);
 });
 
+test('reportOwnership: earlierOf and laterOf carry each report\'s id, and a report is in neither of its own', () => {
+  const [w1, w2, w3] = reads(['w1', D1, [row()]], ['w2', D2, [row()]], ['w3', D3, [row()]]);
+  const own = reportOwnership([w3, w1, w2, { id: 'torn', path: '/torn.json', error: 'cannot read' }]);
+  assert.deepEqual(own.earlierOf(w3).map((r) => r.reportId), ['w1', 'w2']);
+  assert.deepEqual(own.laterOf(w1).map((r) => [r.reportId, r.startedAt]), [['w2', D2], ['w3', D3]]);
+  assert.deepEqual(own.laterOf(w3), []);
+  assert.deepEqual(own.laterOf(w2).map((r) => r.reportId), ['w3']);
+});
+
 // Each case: the reports (oldest first), and the owner of REF (its id, or null).
 const OWNER_CASES = {
   'a row that carries the earlier one over is not its report\'s own event': [[['w1', D1, [row()]], ['w2', D2, [row()]]], 'w1'],
