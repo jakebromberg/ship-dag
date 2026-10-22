@@ -53,7 +53,7 @@ import { isMain } from './lib/is-main.mjs';
 import { INFRA_REASONS, RESOURCE_ROUTE, ranOf, SKIP_REASON_DEPENDENCY } from './lib/failure.mjs';
 import { mintRunId, runIdFromConfigName, sameRun } from './lib/run-id.mjs';
 import { implementCost, isCount, isUsd } from './lib/transcript-cost.mjs';
-import { deriveWaveRecords, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
+import { deriveWaveRecords, markerDeathOf, rowCovered, TERMINAL, WaveRefusal } from './lib/wave-records.mjs';
 import { formatRef, groupByRepo, isPr, issueKey, parseRef, refKey, repoSpellings, sameRepo } from './lib/ref.mjs';
 import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
@@ -545,11 +545,13 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   const taken = [];
   for (const rec of records) {
     if (rec.implStatus === null || rec.ran === false) continue;
-    const counted = [...existing, ...taken].filter((e) => sameRepo(e.repo, rec.repo) && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
     // The engine named the log from the row's ref as written, so find that row, as written, rather than rebuild it.
     const ref = refs.find((r) => { const p = parseRef(r); return p?.repo === rec.repo && p.number === rec.issue; });
-    const { sessionIds } = report.issues.find((r) => r.ref === ref);
-    const implement = implementCost(logPathForRef(stateDir, ref), counted, warn, sessionIds);
+    const row = report.issues.find((r) => r.ref === ref);
+    // A marker's death is an earlier run's: the sessions the row lists, or its transcript holds, are its continuation's.
+    if (markerDeathOf(row)(rec)) continue;
+    const counted = [...existing, ...taken].filter((e) => sameRepo(e.repo, rec.repo) && e.issue === rec.issue && sameRun(e.runId, rec.runId)).flatMap((e) => e.cost?.implement?.sessionIds ?? []);
+    const implement = implementCost(logPathForRef(stateDir, ref), counted, warn, row.sessionIds);
     if (implement) { rec.cost = { implement }; taken.push(rec); }
   }
   let appended = 0;
