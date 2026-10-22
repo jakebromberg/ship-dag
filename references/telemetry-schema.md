@@ -11,10 +11,10 @@ Required (`normalizeRecord` refuses a record without them): `runId`, `repo`, `is
 | Key | Value |
 | --- | --- |
 | `kind` | `"issue"`. |
-| `ts` | ISO timestamp, stamped by `append` when absent; `ingest-wave` uses the report's `finishedAt`. |
+| `ts` | ISO timestamp, stamped by `append` when absent; `ingest-wave` uses the report's `finishedAt`, else its `startedAt`. |
 | `runId` | The run's id (`telemetry.mjs run-id`); a resumed session reuses the original. |
-| `reportId` | `ingest-wave` only: the stem of the report the record was derived from. Two PR-less failures are one event only if their `reportId`s match. Hand-written records have none. |
-| `ran` | `ingest-wave` only, from a report row that carries it: whether the engine launched a session for the row. Once either record carries it, records of different reports are two events. Absent on older and hand-written records. |
+| `reportId` | `ingest-wave` only: the stem of the report the record was derived from. Two PR-less failures (`implStatus: "error"`, the rows a retry re-runs) are one event only if their `reportId`s match, while any other record a later report re-lists unchanged stays one. Hand-written records have none. |
+| `ran` | `ingest-wave` only, from a report row that carries it: whether the engine launched a session for the row. Once either record carries it, records of different reports are two events, since a row a later report only carries over (`ran: false`, listed by an earlier report of the run family with the same status and PR) derives no record. Absent on older and hand-written records. |
 | `repo`, `issue` | `owner/repo` and the issue number. |
 | `complexity` | `mechanical`, `normal` or `complex`. |
 | `complexitySource` | `entry` (the wave's routing named the complexity) or `default` (it did not; `complexity` is the `normal` ingest assumed). Absent on older records. |
@@ -35,7 +35,7 @@ Required (`normalizeRecord` refuses a record without them): `runId`, `repo`, `is
 | `pr` | The PR number, or null. Older rows spell it `owner/repo#N` or as a PR URL and are still read; a new record writes the number. |
 | `pressureOverride` | `true`, stamped when the user chose point F's "start anyway" for the wave's engine invocation; absent otherwise. |
 | `tokens` | Token usage, or null. |
-| `cost` | Optional (null reads as absent): `{implement: {costUsd, input, output, cacheRead, cacheCreate, sessions, sessionIds[]}}`, summed from the ref's transcript. A session killed before writing a result is not counted, and a skipped row carries none. |
+| `cost` | Optional (null reads as absent): `{implement: {costUsd, input, output, cacheRead, cacheCreate, sessions, sessionIds[]}}`, summed from the ref's transcript over the sessions that wrote a result record and that no earlier record of the ref's run family (`sameRun`) lists, so a session is counted once across the family. A session killed before writing a result (a stall, a hard death) is not counted, so the figure can fall short of the real spend. A skipped row carries none. |
 | `policySource` | `sidecar` (the wave's entry named `blockOn`) or `default`. Derived records only. |
 | `tuningVersion` | The tuning version in force. |
 
