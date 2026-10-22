@@ -26,9 +26,6 @@ import { classifyRound } from './review-rounds.mjs';
 import { runIdFromConfigName, sameRun } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
-/** `skipReason` for an engine's dependency skip, defined in `failure.mjs` beside `INFRA_REASONS` so `log-order.mjs` reads the same constant. */
-export { SKIP_REASON_DEPENDENCY };
-
 /**
  * A refusal to derive records from the artifacts handed in, as distinct from a bug. `kind` is the
  * contract callers dispatch on (`half-supplied`, `no-run-id`, `malformed-row`); the message is for
