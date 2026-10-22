@@ -540,3 +540,44 @@ test("SKILL.md tells the orchestrator to run `board.mjs refresh --run-id` after 
     assert.ok(rule.toLowerCase().includes(event), `names the event: ${event}`);
   }
 });
+
+test('refresh on an explicit-set run (issueSet {}) with no dag.json exits 1, naming --spec and init --epic/--label, before any fetch', async () => {
+  const s = setUp({ files: { 'dag.json': undefined, 'board.html': '<old board>' } });
+  let fetched = false;
+  const { code, err, html, spec } = await refresh(['refresh', '--run-id', RUN], { ...s, runGh: fakeGh(TABLE).runGh, fetchSpec: () => { fetched = true; return WIRE_SPEC; } });
+  assert.equal(code, 1);
+  assert.match(err.join('\n'), /dag\.json.*--spec.*render.*init.*--epic.*--label/s);
+  assert.equal(fetched, false);
+  assert.equal(html, '<old board>');
+  assert.equal(spec, null);
+});
+
+// ---- the documented cost, the render/CO_HOME claim, and the usage line stay consistent across the header, README and SKILL.md ----
+
+const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+const COST = 'about L+2 GraphQL queries and L REST calls for L open leaves, plus ceil(T/40) GraphQL queries to render T tickets';
+
+for (const file of ['./board.mjs', '../README.md', '../SKILL.md']) {
+  test(`${file} states the one refresh cost figure and no longer claims render works without claude-orchestrator`, () => {
+    const text = read(file).replace(/\s*\n\/\/\s*|\s+/g, ' ');
+    assert.ok(text.includes(COST), `${file} states: ${COST}`);
+    assert.doesNotMatch(text, /never needs the topo core|render never needs|render needs no CO_HOME|without claude-orchestrator/i);
+  });
+}
+
+test('board.mjs imports plan-waves statically: no lazy import indirection', () => {
+  assert.doesNotMatch(read('./board.mjs'), /await import\(/);
+  assert.match(read('./board.mjs'), /^import \{ fetchSpec as \w+ \} from '\.\/plan-waves\.mjs';$/m);
+});
+
+test('the usage header shows refresh taking $SHIP_DAG_RUN_ID, like render', () => {
+  assert.match(read('./board.mjs'), /board\.mjs refresh \[--state-dir <dir> \| --run-id <id>\]/);
+});
+
+test('SKILL.md tells a resumed run to run init when board.json is absent, and documents explicit sets', () => {
+  const rule = read('../SKILL.md').split('\n').find((l) => l.startsWith('**Status board.**'));
+  assert.doesNotMatch(rule, /already has its `board\.json`/);
+  assert.match(rule, /run it first if `\$STATE\/board\.json` is absent/);
+  assert.match(rule, /explicit set/);
+  assert.match(rule, /render --spec/);
+});
