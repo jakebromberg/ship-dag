@@ -750,15 +750,36 @@ for (const [name, kind, go] of [
   }
 }
 
-// references/telemetry-schema.md is the one authored issue-record schema: a key deriveWaveRecords emits must be named in it, in backticks.
-test('every key deriveWaveRecords emits is named in references/telemetry-schema.md', () => {
-  const schema = readFileSync(new URL('../../references/telemetry-schema.md', import.meta.url), 'utf-8');
+// references/telemetry-schema.md is the one authored issue-record schema: a key deriveWaveRecords emits must be named in
+// it, in backticks. The intro and the retro section name some of the same keys, so only the issue-record table counts.
+const SCHEMA = readFileSync(new URL('../../references/telemetry-schema.md', import.meta.url), 'utf-8');
+const issueTableKeys = (schema) => {
+  const section = schema.split(/^## Issue record/m)[1]?.split(/^#/m)[0] ?? '';
+  const firstCells = section.split('\n').filter((l) => l.startsWith('| `')).map((l) => l.split('|')[1]);
+  return new Set(firstCells.flatMap((cell) => [...cell.matchAll(/`([A-Za-z]+)`/g)].map((m) => m[1])));
+};
+const emittedKeys = () => {
   const emitted = new Set();
   for (const rec of [
     derive({ report: report([row({ ran: true })]), outcomes: { [REF]: { pressureOverride: true } } }).records[0],
     derive({ report: report([row({ status: 'skipped', prNumber: null, prUrl: null })]) }).records[0],
   ]) for (const k of Object.keys(rec)) emitted.add(k);
+  return emitted;
+};
+
+test('every key deriveWaveRecords emits is named in the issue-record table of references/telemetry-schema.md', () => {
+  const emitted = emittedKeys();
   assert.ok(emitted.has('ran') && emitted.has('skipReason') && emitted.has('pressureOverride'), 'the sample must cover the conditional keys');
-  const missing = [...emitted].filter((k) => !schema.includes(`\`${k}\``));
-  assert.deepEqual(missing, []);
+  const named = issueTableKeys(SCHEMA);
+  assert.deepEqual([...emitted].filter((k) => !named.has(k)), []);
 });
+
+for (const key of ['ts', 'runId', 'tokens', 'kind']) {
+  test(`the schema guard misses \`${key}\` once its issue-table row is deleted, although the prose still names it`, () => {
+    const rowLine = SCHEMA.split('\n').find((l) => l.startsWith(`| \`${key}\` |`));
+    assert.ok(rowLine, `the table has a \`${key}\` row`);
+    const mutated = SCHEMA.replace(`${rowLine}\n`, '');
+    assert.ok(mutated.includes(`\`${key}\``), 'the prose outside the table still names the key');
+    assert.equal(issueTableKeys(mutated).has(key), false);
+  });
+}
