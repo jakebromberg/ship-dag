@@ -301,6 +301,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
         reviewVerdict: verdicts.length ? worst.verdict : null,
         reviewPath: refRounds.at(-1)?.path ?? null,
         failureReason,
+        // Each derived finding is an `isFindingObject` (scripts/lib/finding.mjs).
         findings: outcome.findings ?? worst.blocking.map((b) => ({ category: b.category, verdict: b.verdict, summary: findingLine(b) })),
         bounces: Math.max(outcome.bounces ?? 0, bounced.filter(Boolean).length),
         hitl: { pointA: false, pointB: !!outcome.hitl?.pointB },
