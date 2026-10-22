@@ -152,7 +152,7 @@ const diedAtOf = (s, rec, t) => s.failureReason === 'engine-died' && s.issue ===
 /**
  * Whether the death `rec` of a marker dated `rec.ts`, whose row's previous marker is dated `prevAt`, is held elsewhere.
  * The engine writes a marker when it next starts, after the run that died (`diedBefore`). When that run's report stamped
- * the row, the death is that report's own record, which its ingest derives with its id and the dead run's sessions (or, before
+ * the row `engine-died` with `implStatus` error (a stamped row that kept a PR is gated, and derives no death), the death is that report's own record, which its ingest derives with its id and the dead run's sessions (or, before
  * #286, derived as a model error that `legacyDeath` names), whichever report is ingested first; until it is, audit names
  * that report's row. Else it is a record in `records` of the same row dated by the same `at` (a later report re-lists every
  * marker), or the run that died's own `engine-died` record. Another config keeps its own markers.

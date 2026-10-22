@@ -773,6 +773,8 @@ for (const [name, kind, go] of [
     ['a stamped death and the marker that lists it', stamped, { ...merged, ...died(B) }, 1],
     ['a stamped death that lists an earlier one: both deaths, each once', { ...stamped, ...died(D1) }, { ...merged, ...died(D1, B) }, 2],
     ['a marker that is not the stamped run\'s death stays a death', { ...merged, ...died(D1) }, { ...failedRow, ...died(D1, B) }, 2],
+    // A stamped row that kept a PR is gated: its report derives no death of its own, so the marker records it, not defers to it.
+    ['a stamped row that kept a PR: the marker is the death', { ...stamped, prNumber: 12 }, { ...merged, ...died(B) }, 1],
   ]) {
     const r1 = tagged(at([r1Row]), 'w1');
     const r2 = tagged({ ...at([r2Row]), finishedAt: R2_TS }, 'w2');
@@ -792,20 +794,22 @@ for (const [name, kind, go] of [
     assert.deepEqual(diedAtOf(ingestAs(r1, logged, { later: [r2] })), []);
   });
 
-  // A marker holds a legacy model-error record (pre-#286) only as the stamped death of the run it followed (legacyDeath): a record
-  // of that report. A stamped run whose record is not in the log yet records its own death when it is ingested (`r1Next`), never the marker.
+  // The deferral to the stamped run, not legacyDeath, is what holds a legacy model-error record (pre-#286): whatever legacy-shaped
+  // record the log holds, a marker after a stamped run records nothing, and that run's ingest records its own death once. A
+  // model error of a run that was not stamped is no death, so the marker records it.
   const R1_TS = '2026-10-08T19:30:00Z';
-  for (const [name, r1Row, logged, r1Next, want] of [
-    ['the legacy record of the stamped run', stamped, wave([stamped]).map((r) => ({ ...r, failureReason: null, finalState: 'error' })), false, []],
-    ['a model error of a run that was not stamped', failedRow, wave([failedRow]), false, [B]],
-    ['a legacy-shaped record of another report', stamped, wave([stamped], [], 'w0').map((r) => ({ ...r, failureReason: null, finalState: 'error' })), true, [R1_TS]],
-    ['a hand-written model error, with no report to prove it', stamped, wave([stamped]).map(({ reportId, ...r }) => ({ ...r, failureReason: null, finalState: 'error' })), true, [R1_TS]],
+  const legacy = (records) => records.map((r) => ({ ...r, failureReason: null, finalState: 'error' }));
+  for (const [name, r1Row, logged, want] of [
+    ['the legacy record of the stamped run', stamped, legacy(wave([stamped])), [R1_TS]],
+    ['a model error of a run that was not stamped', failedRow, wave([failedRow]), [B]],
+    ['a legacy-shaped record of another report', stamped, legacy(wave([stamped], [], 'w0')), [R1_TS]],
+    ['a hand-written model error, with no report to prove it', stamped, legacy(wave([stamped]).map(({ reportId, ...r }) => r)), [R1_TS]],
   ]) {
     test(`engineDeaths: legacy: ${name}`, () => {
       const r1 = tagged(at([r1Row]), 'w1');
       const r2 = tagged({ ...at([{ ...merged, ...died(B) }]), finishedAt: R2_TS }, 'w2');
       const r2Records = ingestAs(r2, logged, { earlier: [r1] });
-      const r1Records = r1Next ? ingestAs(r1, [...logged, ...r2Records], { later: [r2] }) : [];
+      const r1Records = ingestAs(r1, [...logged, ...r2Records], { later: [r2] });
       assert.deepEqual(diedAtOf([...r2Records, ...r1Records]), want);
     });
   }
