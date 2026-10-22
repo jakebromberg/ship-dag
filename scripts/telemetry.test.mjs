@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { rmSync, readFileSync, readdirSync, existsSync, appendFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
-import { WaveRefusal } from './lib/wave-records.mjs';
+import { WaveRefusal, deriveWaveRecords } from './lib/wave-records.mjs';
 import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit } from './telemetry.mjs';
 import { artifactStem } from './lib/failure.mjs';
 import { writeFailureDigests } from './engine/failure-digest.mjs';
@@ -1452,6 +1452,16 @@ describe('audit', () => {
     assert.deepEqual(audit_(base, [death, logged({ ts: T2, repo: 'wxyc/dj-site' })]).engineDied, []);
     // An outcome that keeps the death's reason (a point-F hold) is an outcome, not the death.
     assert.deepEqual(audit_(base, [death, logged({ ts: T2, reportId: 'w1', implStatus: 'error', finalState: 'blocked-hitl', failureReason: 'engine-died' })]).engineDied, []);
+  }));
+
+  test('a death derived from engineDeaths, with nothing after it, is named by engineDied and counted unresolved', () => family({
+    [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prNumber: null })]) }, sidecar: [sidecarEntry([REF])] },
+  }, (base) => {
+    const row = { ref: REF, status: 'failed', prNumber: null, failureReason: 'engine-died', engineDeaths: [{ at: T0 }] };
+    const { records } = deriveWaveRecords({ configName: `ship-dag-${RUN_A}`, finishedAt: T1, issues: [row] }, null, {}, {}, {}, { reportId: 'w1', warn: () => {} });
+    const derived = records.map((r) => normalizeRecord(r, () => T1));
+    assert.deepEqual(audit_(base, derived).engineDied, [REF]);
+    assert.deepEqual(report(derived).issues, { distinct: 1, merged: 0, unresolved: 1, attemptsPerMerged: null });
   }));
 
   test('an engine-died row logged before engine-died was an infra reason is covered by its record with no reason', () => family({
