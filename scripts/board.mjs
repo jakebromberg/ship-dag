@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 // board.mjs — the status board CLI. `init` writes the run's board.json; `render` builds board.html from the graph
 // spec (`dag.json`, never fetched here), one batched GraphQL read of the tickets' GitHub state, and the files the
-// engine already leaves in the run family. The board's four files live in the family's base dir (`runBaseDir`).
+// engine already leaves in the run family; `refresh` is `render` after re-fetching the graph spec, in one command. The board's four files live in the family's base dir (`runBaseDir`).
 // board.json's optional `predecessors: ["owner/repo#N", ...]` names epics whose work came before this run: render reads their
 // leaf sub-issues (recursively, paged) in extra batched queries and shows the closed ones as "Shipped before this run".
+// `refresh` reads board.json's `issueSet` (`{epic: "owner/repo#N"}` or `{repo, label}`), fetches the spec with
+// plan-waves.mjs's `fetchSpec` in-process (the equivalent of `plan-waves.mjs fetch --repo R --epic N --members`, or `--label L
+// --members`; an epic's cross-repo sub-issues come back unioned by the walk), writes it to `<runBaseDir>/spec-board.json`
+// (atomically, so concurrent refreshes are safe) and renders from it. If the fetch fails the render is skipped and the old
+// board.html stays. An `issueSet` of `{}` (an explicit set) has nothing to fetch: refresh warns and renders from dag.json.
+// Cost: the fetch is one `gh` call per issue in scope (a view, plus a dependency read), a few more per epic level; the render is
+// one GraphQL query per 40 tickets, plus closure and predecessor rounds. A 20-ticket run is roughly 60 `gh` calls and 1-2 queries.
 // Exit codes: 0 = done; 1 = failed (stderr says why; the old board.html is untouched); 64 = usage.
 //
 // Usage: board.mjs init   (--state-dir <dir> | --run-id <id>) [--title T] [--epic owner/repo#N | --label L --repo owner/repo]
 //                         [--block-on a,b] [--out path] [--abbreviations <json|@file|->] [--predecessors a,b]
 //        board.mjs render [--state-dir <dir> | --run-id <id>] [--spec path] [--board-config path] [--out path]
+//        board.mjs refresh (--state-dir <dir> | --run-id <id>) [--board-config path] [--out path]
 
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,7 +27,7 @@ import { fetchPredecessors } from './board/predecessors.mjs';
 import { readBoard, readJson, readNotes, readRetros, resolveRun, runBaseDir, runWaves } from './board/run.mjs';
 import { deriveStage, readFamily } from './board/stage.mjs';
 import { stringOption } from './lib/cli-args.mjs';
-import { ghCli, ghErrorBody, ghNotFound, withBackoff } from './lib/gh.mjs';
+import { ghCli, ghErrorBody, ghNotFound, realRunGh, withBackoff } from './lib/gh.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { readArg } from './lib/read-arg.mjs';
 import { REPO_RE, parseRef } from './lib/ref.mjs';
@@ -150,6 +158,30 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   };
 }
 
+/** The default `fetchSpec(repo, {epic|label, members, warn})`: plan-waves', loaded on first use so `render` never needs the topo core. A replacement may be sync or async. */
+const planWavesFetch = (runGhSync) => async (repo, opts) => (await import('./plan-waves.mjs')).fetchSpec(repo, opts, runGhSync);
+
+/**
+ * `refresh`'s fetch: the run's graph spec for board.json's `issueSet`, written atomically to `<dir>/spec-board.json`.
+ * @returns {Promise<string|null>} the spec's path, or null when the issue set is explicit (nothing to fetch)
+ * @throws when board.json is absent or the fetch fails; spec-board.json is then left as it was
+ */
+async function refreshSpec({ dir, flag, fetchSpec, warn }) {
+  const board = readBoard(dir, { path: flag('--board-config') });
+  if (!board) throw new Error(`${join(dir, 'board.json')} absent: run \`board.mjs init\` first`);
+  const { epic, label, repo } = board.issueSet ?? {};
+  if (!epic && !label) {
+    warn('board.json names neither an epic nor a label: the spec is not re-fetched; rendering from dag.json (or write the graph there first)');
+    return null;
+  }
+  const ref = epic && asRef(epic);
+  const spec = epic ? await fetchSpec(ref.repo, { epic: String(ref.number), members: true, warn })
+    : await fetchSpec(repo, { label, members: true, warn });
+  const path = join(dir, 'spec-board.json');
+  writeAtomic(path, `${JSON.stringify(spec, null, 2)}\n`);
+  return path;
+}
+
 /** Write `text` to `path` through a temp file beside it, so a failure leaves the old file byte-identical. */
 function writeAtomic(path, text) {
   const tmp = `${path}.tmp-${process.pid}`;
@@ -164,20 +196,24 @@ function writeAtomic(path, text) {
 
 /**
  * Run the CLI. `deps` injects `runGh` (`async (args) => stdout`), `now`, `env`, `log` (a line to stderr) and `sleep`
- * (the rate-limit backoff's wait), so a test touches neither GitHub nor the clock.
+ * (the rate-limit backoff's wait), so a test touches neither GitHub nor the clock. `refresh` also takes `runGhSync`
+ * (`(args) => stdout`, what plan-waves' `fetchSpec` drives) or, to replace the fetch whole, `fetchSpec`.
  * @returns {Promise<number>} the exit code
  */
-export async function main(argv, { runGh = ghCli, now = () => new Date(), env = process.env, log = (m) => process.stderr.write(`${m}\n`), sleep } = {}) {
+export async function main(argv, {
+  runGh = ghCli, now = () => new Date(), env = process.env, log = (m) => process.stderr.write(`${m}\n`), sleep,
+  runGhSync = realRunGh, fetchSpec = planWavesFetch(runGhSync),
+} = {}) {
   const [cmd, ...rest] = argv;
-  if (cmd !== 'init' && cmd !== 'render') {
-    log('usage: board.mjs init|render (--state-dir <dir> | --run-id <id>) [options]');
+  if (cmd !== 'init' && cmd !== 'render' && cmd !== 'refresh') {
+    log('usage: board.mjs init|render|refresh (--state-dir <dir> | --run-id <id>) [options]');
     return EX_USAGE;
   }
   const seen = new Set();
   const warn = (m) => { if (!seen.has(m)) { seen.add(m); log(`[board] ${m}`); } };
   const flag = (name) => usage(() => stringOption(rest, name));
   try {
-    const run = usage(() => resolveRun({ stateDir: flag('--state-dir'), runId: flag('--run-id'), env, envFallback: cmd === 'render' }));
+    const run = usage(() => resolveRun({ stateDir: flag('--state-dir'), runId: flag('--run-id'), env, envFallback: cmd !== 'init' }));
     const dirs = runFamilyStateDirs(run.runDir, { runId: run.runId, warn }); // listed once, for every reader
     const dir = runBaseDir(run, { warn, dirs });
     if (cmd === 'init') {
@@ -203,7 +239,13 @@ export async function main(argv, { runGh = ghCli, now = () => new Date(), env = 
     // The command this page was built with, naming the run when it came from $SHIP_DAG_RUN_ID.
     const named = rest.includes('--state-dir') || rest.includes('--run-id');
     const rebuild = ['node', SCRIPT, cmd, ...rest, ...(named ? [] : ['--run-id', run.runId])].map(shellWord).join(' ');
-    const view = await gather({ run, dir, dirs, flag, rebuild, deps: { runGh, now, env, sleep }, warn });
+    let readFlag = flag;
+    if (cmd === 'refresh') {
+      if (flag('--spec') !== undefined) throw new UsageError('refresh writes its own spec (spec-board.json): --spec is for render');
+      const specPath = await refreshSpec({ dir, flag, fetchSpec, warn });
+      if (specPath) readFlag = (name) => (name === '--spec' ? specPath : flag(name));
+    }
+    const view = await gather({ run, dir, dirs, flag: readFlag, rebuild, deps: { runGh, now, env, sleep }, warn });
     writeAtomic(view.out, renderBoard(view));
     warn(`wrote ${view.out} (${view.tickets.length} tickets)`);
     return 0;
