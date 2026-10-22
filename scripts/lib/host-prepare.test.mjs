@@ -205,7 +205,7 @@ function probeXcode(stubs, opts = { xcode: true }) {
   for (const [tool, body] of Object.entries(stubs)) {
     writeFileSync(join(bin, tool), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   }
-  const fake = validateHosts({ box: { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') } }).box;
+  const fake = testHost(home);
   const r = spawnSync('/bin/sh', ['-c', probeScript(fake, undefined, [], opts)], { encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin` } });
   const { xcodePath, xcodeVersion, xcodeError } = parseProbe(r.stdout);
   return { xcodePath, xcodeVersion, xcodeError, ran: existsSync(join(bin, 'xcodebuild.ran')) };
@@ -233,4 +233,51 @@ test('the Xcode probe with tools that print nothing and fail reports an error, a
   assert.match(run(probeXcode({ 'xcode-select': 'exit 1', xcodebuild: 'exit 1' }), { needs: ['xcode'] }).refusals.join('\n'), /xcodebuild is not available/);
   const probe = probeXcode({ xcodebuild: 'touch "$(dirname "$0")/xcodebuild.ran"; echo Xcode 1' }, {});
   assert.deepEqual([probe.xcodeVersion, probe.xcodePath, probe.ran], [undefined, undefined, false]);
+});
+
+test('the Xcode probe takes the first non-blank line, so a blank first line is not read as no output', () => {
+  const probe = probeXcode({ 'xcode-select': 'echo /Applications/Xcode.app/Contents/Developer', xcodebuild: 'echo; echo "xcodebuild: error: SDK missing" >&2; exit 1' });
+  assert.equal(probe.xcodeError, 'xcodebuild: error: SDK missing');
+  assert.match(run(probe, { needs: ['xcode'] }).refusals.join('\n'), /xcodebuild -version failed \(xcodebuild: error: SDK missing\); active developer directory \/Applications/);
+  assert.doesNotMatch(run(probe, { needs: ['xcode'] }).refusals.join('\n'), /Command Line Tools/);
+});
+
+test('an empty xcodebuild failure with an Xcode.app selected says it printed nothing, not Command Line Tools', () => {
+  assert.match(xcodeRefusal({ xcodePath: XCODE.xcodePath }), /xcodebuild -version failed \(no output\)/);
+});
+
+// With an unlicensed Xcode selected, /usr/bin/git (an xcrun shim) fails, so every git fact comes back empty.
+const LICENSE = 'You have not agreed to the Xcode license agreements. You must agree to the license below in order to use Xcode.';
+const GITLESS = { sdSha: '', coSha: '', origins: { app: '' }, gitError: LICENSE };
+
+for (const [name, needs] of [['a node-only wave', []], ['a wave that needs xcode', ['xcode']]]) {
+  test(`an unlicensed Xcode that empties the git probes gives the license refusal alone: ${name}`, () => {
+    const r = run(needs.length ? { ...GITLESS, xcodePath: XCODE.xcodePath, xcodeError: LICENSE } : GITLESS, { needs });
+    assert.equal(r.refusals.length, 1, r.refusals.join('\n'));
+    assert.match(r.refusals[0], /box: the Xcode license is not accepted .*ssh -t box 'sudo xcodebuild -license accept'/);
+    assert.deepEqual(r.plan, []);
+  });
+}
+
+test('a license refusal does not hide refusals that need no git', () => {
+  const r = run({ ...GITLESS, freeGb: 1 });
+  assert.equal(r.refusals.length, 2);
+  assert.match(r.refusals.join('\n'), /1 GB free/);
+});
+
+test('empty git probes with no license error keep the git-derived refusals', () => {
+  assert.match(run({ sdSha: '', origins: { app: '' } }).refusals.join('\n'), /ship-dag is at unknown.*\n.*origin is unset/s);
+});
+
+test('the probe reports gitError when git --version fails, and nothing when it works', () => {
+  const home = mkdtempSync(join(tmpdir(), 'host-prepare-git-'));
+  const bin = join(home, 'bin');
+  mkdirSync(bin);
+  const fake = testHost(home);
+  const probeWith = (git) => {
+    writeFileSync(join(bin, 'git'), `#!/bin/sh\n${git}\n`, { mode: 0o755 });
+    return parseProbe(spawnSync('/bin/sh', ['-c', probeScript(fake, undefined, [])], { encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin` } }).stdout);
+  };
+  assert.equal(probeWith(`echo >&2; echo "${LICENSE}" >&2; exit 69`).gitError, LICENSE);
+  assert.equal(probeWith('echo git version 2.50').gitError, undefined);
 });

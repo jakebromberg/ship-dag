@@ -26,6 +26,15 @@ export function toolchainsNeeded(profile) {
   return { toolchains: [...toolchains], unrecognized };
 }
 
+/**
+ * The toolchains the repos of an engine config need: per repo, the registry profile's declared `toolchains` (the config does not
+ * carry them), else those its `postSessionCheck.commands` imply. Shared by host-prepare (what to probe) and host-run (what to serialize).
+ */
+export function configToolchains(config, profiles = {}) {
+  const needed = Object.entries(config.repos ?? {}).flatMap(([repo, entry]) => toolchainsNeeded({ commands: entry?.postSessionCheck?.commands, toolchains: profiles[repo]?.toolchains }).toolchains);
+  return [...new Set(needed)];
+}
+
 /** `spec` re-pointed at a remote host: the same `ship-dag/engine/<runId>` state dir under its home, its repos dir and its ship-dag checkout. */
 function onHost(spec, host, issues) {
   const tail = /ship-dag\/engine\/[^/]+(?=\/*$)/.exec(spec.stateDir)?.[0];
