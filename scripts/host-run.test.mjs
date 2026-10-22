@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hostRun, main, realRunner } from './host-run.mjs';
+import { cli as entry, hostRun, main, realRunner } from './host-run.mjs';
 import { readLatestUtilization } from './rate-limit-preflight.mjs';
 import { LOG_CHUNK, parsePoll, pollScript, preflightCommand, rsyncArgs } from './lib/host-run.mjs';
 import { scopedEngineFixture } from './lib/engine-fixture.mjs';
@@ -56,6 +56,27 @@ test('an engine that exits with no report exits 1 naming the remote log, and sti
   assert.equal(r.code, 1);
   assert.match(r.logged.join('\n'), /no report; see boxssh:\/h\/\.local\/state\/ship-dag\/engine\/run1\/state\/logs\/orchestrator\.log/);
   assert.equal(r.rsync.length, 1);
+});
+
+// A throw after the launch (a full local disk under emit, a failing rsync call) leaves an engine that may be running: exit 255 with the --collect-only command, never a relaunch.
+const boom = () => { throw new Error('ENOSPC: no space left on device'); };
+for (const [name, replies, opts] of [
+  ['the launch output is emitted', [FRESH, LAUNCHED], { emit: boom }],
+  ['a poll\'s log is emitted', [FRESH, LAUNCHED, poll(1, 0, 'x\n')], { emit: (() => { let n = 0; return () => { if (++n > 1) boom(); }; })() }],
+  ['--collect-only emits', [poll(0, 1, 'x\n')], { collectOnly: true, emit: boom }],
+  ['rsync throws', [FRESH, LAUNCHED, poll(0, 1)], { rsyncReply: { get status() { return boom(); } } }],
+]) {
+  test(`a throw after the launch (${name}) exits 255 with the --collect-only command and starts nothing more`, async () => {
+    const r = await go(replies, opts);
+    assert.equal(r.code, 255, String(r.stack ?? ''));
+    assert.match(r.logged.join('\n'), /ENOSPC/);
+    assert.match(r.logged.join('\n'), /re-attach: RE\n {2}collect: {3}COLLECT/);
+    assert.equal(r.ssh.filter(([, c]) => /--detach/.test(c)).length, name === '--collect-only emits' ? 0 : 1);
+  });
+}
+
+test('a throw before the launch (the report check) is not a post-launch case: hostRun rejects', async () => {
+  await assert.rejects(hostRun({ name: 'box', host: box, stateDir, localState: '/l', run: { ssh: boom }, emit() {}, log() {}, sleep: async () => {}, reattach: 'RE', collect: 'COLLECT' }), /ENOSPC/);
 });
 
 for (const [name, replies, nextCalls, opts] of [
@@ -263,6 +284,42 @@ test('main: a dropped connection prints resume commands with the host and its ss
   assert.equal(r.code, 255);
   assert.match(r.err, /re-attach: ssh -o BatchMode=yes -o ConnectTimeout=10 'o'\\''box' '/);
   assert.match(r.err, /collect: +node '\/[^']*host-run\.mjs' 'box' '\/[^']*config\.box\.json' --state '\/[^']*local' --max-wait 30 --collect-only/);
+});
+
+// The entry wrapper's exit codes: a usage error is 2, any other throw before the launch is 1 (a broken registry or config file is not the command line's fault).
+const BAD_CONFIG = join(mkdtempSync(join(tmpdir(), 'host-run-bad-')), 'config.json');
+writeFileSync(BAD_CONFIG, JSON.stringify({ configDir: '/x', worktreeDir: '/y' }));
+const entryArgs = (config, ...rest) => ['box', config, '--state', join(tmpdir(), 'host-run-entry'), ...rest];
+for (const [name, argv, deps, expected, shown] of [
+  ['an unknown option', ['box', 'c', '--state', 's', '--dryrun'], {}, 2, /unknown option --dryrun/],
+  ['no arguments', [], {}, 2, /^usage: host-run\.mjs/],
+  ['a missing --state', ['box', 'c'], {}, 2, /^usage: host-run\.mjs/],
+  ['--state without a value', ['box', 'c', '--state'], {}, 2, /--state/],
+  ['--max-wait without a value', ['box', 'c', '--state', 's', '--max-wait'], {}, 2, /--max-wait/],
+  ['an unknown host', ['nope', 'c', '--state', 's'], { hosts: { box } }, 2, /unknown host "nope"; known: box/],
+  ['a config that is not emit-config\'s', entryArgs(BAD_CONFIG), { hosts: { box } }, 2, /pass the config emit-config --by-host wrote/],
+  ['an invalid hosts.json', entryArgs(BAD_CONFIG), { loadHosts: () => { throw new Error('hosts.json: bad'); } }, 1, /hosts\.json: bad/],
+  ['a missing config file', entryArgs(join(tmpdir(), 'host-run-absent.json')), { hosts: { box } }, 1, /ENOENT/],
+]) {
+  test(`the CLI exits ${expected} for ${name}`, async () => {
+    const lines = [];
+    assert.equal(await entry(argv, { ...deps, err: (m) => lines.push(m), run: { ssh: boom, rsync: boom } }), expected);
+    assert.match(lines.join(''), shown);
+  });
+}
+
+test('the CLI exits 1 for a plain throw from the runner before the launch, and 255 for one after it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'host-run-entry-'));
+  const config = join(dir, 'config.box.json');
+  writeFileSync(config, JSON.stringify({ configDir: `${stateDir}/state`, worktreeDir: `${stateDir}/wt` }));
+  const lines = [];
+  const ssh = () => { throw new Error('spawn exploded'); };
+  assert.equal(await entry(['box', config, '--state', join(dir, 'l')], { hosts: { box }, run: { ssh, rsync: boom }, err: (m) => lines.push(m), out() {}, sleep: async () => {} }), 1);
+  assert.match(lines.join(''), /spawn exploded/);
+  const replies = [FRESH, LAUNCHED];
+  const after = await entry(['box', config, '--state', join(dir, 'l')], { hosts: { box }, run: { ssh: () => { const r = replies.shift(); if (!r) throw new Error('disk full'); return r; }, rsync: boom }, err: (m) => lines.push(m), out() {}, sleep: async () => {} });
+  assert.equal(after, 255);
+  assert.match(lines.join(''), /disk full[^]*--collect-only/);
 });
 
 test('main: --max-wait must be a positive number of minutes', async () => {

@@ -9,7 +9,7 @@
 // <local stateDir>/state/. The engine's output is printed with a `[<host>] ` prefix and appended to
 // <local stateDir>/host-<host>.log. Exits 0 when a report was written, 1 when the engine exited with none or a step
 // failed, 2 on usage, 3 when ssh dropped before any engine started (nothing to resume), 4 when --max-wait (default 360
-// minutes) passed with the engine still running, and 255 when ssh dropped after the launch (the engine may still be
+// minutes) passed with the engine still running, and 255 when ssh dropped, or a local error threw, after the launch (the engine may still be
 // running; the message gives the commands to resume). A run refuses to start on a host state dir that already holds a report (each
 // wave needs its own state dir). `--collect-only` starts nothing and resumes the same wait on the recorded pid. A
 // `--plan` run only prints the read-only plan. A `--preflight` run prints the host's resource-preflight JSON (run under the
@@ -22,7 +22,7 @@ import { loadProfiles } from './lib/ci-profile.mjs';
 import { loadHosts } from './lib/hosts.mjs';
 import { configToolchains } from './lib/split-by-host.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
-import { SSH_MAX_BUFFER, SSH_OPTS, callFailure, remoteCommand, shQuote, sshCommandLine } from './lib/remote.mjs';
+import { SSH_MAX_BUFFER, SSH_OPTS, UsageError, asUsage, callFailure, remoteCommand, runCli, shQuote, sshCommandLine } from './lib/remote.mjs';
 import { configStateDir } from './lib/host-prepare.mjs';
 import { DETACHED, LOG_CHUNK, PID_FILE, RSYNC_SAFE_PATH, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, preflightCommand, prefixLines, reportsScript, rsyncArgs } from './lib/host-run.mjs';
 import { isMain } from './lib/is-main.mjs';
@@ -48,12 +48,26 @@ export const realRunner = () => ({
  * hosts.json entry and `stateDir` the host's state dir. `run` is the injected runner, `emit(chunk)` receives the
  * engine's output (a string or the raw log bytes) and `log(message)` host-run's own messages; `sleep(ms)` and `now()`
  * pace the polls and the `maxWaitMs` deadline. `reattach` and `collect` are the commands a dropped connection or the
- * deadline prints. `preflight` runs only the host's resource preflight (its stdout is `emit`ted unprefixed, its stderr `log`ged). `oneAtATime` (the wave holds an Xcode repo) runs one session whatever `--parallel` says or omits, and logs
+ * deadline prints. A throw once the launch has started (or, for `--collect-only`, once the wait has) exits 255 with those commands, as a dropped connection does; an earlier throw rejects. `preflight` runs only the host's resource preflight (its stdout is `emit`ted unprefixed, its stderr `log`ged). `oneAtATime` (the wave holds an Xcode repo) runs one session whatever `--parallel` says or omits, and logs
  * the clamp: two xcodebuild runs share DerivedData, simulators and an 8 GB host's memory and disk. A host state dir with a character outside `RSYNC_SAFE_PATH` is refused before any call. A run
  * refuses to start when the host state dir already holds a report, since the wait could not tell it from this run's;
  * `--collect-only` resumes the recorded launch whatever the dir holds.
  */
-export async function hostRun({ name, host, stateDir, localState, parallel, oneAtATime = false, plan, preflight, collectOnly, maxWaitMs = MAX_WAIT_MINUTES * MINUTE, run, emit, log, sleep, now = Date.now, reattach, collect }) {
+export async function hostRun(args) {
+  let launched = false;
+  try {
+    return await drive(args, () => { launched = true; });
+  } catch (e) {
+    if (!launched) throw e;
+    // The engine may be running: never relaunch, resume with --collect-only.
+    const o = outcome(args.name, 'stopped', { reattach: args.reattach, collect: args.collect, detail: e.message });
+    args.log(o.message);
+    return o.code;
+  }
+}
+
+/** `hostRun`'s steps; calls `launching()` as the launch starts (or, for `--collect-only`, once the recorded one is being waited on), so a throw after it is known to follow a launch. */
+async function drive({ name, host, stateDir, localState, parallel, oneAtATime = false, plan, preflight, collectOnly, maxWaitMs = MAX_WAIT_MINUTES * MINUTE, run, emit, log, sleep, now = Date.now, reattach, collect }, launching) {
   const engineLog = `${host.ssh}:${stateDir}/state/logs/orchestrator.log`;
   const pidFile = `${stateDir}/${PID_FILE}`;
   const finish = (kind, detail, step) => {
@@ -92,6 +106,7 @@ export async function hostRun({ name, host, stateDir, localState, parallel, oneA
     if (refused !== undefined) return refused;
     const wanted = parallel ?? host.sessionSlots ?? 1;
     if (oneAtATime && Math.min(wanted, host.sessionSlots ?? 1) > 1) log(`host-run: ${name}: the wave needs the xcode toolchain, which runs one session at a time (xcodebuild runs share DerivedData and simulators, and the host's memory and disk); clamping --parallel from ${Math.min(wanted, host.sessionSlots ?? 1)} to 1.`);
+    launching();
     const r = ssh(launchScript(engineCommand(host, stateDir, 'run', oneAtATime ? 1 : parallel), pidFile));
     show(r);
     const stop = halted('the launch', r)
@@ -99,6 +114,7 @@ export async function hostRun({ name, host, stateDir, localState, parallel, oneA
       ?? (DETACHED.test(String(r.stdout ?? '')) ? undefined : finish('failed', 'the engine did not start: its output names no PID'));
     if (stop !== undefined) return stop;
   }
+  launching();
   const start = now();
   let offset = 0;
   let reportSeen = false;
@@ -131,22 +147,21 @@ export async function hostRun({ name, host, stateDir, localState, parallel, oneA
  * The CLI: parse `argv` (as in USAGE) and run `hostRun`; resolves to the exit code. `hosts`, `run`, `out`, `err`,
  * `sleep`, `now` and `profiles` default to the registry, the real runner, the process's streams and the real clock.
  */
-export async function main(argv, { hosts, run = realRunner(), out = (s) => process.stdout.write(s), err = (s) => process.stderr.write(s), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, profiles = loadProfiles() } = {}) {
+export async function main(argv, { hosts, loadHosts: load = loadHosts, run = realRunner(), out = (s) => process.stdout.write(s), err = (s) => process.stderr.write(s), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, profiles = loadProfiles() } = {}) {
   const flags = ['--state', '--parallel', '--max-wait'];
   const unknown = argv.find((a) => a.startsWith('--') && ![...flags, '--plan', '--preflight', '--collect-only'].includes(a));
-  if (unknown) throw new Error(`unknown option ${unknown}; ${USAGE}`);
+  if (unknown) throw new UsageError(`unknown option ${unknown}; ${USAGE}`);
   const [name, configPath, ...extra] = argv.filter((a, i) => !a.startsWith('--') && !flags.includes(argv[i - 1]));
-  const state = stringOption(argv, '--state');
-  if (!name || !configPath || extra.length || !state) throw new Error(USAGE);
+  const state = asUsage(() => stringOption(argv, '--state'));
+  if (!name || !configPath || extra.length || !state) throw new UsageError(USAGE);
   const number = (flag) => (stringOption(argv, `--${flag}`) === undefined ? undefined : parseNumberOption(flag, stringOption(argv, `--${flag}`), { min: 1 }));
-  const parallel = number('parallel');
-  const maxWait = number('max-wait') ?? MAX_WAIT_MINUTES;
-  const registry = hosts ?? loadHosts();
-  if (!Object.hasOwn(registry, name)) throw new Error(`unknown host ${JSON.stringify(name)}; known: ${Object.keys(registry).join(', ') || 'none'}`);
+  const [parallel, maxWait = MAX_WAIT_MINUTES] = asUsage(() => [number('parallel'), number('max-wait')]);
+  const registry = hosts ?? load();
+  if (!Object.hasOwn(registry, name)) throw new UsageError(`unknown host ${JSON.stringify(name)}; known: ${Object.keys(registry).join(', ') || 'none'}`);
   const host = registry[name];
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const stateDir = configStateDir(config);
-  if (!stateDir) throw new Error(`${configPath}: configDir and worktreeDir are not <dir>/state and a path under <dir>; pass the config emit-config --by-host wrote for ${name}`);
+  if (!stateDir) throw new UsageError(`${configPath}: configDir and worktreeDir are not <dir>/state and a path under <dir>; pass the config emit-config --by-host wrote for ${name}`);
   const preflight = argv.includes('--preflight');
   const plan = argv.includes('--plan');
   const readOnly = plan || preflight;
@@ -164,6 +179,9 @@ export async function main(argv, { hosts, run = realRunner(), out = (s) => proce
   });
 }
 
+/** `main` under the shared entry wrapper: resolves to the exit code for `argv`, errors written to `deps.err`. */
+export const cli = (argv, deps) => runCli(main, argv, deps);
+
 if (isMain(import.meta.url)) {
-  main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e) => { process.stderr.write(`${e.message}\n`); process.exitCode = 2; });
+  cli(process.argv.slice(2)).then((code) => { process.exitCode = code; });
 }
