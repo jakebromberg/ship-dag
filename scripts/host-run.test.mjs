@@ -8,7 +8,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cli as entry, hostRun, main, realRunner } from './host-run.mjs';
 import { readLatestUtilization } from './rate-limit-preflight.mjs';
-import { LOG_CHUNK, parsePoll, pollScript, preflightCommand, rsyncArgs, worktreeScript } from './lib/host-run.mjs';
+import { LOG_CHUNK, mirrorArgs, parsePoll, pollScript, preflightCommand, rsyncArgs, worktreeScript } from './lib/host-run.mjs';
 import { scopedEngineFixture } from './lib/engine-fixture.mjs';
 import { testHost } from './lib/host-fixture.mjs';
 
@@ -22,15 +22,17 @@ const failedToRun = (code) => ({ status: null, signal: 'SIGTERM', stdout: '', st
 const MINUTE = 60_000;
 
 /** Run `hostRun` with `ssh` answering from `replies` in order (rsync with `rsyncReply`) on a clock only `sleep` moves; returns what it did. */
-async function go(replies, { rsyncReply = { status: 0, stderr: '' }, ...opts } = {}) {
-  const calls = { ssh: [], rsync: [], emitted: '', logged: [], slept: 0 };
+async function go(replies, { rsyncReply = { status: 0, stderr: '' }, mirrorReply = { status: 0, stderr: '' }, ...opts } = {}) {
+  // `rsync` holds the collects, `mirror` the waiting polls' copies of status/ and metadata/, `marks` each `record` call.
+  const calls = { ssh: [], rsync: [], mirror: [], marks: [], emitted: '', logged: [], slept: 0 };
   let clock = 0;
   const run = {
     ssh: (alias, command) => (calls.ssh.push([alias, command]), replies.shift()),
-    rsync: (args) => (calls.rsync.push(args), rsyncReply),
+    rsync: (args) => (args.includes('--include=reports/') ? (calls.rsync.push(args), rsyncReply) : (calls.mirror.push(args), mirrorReply)),
   };
   const code = await hostRun({
     name: 'box', host: box, stateDir, localState: '/l', run, emit: (t) => (calls.emitted += t), log: (m) => calls.logged.push(m),
+    record: (ok, at) => calls.marks.push([ok, at]),
     sleep: async (ms) => { calls.slept += 1; clock += ms; }, now: () => clock, reattach: 'RE', collect: 'COLLECT', ...opts,
   });
   return { code, ...calls };
@@ -49,6 +51,27 @@ test('a run launches detached, recording the pid on the host, polls until the en
   assert.equal(r.rsync.length, 1);
   assert.deepEqual(r.rsync[0].slice(-2), [`boxssh:${stateDir}/state/`, '/l/state/']);
   assert.deepEqual(r.logged, []);
+});
+
+test('each waiting poll mirrors the host\'s status/ and metadata/ into the local state dir for the board, and records the read; the collect records one too', async () => {
+  const r = await go([FRESH, LAUNCHED, poll(1, 0), poll(1, 0), poll(0, 1)]);
+  assert.equal(r.code, 0);
+  assert.equal(r.mirror.length, 2);
+  assert.deepEqual(r.mirror[0], mirrorArgs(`boxssh:${stateDir}/state/`, '/l/state/'));
+  assert.deepEqual(r.marks, [[true, '1970-01-01T00:00:00.000Z'], [true, '1970-01-01T00:01:00.000Z'], [true, '1970-01-01T00:02:00.000Z']]);
+});
+
+test('a mirror that fails records the host as unreachable and logs it, but the wait goes on', async () => {
+  const r = await go([FRESH, LAUNCHED, poll(1, 0), poll(0, 1)], { mirrorReply: { status: 255, stderr: '' } });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.marks.map(([ok]) => ok), [false, true]);
+  assert.match(r.logged.join('\n'), /could not copy the host's engine state for the board.*the wait goes on/);
+});
+
+test('a dropped poll records the host as unreachable before exiting 255', async () => {
+  const r = await go([FRESH, LAUNCHED, poll(1, 0), { status: 255, stdout: '', stderr: '' }]);
+  assert.equal(r.code, 255);
+  assert.deepEqual(r.marks.map(([ok]) => ok), [true, false]);
 });
 
 test('an engine that exits with no report exits 1 naming the remote log, and still collects', async () => {
