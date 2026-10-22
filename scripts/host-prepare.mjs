@@ -21,7 +21,7 @@ import { coHome } from './lib/co-home.mjs';
 import { stringOption, parseNumberOption } from './lib/cli-args.mjs';
 import { loadProfiles } from './lib/ci-profile.mjs';
 import { loadHosts } from './lib/hosts.mjs';
-import { toolchainsNeeded } from './lib/split-by-host.mjs';
+import { configToolchains } from './lib/split-by-host.mjs';
 import { EXIT, SSH_MAX_BUFFER, SSH_OPTS, callFailure, remoteCommand } from './lib/remote.mjs';
 import { configStateDir, planHost, probeScript, parseProbe } from './lib/host-prepare.mjs';
 import { isMain } from './lib/is-main.mjs';
@@ -59,7 +59,7 @@ export function prepareHost({ name, hosts, config, configPath, local, run, minFr
     }
   };
   const repos = Object.keys(config.repos ?? {}).map((repo) => ({ repo, name: repo.split('/').pop(), layoutDir: repoDirName(repo, { reposDir }) }));
-  const needs = [...new Set(repos.flatMap(({ repo }) => toolchainsNeeded({ commands: config.repos[repo]?.postSessionCheck?.commands, toolchains: profiles[repo]?.toolchains }).toolchains))];
+  const needs = configToolchains(config, profiles);
   const probe = parseProbe(call('probe', run.ssh, probeScript(host, configStateDir(config), repos.map((r) => r.name), { xcode: needs.includes('xcode') })));
   const { refusals, plan } = planHost({ name, host, config, configPath, repos, local: { ...local, configHash: sha256(configPath) }, probe, minFreeGb, needs });
   for (const r of refusals) log(r);

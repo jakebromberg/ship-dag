@@ -224,17 +224,17 @@ test('--plan runs the read-only plan, streams it, and starts and collects nothin
 });
 
 /** Run `main` for host `box` against a scratch config and local state dir (its host log holding `log`, if given), with `ssh` answering from `replies`; returns the exit code, output and host log (undefined when absent). */
-async function cli(args, replies, { hosts = { box }, log, relativePaths = false } = {}) {
+async function cli(args, replies, { hosts = { box }, log, relativePaths = false, repos, calls, profiles } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'host-run-cli-'));
   const config = join(dir, 'config.box.json');
-  writeFileSync(config, JSON.stringify({ configDir: `${stateDir}/state`, worktreeDir: `${stateDir}/wt` }));
+  writeFileSync(config, JSON.stringify({ configDir: `${stateDir}/state`, worktreeDir: `${stateDir}/wt`, repos }));
   const state = join(dir, 'local');
   if (log !== undefined) { mkdirSync(state, { recursive: true }); writeFileSync(join(state, 'host-box.log'), log); }
   let out = '';
   let err = '';
-  const run = { ssh: () => replies.shift(), rsync: () => ({ status: 0, stderr: '' }) };
+  const run = { ssh: (alias, command) => (calls?.push(command), replies.shift()), rsync: () => ({ status: 0, stderr: '' }) };
   const path = (p) => (relativePaths ? relative(process.cwd(), p) : p);
-  const code = await main(['box', path(config), '--state', path(state), ...args], { hosts, run, out: (s) => (out += s), err: (s) => (err += s), sleep: async () => {} });
+  const code = await main(['box', path(config), '--state', path(state), ...args], { hosts, run, out: (s) => (out += s), err: (s) => (err += s), sleep: async () => {}, ...(profiles && { profiles }) });
   const logPath = join(state, 'host-box.log');
   return { code, out, err, log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : undefined };
 }
@@ -308,3 +308,28 @@ test('diagnose-failure and rate-limit-preflight read a collected stateDir as the
   assert.deepEqual(diagnose(join(base, 'run1')), diagnose(remote));
   assert.equal(readLatestUtilization(base).utilization, 0.42);
 });
+
+// A wave that holds an Xcode repo runs one session at a time, however many slots the host has and whatever --parallel says.
+const TWO = testHost('/h', { sessionSlots: 2 }, 'boxssh');
+const IOS = { 'o/ios': { baseBranch: 'main', postSessionCheck: { commands: ['xcodebuild test -scheme A'] } } };
+const NODE = { 'o/app': { baseBranch: 'main', postSessionCheck: { commands: ['npm test'] } } };
+const HIDDEN = { 'o/hidden': { baseBranch: 'main', postSessionCheck: { commands: ['scripts/test-affected.sh'] } } };
+const flagsOf = (calls) => /--parallel (\d+) --detach/.exec(calls.find((c) => c.includes('--detach')))?.[1];
+
+for (const [name, args, repos, profiles, parallel, clamped] of [
+  ['an Xcode repo with no --parallel', [], IOS, {}, '1', true],
+  ['an Xcode repo with --parallel 2', ['--parallel', '2'], IOS, {}, '1', true],
+  ['an Xcode repo with --parallel 1 needs no clamp', ['--parallel', '1'], IOS, {}, '1', false],
+  ['an Xcode repo declared by its profile, its command hiding xcodebuild', [], HIDDEN, { 'o/hidden': { toolchains: ['xcode'] } }, '1', true],
+  ['a node-only config with no --parallel keeps the host slots', [], NODE, {}, '2', false],
+  ['a node-only config with --parallel 2', ['--parallel', '2'], NODE, {}, '2', false],
+  ['a mixed config is serialized too', [], { ...NODE, ...IOS }, {}, '1', true],
+]) {
+  test(`main: ${name}`, async () => {
+    const calls = [];
+    const r = await cli(args, [FRESH, LAUNCHED, poll(0, 1)], { hosts: { box: TWO }, repos, calls, profiles });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(flagsOf(calls), parallel);
+    assert.equal(/clamping --parallel from 2 to 1/.test(r.err), clamped, r.err);
+  });
+}
