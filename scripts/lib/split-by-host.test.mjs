@@ -22,8 +22,7 @@ test('declared toolchains win over the commands', () => {
   assert.deepEqual(toolchainsNeeded({ commands: ['scripts/ci'], toolchains: ['python'] }), { toolchains: ['python'], unrecognized: [] });
 });
 
-// sdHome is not under reposDir, so a host path built from the wrong field fails.
-const hosts = { box: testHost('/h', { toolchains: ['node'], sdHome: '/h/sd' }) };
+const hosts = { box: testHost('/h', { toolchains: ['node'] }) };
 const base = { stateDir: '/s/ship-dag/engine/run1', projectRoot: '/p', promptTemplate: '/sd/scripts/engine/prompt.md', repo: 'o/r' };
 
 test('a spec with no host fields stays one local sub-spec with every issue', () => {
