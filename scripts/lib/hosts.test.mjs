@@ -5,9 +5,9 @@ import { loadHosts, validateHosts } from './hosts.mjs';
 
 const GOOD = { ssh: 'box', home: '/Users/jake', reposDir: '/Users/jake/Developer', sdHome: '/Users/jake/Developer/ship-dag' };
 
-test('the shipped hosts.json loads, listing funlandresearch with the node toolchain', () => {
+test('the shipped hosts.json loads, listing funlandresearch with the node and xcode toolchains', () => {
   assert.deepEqual(Object.keys(loadHosts()), ['funlandresearch']);
-  assert.deepEqual(loadHosts().funlandresearch.toolchains, ['node']);
+  assert.deepEqual(loadHosts().funlandresearch.toolchains, ['node', 'xcode']);
 });
 
 test('validateHosts accepts a full entry, defaulting toolchains to none and coHome under home', () => {

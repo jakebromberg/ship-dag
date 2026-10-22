@@ -3,13 +3,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildConfigsByHost } from '../emit-config.mjs';
 import { testHost } from './host-fixture.mjs';
 import { mergeSettings } from './host-sync-claude.mjs';
-import { configStateDir, planHost, probeScript, parseProbe } from './host-prepare.mjs';
+import { configStateDir, planHost, probeScript, parseProbe, xcodeRefusal } from './host-prepare.mjs';
 
 const host = testHost('/h', { toolchains: ['node'] });
 const hosts = { box: host };
@@ -174,3 +174,63 @@ for (const [name, settings, leaseHook] of [
     assert.equal(/lease hook/.test(run({ leaseHook: probe.leaseHook }).refusals.join('\n')), !leaseHook);
   });
 }
+
+// The Xcode gate: a wave that needs xcode refuses a host whose Xcode cannot run, naming the fix.
+const XCODE = { xcodePath: '/Applications/Xcode.app/Contents/Developer', xcodeVersion: 'Xcode 27.1' };
+for (const [name, over, needs, refused] of [
+  ['Xcode.app selected and licensed', XCODE, ['node', 'xcode'], null],
+  ['an unaccepted license', { xcodePath: XCODE.xcodePath, xcodeError: 'You have not agreed to the Xcode license agreements. You must agree to the license below in order to use Xcode.' }, ['xcode'], /box: the Xcode license is not accepted \(You have not agreed.*\); run: ssh -t box 'sudo xcodebuild -license accept'/],
+  ['Command Line Tools only (xcodebuild says so)', { xcodePath: '/Library/Developer/CommandLineTools', xcodeError: "xcode-select: error: tool 'xcodebuild' requires Xcode, but active developer directory '/Library/Developer/CommandLineTools' is a command line tools instance" }, ['xcode'], /box: xcodebuild is not available and the active developer directory is \/Library\/Developer\/CommandLineTools .*install Xcode\.app and run: ssh -t box 'sudo xcode-select -s \/Applications\/Xcode\.app\/Contents\/Developer'/],
+  ['no developer directory and no output', {}, ['xcode'], /active developer directory is none/],
+  ['another xcodebuild failure', { xcodePath: XCODE.xcodePath, xcodeError: 'xcodebuild: error: boom' }, ['xcode'], /xcodebuild -version failed \(xcodebuild: error: boom\); active developer directory \/Applications/],
+  ['a broken Xcode on a wave that needs no Xcode', {}, ['node'], null],
+  ['a broken Xcode when no toolchain is named', {}, undefined, null],
+]) {
+  test(`the Xcode gate: ${name}`, () => {
+    const r = run(over, needs ? { needs } : {});
+    if (refused) assert.match(r.refusals.join('\n'), refused);
+    else assert.deepEqual(r.refusals, []);
+  });
+}
+
+test('xcodeRefusal names no host when it is given none', () => {
+  assert.match(xcodeRefusal({ xcodeError: 'You have not agreed to the Xcode license agreements.' }), /ssh -t <host> 'sudo xcodebuild -license accept'/);
+});
+
+/** The probe against a fake home whose PATH holds stub xcode-select/xcodebuild (none when `stubs` is empty). */
+function probeXcode(stubs, opts = { xcode: true }) {
+  const home = mkdtempSync(join(tmpdir(), 'host-prepare-xcode-'));
+  const bin = join(home, 'bin');
+  mkdirSync(bin);
+  for (const [tool, body] of Object.entries(stubs)) {
+    writeFileSync(join(bin, tool), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  }
+  const fake = validateHosts({ box: { ssh: 'box', home, reposDir: join(home, 'D'), sdHome: join(home, 'D', 'ship-dag') } }).box;
+  const r = spawnSync('/bin/sh', ['-c', probeScript(fake, undefined, [], opts)], { encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin` } });
+  const { xcodePath, xcodeVersion, xcodeError } = parseProbe(r.stdout);
+  return { xcodePath, xcodeVersion, xcodeError, ran: existsSync(join(bin, 'xcodebuild.ran')) };
+}
+
+test('the Xcode probe reports the path and the first line of a working xcodebuild -version', () => {
+  const probe = probeXcode({ 'xcode-select': 'echo /Applications/Xcode.app/Contents/Developer', xcodebuild: 'echo "Xcode 27.1"; echo "Build version 27A1"' });
+  assert.deepEqual([probe.xcodePath, probe.xcodeVersion, probe.xcodeError], ['/Applications/Xcode.app/Contents/Developer', 'Xcode 27.1', undefined]);
+  assert.deepEqual(run({ xcodePath: probe.xcodePath, xcodeVersion: probe.xcodeVersion }, { needs: ['xcode'] }).refusals, []);
+});
+
+test('the Xcode probe turns an unaccepted license into a refusal', () => {
+  const probe = probeXcode({ 'xcode-select': 'echo /Applications/Xcode.app/Contents/Developer', xcodebuild: 'echo "You have not agreed to the Xcode license agreements. You must agree to the license below in order to use Xcode." >&2; echo "Run sudo xcodebuild -license" >&2; exit 69' });
+  assert.match(probe.xcodeError, /^You have not agreed to the Xcode license agreements/);
+  assert.equal(probe.xcodeVersion, undefined);
+  assert.match(run(probe, { needs: ['xcode'] }).refusals.join('\n'), /Xcode license is not accepted/);
+});
+
+test('the Xcode probe turns a Command Line Tools host into a refusal', () => {
+  const probe = probeXcode({ 'xcode-select': 'echo /Library/Developer/CommandLineTools', xcodebuild: "echo \"xcode-select: error: tool 'xcodebuild' requires Xcode, but active developer directory '/Library/Developer/CommandLineTools' is a command line tools instance\" >&2; exit 1" });
+  assert.match(run(probe, { needs: ['xcode'] }).refusals.join('\n'), /Command Line Tools only.*install Xcode\.app/);
+});
+
+test('the Xcode probe with tools that print nothing and fail reports an error, and without the option runs no Xcode tool', () => {
+  assert.match(run(probeXcode({ 'xcode-select': 'exit 1', xcodebuild: 'exit 1' }), { needs: ['xcode'] }).refusals.join('\n'), /xcodebuild is not available/);
+  const probe = probeXcode({ xcodebuild: 'touch "$(dirname "$0")/xcodebuild.ran"; echo Xcode 1' }, {});
+  assert.deepEqual([probe.xcodeVersion, probe.xcodePath, probe.ran], [undefined, undefined, false]);
+});

@@ -154,3 +154,35 @@ for (const [name, error, expected] of [['ssh exit 255 (an unreachable host)', ex
     }
   });
 }
+
+// A wave that needs xcode (declared by the repo's profile, since its command hides xcodebuild) probes Xcode on the host.
+const iosHosts = validateHosts({ box: { ssh: 'box', home: '/h', reposDir: '/h/D', sdHome: '/h/D/ship-dag', toolchains: ['node', 'xcode'] } });
+const [{ config: iosConfig }] = buildConfigsByHost({
+  name: 'ship-dag-run1', repo: 'o/ios', stateDir: '/m/.local/state/ship-dag/engine/run1', projectRoot: '/m/D', promptTemplate: '/m/p.md',
+  repos: { 'o/ios': { baseBranch: 'main', commands: ['scripts/test-affected.sh'], toolchains: ['xcode'], host: 'box' } },
+  issues: [{ number: 1, title: 'one' }],
+}, iosHosts);
+const iosState = (over = {}) => state({ present: ['ios'], ...over });
+const execIos = (s, opts = {}) => {
+  const calls = [];
+  const logs = [];
+  const run = { ssh: (alias, cmd) => (calls.push(cmd), calls.length === 1 ? probeOut(s) : ''), scp: () => {} };
+  const code = prepareHost({ name: 'box', hosts: iosHosts, config: iosConfig, configPath, local, run, minFreeGb: 10, dryRun: true, log: (m) => logs.push(m), profiles: { 'o/ios': { toolchains: ['xcode'] } }, ...opts });
+  return { code, calls, logs };
+};
+
+test('a declared xcode toolchain makes the probe ask for Xcode, and a broken license refuses', () => {
+  const { code, calls, logs } = execIos(iosState({ xcodePath: '/Applications/Xcode.app/Contents/Developer', xcodeError: 'You have not agreed to the Xcode license agreements.' }));
+  assert.match(calls[0], /xcodebuild -version/);
+  assert.equal(code, 1);
+  assert.match(logs.join('\n'), /box: the Xcode license is not accepted/);
+});
+
+test('a working Xcode passes the gate', () => {
+  assert.equal(execIos(iosState({ xcodePath: '/Applications/Xcode.app/Contents/Developer', xcodeVersion: 'Xcode 27.1' })).code, 0);
+});
+
+test('a wave with no xcode repo never runs an Xcode tool on the host', () => {
+  const { calls } = exec(state());
+  assert.doesNotMatch(calls[0][2], /xcode/);
+});
