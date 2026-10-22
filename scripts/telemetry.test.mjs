@@ -1803,6 +1803,71 @@ describe('report: byRepo', () => {
   });
 });
 
+// Each byRepo entry splits the same rows by complexity tier (a tier under minSample keeps only its count) and counts the
+// object findings of its blocking records by category.
+describe('report: byRepo by complexity and finding category', () => {
+  const rec = (repo, issue, over = {}) => normalizeRecord(base({ repo, issue, ...over }), FIXED);
+  const block = (repo, issue, findings, over = {}) => rec(repo, issue, { finalState: 'blocked-hitl', reviewVerdict: 'blocking', bounces: 1, findings, ...over });
+  const f = (category) => ({ category, verdict: 'CONFIRMED', summary: `${category} s` });
+
+  test('per-tier yield and catch, a thin tier keeps its count, infra rows are left out', () => {
+    const recs = [
+      rec('a/one', 1, { complexity: 'mechanical' }), rec('a/one', 2, { complexity: 'mechanical' }),
+      block('a/one', 3, [], { complexity: 'mechanical' }),
+      rec('a/one', 4), block('a/one', 5, []),
+      rec('a/one', 6, { complexity: 'complex' }),
+      rec('a/one', 7, { complexity: 'complex', finalState: 'error', implStatus: 'error', failureReason: 'rate-limited', reviewVerdict: null, ciStatus: null }),
+      rec('b/two', 8, { complexity: 'mechanical' }), block('b/two', 9, [], { complexity: 'mechanical' }),
+    ];
+    const rep = report(recs, { minSample: 2 });
+    const one = rep.byRepo['a/one'].byComplexity;
+    assert.deepEqual(one.mechanical.firstPassYield, { reached: 3, pass: 2, rate: 2 / 3 });
+    assert.deepEqual(one.mechanical.reviewCatch, { reached: 3, blocking: 1, rate: 1 / 3 });
+    assert.deepEqual(one.normal.firstPassYield, { reached: 2, pass: 1, rate: 0.5 });
+    assert.deepEqual(one.complex, { n: 1 });
+    const two = rep.byRepo['b/two'].byComplexity;
+    assert.deepEqual(two.mechanical.firstPassYield, { reached: 2, pass: 1, rate: 0.5 });
+    assert.deepEqual(two.normal, { n: 0 });
+  });
+
+  test('counts object findings by category, (blank) and (other), and unstructured blocking records', () => {
+    const recs = [
+      block('a/one', 1, [f('correctness'), f('correctness'), 'a string finding', f(null)]),
+      block('a/one', 2, [f('correctness'), f('made-up')]),
+      block('a/one', 3, ['only a string']),
+      block('a/one', 4, []),
+      rec('a/one', 5, { findings: [f('security')] }),
+      block('a/one', 6, [f('contract')], { failureReason: 'rate-limited', finalState: 'error', implStatus: 'error' }),
+    ];
+    const e = report(recs, { minSample: 1 }).byRepo['a/one'];
+    assert.deepEqual(e.findingCategories, { correctness: 3, '(blank)': 1, '(other)': 1 });
+    assert.equal(e.unstructured, 2);
+  });
+
+  test('a repo under the minimum carries neither', () => {
+    assert.deepEqual(report([block('a/one', 1, [f('security')])], { minSample: 2 }).byRepo['a/one'], { n: 1 });
+  });
+
+  test('the table pads its columns and shows each tier', () => {
+    const recs = [
+      ...Array.from({ length: 4 }, (_, i) => rec('a/longer-name', i + 1)),
+      rec('b/x', 10, { complexity: 'mechanical' }), block('b/x', 11, [], { complexity: 'mechanical' }),
+      rec('b/x', 12, { complexity: 'mechanical' }),
+    ];
+    const lines = renderReport(report(recs, { minSample: 3 })).split('\n');
+    const at = lines.findIndex((l) => l.startsWith('by repo:'));
+    const [head, a, b] = lines.slice(at, at + 3);
+    assert.match(head, /mechanical\s+normal\s+complex/);
+    assert.match(a, /a\/longer-name\s+4\s+4\/4 \(100\.0%\)/);
+    assert.match(b, /b\/x\s+3\s+2\/3 \(66\.7\%\)/);
+    // every column starts at the same offset in each row
+    for (const col of ['reached', 'yield', 'review-catch', 'triage-miss', 'mechanical', 'normal', 'complex']) {
+      assert.ok(head.indexOf(col) > 0, col);
+    }
+    assert.equal(a.indexOf('4/4 (100.0%)'), b.indexOf('2/3 (66.7%)'));
+  });
+});
+
 describe('report: issues block', () => {
   const at = (n, over) => normalizeRecord(base({ ts: `2026-07-0${n}T00:00:00Z`, ...over }), FIXED);
   const err = { finalState: 'error', implStatus: 'error', failureReason: null };
