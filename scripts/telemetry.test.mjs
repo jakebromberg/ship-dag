@@ -1457,9 +1457,11 @@ describe('audit', () => {
   test('a death derived from engineDeaths, with nothing after it, is named by engineDied and counted unresolved', () => family({
     [RUN_A]: { reports: { 'w1.json': stateReport([stateRow(REF, { status: 'failed', prNumber: null })]) }, sidecar: [sidecarEntry([REF])] },
   }, (base) => {
-    const row = { ref: REF, status: 'failed', prNumber: null, failureReason: 'engine-died', engineDeaths: [{ at: T0 }] };
+    // Not stamped: the only death is the marker's, and the row's continuation (its model error) is not logged yet.
+    const row = { ref: REF, status: 'failed', prNumber: null, engineDeaths: [{ at: T0 }] };
     const { records } = deriveWaveRecords({ configName: `ship-dag-${RUN_A}`, finishedAt: T1, issues: [row] }, null, {}, {}, {}, { reportId: 'w1', warn: () => {} });
-    const derived = records.map((r) => normalizeRecord(r, () => T1));
+    const derived = records.filter((r) => r.failureReason === 'engine-died').map((r) => normalizeRecord(r, () => T1));
+    assert.deepEqual(derived.map((r) => r.ts), [T0]);
     assert.deepEqual(audit_(base, derived).engineDied, [REF]);
     assert.deepEqual(report(derived).issues, { distinct: 1, merged: 0, unresolved: 1, attemptsPerMerged: null });
   }));
