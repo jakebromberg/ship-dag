@@ -101,6 +101,11 @@ for (const [field, label, value, ok] of FIELD_CASES) {
   });
 }
 
+test('normalizeRecord: a bad findings entry is named by its index, not the whole array', () => {
+  assert.throws(() => normalizeRecord(base({ findings: ['a', 'b', 7] }), FIXED), { message: 'bad findings: entry 2 is 7' });
+  assert.throws(() => normalizeRecord(base({ findings: 'a' }), FIXED), { message: 'bad findings: not an array: "a"' });
+});
+
 test('normalizeRecord: point-A defer record — nullable downstream fields default to null', () => {
   const r = normalizeRecord(
     { runId: 'r', repo: 'WXYC/x', issue: 2, complexity: 'complex', triageStatus: 'needs-decision', path: 'inline', finalState: 'blocked-hitl', hitl: { pointA: true } },
