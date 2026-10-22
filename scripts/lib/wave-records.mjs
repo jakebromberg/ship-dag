@@ -162,12 +162,22 @@ const deathHeld = (records, rec, prevAt, runs) => {
   return Boolean(died?.stamped) || records.some((s) => diedAtOf(s, rec, Date.parse(rec.ts)) || (died && diedAtOf(s, rec, died.ts)));
 };
 /**
- * Whether `records` hold the marker death of `rec`, a stamped death of the report `runs[0]`: a later report ingested first
- * listed it as a marker, dated by its `at`. Only a log appended before `deathHeld` deferred to the stamped report holds one;
- * the log is never rewritten, so the death stays that one record.
+ * Whether `records` hold the marker death of `rec`, an `engine-died` death of the report `runs[0]`: a later report ingested
+ * first listed it as a marker, dated by its `at`. Only a log appended before `deathHeld` deferred to the stamped report holds one;
+ * the log is never rewritten, so the death stays that one record. Ingest derives no record of `rec` then, and `rowCovered`
+ * takes the marker death as covering its row, by this one predicate, so audit never names a row whose ingest adds nothing.
  */
-const heldByMarker = (records, rec, runs) => runs.some((l) => l.markers.some((at, i) => diedBefore(runs, Date.parse(at), l.markers[i - 1]) === runs[0]
+const heldByMarker = (records, rec, runs) => rec.failureReason === 'engine-died' && runs.some((l) => l.markers.some((at, i) => diedBefore(runs, Date.parse(at), l.markers[i - 1]) === runs[0]
   && records.some((s) => diedAtOf(s, rec, Date.parse(at)))));
+/**
+ * Each run of `report`'s config, `report` (stem `reportId`) first, then `earlier`'s and `later`'s (parsed reports, each with its
+ * `reportId`): its id, when it started, how its records are dated, whether it stamped `ref`'s row engine-died, and the markers
+ * that row lists. A stamped death of one is what a marker records. Ingest and audit build `runs` here, so they agree on it.
+ */
+const runsOf = (report, reportId, earlier, later, ref) => [{ ...report, reportId }, ...earlier, ...later].filter((r) => r?.configName === report?.configName).map((r) => {
+  const row = (Array.isArray(r.issues) ? r.issues : []).find((i) => i?.ref === ref);
+  return { id: r.reportId, start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt), stamped: row?.failureReason === 'engine-died' && implStatusOf(row, isPr(row.prNumber) ? row.prNumber : null) === 'error', markers: engineDeathsOf(row) };
+});
 /** Whether a row with `implStatus` carries its stop as the record's `failureReason`: a death, or a launch stop that never started. */
 const diesWith = (row, implStatus) => implStatus === 'error' || row.status === 'pending';
 
@@ -189,14 +199,21 @@ const diesWith = (row, implStatus) => implStatus === 'error' || row.status === '
  * - `--outcomes`: a row covered by a record of another finalState (a point-B hold of its PR, an operator's
  *   `deferred`) appends under other --outcomes, as the merge that followed the hold does; and a PR-less row whose
  *   PR came from --outcomes is named unless a record carrying `id` holds that PR (or, on a death, the death's record).
+ * A row's `engine-died` death is also covered by a later report's marker death of it that a log appended before markers
+ * deferred to the stamped report holds (`heldByMarker`, which ingest reads too), so this needs the report's `report` (its
+ * parsed body, as `readWaveReport` reads it) and `later` (the run family's later parsed reports, each with its `reportId`).
  */
-export function rowCovered(row, { id, startedAt }, records, runId, digest, earlier = []) {
+export function rowCovered(row, { id, startedAt, report }, records, runId, digest, earlier = [], later = []) {
   const { repo, number } = parseRef(row.ref);
   const findPr = row.status === 'succeeded' && !isPr(row.prNumber);
   const stopReason = stopReasonOf(row, digest);
   const carried = carriedOver(row, earlier);
   // Whether a PR-less run of the row is the death of a stop (a row with a PR is gated, and reads its own PR).
   const dies = stopReason && implStatusOf(row, null) === 'error';
+  // The row's own death as ingest derives it with no --outcomes, held when a marker death of it is logged.
+  const ownPr = isPr(row.prNumber) ? row.prNumber : null;
+  const ownDeath = { runId, repo, issue: number, failureReason: stopReason && diesWith(row, implStatusOf(row, ownPr)) ? stopReason : null };
+  if (!carried && ownDeath.failureReason && heldByMarker(records, ownDeath, runsOf(report, id, earlier, later, row.ref))) return true;
   const markerDeath = markerDeathOf(row);
   return records.some((r) => {
     if (markerDeath(r)) return false;
@@ -256,14 +273,8 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
 
   const seen = [...existing];
   const records = [];
-  // Each run of this config, this report's first, then the earlier and later ones': its id, when it started, how its records are
-  // dated, whether it stamped `ref`'s row engine-died, and the markers that row lists. A stamped death of one is what a marker records.
-  const runsOf = (ref) => [{ ...report, reportId }, ...earlier, ...later].filter((r) => r?.configName === report?.configName).map((r) => {
-    const row = (Array.isArray(r.issues) ? r.issues : []).find((i) => i?.ref === ref);
-    return { id: r.reportId, start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt), stamped: row?.failureReason === 'engine-died' && implStatusOf(row, isPr(row.prNumber) ? row.prNumber : null) === 'error', markers: engineDeathsOf(row) };
-  });
   for (const row of rows) {
-    const runs = runsOf(row.ref);
+    const runs = runsOf(report, reportId, earlier, later, row.ref);
     const m = parseRef(row.ref);
     const outcome = outcomes?.[row.ref] ?? {};
     const planned = (entry?.issues ?? []).find((i) => i.ref === row.ref);
@@ -359,7 +370,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
     const { pressureOverride: _ranUnderOverride, ...continuation } = outcome;
     const own = death?.failureReason ? [death, build(continuation, pr, null)] : [build(outcome, pr, stopReason)];
     for (const rec of own) {
-      if (seen.some((s) => !markerDeath(s) && sameEvent(s, rec)) || (rec.failureReason === 'engine-died' && heldByMarker(seen, rec, runs))) continue;
+      if (seen.some((s) => !markerDeath(s) && sameEvent(s, rec)) || heldByMarker(seen, rec, runs)) continue;
       seen.push(rec);
       records.push(rec);
     }
