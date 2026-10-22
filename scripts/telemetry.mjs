@@ -87,6 +87,7 @@ import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 import { latestByRef, outcomeOf } from './lib/log-order.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
+import { CATEGORIES } from './review-gate.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
 import { evaluateAll, loadTripwires, tripwireContext } from './lib/tripwires.mjs';
@@ -268,7 +269,9 @@ export function readRecords(path = telemetryPath()) {
  * kind:"retro" records are excluded from every per-issue indicator (they are
  * pass-scoped, not issue-scoped) and aggregated into their own `retro` section.
  * `byRepo` groups the same population by repo (casing folded by `sameRepo`, keyed as first written); a repo with
- * fewer than `minSample` reached rows carries `n` and no rates.
+ * fewer than `minSample` reached rows carries `n` and no rates. Each entry splits yield and review catch by tier (a tier
+ * under `minSample` keeps `n` only), counts the object `findings` of its blocking rows by category in `findingCategories`
+ * (a null category as `(blank)`, one outside `CATEGORIES` as `(other)`) and the blocking rows with no object finding in `unstructured`.
  * `issues` counts distinct issues (`latestByRef`, casing folded), those merged in the window, the mean non-infra rows
  * that reached implement per merged issue (`null` with none), and those whose latest record is no merge and no maintainer deferral. A
  * deferral with an infra reason (`INFRA_REASONS`: an engine death, a lease-wait, memory-critical or rate-limited stop)
@@ -304,9 +307,27 @@ export function report(records, { minSample = 20 } = {}) {
   const clearedByRepo = groupByRepo(records, cleared);
   for (const [repo, rs] of groupByRepo(records, reached)) {
     const clearedHere = clearedByRepo.get(repo) ?? [];
+    const tiers = groupBy((r) => r.complexity, rs);
+    const tierOf = (tier) => {
+      const t = tiers.get(tier) ?? [];
+      return t.length < minSample ? { n: t.length } : { n: t.length, firstPassYield: yieldOf(t), reviewCatch: { reached: t.length, blocking: blockingOf(t), rate: blockingOf(t) / t.length } };
+    };
+    const findingCategories = {};
+    let unstructured = 0;
+    for (const r of rs.filter((x) => x.reviewVerdict === 'blocking')) {
+      const objs = r.findings.filter((x) => x !== null && typeof x === 'object');
+      if (!objs.length) unstructured++;
+      for (const { category } of objs) {
+        const key = category == null ? '(blank)' : CATEGORIES.includes(category) ? category : '(other)';
+        findingCategories[key] = (findingCategories[key] ?? 0) + 1;
+      }
+    }
     byRepo[repo] = rs.length < minSample ? { n: rs.length } : {
       n: rs.length,
       firstPassYield: yieldOf(rs),
+      byComplexity: Object.fromEntries(TIERS.map((tier) => [tier, tierOf(tier)])),
+      findingCategories,
+      unstructured,
       reviewCatch: { reached: rs.length, blocking: blockingOf(rs), rate: blockingOf(rs) / rs.length },
       triageMiss: { cleared: clearedHere.length, miss: missOf(clearedHere), rate: clearedHere.length ? missOf(clearedHere) / clearedHere.length : 0 },
     };
@@ -381,12 +402,15 @@ export function renderReport(rep) {
   // Gated on a non-empty byRepo so a log with no rows reached renders as before.
   const repos = Object.entries(rep.byRepo ?? {}).sort(([, a], [, b]) => b.n - a.n);
   if (repos.length) {
-    lines.push('by repo:           reached  yield  review-catch  triage-miss');
+    const yieldCell = (y) => `${y.pass}/${y.reached} (${pct(y.rate)})`;
+    const table = [['by repo:', 'reached', 'yield', 'review-catch', 'triage-miss', ...TIERS]];
     for (const [repo, e] of repos) {
-      lines.push(e.firstPassYield
-        ? `  ${repo}  ${e.n}  ${e.firstPassYield.pass}/${e.firstPassYield.reached} (${pct(e.firstPassYield.rate)})  ${pct(e.reviewCatch.rate)}  ${pct(e.triageMiss.rate)}`
-        : `  ${repo}  ${e.n}  n<${rep.minSample}`);
+      table.push(e.firstPassYield
+        ? [`  ${repo}`, `${e.n}`, yieldCell(e.firstPassYield), pct(e.reviewCatch.rate), pct(e.triageMiss.rate), ...TIERS.map((t) => e.byComplexity[t].firstPassYield ? yieldCell(e.byComplexity[t].firstPassYield) : `n=${e.byComplexity[t].n}`)]
+        : [`  ${repo}`, `${e.n}`, `n<${rep.minSample}`]);
     }
+    const widths = table[0].map((_, c) => Math.max(...table.map((r) => (r[c] ?? '').length)));
+    table.forEach((r) => lines.push(r.map((c, k) => c.padEnd(widths[k])).join('  ').trimEnd()));
   }
   // Gated on passes > 0 so a retro-free log renders byte-identically to before
   // the retro record kind existed (the field report quotes this table verbatim).
