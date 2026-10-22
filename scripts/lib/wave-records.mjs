@@ -150,20 +150,21 @@ const diedBefore = (runs, at, prevAt) => {
 /** Whether `s` is an `engine-died` record of the row of `rec`, dated `t`. */
 const diedAtOf = (s, rec, t) => s.failureReason === 'engine-died' && s.issue === rec.issue && sameRepo(s.repo, rec.repo) && sameRun(s.runId, rec.runId) && Date.parse(s.ts) === t;
 /**
- * Whether `records` already hold the death `rec` of a marker dated `rec.ts`, whose row's previous marker is dated `prevAt`.
- * The engine writes a marker when it next starts, after the run that died, so the death is a record of the same row dated
- * by the same `at`, or the run that died's (`diedBefore`) own: its stamped `engine-died` record, or the model error that was
- * the record of a stamped row before #286 (`legacyDeath`, by the report's id: any other model error is a real one). A later
- * report re-lists every marker, so the same `at` recurs; another config keeps its own markers.
+ * Whether the death `rec` of a marker dated `rec.ts`, whose row's previous marker is dated `prevAt`, is held elsewhere.
+ * The engine writes a marker when it next starts, after the run that died (`diedBefore`). When that run's report stamped
+ * the row, the death is that report's own record, which its ingest derives with its id and the dead run's sessions (or, before
+ * #286, derived as a model error that `legacyDeath` names), whichever report is ingested first; until it is, audit names
+ * that report's row. Else it is a record in `records` of the same row dated by the same `at` (a later report re-lists every
+ * marker), or the run that died's own `engine-died` record. Another config keeps its own markers.
  */
 const deathHeld = (records, rec, prevAt, runs) => {
   const died = diedBefore(runs, Date.parse(rec.ts), prevAt);
-  return records.some((s) => diedAtOf(s, rec, Date.parse(rec.ts)) || (died && diedAtOf(s, rec, died.ts))
-    || (died?.stamped && legacyDeath(s, { ...rec, reportId: died.id })));
+  return Boolean(died?.stamped) || records.some((s) => diedAtOf(s, rec, Date.parse(rec.ts)) || (died && diedAtOf(s, rec, died.ts)));
 };
 /**
  * Whether `records` hold the marker death of `rec`, a stamped death of the report `runs[0]`: a later report ingested first
- * listed it as a marker, dated by its `at`. The death is the one record, whichever report is ingested first.
+ * listed it as a marker, dated by its `at`. Only a log appended before `deathHeld` deferred to the stamped report holds one;
+ * the log is never rewritten, so the death stays that one record.
  */
 const heldByMarker = (records, rec, runs) => runs.some((l) => l.markers.some((at, i) => diedBefore(runs, Date.parse(at), l.markers[i - 1]) === runs[0]
   && records.some((s) => diedAtOf(s, rec, Date.parse(at)))));
@@ -227,7 +228,7 @@ export function rowCovered(row, { id, startedAt }, records, runId, digest, earli
  * @param {Record<string, object>} outcomes per-ref `{pr, hitl, finalState, bounces, findings, tokens, pressureOverride}`
  * @param {{existing?: object[], warn?: (m: string) => void, tuningVersion?: unknown, reportId?: string, noCheckRepos?: Iterable<string>, earlier?: object[], later?: object[]}} [opts]
  *   a record that is the same event as an `existing` one (or an earlier row's), by `sameEvent`, is dropped; `reportId` (the report's file stem) is stamped on each record;
- *   a row `carriedOver` by an `earlier` report (the run family's earlier parsed reports, each with its `reportId`) derives none, and `later` (the later ones) tells a stamped death a later report's marker already recorded; each record carries its row's `ran` when it is a boolean;
+ *   a row `carriedOver` by an `earlier` report (the run family's earlier parsed reports, each with its `reportId`) derives none, and `later` (the later ones) tells a stamped death a later report's marker recorded in a log appended before a marker deferred to it; each record carries its row's `ran` when it is a boolean;
  *   a succeeded row in a `noCheckRepos` repo (no `postSessionCheck`, so the engine ran none) records `ciStatus: "none"`
  * @returns {{records: object[]}}
  * @throws when a terminal row has no `owner/repo#N` ref (`malformed report row`), or exists but no run
@@ -259,7 +260,7 @@ export function deriveWaveRecords(report, entry, digests, rounds, outcomes, { ex
   // dated, whether it stamped `ref`'s row engine-died, and the markers that row lists. A stamped death of one is what a marker records.
   const runsOf = (ref) => [{ ...report, reportId }, ...earlier, ...later].filter((r) => r?.configName === report?.configName).map((r) => {
     const row = (Array.isArray(r.issues) ? r.issues : []).find((i) => i?.ref === ref);
-    return { id: r.reportId, start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt), stamped: row?.failureReason === 'engine-died', markers: engineDeathsOf(row) };
+    return { id: r.reportId, start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt), stamped: row?.failureReason === 'engine-died' && implStatusOf(row, isPr(row.prNumber) ? row.prNumber : null) === 'error', markers: engineDeathsOf(row) };
   });
   for (const row of rows) {
     const runs = runsOf(row.ref);
