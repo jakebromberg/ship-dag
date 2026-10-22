@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { main } from './board.mjs';
-import { graphqlAnswer } from './lib/gh-fixture.mjs';
+import { ghExecError, graphqlAnswer } from './lib/gh-fixture.mjs';
 import { RUN, T0, engineConfig, scopedEngineFixture, stamped } from './lib/engine-fixture.mjs';
 import { parseRef } from './lib/ref.mjs';
 import { artifactStem } from './lib/failure.mjs';
@@ -382,4 +382,161 @@ test('render asks for createdAt in its batched lookup and draws the burn-up from
   assert.match(html, /<section class="burn">/);
   assert.match(html, /aria-label="Burn-up: 1 of 3 shipped this run as of Oct 8, 1:30 PM PDT; 2 in scope when the run started, Oct 8, 5:00 AM PDT\."/,
     'r#1 and r#9 from the start, r#9 shipped at 6 AM, r#2 filed at 8 AM');
+});
+
+// ---- refresh: fetch the run's graph spec, write spec-board.json, render ----
+
+/** `run`, with the extra deps `refresh` takes (`fetchSpec`, `runGhSync`), and `spec-board.json` read back (null if absent). */
+async function refresh(argv, { env, dir, runGh = async () => { throw new Error('no gh expected'); }, ...deps }) {
+  const err = [];
+  const code = await main(argv, { runGh, env, now: () => NOW, log: (m) => err.push(m), sleep: async () => {}, ...deps });
+  const read = (name) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8') : null);
+  return { code, err, html: read('board.html'), spec: read('spec-board.json') && JSON.parse(read('spec-board.json')) };
+}
+
+/** A sync `gh` for plan-waves' fetchSpec over a label's issues; `fail` makes the open listing throw as gh does. */
+function fakeFetchGh({ open = [1, 2], closed = [9], fail } = {}) {
+  const calls = [];
+  const runGhSync = (args) => {
+    calls.push(args);
+    if (args[0] === 'issue' && args[1] === 'list') {
+      if (fail) { throw fail(args); }
+      return JSON.stringify((args[args.indexOf('--state') + 1] === 'closed' ? closed : open).map((number) => ({ number })));
+    }
+    if (args[0] === 'issue' && args[1] === 'view') {
+      return JSON.stringify({ number: Number(args[2]), title: `Title ${args[2]}`, labels: [], body: Number(args[2]) === 2 ? 'Blocked by #1' : '', state: 'OPEN' });
+    }
+    if (args[0] === 'api') { return ''; } // no native blocked_by edges
+    throw new Error(`unexpected gh call: ${args.join(' ')}`);
+  };
+  return { runGhSync, calls };
+}
+
+const EPIC_BOARD = { ...BOARD, issueSet: { epic: R(50) } };
+const EPIC_TABLE = { ...TABLE, [R(50)]: {} };
+const WIRE_SPEC = { repo: 'o/r', nodes: [{ ref: R(1) }, { ref: R(2) }], edges: [{ blocked: R(2), blockedBy: R(1) }], done: [R(9)], members: [R(1), R(2), R(9)] };
+
+test('refresh on an epic run fetches the epic with --members, writes spec-board.json, and renders from it', async () => {
+  const s = setUp({ files: { 'board.json': EPIC_BOARD, 'dag.json': undefined } });
+  const seen = [];
+  const fetchSpec = (repo, opts) => { seen.push([repo, opts.epic, opts.label, opts.members]); return WIRE_SPEC; };
+  const { code, err, html, spec } = await refresh(['refresh', '--run-id', RUN], { ...s, runGh: fakeGh(EPIC_TABLE).runGh, fetchSpec });
+  assert.equal(code, 0, err.join('\n'));
+  assert.deepEqual(seen, [['o/r', '50', undefined, true]]);
+  assert.deepEqual(spec, WIRE_SPEC);
+  assert.match(html, /<b>1\/3<\/b><span>shipped<\/span>/);
+  assert.ok(html.includes(`board.mjs refresh --run-id ${RUN}`), 'the page names the command that rebuilt it');
+  assert.deepEqual(readdirSync(s.dir).filter((f) => f.includes('.tmp')), []);
+});
+
+test('refresh on a label run lists the label (open and closed) through plan-waves fetchSpec with the injected sync gh', async () => {
+  const s = setUp({ files: { 'board.json': { ...BOARD, issueSet: { repo: 'o/r', label: 'wave' } }, 'dag.json': undefined } });
+  const gh = fakeFetchGh();
+  const { code, err, html, spec } = await refresh(['refresh', '--run-id', RUN], { ...s, runGh: fakeGh(TABLE).runGh, runGhSync: gh.runGhSync });
+  assert.equal(code, 0, err.join('\n'));
+  assert.deepEqual(spec.members, [R(1), R(2), R(9)]);
+  assert.deepEqual(spec.edges, [{ blocked: R(2), blockedBy: R(1) }]);
+  assert.deepEqual(gh.calls.filter((a) => a[1] === 'list').map((a) => a[a.indexOf('--label') + 1] + ':' + a[a.indexOf('--state') + 1]), ['wave:open', 'wave:closed']);
+  assert.match(html, /<b>1\/3<\/b><span>shipped<\/span>/);
+});
+
+test('refresh overwrites a stale spec-board.json and ignores dag.json', async () => {
+  const s = setUp({ files: { 'board.json': EPIC_BOARD, 'spec-board.json': { nodes: [{ ref: R(77) }], edges: [] } } });
+  const { code, spec, html } = await refresh(['refresh', '--run-id', RUN], { ...s, runGh: fakeGh(EPIC_TABLE).runGh, fetchSpec: () => WIRE_SPEC });
+  assert.equal(code, 0);
+  assert.deepEqual(spec, WIRE_SPEC);
+  assert.ok(!html.includes('o/r#77'));
+});
+
+test('refresh --state-dir finds the run too, and --out redirects the page but not spec-board.json', async () => {
+  const s = setUp({ files: { 'board.json': EPIC_BOARD, 'dag.json': undefined } });
+  const out = join(s.base, 'elsewhere.html');
+  const { code, spec } = await refresh(['refresh', '--state-dir', s.dir, '--out', out], { ...s, runGh: fakeGh(EPIC_TABLE).runGh, fetchSpec: () => WIRE_SPEC });
+  assert.equal(code, 0);
+  assert.deepEqual(spec, WIRE_SPEC);
+  assert.ok(existsSync(out));
+  assert.equal(existsSync(join(s.dir, 'board.html')), false);
+});
+
+for (const [name, deps, want] of [
+  ['an injected fetch that throws', { fetchSpec: () => { throw new Error('boom from fetch'); } }, /boom from fetch/],
+  ['a gh failure listing the label', { runGhSync: fakeFetchGh({ fail: (args) => ghExecError(args, { stderr: 'gh: Bad credentials (HTTP 401)\n' }) }).runGhSync }, /Bad credentials/],
+]) {
+  test(`refresh exits 1 and leaves board.html and spec-board.json untouched: ${name}`, async () => {
+    const s = setUp({ files: { 'board.json': { ...BOARD, issueSet: deps.fetchSpec ? { epic: R(50) } : { repo: 'o/r', label: 'wave' } }, 'dag.json': undefined, 'board.html': '<old board>', 'spec-board.json': { nodes: [], keep: true } } });
+    const { code, err, html, spec } = await refresh(['refresh', '--run-id', RUN], { ...s, runGh: fakeGh(EPIC_TABLE).runGh, ...deps });
+    assert.equal(code, 1);
+    assert.match(err.join('\n'), want);
+    assert.equal(html, '<old board>');
+    assert.deepEqual(spec, { nodes: [], keep: true });
+  });
+}
+
+test('refresh exits 1 and keeps the old board.html when the fetch works but the render fails', async () => {
+  const s = setUp({ files: { 'board.json': EPIC_BOARD, 'dag.json': undefined, 'board.html': '<old board>' } });
+  const down = async () => { throw new Error('GitHub is down'); };
+  const { code, err, html } = await refresh(['refresh', '--run-id', RUN], { ...s, runGh: down, fetchSpec: () => WIRE_SPEC });
+  assert.equal(code, 1);
+  assert.match(err.join('\n'), /GitHub is down/);
+  assert.equal(html, '<old board>');
+});
+
+test('refresh with no board.json exits 1 with the init hint, before any fetch', async () => {
+  const s = setUp({ files: { 'board.json': undefined } });
+  let fetched = false;
+  const { code, err, spec } = await refresh(['refresh', '--run-id', RUN], { ...s, fetchSpec: () => { fetched = true; return WIRE_SPEC; } });
+  assert.equal(code, 1);
+  assert.match(err.join('\n'), /board\.json.*init/);
+  assert.equal(fetched, false);
+  assert.equal(spec, null);
+});
+
+test('refresh on a run whose board.json names no epic or label warns, does not fetch, and renders from dag.json', async () => {
+  const s = setUp();
+  let fetched = false;
+  const { code, err, html } = await refresh(['refresh', '--run-id', RUN], { ...s, runGh: fakeGh(TABLE).runGh, fetchSpec: () => { fetched = true; return WIRE_SPEC; } });
+  assert.equal(code, 0, err.join('\n'));
+  assert.equal(fetched, false);
+  assert.ok(err.some((m) => /neither an epic nor a label/.test(m)), err.join('\n'));
+  assert.match(html, /<b>1\/3<\/b><span>shipped<\/span>/);
+});
+
+for (const [name, argv, want] of [
+  ['no run named', ['refresh'], /no run named/],
+  ['a flag with no value', ['refresh', '--run-id'], /--run-id requires a value/],
+  ['--spec, which refresh writes itself', ['refresh', '--run-id', RUN, '--spec', '/x.json'], /--spec/],
+]) {
+  test(`refresh: a usage error exits 64 and fetches and writes nothing: ${name}`, async () => {
+    const s = setUp({ files: { 'board.json': EPIC_BOARD, 'dag.json': undefined } });
+    let fetched = false;
+    const { code, err, html, spec } = await refresh(argv, { ...s, fetchSpec: () => { fetched = true; return WIRE_SPEC; } });
+    assert.equal(code, 64);
+    assert.match(err.join('\n'), want);
+    assert.equal(fetched, false);
+    assert.deepEqual([html, spec], [null, null]);
+  });
+}
+
+test('refresh takes $SHIP_DAG_RUN_ID like render, and the page names the run in its rebuild command', async () => {
+  const s = setUp({ files: { 'board.json': EPIC_BOARD, 'dag.json': undefined } });
+  const { code, html } = await refresh(['refresh'], { ...s, env: { ...s.env, SHIP_DAG_RUN_ID: RUN }, runGh: fakeGh(EPIC_TABLE).runGh, fetchSpec: () => WIRE_SPEC });
+  assert.equal(code, 0);
+  assert.ok(html.includes(`board.mjs refresh --run-id ${RUN}`));
+});
+
+test('the usage line for a bad subcommand lists refresh', async () => {
+  const s = setUp();
+  const { code, err } = await run(['bogus'], s);
+  assert.equal(code, 64);
+  assert.match(err.join('\n'), /init\|render\|refresh/);
+});
+
+test("SKILL.md tells the orchestrator to run `board.mjs refresh --run-id` after each status-changing event", () => {
+  const skill = readFileSync(new URL('../SKILL.md', import.meta.url), 'utf8');
+  const rule = skill.split('\n').find((l) => l.startsWith('**Status board.**'));
+  assert.ok(rule, 'a **Status board.** paragraph');
+  assert.match(rule, /board\.mjs" refresh --run-id "\$RUN_ID"/);
+  for (const event of ['engine report', 'review round', 'fix pass', 'merge', 'ingest', 'sub-epic', 'retro', 'ops ticket', 'out-of-band merge']) {
+    assert.ok(rule.toLowerCase().includes(event), `names the event: ${event}`);
+  }
 });
