@@ -67,13 +67,14 @@ async function answer(query, { runGh, sleep }, extra = []) {
 /**
  * Where `ref`'s issue lives now, for a ref GraphQL has no issue for: GraphQL's `repository{issue}` does not follow a
  * transfer, REST's `repos/<repo>/issues/<n>` does. The new ref, or null when REST has no issue there either (a 404,
- * a 410 for a deleted one) or answers with a pull request or the same ref.
+ * a 410 for a deleted one, a 403 the token cannot read past) or answers with a pull request or the same ref.
  */
 async function transferredTo(ref, { runGh, sleep }) {
   const { repo, number } = asRef(ref);
   let issue;
   try { issue = JSON.parse(await withBackoff(() => runGh(['api', `repos/${repo}/issues/${number}`]), { repo, sleep })); } catch (err) {
-    if ([404, 410].includes(ghFailure(err).status)) return null;
+    const failure = ghFailure(err);
+    if ([403, 404, 410].includes(failure.status) && !failure.rateLimited) return null;
     throw err;
   }
   const home = /\/([^/]+\/[^/]+)\/issues\/(\d+)$/.exec(issue?.html_url ?? '');
@@ -81,12 +82,26 @@ async function transferredTo(ref, { runGh, sleep }) {
   return to && refKey(to) !== refKey(ref) ? to : null;
 }
 
+/** `transferredTo`, asked once per ref and in parallel by its callers, with one warning per transfer found. */
+function transfers(deps, warn) {
+  const asked = new Map();
+  return (ref) => {
+    if (!asked.has(ref)) {
+      asked.set(ref, transferredTo(ref, deps).then((to) => {
+        if (to) warn(`${ref} was transferred to ${to}; shown under ${ref}`);
+        return to;
+      }));
+    }
+    return asked.get(ref);
+  };
+}
+
 /**
  * Look `refs` up, `BATCH` to a query. Returns `[ref, issue]` pairs, keyed on the refs asked for. A ref whose issue
  * was transferred is read at its new home and answered under the old ref, its issue carrying `transferredTo` (the new
- * ref), with a warning naming both. Refs GitHub has no issue for at all throw, named together.
+ * ref); `moved` is `transfers`'. Refs GitHub has no issue for at all throw, named together.
  */
-async function lookup(refs, deps, warn) {
+async function lookup(refs, deps, moved) {
   const found = [];
   const missing = [];
   for (let i = 0; i < refs.length; i += BATCH) {
@@ -99,19 +114,12 @@ async function lookup(refs, deps, warn) {
     const { data } = await answer(query, deps);
     batch.forEach((ref, j) => (data?.[`r${j}`]?.issue ? found.push([ref, data[`r${j}`].issue]) : missing.push(ref)));
   }
-  const moved = [];
-  const gone = [];
-  for (const ref of missing) {
-    const to = await transferredTo(ref, deps);
-    if (to) moved.push([ref, to]); else gone.push(ref);
-  }
+  const homes = await Promise.all(missing.map(async (ref) => [ref, await moved(ref)]));
+  const gone = homes.filter(([, to]) => !to).map(([ref]) => ref);
   if (gone.length) throw new Error(`${gone.join(', ')}: GitHub has no such issue`);
-  if (moved.length) {
-    const there = await lookup(moved.map(([, to]) => to), deps, warn);
-    moved.forEach(([ref, to], k) => {
-      warn(`${ref} was transferred to ${to}; shown under ${ref}`);
-      found.push([ref, { ...there[k][1], transferredTo: to }]);
-    });
+  if (homes.length) {
+    const there = new Map((await lookup(homes.map(([, to]) => to), deps, moved)).map(([to, issue]) => [refKey(to), issue]));
+    for (const [ref, to] of homes) found.push([ref, { ...there.get(refKey(to)), transferredTo: to }]);
   }
   return found;
 }
@@ -129,8 +137,6 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const notes = readNotes(dir) ?? {};
   const refOf = (n) => (typeof n === 'string' ? n : n.ref);
   const nodes = spec.nodes.map(refOf);
-  const edges = spec.edges ?? [];
-  const members = spec.members ?? [...nodes, ...(spec.done ?? [])];
   const retro = readRetros(run.runId, { path: telemetryPath(deps.env) }).flatMap((r) => r.filed ?? []);
   const epic = board.issueSet?.epic;
   if (board.predecessors !== undefined && !Array.isArray(board.predecessors)) throw new Error('board.json predecessors must be an array of owner/repo#N refs');
@@ -138,24 +144,21 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   predecessors.forEach((ref) => asRef(ref));
   // The walk needs nothing the lookups below return, so it runs beside them; a no-op catch keeps an early failure of
   // theirs from leaving its rejection unhandled, and the await below still throws it.
-  const moved = async (ref) => {
-    const to = await transferredTo(ref, deps);
-    if (to) warn(`${ref} was transferred to ${to}; shown under ${ref}`);
-    return to;
-  };
+  const moved = transfers(deps, warn);
   const walk = fetchPredecessors(predecessors, (q) => answer(q, deps, ['-H', 'GraphQL-Features: sub_issues']), { transferredTo: moved });
   walk.catch(() => {});
-  const wanted = [...new Set([...members, ...nodes, ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? []),
-    ...edges.flatMap((e) => [e.blocked, e.blockedBy]), ...(epic ? [epic] : [])])];
+  const wanted = [...new Set([...(spec.members ?? [...nodes, ...(spec.done ?? [])]), ...nodes, ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? []),
+    ...(spec.edges ?? []).flatMap((e) => [e.blocked, e.blockedBy]), ...(epic ? [epic] : [])])];
 
   const info = new Map(); // ref → the issue GitHub returned
   const state = new Map(); // ref → OPEN | CLOSED, also for a blocker no one has looked up
   const native = []; // GitHub's own blockedBy edges
   const known = new Map(); // a transferred issue's new ref → the ref the run knows it by
+  const canon = (ref) => known.get(refKey(ref)) ?? ref; // the one name the board uses for an issue
   let todo = wanted;
   for (let round = 0; todo.length; round += 1) {
     if (round > CLOSURE_ROUNDS) { warn(`closure stopped after ${CLOSURE_ROUNDS} rounds; ${todo.length} open blockers unread`); break; }
-    const found = await lookup(todo, deps, warn);
+    const found = await lookup(todo, deps, moved);
     for (const [ref, issue] of found) {
       info.set(ref, issue);
       state.set(ref, issue.state);
@@ -164,7 +167,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     for (const [ref, issue] of found) {
       for (const b of issue.blockedBy.nodes) {
         const at = formatRef(b.repository.nameWithOwner, b.number);
-        const blocker = known.get(refKey(at)) ?? at; // GitHub names a moved blocker by its new ref
+        const blocker = canon(at); // GitHub names a moved blocker by its new ref
         native.push({ blocked: ref, blockedBy: blocker });
         if (!state.has(blocker)) state.set(blocker, b.state);
       }
@@ -172,9 +175,12 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     todo = [...state].filter(([ref, s]) => s === 'OPEN' && !info.has(ref)).map(([ref]) => ref);
   }
 
+  // The spec may name a transferred issue by its new ref while the waves name it by its old one: the board uses the old.
+  const members = (spec.members ?? [...nodes, ...(spec.done ?? [])]).map(canon);
+  const edges = (spec.edges ?? []).map((e) => ({ blocked: canon(e.blocked), blockedBy: canon(e.blockedBy) }));
   const startedAt = Date.parse(board.startedAt);
   const dropped = (ref) => board.issueSet?.label && info.get(ref).state === 'CLOSED' && Date.parse(info.get(ref).closedAt) < startedAt;
-  const refs = [...new Set([...members.filter((r) => !dropped(r)), ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? [])])];
+  const refs = [...new Set([...members.filter((r) => !dropped(r)), ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? [])].map(canon))];
   const allEdges = [...edges, ...native];
   const family = readFamily(dir, { runId: run.runId, warn, dirs });
   const latest = new Map(waves.flatMap((w) => w.refs.map((ref) => [ref, w]))); // oldest first, so the newest wave wins

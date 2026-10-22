@@ -111,3 +111,10 @@ test('an epic transferred to another repo is read at its new home and kept under
 test('an epic GitHub has nowhere, even through REST, still throws, naming it', async () => {
   await assert.rejects(fetchPredecessors([R(404)], fakeAsk({}).ask, { transferredTo: async () => null }), new RegExp(`^Error: ${R(404)}: GitHub has no such issue$`));
 });
+
+test('an epic named under its old ref and its new one is one group, read once', async () => {
+  const { ask, calls } = fakeAsk({ 'x/y#70': { kids: [R(3)] }, [R(3)]: { kids: [] } });
+  const groups = await fetchPredecessors([R(50), 'x/y#70'], ask, { transferredTo: async (ref) => (ref === R(50) ? 'x/y#70' : null) });
+  assert.deepEqual(groups.map((g) => [g.ref, leafRefs(g)]), [['x/y#70', [R(3)]]]);
+  assert.deepEqual(calls, [[R(50), 'x/y#70']]);
+});

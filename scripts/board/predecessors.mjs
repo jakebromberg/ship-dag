@@ -25,7 +25,8 @@ function alias(item, i) {
  * earlier). Leaves are returned as GitHub has them, open ones included; the model decides what shipped.
  *
  * An epic GraphQL has no issue for is asked of `transferredTo` (its new ref, or null): one transferred to another repo
- * is read there, and its group keeps the ref it was named by, with the new home's url and title.
+ * is read there, and its group keeps the ref it was named by, with the new home's url and title. When the new ref is
+ * one of `epics` too, or another walk reaches it, the old ref's group is left out: the epic is read once.
  *
  * @param {string[]} epics  `owner/repo#N` refs
  * @param {(query:string) => Promise<{data?:object}>} ask
@@ -38,6 +39,7 @@ export async function fetchPredecessors(epics, ask, { transferredTo = async () =
   const groups = epics.map((ref) => ({ ref, url: '', title: '', leaves: [] }));
   const seen = new Set(epics);
   const queue = groups.map((g) => ({ ref: g.ref, group: g, cursor: null, head: true }));
+  const merged = new Set(); // groups whose epic moved to one read under another ref
   while (queue.length) {
     const batch = queue.splice(0, BATCH);
     const { data } = await ask(`query{${batch.map(alias).join(' ')}}`);
@@ -67,8 +69,10 @@ export async function fetchPredecessors(epics, ask, { transferredTo = async () =
     for (const item of lost) {
       const to = await transferredTo(item.ref);
       if (!to) { throw new Error(`${item.ref}: GitHub has no such issue`); }
+      if (seen.has(to)) { merged.add(item.group); continue; }
+      seen.add(to);
       queue.push({ ...item, ref: to });
     }
   }
-  return groups;
+  return groups.filter((g) => !merged.has(g));
 }
