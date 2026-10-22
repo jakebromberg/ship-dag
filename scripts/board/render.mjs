@@ -55,6 +55,17 @@ const chip = (status, stage) => {
   return html`<span class="chip c-${wears}">${stage || CHIP[status] || status}</span>`;
 };
 
+/**
+ * The line that names a remote ticket's host and how fresh the board's copy of its engine state is (`remoteSource`,
+ * remote.mjs), or '' for a local ticket. An unreachable host's stage is unknown, so the ticket shows as queued.
+ */
+export const hostLine = (remote) => {
+  if (!remote) return '';
+  const last = remote.readAt ? formatPacific(remote.readAt) : '';
+  const read = remote.unreachable ? `host unreachable; stage unknown${last && ` (last read ${last})`}` : last ? `read ${last}` : 'not read yet';
+  return html`<div class="host">on ${remote.host} · ${read}</div>`;
+};
+
 /** `1 ticket`, `2 tickets`. */
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
@@ -71,7 +82,8 @@ export function waveSpan(labels) {
  * @param {{url:string,label:string,title:string}|null} v.scope  link to the epic / label / set the run ships
  * @param {string} v.now  ISO instant the page was built
  * @param {Array<{ref:string,title:string,url:string,status:string,stage?:string,note?:string,
- *   prs:Array<{number:number,url:string,state:'open'|'merged'|'closed'}>,closedAt?:string,shippedWave?:string}>} v.tickets
+ *   prs:Array<{number:number,url:string,state:'open'|'merged'|'closed'}>,closedAt?:string,shippedWave?:string,
+ *   remote?:ReturnType<import('./remote.mjs').remoteSource>}>} v.tickets  `remote`: where a remote host's ticket was read (`hostLine`)
  * @param {ReturnType<import('./model.mjs').buildGraph>} v.graph  over the open tickets
  * @param {{id:string, refs:Set<string>}|null} v.current  the wave building now
  * @param {Map<string,{label:string|null,now:boolean}>} v.waves  projectWaves() result
@@ -120,7 +132,7 @@ export function renderBoard(v) {
   const defaultSubtitle = v.current ? `wave ${v.current.id}` : '';
   h.push(html`<h2>In flight <small>${notes.wave || defaultSubtitle}</small></h2>`);
   h.push(flight.length
-    ? html`<div class="cards">${flight.map((t) => html`<div class="card"><div class="top">${link(t.ref)}${chip('flight', t.stage)}</div><div class="t">${t.title}</div><div>${list(prLinks(t, ['open', 'merged']), ' ')}</div>${t.note && html`<div class="note">${t.note}</div>`}</div>`)}</div>`
+    ? html`<div class="cards">${flight.map((t) => html`<div class="card"><div class="top">${link(t.ref)}${chip('flight', t.stage)}</div>${hostLine(t.remote)}<div class="t">${t.title}</div><div>${list(prLinks(t, ['open', 'merged']), ' ')}</div>${t.note && html`<div class="note">${t.note}</div>`}</div>`)}</div>`
     : html`<p class="sub">No PR open right now.</p>`);
   const just = v.current ? v.tickets.filter((t) => t.status === 'shipped' && v.current.refs.has(t.ref)) : [];
   if (just.length) {
@@ -205,7 +217,7 @@ function roadAhead(v, byRef, link, gates) {
       const st = status(r);
       const after = [...g.direct.get(r)].sort((a, b) => g.stepOf.get(a) - g.stepOf.get(b) || compareRefs(a, b)).map((p) => v.shortRef(p)).join(', ');
       const desc = g.descendants.get(r);
-      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${r}"><div class="top">${link(r)}${chip(st, t.stage)}</div><div class="t" title="${t.title}">${t.title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${desc.size ? `unblocks ${desc.size}` : 'nothing waits on it'}</div></div>`);
+      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${r}"><div class="top">${link(r)}${chip(st, t.stage)}</div>${hostLine(t.remote)}<div class="t" title="${t.title}">${t.title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${desc.size ? `unblocks ${desc.size}` : 'nothing waits on it'}</div></div>`);
     }
     h.push('</div></div>');
   });

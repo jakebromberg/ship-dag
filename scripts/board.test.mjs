@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join, resolve } from 'node:path';
 import { main } from './board.mjs';
 import { ghExecError, graphqlAnswer, restFailure } from './lib/gh-fixture.mjs';
-import { RUN, T0, engineConfig, scopedEngineFixture, stamped } from './lib/engine-fixture.mjs';
+import { RUN, T0, T1, engineConfig, scopedEngineFixture, stamped } from './lib/engine-fixture.mjs';
 import { parseRef } from './lib/ref.mjs';
 import { artifactStem } from './lib/failure.mjs';
 import { appendRecord } from './telemetry.mjs';
@@ -315,6 +315,45 @@ test('a failed ticket with an open PR and no metadata.prNumber, whose latest rou
   assert.match(html, /<span class="chip c-flight">Fixing<\/span>/);
   assert.ok(!html.includes('Stalled'));
 });
+
+/** The R(n) node of the road ahead: from its `data-ref` to the next node. */
+const nodeOf = (html, ref) => html.slice(html.indexOf(`data-ref="${ref}"`)).split('class="node')[0];
+
+// Wave 2 runs R(1) here and R(2) on host `mini`, whose host-run copies its state/ into the letter dir `-w2z`.
+const READ_AT = '2026-10-08T20:25:00.000Z';
+for (const [name, letter, want] of [
+  ['a remote row the host has started renders as Building, naming its host and when it was read',
+    { mirror: { host: 'mini', readAt: READ_AT }, status: 'running' }, { chip: />Building</, host: /on mini · read Oct 8, 1:25 PM PDT/ }],
+  ['a remote row the host has not started stays queued, naming its host',
+    { mirror: { host: 'mini', readAt: READ_AT } }, { chip: /c-ready">Ready</, host: /on mini · read Oct 8, 1:25 PM PDT/ }],
+  ['a remote row before the first copy stays queued, naming its host',
+    {}, { chip: /c-ready">Ready</, host: /on mini · not read yet/ }],
+  ['a remote row on an unreachable host stays queued with the note, whatever its last copy said',
+    { mirror: { host: 'mini', readAt: READ_AT, unreachableAt: '2026-10-08T20:26:00.000Z' }, status: 'running' }, { chip: /c-ready">Ready</, host: /on mini · host unreachable; stage unknown \(last read Oct 8, 1:25 PM PDT\)/ }],
+]) {
+  test(name, async () => {
+    const wave = `ship-dag/engine/${RUN}-w2`;
+    const s = setUp({
+      files: { 'dag.json': { ...SPEC, edges: [] } },
+      siblings: {
+        [wave]: { configs: {
+          'hosts/config.local.json': stamped(T1, engineConfig([R(1)], { configDir: `/x/${RUN}-w2/state` })),
+          'hosts/config.mini.json': stamped(T1, engineConfig([R(2)], { configDir: `/h/${RUN}-w2/state` })),
+        } },
+        [`${wave}z`]: { files: {
+          ...(letter.mirror && { 'host-mirror.json': letter.mirror }),
+          ...(letter.status && { [`state/status/issue-${artifactStem(R(2))}.status`]: letter.status }),
+        } },
+      },
+    });
+    const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh(TABLE).runGh });
+    assert.equal(code, 0, err.join('\n'));
+    const node = nodeOf(html, R(2));
+    assert.match(node, want.chip);
+    assert.match(node, want.host);
+    assert.doesNotMatch(nodeOf(html, R(1)), /on mini/, 'a local row names no host');
+  });
+}
 
 test('a retro-filed ref and an extraRefs ref join the board', async () => {
   const s = setUp({ files: { 'board-notes.json': { extraRefs: [R(4)] } } });
