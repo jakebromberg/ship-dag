@@ -155,12 +155,9 @@ const diedAtOf = (s, rec, t) => s.failureReason === 'engine-died' && s.issue ===
  * the row `engine-died` with `implStatus` error (a stamped row that kept a PR is gated, and derives no death), the death is that report's own record, which its ingest derives with its id and the dead run's sessions (or, before
  * #286, derived as a model error that `legacyDeath` names), whichever report is ingested first; until it is, audit names
  * that report's row. Else it is a record in `records` of the same row dated by the same `at` (a later report re-lists every
- * marker), or the run that died's own `engine-died` record. Another config keeps its own markers.
+ * marker). Another config keeps its own markers.
  */
-const deathHeld = (records, rec, prevAt, runs) => {
-  const died = diedBefore(runs, Date.parse(rec.ts), prevAt);
-  return Boolean(died?.stamped) || records.some((s) => diedAtOf(s, rec, Date.parse(rec.ts)) || (died && diedAtOf(s, rec, died.ts)));
-};
+const deathHeld = (records, rec, prevAt, runs) => Boolean(diedBefore(runs, Date.parse(rec.ts), prevAt)?.stamped) || records.some((s) => diedAtOf(s, rec, Date.parse(rec.ts)));
 /**
  * Whether `records` hold the marker death of `rec`, an `engine-died` death of the report `runs[0]`: a later report ingested
  * first listed it as a marker, dated by its `at`. Only a log appended before `deathHeld` deferred to the stamped report holds one;
@@ -176,7 +173,7 @@ const heldByMarker = (records, rec, runs) => rec.failureReason === 'engine-died'
  */
 const runsOf = (report, reportId, earlier, later, ref) => [{ ...report, reportId }, ...earlier, ...later].filter((r) => r?.configName === report?.configName).map((r) => {
   const row = (Array.isArray(r.issues) ? r.issues : []).find((i) => i?.ref === ref);
-  return { id: r.reportId, start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt), stamped: row?.failureReason === 'engine-died' && implStatusOf(row, isPr(row.prNumber) ? row.prNumber : null) === 'error', markers: engineDeathsOf(row) };
+  return { id: r.reportId, start: Date.parse(r.startedAt || r.finishedAt), ts: Date.parse(r.finishedAt || r.startedAt), stamped: TERMINAL.has(row?.status) && row.status !== 'succeeded' && row.failureReason === 'engine-died' && implStatusOf(row, isPr(row.prNumber) ? row.prNumber : null) === 'error', markers: engineDeathsOf(row) };
 });
 /** Whether a row with `implStatus` carries its stop as the record's `failureReason`: a death, or a launch stop that never started. */
 const diesWith = (row, implStatus) => implStatus === 'error' || row.status === 'pending';
@@ -213,7 +210,11 @@ export function rowCovered(row, { id, startedAt, report }, records, runId, diges
   // The row's own death as ingest derives it with no --outcomes, held when a marker death of it is logged.
   const ownPr = isPr(row.prNumber) ? row.prNumber : null;
   const ownDeath = { runId, repo, issue: number, failureReason: stopReason && diesWith(row, implStatusOf(row, ownPr)) ? stopReason : null };
-  if (!carried && ownDeath.failureReason && heldByMarker(records, ownDeath, runsOf(report, id, earlier, later, row.ref))) return true;
+  const runs = runsOf(report, id, earlier, later, row.ref);
+  // Each marker death is held as ingest holds it (`deathHeld`); a terminal row with one that is not is uncovered, a carried-over row too.
+  const ats = TERMINAL.has(row.status) ? engineDeathsOf(row) : [];
+  if (ats.some((ts, i) => !deathHeld(records, { runId, repo, issue: number, ts }, ats[i - 1], runs))) return false;
+  if (!carried && ownDeath.failureReason && heldByMarker(records, ownDeath, runs)) return true;
   const markerDeath = markerDeathOf(row);
   return records.some((r) => {
     if (markerDeath(r)) return false;
