@@ -495,8 +495,7 @@ test('the unverified-repo warning names both remedies: the repo declaring script
 
 // ---- hosts: --by-host splits the wave into one config per host ---------
 
-// sdHome is not under reposDir, so a host path built from the wrong field fails.
-const BOX = { box: testHost('/Users/jake', { toolchains: ['node', 'python'], sdHome: '/Users/jake/sd' }) };
+const BOX = { box: testHost('/Users/jake', { toolchains: ['node', 'python'] }) };
 const NODE_REPO = 'o/web';
 const XCODE_REPO = 'o/ios';
 const OPAQUE_REPO = 'o/opaque';
