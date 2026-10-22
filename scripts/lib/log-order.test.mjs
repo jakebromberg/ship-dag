@@ -1,7 +1,7 @@
 // Tests for the telemetry log's ordering helpers. Run: node --test "scripts/**/*.test.mjs"
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { byTs, latestByRef } from './log-order.mjs';
+import { byTs, latestByRef, outcomeOf } from './log-order.mjs';
 
 describe('byTs', () => {
   const [A, B, C] = ['2026-10-01T00:00:00Z', '2026-10-02T00:00:00Z', '2026-10-03T00:00:00Z'];
@@ -50,4 +50,22 @@ describe('latestByRef', () => {
     const good = r('o/r', 1, '2026-10-01T00:00:00Z');
     assert.equal(latestByRef([good, r('o/r', 1, 'garbage')]).get('o/r#1'), good);
   });
+});
+
+describe('outcomeOf', () => {
+  const cases = [
+    ['merged', { finalState: 'merged' }, 'merged'],
+    ['merged beats a stale engine-died reason', { finalState: 'merged', failureReason: 'engine-died', implStatus: 'error' }, 'merged'],
+    ['an unmarked deferral', { finalState: 'deferred', failureReason: null, implStatus: 'ok' }, 'maintainer-deferred'],
+    ['an engine death', { finalState: 'deferred', failureReason: 'engine-died', implStatus: 'error' }, 'engine-died'],
+    ['a point-F deferral of an engine death', { finalState: 'deferred', failureReason: 'engine-died', implStatus: null }, 'infra-stopped'],
+    ['a lease-wait stop', { finalState: 'deferred', failureReason: 'lease-wait', implStatus: 'error' }, 'infra-stopped'],
+    ['a memory-critical stop', { finalState: 'deferred', failureReason: 'memory-critical' }, 'infra-stopped'],
+    ['a rate-limited stop', { finalState: 'deferred', failureReason: 'rate-limited' }, 'infra-stopped'],
+    ['a dependency skip', { finalState: 'deferred', skipReason: 'dependency' }, 'skipped'],
+    ['a dependency skip marked blocked-hitl by --outcomes', { finalState: 'blocked-hitl', skipReason: 'dependency' }, 'skipped'],
+    ['a model error', { finalState: 'failed', failureReason: null, implStatus: 'error' }, 'failed'],
+    ['a blocked-hitl ref', { finalState: 'blocked-hitl' }, 'failed'],
+  ];
+  for (const [name, record, outcome] of cases) test(`${name} is ${outcome}`, () => assert.equal(outcomeOf(record), outcome));
 });

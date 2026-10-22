@@ -85,7 +85,7 @@ import { formatRef, groupByRepo, isPr, issueKey, parseRef, refKey, repoSpellings
 import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
-import { latestByRef } from './lib/log-order.mjs';
+import { latestByRef, outcomeOf } from './lib/log-order.mjs';
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
@@ -314,7 +314,7 @@ export function report(records, { minSample = 20 } = {}) {
   const latest = latestByRef(records);
   const attempts = groupBy(issueKey, reached);
   const mergedKeys = new Set(issues.filter((r) => r.finalState === 'merged').map(issueKey));
-  const unresolved = [...latest.values()].filter((r) => r.finalState !== 'merged' && (r.finalState !== 'deferred' || INFRA_REASONS.has(r.failureReason) || r.skipReason));
+  const unresolved = [...latest.values()].filter((r) => !['merged', 'maintainer-deferred'].includes(outcomeOf(r)));
   const issueOutcomes = {
     distinct: latest.size,
     merged: mergedKeys.size,
@@ -652,9 +652,8 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
   // nothing followed was never resumed into the log. The death is its deferral with implStatus "error"; an outcome
   // that keeps the reason (a point-F hold) is not. A ref deferred at point F stays named: its deferral is the death.
   const last = latestByRef(logged);
-  const died = (r) => r.failureReason === 'engine-died' && r.implStatus === 'error' && r.finalState === 'deferred';
   const spelled = repoSpellings(records);
-  out.engineDied = [...last.values()].filter(died).map((r) => formatRef(spelled.get(refKey(r.repo)), r.issue));
+  out.engineDied = [...last.values()].filter((r) => outcomeOf(r) === 'engine-died').map((r) => formatRef(spelled.get(refKey(r.repo)), r.issue));
   return out;
 }
 
