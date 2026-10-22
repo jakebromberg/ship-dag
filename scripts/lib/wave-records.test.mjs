@@ -8,6 +8,8 @@ import { reviewRoundFiles } from './review-rounds.mjs';
 import { appendWave, findWaveContext } from './wave-sidecar.mjs';
 import { DEFAULT_BLOCK_ON } from '../review-gate.mjs';
 import { load as loadTuning } from './tuning.mjs';
+import { outcomeOf } from './log-order.mjs';
+import { normalizeRecord } from '../telemetry.mjs';
 
 const REF = 'WXYC/dj-site#1';
 const STEM = 'WXYC%2Fdj-site%231';
@@ -669,6 +671,67 @@ for (const [name, kind, go] of [
     assert.equal(deriveWaveRecords(at([row]), { runId: RUN, issues: [] }, {}, {}, {}, { reportId: 'w1', warn: () => {} }).records.length, 0);
     const { records } = deriveWaveRecords(at([row]), { runId: RUN, issues: [] }, {}, {}, { 'a/b#1': { finalState: 'deferred' } }, { reportId: 'w1', warn: () => {} });
     assert.deepEqual(records.map((r) => [r.finalState, r.failureReason]), [['deferred', 'engine-died']]);
+  });
+
+  // engineDeaths: claude-orchestrator#315's `[{at}]` on a report row, oldest first, omitted when empty. The store is never
+  // cleared, so a later report re-lists every death. The second report's `ran` is true throughout: a row relaunched.
+  const D1 = '2026-10-08T17:00:00.000Z';
+  const D2 = '2026-10-08T18:00:00.000Z';
+  const died = (...ats) => ({ engineDeaths: ats.map((a) => ({ at: a })) });
+  const failedRow = { ref: 'a/b#1', status: 'failed', prNumber: null };
+  const stamped = { ...failedRow, failureReason: 'engine-died' };
+  const wave = (rows, existing = [], reportId = 'w1', warn = () => {}) => deriveWaveRecords(at(rows), { runId: RUN, issues: [] }, {}, {}, {}, { existing, reportId, warn }).records;
+  const shape = (records) => records.map((r) => [r.ts, r.implStatus, r.finalState, r.failureReason ?? null, r.pr ?? null]);
+  const DEATH = (ts) => [ts, 'error', 'deferred', 'engine-died', null];
+  const REPORT_TS = '2026-10-08T19:30:00Z';
+  for (const [name, first, second, want] of [
+    ['no engineDeaths: the outcome alone, as before', [merged], null, [[REPORT_TS, 'pushed', 'merged', null, 11]]],
+    ['an empty engineDeaths: the outcome alone', [{ ...merged, engineDeaths: [] }], null, [[REPORT_TS, 'pushed', 'merged', null, 11]]],
+    ['one death then success: the death, then the merge as its continuation', [{ ...merged, ...died(D1) }], null, [DEATH(D1), [REPORT_TS, 'pushed', 'merged', null, 11]]],
+    ['two deaths: two death records in order, then the continuation', [{ ...merged, ...died(D1, D2) }], null, [DEATH(D1), DEATH(D2), [REPORT_TS, 'pushed', 'merged', null, 11]]],
+    ['a death then a model failure: the failure stays a model error', [{ ...failedRow, ...died(D1) }], null, [DEATH(D1), [REPORT_TS, 'error', 'error', null, null]]],
+    ['a later report that re-lists the death adds only the continuation', [{ ...merged, ...died(D1) }], [{ ...failedRow, ...died(D1) }], [[REPORT_TS, 'error', 'error', null, null]]],
+    ['a later report that re-lists one death and adds another records the new one', [{ ...merged, ...died(D1) }], [{ ...failedRow, ...died(D1, D2) }], [DEATH(D2), [REPORT_TS, 'error', 'error', null, null]]],
+    ['a death then an engine skip: the death carries no skipReason', [{ ref: 'a/b#1', status: 'skipped', prNumber: null, ...died(D1) }], null, [DEATH(D1), [REPORT_TS, null, 'deferred', null, null]]],
+    ['a hand-stamped engine-died row with its engineDeaths entry is one death record', [{ ...stamped, ...died(D1) }], null, [DEATH(D1)]],
+    ['a hand-stamped row with two engineDeaths entries is two', [{ ...stamped, ...died(D1, D2) }], null, [DEATH(D1), DEATH(D2)]],
+  ]) {
+    test(`engineDeaths: ${name}`, () => {
+      const logged = second ? wave(first) : [];
+      const records = wave(second ?? first, logged, second ? 'w2' : 'w1');
+      assert.deepEqual(shape(records), want);
+      const deaths = records.filter((r) => r.failureReason === 'engine-died');
+      for (const rec of records) assert.doesNotThrow(() => normalizeRecord(rec, () => REPORT_TS));
+      for (const rec of deaths) assert.deepEqual([outcomeOf(rec), rec.findings, 'skipReason' in rec], ['engine-died', [], false]);
+    });
+  }
+
+  // The same report ingested again once its row lists the death: the hand-stamped record, or a legacy model error, already holds it.
+  for (const [name, logged] of [
+    ['a hand-stamped death', wave([stamped])],
+    ['a legacy model error', wave([stamped]).map((r) => ({ ...r, failureReason: null, finalState: 'error' }))],
+  ]) {
+    test(`engineDeaths: ${name} already logged for the same report covers the death its entry lists`, () => {
+      assert.deepEqual(shape(wave([{ ...stamped, ...died(D1) }], logged)), []);
+    });
+  }
+
+  test('engineDeaths: a hand-stamped record covers only the last death, and only for a stamped row', () => {
+    const logged = wave([stamped]);
+    assert.deepEqual(shape(wave([{ ...stamped, ...died(D1, D2) }], logged)), [DEATH(D1)]);
+    assert.deepEqual(shape(wave([{ ...failedRow, ...died(D1) }], logged)), [DEATH(D1), [REPORT_TS, 'error', 'error', null, null]]);
+  });
+
+  test('engineDeaths: a death derived earlier from the same report does not cover a later one', () => {
+    const logged = wave([{ ...stamped, ...died(D1) }]);
+    assert.deepEqual(shape(wave([{ ...stamped, ...died(D1, D2) }], logged)), [DEATH(D2)]);
+  });
+
+  test('engineDeaths: a death entry without a readable at is warned about and skipped', () => {
+    const warned = [];
+    const records = wave([{ ...merged, engineDeaths: [{ at: 'soon' }, {}, { at: D1 }] }], [], 'w1', (m) => warned.push(m));
+    assert.deepEqual(shape(records), [DEATH(D1), [REPORT_TS, 'pushed', 'merged', null, 11]]);
+    assert.equal(warned.length, 2);
   });
 
   test('ran: a derived record carries the row\'s ran, and a row with none carries none', () => {
