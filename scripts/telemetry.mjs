@@ -640,7 +640,8 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
       // Quiet: a digest outside the window, or unreadable, is ingest's to warn about.
       const { digests } = waveWindow(dir, read, family, ownership, () => {});
       const terminal = read.report.issues.filter((r) => TERMINAL.has(r?.status));
-      const uncovered = terminal.filter((r) => !rowCovered(r, read, logged, runId, digests[r.ref], ownership.earlierOf(read)));
+      const [earlier, later] = [ownership.earlierOf(read), ownership.laterOf(read)];
+      const uncovered = terminal.filter((r) => !rowCovered(r, read, logged, runId, digests[r.ref], earlier, later));
       out.terminalRows += terminal.length;
       out.prRows.total += terminal.filter((r) => isPr(r.prNumber)).length;
       out.prRows.uncovered += uncovered.filter((r) => isPr(r.prNumber)).length;
