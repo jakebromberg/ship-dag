@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // host-run.mjs — run a wave's engine on a remote host and collect its reports and logs into the local stateDir.
 //
-// Usage: node host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--preflight] [--collect-only] [--worktree <path> --base <branch>]
+// Usage: node host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan | --preflight | --collect-only | --worktree <path> --base <branch>]
 //
 // Starts the engine detached over ssh (a detached engine outlives the ssh session; an attached one dies with it) and
 // records its pid in <host stateDir>/host-run.pid, polls once a minute until the engine has exited or its report has
@@ -30,7 +30,7 @@ import { configStateDir } from './lib/host-prepare.mjs';
 import { DETACHED, LOG_CHUNK, PID_FILE, RSYNC_SAFE_PATH, engineCommand, launchScript, outcome, parsePoll, parseReports, pollDecision, pollScript, preflightCommand, prefixLines, reportsScript, rsyncArgs, parseWorktree, worktreeScript } from './lib/host-run.mjs';
 import { isMain } from './lib/is-main.mjs';
 
-const USAGE = 'usage: host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan] [--preflight] [--collect-only] [--worktree <path> --base <branch>]';
+const USAGE = 'usage: host-run.mjs <host> <config.<host>.json> --state <local stateDir> [--parallel K] [--max-wait <minutes>] [--plan | --preflight | --collect-only | --worktree <path> --base <branch>]';
 const MINUTE = 60_000;
 const POLL_MS = MINUTE;
 const CALL_MS = 2 * MINUTE;
@@ -177,17 +177,20 @@ export async function main(argv, { hosts, loadHosts: load = loadHosts, run = rea
   if (!stateDir) throw new UsageError(`${configPath}: configDir and worktreeDir are not <dir>/state and a path under <dir>; pass the config emit-config --by-host wrote for ${name}`);
   const [worktree, base] = asUsage(() => [stringOption(argv, '--worktree'), stringOption(argv, '--base')]);
   if ((worktree === undefined) !== (base === undefined)) throw new UsageError(`--worktree and --base go together; ${USAGE}`);
+  const modes = ['plan', 'preflight', 'collect-only', 'worktree'].filter((m) => (m === 'worktree' ? worktree !== undefined : argv.includes(`--${m}`)));
+  if (modes.length > 1) throw new UsageError(`${modes.map((m) => `--${m}`).join(' and ')} are alternatives; give one. ${USAGE}`);
+  const mode = modes[0] ?? 'run';
   // Before hostRun: nothing is launched, so a failed read exits 1 through runCli and never routes to --collect-only.
-  if (worktree !== undefined) return readWorktree(host, worktree, base, run, out, err);
-  const preflight = argv.includes('--preflight');
-  const plan = argv.includes('--plan');
-  const readOnly = plan || preflight;
+  if (mode === 'worktree') return readWorktree(host, worktree, base, run, out, err);
+  const preflight = mode === 'preflight';
+  const plan = mode === 'plan';
+  const readOnly = ['plan', 'preflight', 'worktree'].includes(mode);
   const logPath = `${state}/host-${name}.log`;
   if (!readOnly) mkdirSync(state, { recursive: true });
   // Absolute paths, so the printed command works from any directory, and the same --max-wait.
   const here = `node ${shQuote(fileURLToPath(import.meta.url))} ${shQuote(name)} ${shQuote(resolve(configPath))} --state ${shQuote(resolve(state))} --max-wait ${maxWait}`;
   return hostRun({
-    name, host, stateDir, localState: state, parallel, oneAtATime: configToolchains(config, profiles).includes('xcode'), plan, preflight, collectOnly: argv.includes('--collect-only'), maxWaitMs: maxWait * MINUTE, run, sleep, now,
+    name, host, stateDir, localState: state, parallel, oneAtATime: configToolchains(config, profiles).includes('xcode'), plan, preflight, collectOnly: mode === 'collect-only', maxWaitMs: maxWait * MINUTE, run, sleep, now,
     // The host log keeps a run's and every resumed --collect-only's output; a --plan or --preflight is not a run and leaves it alone.
     emit: (chunk) => { out(preflight ? String(chunk) : prefixLines(name, String(chunk))); if (!readOnly) appendFileSync(logPath, chunk); },
     log: (m) => err(`${m}\n`),
