@@ -7,8 +7,11 @@ const tsOf = (r) => { const t = Date.parse(r.ts); return Number.isNaN(t) ? -Infi
 /** Compare records oldest first by `ts`. Transitive: a record with no parseable `ts` sorts first, and equal times compare 0, so a stable sort keeps log order. Newest first is `(a, b) => byTs(b, a)`. */
 export const byTs = (a, b) => (tsOf(a) === tsOf(b) ? 0 : tsOf(a) < tsOf(b) ? -1 : 1);
 
-/** A `Map` from `issueKey` to that issue's latest record by `ts` (a later ingest can append an earlier event). Retro records have no issue and are left out. */
-export const latestByRef = (records) => new Map(records.filter((r) => r.kind !== 'retro').sort(byTs).map((r) => [issueKey(r), r]));
+/** Whether `r` is an issue record: `kind: "issue"`, or no `kind` (written before kinds). The one filter every per-issue reader of the log applies; `retro` and `measure` records are not issue records. */
+export const isIssueRecord = (r) => (r.kind ?? 'issue') === 'issue';
+
+/** A `Map` from `issueKey` to that issue's latest record by `ts` (a later ingest can append an earlier event). Records that are not issue records have no issue and are left out. */
+export const latestByRef = (records) => new Map(records.filter(isIssueRecord).sort(byTs).map((r) => [issueKey(r), r]));
 
 /**
  * What a ref's latest record means, as one of `merged`, `skipped` (an engine skip of a dependent, `skipReason: SKIP_REASON_DEPENDENCY`, even when `--outcomes` marked it blocked-hitl),
