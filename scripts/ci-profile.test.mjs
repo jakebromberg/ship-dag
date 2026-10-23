@@ -62,3 +62,13 @@ test("prints a registry entry's host, so a spec's repos map carries it to emit-c
   const repos = await reposMap([REGISTERED], { profiles: { [REGISTERED]: { commands: ['npm test'], host: 'box' } } });
   assert.deepEqual(repos[REGISTERED], { baseBranch: 'main', commands: ['npm test'], source: 'registry', host: 'box' });
 });
+
+test('the Backend-Service profile runs typecheck:tests and the dummy-env audit-coverage check right after typecheck, as test.yml does', async () => {
+  const { 'WXYC/Backend-Service': { commands } } = await reposMap(['WXYC/Backend-Service']);
+  const at = commands.indexOf('npm run typecheck');
+  assert.notEqual(at, -1);
+  assert.deepEqual(commands.slice(at + 1, at + 3), [
+    'npm run typecheck:tests',
+    'NODE_ENV=test DB_HOST=localhost DB_NAME=dummy DB_USERNAME=dummy DB_PASSWORD=dummy npm run check:audit-coverage:ci',
+  ]);
+});

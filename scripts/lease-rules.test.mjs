@@ -77,6 +77,7 @@ const LIGHT = [
   /^scripts\/check-(cross-cache-identity-flags|precondition-guards)\.sh$/,
   /^node scripts\/check-(legacy-entry-id-writes|lml-caller-classification|auth-tables-doc|sql-claim-docs)\.mjs$/,
   /^node scripts\/check-bulk-update-analyze\.mjs --strict$/,
+  /^NODE_ENV=test DB_HOST=localhost DB_NAME=dummy DB_USERNAME=dummy DB_PASSWORD=dummy npm run check:audit-coverage:ci$/, // static scan of source, after the typecheck builds its dists
   // code-audit-pipeline's shell self-tests of its queries and extractors: small
   // fixtures, but outside the matcher's `scripts/test*.sh` pattern.
   /^pipeline\/(queries\/)?_tests\/test_\w+\.sh$/,
