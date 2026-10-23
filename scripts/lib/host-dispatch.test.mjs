@@ -141,14 +141,23 @@ test('SKILL.md step 4b exit-route table agrees with routeHostExit, row by row', 
   }
 });
 
-// Every code step 4b can receive has a row. host-sync-claude's EXIT.pending (10) is returned only under --dry-run, and
-// step 4b always runs the real sync, so it never sees 10 and the table has no row for it.
+// Every code step 4b can receive has a row: each script's expected codes are all of EXIT less its named exclusions, so a
+// new EXIT code fails here until it gets a table row or an exclusion with a reason.
+const NOT_RETURNED = {
+  // Only `host-sync-claude --dry-run` returns pending, and step 4b always runs the real sync.
+  pending: ['host-sync-claude', 'host-prepare', 'host-run'],
+  // Only host-run waits for an engine or launches one that a drop can follow.
+  waiting: ['host-sync-claude', 'host-prepare'],
+  dropped: ['host-sync-claude', 'host-prepare'],
+};
+
 test('SKILL.md step 4b exit-route table has a row for every code each script returns to it', () => {
-  const returned = {
-    'host-sync-claude': [EXIT.ok, EXIT.failure, EXIT.usage, EXIT.unreachable],
-    'host-prepare': [EXIT.ok, EXIT.failure, EXIT.usage, EXIT.unreachable],
-    'host-run': [EXIT.ok, EXIT.failure, EXIT.usage, EXIT.unreachable, EXIT.waiting, EXIT.dropped],
-  };
+  const returned = Object.fromEntries(
+    ['host-sync-claude', 'host-prepare', 'host-run'].map((s) => [
+      s,
+      Object.entries(EXIT).filter(([k]) => !NOT_RETURNED[k]?.includes(s)).map(([, c]) => c),
+    ]),
+  );
   const have = exitRouteRows().map((r) => `${r.script} ${r.code}`).sort();
   const want = Object.entries(returned).flatMap(([s, codes]) => codes.map((c) => `${s} ${c}`)).sort();
   assert.deepEqual(have, want);
