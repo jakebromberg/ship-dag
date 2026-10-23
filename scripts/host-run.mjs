@@ -169,24 +169,25 @@ export async function main(argv, { hosts, loadHosts: load = loadHosts, run = rea
   if (!name || !configPath || extra.length || !state) throw new UsageError(USAGE);
   const number = (flag) => (stringOption(argv, `--${flag}`) === undefined ? undefined : parseNumberOption(flag, stringOption(argv, `--${flag}`), { min: 1 }));
   const [parallel, maxWait = MAX_WAIT_MINUTES] = asUsage(() => [number('parallel'), number('max-wait')]);
+  // Usage errors first: they exit 2 whatever hosts.json and the config hold.
+  const [worktree, base] = asUsage(() => [stringOption(argv, '--worktree'), stringOption(argv, '--base')]);
+  if ((worktree === undefined) !== (base === undefined)) throw new UsageError(`--worktree and --base go together; ${USAGE}`);
+  const modes = ['plan', 'preflight', 'collect-only', 'worktree'].filter((m) => (m === 'worktree' ? worktree !== undefined : argv.includes(`--${m}`)));
+  if (modes.length > 1) throw new UsageError(`${modes.map((m) => `--${m}`).join(' and ')} are alternatives; give one. ${USAGE}`);
+  const mode = modes[0] ?? 'run';
   const registry = hosts ?? load();
   if (!Object.hasOwn(registry, name)) throw new UsageError(`unknown host ${JSON.stringify(name)}; known: ${Object.keys(registry).join(', ') || 'none'}`);
   const host = registry[name];
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const stateDir = configStateDir(config);
   if (!stateDir) throw new UsageError(`${configPath}: configDir and worktreeDir are not <dir>/state and a path under <dir>; pass the config emit-config --by-host wrote for ${name}`);
-  const [worktree, base] = asUsage(() => [stringOption(argv, '--worktree'), stringOption(argv, '--base')]);
-  if ((worktree === undefined) !== (base === undefined)) throw new UsageError(`--worktree and --base go together; ${USAGE}`);
-  const modes = ['plan', 'preflight', 'collect-only', 'worktree'].filter((m) => (m === 'worktree' ? worktree !== undefined : argv.includes(`--${m}`)));
-  if (modes.length > 1) throw new UsageError(`${modes.map((m) => `--${m}`).join(' and ')} are alternatives; give one. ${USAGE}`);
-  const mode = modes[0] ?? 'run';
-  // Before hostRun: nothing is launched, so a failed read exits 1 through runCli and never routes to --collect-only.
-  if (mode === 'worktree') return readWorktree(host, worktree, base, run, out, err);
   const preflight = mode === 'preflight';
   const plan = mode === 'plan';
   const readOnly = ['plan', 'preflight', 'worktree'].includes(mode);
   const logPath = `${state}/host-${name}.log`;
   if (!readOnly) mkdirSync(state, { recursive: true });
+  // Before hostRun: nothing is launched, so a failed read exits 1 through runCli and never routes to --collect-only.
+  if (mode === 'worktree') return readWorktree(host, worktree, base, run, out, err);
   // Absolute paths, so the printed command works from any directory, and the same --max-wait.
   const here = `node ${shQuote(fileURLToPath(import.meta.url))} ${shQuote(name)} ${shQuote(resolve(configPath))} --state ${shQuote(resolve(state))} --max-wait ${maxWait}`;
   return hostRun({

@@ -447,17 +447,25 @@ test('the CLI exits 1, never 255 or a --collect-only resume, when the worktree r
   assert.equal(existsSync(join(dir, 'l')), false);
 });
 
-// The four modes are alternatives: any two together exit 2 naming both, before an ssh call (the runner throws if called).
+// The four modes are alternatives: any two together exit 2 naming both, before a config read or an ssh call (the config is missing and the runner throws if called).
 const MODE_FLAGS = [['--plan'], ['--preflight'], ['--collect-only'], WORKTREE];
 for (const [i, a] of MODE_FLAGS.entries()) {
   for (const b of MODE_FLAGS.slice(i + 1)) {
     test(`the CLI exits 2 for ${a[0]} with ${b[0]}, naming both and making no call`, async () => {
       const lines = [];
-      const config = join(mkdtempSync(join(tmpdir(), 'host-run-modes-')), 'c.json');
-      writeFileSync(config, JSON.stringify({ configDir: `${stateDir}/state`, worktreeDir: `${stateDir}/wt` }));
+      const config = join(mkdtempSync(join(tmpdir(), 'host-run-modes-')), 'missing.json');
       assert.equal(await entry(['box', config, '--state', 's', ...a, ...b], { hosts: { box }, run: { ssh: boom, rsync: boom }, err: (m) => lines.push(m) }), 2);
-      const shown = lines.join('');
-      assert.ok(shown.includes(a[0]) && shown.includes(b[0]), shown);
+      // USAGE names every mode flag, so only the conflict clause before it can show that both were named.
+      const [clause] = lines.join('').split('usage:');
+      assert.match(clause, /alternatives/);
+      assert.ok(clause.includes(a[0]) && clause.includes(b[0]), clause);
     });
   }
 }
+
+test('the CLI exits 2, not 1, for --worktree without --base when the config is missing', async () => {
+  const lines = [];
+  const config = join(mkdtempSync(join(tmpdir(), 'host-run-modes-')), 'missing.json');
+  assert.equal(await entry(['box', config, '--state', 's', '--worktree', '/w'], { hosts: { box }, run: { ssh: boom, rsync: boom }, err: (m) => lines.push(m) }), 2);
+  assert.match(lines.join(''), /--worktree and --base/);
+});
