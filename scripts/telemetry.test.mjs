@@ -9,6 +9,7 @@ import { rmSync, readFileSync, readdirSync, existsSync, appendFileSync, chmodSyn
 import { WaveRefusal, deriveWaveRecords } from './lib/wave-records.mjs';
 import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit, isIssueRecord } from './telemetry.mjs';
 import { artifactStem } from './lib/failure.mjs';
+import { docSection } from './lib/doc-pins.mjs';
 import { writeFailureDigests } from './engine/failure-digest.mjs';
 import { diagnose } from './diagnose-failure.mjs';
 import { NO_ENGINE_DIR } from './lib/tripwires.mjs';
@@ -1946,7 +1947,7 @@ describe('SKILL.md telemetry wiring', () => {
 // derive the events the row's situation calls for, so a renamed field or a changed rule fails here, not in a live wave.
 describe("SKILL.md step 6.3's --outcomes table", () => {
   const skill = readFileSync(fileURLToPath(new URL('../SKILL.md', import.meta.url)), 'utf8');
-  const section = skill.slice(skill.indexOf('### 6.3 Ingest the wave'), skill.indexOf('### 6.5 '));
+  const section = docSection('### 6.3 Ingest the wave');
   const rows = section.split('\n').filter((l) => l.startsWith('| ') && l.includes('{"<ref>"'))
     .map((l) => ({ situation: l.split('|')[1].trim(), cells: [...l.matchAll(/`(\{"<ref>":[^`]*\})`/g)].map((m) => JSON.parse(m[1].replaceAll('<ref>', REF).replace(/\bN\b/g, '2'))) }));
   const findPr = stateRow(REF, { prUrl: null, prNumber: null });

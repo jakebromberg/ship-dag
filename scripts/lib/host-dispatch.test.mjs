@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostLaunches, rateLimitGate, routeHostExit } from './host-dispatch.mjs';
 import { EXIT } from './remote.mjs';
+import { docBetween, docSection } from './doc-pins.mjs';
 
 for (const [script, code, route] of [
   ['host-sync-claude', EXIT.ok, 'host-prepare'],
@@ -67,8 +68,7 @@ for (const [name, decision, uncollected, expected] of [
   });
 }
 
-const skill = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../SKILL.md'), 'utf8');
-const step4b = skill.split('**b. Invoke the engine.**')[1].split('**c. Read the report.**')[0];
+const step4b = docBetween('**b. Invoke the engine.**', '**c. Read the report.**');
 
 for (const [name, rule] of [
   ['the real sync before host-prepare', /host-sync-claude\.mjs <host>.*before `host-prepare\.mjs`/s],
@@ -87,7 +87,7 @@ for (const [name, rule] of [
 }
 
 const policy = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../references/escalation-policy.md'), 'utf8');
-const step5 = skill.split('### 5. Reconcile each result')[1].split('\n### ')[0];
+const step5 = docSection('### 5. Reconcile each result');
 
 test('step 5 holds no hand-written ssh line, and names the exists: false case in the escalation policy', () => {
   assert.doesNotMatch(step5, /ssh <alias>|rev-list --count/);

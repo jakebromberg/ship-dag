@@ -6,17 +6,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { docLine, docSection } from './lib/doc-pins.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(root, p), 'utf8');
 const unescaped = (src) => src.replaceAll('\\`', '`');
 const skill = read('SKILL.md');
 const policy = read('references/escalation-policy.md');
-const lines = skill.split('\n');
-const step4d = lines.find((l) => l.startsWith('**d. Review pass'));
-const step5 = skill.split('### 5. Reconcile each result')[1].split('\n### ')[0];
-const blockingBullet = step5.split('\n').find((l) => l.startsWith('- **Blocking finding**'));
-const block = (heading) => skill.split(heading)[1].split(/\n### |\n## /)[0];
+const step4d = docLine('**d. Review pass');
+const blockingBullet = docLine('- **Blocking finding**');
 const workflow = unescaped(read('workflow.js'));
 
 const HANDOFF_RULES = [
@@ -57,12 +55,12 @@ test('step 5 reads a lease give-up before it reads non-convergence as point B', 
 });
 
 test('step 4 documents recommendedHandoff in the preflight output', () => {
-  const step4 = lines.find((l) => l.startsWith('**Resource preflight (beside'));
+  const step4 = docLine('**Resource preflight (beside');
   assert.match(step4, /prints `\{ action, reason, level, capacity, step, sessions, live, recommendedParallel, recommendedHandoff \}`/);
 });
 
 const copies = {
-  "SKILL.md's Implement block": block('### Implement (Sonnet, own worktree)'),
+  "SKILL.md's Implement block": docSection('### Implement (Sonnet, own worktree)'),
   "workflow.js's implementPrompt": workflow.split('function implementPrompt')[1].split('function reviewPathFor')[0],
 };
 for (const [name, text] of Object.entries(copies)) {
@@ -70,7 +68,7 @@ for (const [name, text] of Object.entries(copies)) {
 }
 
 const reviewCopies = {
-  "SKILL.md's Review block": [block('### Review (Opus, own worktree)'), CLOSING_LINE_RETURN],
+  "SKILL.md's Review block": [docSection('### Review (Opus, own worktree)'), CLOSING_LINE_RETURN],
   "workflow.js's reviewPrompt": [workflow.split('function reviewPrompt')[1], SCHEMA_RETURN],
 };
 for (const [name, [text, ret]] of Object.entries(reviewCopies)) {
@@ -85,7 +83,7 @@ test("workflow.js's REVIEW_SCHEMA carries the status and notes the give-up retur
   assert.match(schema, /notes: \{/);
 });
 
-const pointF = policy.slice(policy.indexOf('## Point F')).split(/\n## /)[0];
+const pointF = docSection('## Point F');
 const row = (label) => {
   const line = pointF.split('\n').find((l) => l.startsWith(`| ${label} |`));
   assert.ok(line, `point F's table has no "${label}" row`);
@@ -113,17 +111,17 @@ for (const [label, trigger, wait, anyway] of [
 }
 
 test('step 4 hitl bullet and the preflight header point at the table', () => {
-  const hitl = lines.find((l) => l.startsWith('- `action: "hitl"`') && l.includes('critical-hitl'));
+  const hitl = docLine('- `action: "hitl"` (`critical-hitl`');
   assert.ok(hitl, 'step 4 has an action: "hitl" bullet');
   assert.match(hitl, /per-step table in `references\/escalation-policy\.md`/);
   assert.match(read('scripts/resource-preflight.mjs'), /point F's per-step table in references\/escalation-policy\.md/);
 });
 
 test('the resource route caps a ref at two resource stops in a run, in SKILL.md and the policy', () => {
-  const route = lines.find((l) => l.startsWith('  - `resource` —'));
+  const route = docLine('  - `resource` —');
   assert.ok(route, 'step 5 has a resource route');
   assert.match(route, /second resource stop in a run[^.]*point F whatever the pressure/);
-  const stops = policy.slice(policy.indexOf('## Resource stops')).split(/\n## /)[0];
+  const stops = docSection('## Resource stops');
   assert.match(stops, /second resource stop in a run[^.]*point F whatever the pressure/);
   // A continuation agent's lease give-up is not an engine row, so the route must count it itself.
   for (const text of [route, stops]) assert.match(text, /continuation agent[^.]*`orchestrator-stop: lease-wait`[^.]*`notes: "lease-wait"`[^.]*counts as that ref's next resource stop/);
@@ -131,7 +129,7 @@ test('the resource route caps a ref at two resource stops in a run, in SKILL.md 
 
 test('trigger 9 and the step 4 hitl bullet name the resource route', () => {
   assert.match(policy.split('\n').find((l) => l.startsWith('9. ')), /resource route/);
-  assert.match(lines.find((l) => l.startsWith('- `action: "hitl"`') && l.includes('critical-hitl')), /step 5's `resource` route/);
+  assert.match(docLine('- `action: "hitl"` (`critical-hitl`'), /step 5's `resource` route/);
 });
 
 test('step 4c sends a PR-less resource stop to the resource route, not point B', () => {
@@ -152,6 +150,6 @@ test("point F's wait and start-anyway bullets defer to the table", () => {
 });
 
 test("step 6.2 says start anyway is a plain rerun below critical", () => {
-  const step62 = lines.find((l) => l.startsWith('2. **If the rebase moved the base**'));
+  const step62 = docLine('2. **If the rebase moved the base**');
   assert.match(step62, /"start anyway" reruns with `CO_PRESSURE_OVERRIDE=critical-as-warning` as an inline prefix on that one command, never exported, when the pressure is `critical`, and plainly below it/);
 });

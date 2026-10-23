@@ -80,6 +80,8 @@ At session start and every two minutes after, the mod finds the newest run under
 node --test 'scripts/**/*.test.mjs' 'eval/**/*.test.mjs'
 ```
 
+A test that pins prose in SKILL.md or `references/` reads it through `scripts/lib/doc-pins.mjs` (`docSection(heading)`, `docLine(marker)`, `docBetween(start, end)`), which finds the text in either place and throws on none or several, so a moved section keeps its pins and a deleted one fails them. `scripts/skill-size.test.mjs` caps SKILL.md at `SKILL_MD_BUDGET` bytes and checks that every `references/` link resolves; a PR that moves text out of SKILL.md sets the budget to the new size plus 4,096, rounded up to a multiple of 4,096.
+
 The mod's own tests run under the engine's test kit: `claude plugin test plugins/ship-dag-eta`, and `claude plugin validate .` checks the marketplace, the manifest and the hooks module.
 
 The suite loads the topo-sort core, so `CO_HOME` must point at a checkout of [claude-orchestrator](https://github.com/jakebromberg/claude-orchestrator) with its deps installed (`npm ci` there — `dist/` is committed, no build). CI ([`.github/workflows/tests.yml`](./.github/workflows/tests.yml)) does exactly this on every push and PR, across Node 22 and 24.

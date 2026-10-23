@@ -6,7 +6,7 @@
 // Run: node --test "skills/ship-dag/scripts/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { docSection } from './doc-pins.mjs';
 import {
   terminalEvent,
   routeFailure,
@@ -188,8 +188,7 @@ for (const [name, code, opts, want] of [
 // that only a succeeded row produces needs a step-5 bullet of its own, or no
 // instruction ever leads an agent to it.
 test('SKILL.md step 5 nests exactly the failed/blocked routes under that bullet, and gives find-pr its own', () => {
-  const skill = readFileSync(new URL('../../SKILL.md', import.meta.url), 'utf8');
-  const step5 = skill.slice(skill.indexOf('\n### 5. '), skill.indexOf('\n### 6. ')).split('\n');
+  const step5 = docSection('### 5. ').split('\n');
   const nested = step5.flatMap((l) => l.match(/^ {2}- `([A-Za-z-]+)`/)?.[1] ?? []);
   const failedOrBlocked = [{ status: 'failed', prNumber: 1 }, { status: 'failed', failureReason: 'rate-limited' }, { status: 'failed', failureReason: 'lease-wait' }, { status: 'failed' }, { status: 'blocked' }];
   assert.deepEqual(new Set(nested), new Set(failedOrBlocked.map(routeFailure)));
@@ -197,10 +196,7 @@ test('SKILL.md step 5 nests exactly the failed/blocked routes under that bullet,
 });
 
 // Step 5's Green rule and its fix rule for a stopped row's CI, pinned: a `ciStatus: "none"` PR is not green until the CI profile run passes.
-const step5Text = () => {
-  const skill = readFileSync(new URL('../../SKILL.md', import.meta.url), 'utf8');
-  return skill.slice(skill.indexOf('\n### 5. '), skill.indexOf('\n### 6. '));
-};
+const step5Text = () => docSection('### 5. ');
 
 test('SKILL.md step 5 Green rule: ciStatus "none" → run-ci-profile → pass, reusing step 6.2', () => {
   const green = step5Text().split('\n').find((l) => l.startsWith('- **Green**'));
