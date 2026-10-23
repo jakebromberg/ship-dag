@@ -37,8 +37,8 @@ export const callFailure = (r) => {
 
 /**
  * The exit codes of host-prepare, host-sync-claude and host-run. `unreachable` is a drop before the script's first call
- * that changed the host, so nothing changed there; a later drop is `failure`, except host-run's, which is `dropped` (the
- * engine may be running: resume with `--collect-only`). `waiting` is host-run's `--max-wait` passing with the engine
+ * that changed the host, so nothing changed there; a later drop is `failure`, except host-run's, which is `dropped` (ssh dropped, or a
+ * local error threw, after the launch; the engine may be running: resume with `--collect-only`). `waiting` is host-run's `--max-wait` passing with the engine
  * still running; `pending` is host-sync-claude's `--dry-run` finding changes.
  */
 export const EXIT = { ok: 0, failure: 1, usage: 2, unreachable: 3, waiting: 4, pending: 10, dropped: 255 };
