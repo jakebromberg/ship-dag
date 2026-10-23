@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { docSection } from './lib/doc-pins.mjs';
 import { checkResource, parseArgs } from './resource-preflight.mjs';
 
 const SESSIONS = { capacity: 6, live: [] };
@@ -102,8 +103,7 @@ test('parseArgs: defaults, valid flags and rejected values', () => {
 const REPO_ROOT = join(import.meta.dirname, '..');
 const skill = readFileSync(join(REPO_ROOT, 'SKILL.md'), 'utf8');
 const policy = readFileSync(join(REPO_ROOT, 'references', 'escalation-policy.md'), 'utf8');
-const pointFStart = policy.indexOf('## Point F');
-const pointF = pointFStart < 0 ? '' : policy.slice(pointFStart).split(/\n## /)[0];
+const pointF = docSection('## Point F');
 
 test('SKILL.md: the Guardrails list of HITL points includes F, and step 4 runs the resource preflight', () => {
   assert.match(skill, /the six HITL points \(A triage, B implement\/review, C cross-repo cutover, D retrospective and tripwires, E rate-limit window, F resource pressure\)/);

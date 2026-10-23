@@ -8,19 +8,19 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { importCo } from './lib/co-home.mjs';
 import { REPO_CI_COMMAND } from './lib/ci-profile.mjs';
+import { docLine, docSection } from './lib/doc-pins.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(root, p), 'utf8');
 // workflow.js holds its prompts in template literals, so its backticks are escaped.
 const unescaped = (src) => src.replaceAll('\\`', '`');
 const skill = read('SKILL.md');
-const block = (heading) => skill.split(heading)[1].split(/\n### |\n## /)[0];
 // The three copies of the implement prompt, which share the rules below.
 const implementCopies = ['prompt.md step 4', "SKILL.md's Implement block", "workflow.js's implementPrompt"];
 const copies = {
   'prompt.md step 4': read('scripts/engine/prompt.md').split('\n').find((l) => l.startsWith('4. ')),
-  "SKILL.md's Implement block": block('### Implement (Sonnet, own worktree)'),
-  "SKILL.md's Review block": block('### Review (Opus, own worktree)'),
+  "SKILL.md's Implement block": docSection('### Implement (Sonnet, own worktree)'),
+  "SKILL.md's Review block": docSection('### Review (Opus, own worktree)'),
   "workflow.js's implementPrompt": unescaped(read('workflow.js')).split('function implementPrompt')[1].split('function reviewPathFor')[0],
   "workflow.js's reviewPrompt": unescaped(read('workflow.js')).split('function reviewPrompt')[1],
 };
@@ -49,9 +49,8 @@ test('step 4b sets CO_LEASE_HOOK=on as an inline prefix on the engine run, not a
 
 test('both retry rules carve out lease reruns', () => {
   const carve = /rerunning after a `lease: no slot` denial is not an infra-failure retry; the two-denial give-up bounds it/;
-  const lines = skill.split('\n');
-  assert.match(lines.find((l) => l.startsWith('**Never loop-retry a failing CI or merge.**')), carve);
-  assert.match(lines.find((l) => l.startsWith('- **No auto-retry loops**')), carve);
+  assert.match(docLine('**Never loop-retry a failing CI or merge.**'), carve);
+  assert.match(docLine('- **No auto-retry loops**'), carve);
 });
 
 // Profile commands the matcher is right to leave alone: each is light, so a
@@ -176,7 +175,9 @@ test("SKILL.md's Implement block has a {DECISIONS} slot beside {DIGEST}", () => 
 
 test("SKILL.md's {DECISIONS} fill rule sits in the step text, outside the verbatim block, with withDecisions' heading", () => {
   assert.ok(!copies["SKILL.md's Implement block"].includes('fill from triage'));
-  assert.ok(skill.split('### Implement (Sonnet, own worktree)')[0].includes(`\`{DECISIONS}\` with the line \`${DECISIONS_HEADING}\``));
+  const fillRule = `\`{DECISIONS}\` with the line \`${DECISIONS_HEADING}\``;
+  assert.ok(skill.includes(fillRule));
+  assert.ok(!docSection('### Implement (Sonnet, own worktree)').includes(fillRule));
 });
 
 test("SKILL.md's Workflow call passes each issue's decisions", () => {

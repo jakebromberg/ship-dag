@@ -9,6 +9,7 @@ import { ghExecError, graphqlAnswer, restFailure } from './lib/gh-fixture.mjs';
 import { RUN, T0, T1, engineConfig, scopedEngineFixture, stamped } from './lib/engine-fixture.mjs';
 import { parseRef } from './lib/ref.mjs';
 import { artifactStem } from './lib/failure.mjs';
+import { docLine } from './lib/doc-pins.mjs';
 import { appendRecord } from './telemetry.mjs';
 
 const R = (n) => `o/r#${n}`;
@@ -639,9 +640,7 @@ test('the usage line for a bad subcommand lists refresh', async () => {
 });
 
 test("SKILL.md tells the orchestrator to run `board.mjs refresh --run-id` after each status-changing event", () => {
-  const skill = readFileSync(new URL('../SKILL.md', import.meta.url), 'utf8');
-  const rule = skill.split('\n').find((l) => l.startsWith('**Status board.**'));
-  assert.ok(rule, 'a **Status board.** paragraph');
+  const rule = docLine('**Status board.**');
   assert.match(rule, /board\.mjs" refresh --run-id "\$RUN_ID"/);
   for (const event of ['engine report', 'review round', 'fix pass', 'merge', 'ingest', 'sub-epic', 'retro', 'ops ticket', 'out-of-band merge']) {
     assert.ok(rule.toLowerCase().includes(event), `names the event: ${event}`);
@@ -682,7 +681,7 @@ test('the usage header shows refresh taking $SHIP_DAG_RUN_ID, like render', () =
 });
 
 test('SKILL.md tells a resumed run to run init when board.json is absent, and documents explicit sets', () => {
-  const rule = read('../SKILL.md').split('\n').find((l) => l.startsWith('**Status board.**'));
+  const rule = docLine('**Status board.**');
   assert.doesNotMatch(rule, /already has its `board\.json`/);
   assert.match(rule, /run it first if `\$STATE\/board\.json` is absent/);
   assert.match(rule, /explicit set/);
