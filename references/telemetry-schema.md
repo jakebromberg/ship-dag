@@ -2,7 +2,7 @@
 
 The one authored description of the records in the run log (`runs.jsonl`, path resolution in `scripts/telemetry.mjs`). `SKILL.md`, the `scripts/telemetry.mjs` header and the README link here instead of restating the field list. The validators are `normalizeRecord` (`scripts/telemetry.mjs`) and `deriveWaveRecords` (`scripts/lib/wave-records.mjs`); `scripts/telemetry.test.mjs` fails when a record `ingest-wave` appends carries a key that the first cell of no row of the issue-record table below names in backticks (a mention elsewhere in this file does not count), so add a new key's row in the PR that adds it.
 
-Every record carries a `kind` discriminator: `"issue"` (the default; `normalizeRecord` stamps it when absent, so older logs stay valid) or `"retro"`. `append` stamps `ts` when absent.
+Every record carries a `kind` discriminator: `"issue"` (the default; `normalizeRecord` stamps it when absent, so older logs stay valid), `"retro"` or `"measure"`. Readers of per-issue data keep only the issue records (`isIssueRecord`, `scripts/lib/log-order.mjs`), so a record of another kind changes no indicator, `audit` or `ingest-wave` result and no tripwire. `append` stamps `ts` when absent.
 
 ## Issue record (`kind: "issue"`)
 
@@ -50,4 +50,10 @@ Anything else is refused with `bad findings`, naming the failing entry's index (
 
 ## Retro record (`kind: "retro"`)
 
-One run-scoped record per step-6.5 pass. Required: `runId`, `wave`, `mergedPrs[]`. The rest: `ts`, `proposedRefactors`, `approvedRefactors`, `declinedRefactors`, `proposedAdjustments`, `approvedAdjustments`, `declinedAdjustments`, `filed[]`, `adjusted[]`, `declinedTitles[]`, `tokens`. It is validated separately and excluded from every per-issue indicator. Older retro rows carry legacy keys (`refactorsProposed`, `adjustmentsProposed`, `proposedPlanAdjustments`, `approvedAll`) from before the canonical counts, whose canonical counts `normalizeRetroRecord` zero-filled; `readRecords` still reads them, and T-retro-approval (`LEGACY_RETRO` in `scripts/lib/tripwires.mjs`) drops them from its sample.
+One run-scoped record per step-6.5 pass. Required: `runId`, `wave`, `mergedPrs[]`. The rest: `ts`, `proposedRefactors`, `approvedRefactors`, `declinedRefactors`, `proposedAdjustments`, `approvedAdjustments`, `declinedAdjustments`, `filed[]`, `filedById`, `adjusted[]`, `declinedTitles[]`, `tokens`. It is validated separately and excluded from every per-issue indicator. Older retro rows carry legacy keys (`refactorsProposed`, `adjustmentsProposed`, `proposedPlanAdjustments`, `approvedAll`) from before the canonical counts, whose canonical counts `normalizeRetroRecord` zero-filled; `readRecords` still reads them, and T-retro-approval (`LEGACY_RETRO` in `scripts/lib/tripwires.mjs`) drops them from its sample.
+
+`filedById` is an object that maps each approved proposal id in `retro/wave-<W>.json` (`R1`, `P3`, …) to the ref it filed, or to a list of refs when one proposal filed several: `{"R1": "owner/repo#N", "P3": ["owner/repo#M", "owner/repo#K"]}`. It is how a filed ticket traces back to its proposal's `locations`. `filed[]` stays the flat list. `normalizeRetroRecord` refuses a `filedById` that is not such an object (`filedById must map each proposal id to a ref or a list of refs`); a record without it, as every record before it, stays valid.
+
+## Measure record (`kind: "measure"`)
+
+One measurement of one metric for one repo in one pass. Required (`normalizeMeasureRecord` refuses a record without them, naming the key): `runId`, `wave`, `repo`, `metric`, `status`. `ts` is stamped when absent. The record stays generic: the fields of a particular metric (for example `scopes` for duplication) are validated by the step that produces it, and `append` keeps them as written. Like a retro record it is not an issue record, so no per-issue indicator, `audit`, `ingest-wave` or tripwire reads it.

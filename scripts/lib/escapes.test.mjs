@@ -424,6 +424,7 @@ test('shipDagPrs: telemetry pr fields (any PR value parsePr reads; newest record
     { repo: 'o/r', issue: 4, pr: 4.5, finalState: 'merged' }, // not a positive integer, so no PR
     { repo: 'o/r', issue: 6, pr: 6, finalState: 'error' },
     { kind: 'retro', wave: 1, mergedPrs: [] },
+    { kind: 'measure', runId: 'r', wave: 1, repo: 'o/r', issue: 12, pr: 12, metric: 'duplication', status: 'ok' }, // a measure record has no PR of ship-dag's
   ];
   const base = engineDir(
     [{ ref: 'O/R#1', status: 'succeeded', prNumber: 11 }, { ref: 'o/r#3', status: 'succeeded', prNumber: 13 }, { ref: 'o/r#2', status: 'failed' }],

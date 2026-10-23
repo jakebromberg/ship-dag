@@ -65,6 +65,14 @@ describe('the version window', () => {
   test('retro records never count', () => {
     assert.equal(run('T-fallback', many(30, { kind: 'retro' })).state, 'insufficient-data');
   });
+
+  test('measure records never count, and are not retro records either', () => {
+    assert.equal(run('T-fallback', many(30, { kind: 'measure' })).state, 'insufficient-data');
+    const ctx = tripwireContext([rec(), ...many(3, { kind: 'measure' })], { version: 2, now: NOW });
+    assert.equal(ctx.records.length, 1);
+    assert.equal(ctx.window.length, 1);
+    assert.deepEqual(ctx.retro, []);
+  });
 });
 
 /** A retro record proposing `p` refactors and approving `a`; `over` adds or overrides keys. */

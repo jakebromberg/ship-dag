@@ -8,7 +8,7 @@
 // and `gh` is never called: T-escapes takes a saved `telemetry.mjs escapes` run.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { byTs } from './log-order.mjs';
+import { byTs, isIssueRecord } from './log-order.mjs';
 import { parsePr } from './ref.mjs';
 import { sameRun } from './run-id.mjs';
 import { bootstrapCI, groupBy, mean, wilson } from './stats.mjs';
@@ -29,7 +29,7 @@ export const loadTripwires = (path = TRIPWIRES_PATH) => JSON.parse(readFileSync(
  * saved `escapes` run, and `audit(runId)`, which returns `telemetry.mjs audit`'s result or throws for a run with no engine dir.
  */
 export function tripwireContext(records, { version, now = Date.now(), escapes, audit } = {}) {
-  const issues = records.filter((r) => r.kind !== 'retro');
+  const issues = records.filter(isIssueRecord);
   return { records: issues, window: issues.filter((r) => ver(r) === version), retro: records.filter((r) => r.kind === 'retro'), version, now, escapes, audit };
 }
 

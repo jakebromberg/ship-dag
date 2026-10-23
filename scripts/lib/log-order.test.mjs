@@ -1,7 +1,7 @@
 // Tests for the telemetry log's ordering helpers. Run: node --test "scripts/**/*.test.mjs"
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { byTs, latestByRef, outcomeOf } from './log-order.mjs';
+import { byTs, isIssueRecord, latestByRef, outcomeOf } from './log-order.mjs';
 import { SKIP_REASON_DEPENDENCY } from './failure.mjs';
 
 describe('byTs', () => {
@@ -30,6 +30,16 @@ describe('byTs', () => {
   });
 });
 
+describe('isIssueRecord', () => {
+  const table = [
+    ['a record with no kind (written before kinds)', {}, true],
+    ['kind: issue', { kind: 'issue' }, true],
+    ['kind: retro', { kind: 'retro' }, false],
+    ['kind: measure', { kind: 'measure' }, false],
+  ];
+  for (const [name, rec, expected] of table) test(name, () => assert.equal(isIssueRecord(rec), expected));
+});
+
 describe('latestByRef', () => {
   const r = (repo, issue, ts, over = {}) => ({ kind: 'issue', repo, issue, ts, ...over });
 
@@ -44,6 +54,12 @@ describe('latestByRef', () => {
   test('a retro record is ignored, even when it is the newest', () => {
     const issue = r('o/r', 1, '2026-10-01T00:00:00Z');
     const latest = latestByRef([issue, r('o/r', 1, '2026-10-09T00:00:00Z', { kind: 'retro' })]);
+    assert.equal(latest.get('o/r#1'), issue);
+  });
+
+  test('a measure record is ignored, even when it is the newest and carries an issue', () => {
+    const issue = r('o/r', 1, '2026-10-01T00:00:00Z');
+    const latest = latestByRef([issue, r('o/r', 1, '2026-10-09T00:00:00Z', { kind: 'measure' })]);
     assert.equal(latest.get('o/r#1'), issue);
   });
 

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { rmSync, readFileSync, readdirSync, existsSync, appendFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { WaveRefusal, deriveWaveRecords } from './lib/wave-records.mjs';
-import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit } from './telemetry.mjs';
+import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit, isIssueRecord } from './telemetry.mjs';
 import { artifactStem } from './lib/failure.mjs';
 import { writeFailureDigests } from './engine/failure-digest.mjs';
 import { diagnose } from './diagnose-failure.mjs';
@@ -345,6 +345,105 @@ test('appendRecord: retro record round-trips through readRecords', () => {
     assert.deepEqual(recs[0].mergedPrs, ['WXYC/x#41', 'WXYC/x#43']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A complete, valid measurement record; overrides tailor it per test. Metric-specific fields are the producer's, so they pass through.
+function measureBase(over = {}) {
+  return { kind: 'measure', runId: 'r1', wave: 2, repo: 'WXYC/x', metric: 'duplication', status: 'ok', scopes: ['scripts/'], ...over };
+}
+
+test('normalizeRecord: measure record — stamps ts and keeps every key, the metric-specific ones too', () => {
+  const r = normalizeRecord(measureBase(), FIXED);
+  assert.deepEqual(r, { ...measureBase(), ts: FIXED() });
+  assert.equal(normalizeRecord(measureBase({ ts: '2020-01-01T00:00:00Z' }), FIXED).ts, '2020-01-01T00:00:00Z');
+});
+
+for (const key of ['runId', 'wave', 'repo', 'metric', 'status']) {
+  test(`normalizeRecord: a measure record without ${key} is refused, naming it`, () => {
+    assert.throws(() => normalizeRecord(measureBase({ [key]: undefined }), FIXED), new RegExp(`missing required key: ${key}$`));
+    assert.throws(() => normalizeRecord(measureBase({ [key]: null }), FIXED), new RegExp(`missing required key: ${key}$`));
+  });
+}
+
+test('appendRecord: a measure record round-trips through readRecords', () => {
+  const p = tmpLog();
+  try {
+    appendRecord(measureBase(), { path: p, now: FIXED });
+    assert.deepEqual(readRecords(p), [{ ...measureBase(), ts: FIXED() }]);
+  } finally {
+    rmSync(p, { force: true });
+  }
+});
+
+test('telemetry append CLI: a measure record is confirmed by its run, wave, repo and metric, not as undefined#undefined', () => {
+  const p = tmpLog();
+  try {
+    const res = spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'append', JSON.stringify(measureBase())],
+      { env: { ...process.env, SHIP_DAG_TELEMETRY: p }, encoding: 'utf8' });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.stderr, `appended measure (wave 2, WXYC/x, duplication: ok) → ${p}\n`);
+    const bad = spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'append', JSON.stringify(measureBase({ metric: undefined }))],
+      { env: { ...process.env, SHIP_DAG_TELEMETRY: p }, encoding: 'utf8' });
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /missing required key: metric/);
+  } finally {
+    rmSync(p, { force: true });
+  }
+});
+
+test('normalizeRecord: a retro record\'s filedById round-trips; one without it is unchanged', () => {
+  const filedById = { R1: 'WXYC/x#77', P3: ['WXYC/x#78', 'WXYC/y#4'] };
+  assert.deepEqual(normalizeRecord(retroBase({ filedById }), FIXED).filedById, filedById);
+  assert.equal('filedById' in normalizeRecord(retroBase(), FIXED), false);
+  assert.deepEqual(normalizeRecord(retroBase({ filedById: {} }), FIXED).filedById, {});
+});
+
+for (const [name, bad] of [
+  ['an array', ['WXYC/x#77']],
+  ['a string', 'R1'],
+  ['null-valued entry', { R1: null }],
+  ['a number-valued entry', { R1: 77 }],
+  ['a list holding a non-string', { R1: ['WXYC/x#77', 7] }],
+]) {
+  test(`normalizeRecord: a retro record's filedById that is ${name} is refused`, () => {
+    assert.throws(() => normalizeRecord(retroBase({ filedById: bad }), FIXED), /filedById must map each proposal id to a ref or a list of refs/);
+  });
+}
+
+test('isIssueRecord is exported by telemetry.mjs: kind issue or no kind', () => {
+  assert.deepEqual([{}, { kind: 'issue' }, { kind: 'retro' }, { kind: 'measure' }].map(isIssueRecord), [true, true, false, false]);
+});
+
+test('report: a measure record changes no per-issue indicator and adds no section', () => {
+  const recs = fixture8().map((r) => normalizeRecord(r, FIXED));
+  assert.deepEqual(report([...recs, normalizeRecord(measureBase({ repo: 'WXYC/x', issue: 1, finalState: 'merged' }), FIXED)]), report(recs));
+});
+
+test('ingest-wave: a measure record that mimics the row\'s own event is no existing record, so the row is still recorded', () => withStateDir({
+  reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()],
+}, (dir) => {
+  const path = join(dir, 'runs.jsonl');
+  ingestWave(reportPath(dir), {}, { path, warn: () => {} });
+  const [first] = readRecords(path);
+  const withMeasure = join(dir, 'with-measure.jsonl');
+  appendFileSync(withMeasure, `${JSON.stringify({ ...first, kind: 'measure', wave: 1, metric: 'duplication', status: 'ok' })}\n`);
+  assert.equal(ingestWave(reportPath(dir), {}, { path: withMeasure, warn: () => {} }).appended, 1);
+}));
+
+test('audit: a measure record that mimics a row\'s record does not cover it', () => {
+  const fx = engineFixture({ [RUN]: { reports: { 'w1.json': stateReport([stateRow(REF)]) }, sidecar: [sidecarEntry()] } });
+  const log = tmpLog();
+  try {
+    ingestWave(reportPath(fx.dirs[RUN]), {}, { path: log, warn: () => {} });
+    const [issueRec] = readRecords(log);
+    const measure = { ...issueRec, kind: 'measure', wave: 1, metric: 'duplication', status: 'ok' };
+    const notIngested = (records) => audit(RUN, { baseDir: fx.base, records, warn: () => {} }).notIngested.map((w) => w.refs);
+    assert.deepEqual(notIngested([issueRec]), []);
+    assert.deepEqual(notIngested([measure]), [[REF]]);
+  } finally {
+    rmSync(log, { force: true });
+    fx.cleanup?.();
   }
 });
 
