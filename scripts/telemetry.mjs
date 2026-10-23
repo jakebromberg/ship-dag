@@ -7,10 +7,10 @@
 // committed. Pure aggregation math is imported from ./lib/stats.mjs; this file
 // owns only validation, the file I/O, and the CLI.
 //
-// Record schema: references/telemetry-schema.md is the one authored description of the issue and retro
-// records (every key, the closed `skipReason` set, both accepted `findings` shapes and the legacy ones
+// Record schema: references/telemetry-schema.md is the one authored description of the issue, retro and
+// measure records (every key, the closed `skipReason` set, both accepted `findings` shapes and the legacy ones
 // that stay readable but that `append` refuses). Records carry a `kind` discriminator — "issue" (default;
-// stamped when absent, so pre-existing logs stay valid) or "retro" (one run-scoped record per step-6.5 pass).
+// stamped when absent, so pre-existing logs stay valid) "retro" (one run-scoped record per step-6.5 pass) or "measure" (one measurement of a metric).
 // normalizeRecord refuses a bad `skipReason` / `findings` with `bad skipReason` / `bad findings`;
 // readRecords does not normalize, so older rows stay readable.
 //
@@ -58,7 +58,9 @@ import { formatRef, groupByRepo, isPr, issueKey, parseRef, refKey, repoSpellings
 import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamilyDirs, runFamilyStateDirs, waveContextFor } from './lib/wave-reports.mjs';
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
-import { latestByRef, outcomeOf } from './lib/log-order.mjs';
+import { isIssueRecord, latestByRef, outcomeOf } from './lib/log-order.mjs';
+
+export { isIssueRecord };
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { CATEGORIES } from './review-gate.mjs';
 import { isFindingObject } from './lib/finding.mjs';
@@ -82,13 +84,15 @@ const CI_STATUSES = new Set(['pass', 'fail', 'none', null]);
 const COMPLEXITY_SOURCES = new Set(['entry', 'default']);
 const TIERS = ['mechanical', 'normal', 'complex'];
 const REQUIRED = ['runId', 'repo', 'issue', 'complexity', 'triageStatus', 'path', 'finalState'];
-const KINDS = new Set(['issue', 'retro']);
+const KINDS = new Set(['issue', 'retro', 'measure']);
 // No `repo` here — a retro pass's merged surface may span repos; the composite
 // refs in mergedPrs[] carry them. `wave` is a display label stamped from the
 // main agent's wave counter, not an index any report logic depends on.
 const REQUIRED_RETRO = ['runId', 'wave', 'mergedPrs'];
 const RETRO_COUNTS = ['proposedRefactors', 'approvedRefactors', 'declinedRefactors', 'proposedAdjustments', 'approvedAdjustments', 'declinedAdjustments'];
 const RETRO_LISTS = ['filed', 'adjusted', 'declinedTitles'];
+// Metric-specific keys are the producing step's to validate; a measure record stays generic.
+const REQUIRED_MEASURE = ['runId', 'wave', 'repo', 'metric', 'status'];
 
 /** Resolve the telemetry log path from the environment (see module header). */
 export function telemetryPath(env = process.env) {
@@ -112,6 +116,7 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   const kind = rec.kind ?? 'issue';
   if (!KINDS.has(kind)) throw new Error(`bad kind: ${rec.kind}`);
   if (kind === 'retro') return normalizeRetroRecord(rec, now);
+  if (kind === 'measure') return normalizeMeasureRecord(rec, now);
   // A retro-shaped record that forgot its discriminator would otherwise fall
   // through to the issue path and die on `missing required key: repo` — naming
   // the one field the retro schema deliberately excludes.
@@ -205,7 +210,28 @@ function normalizeRetroRecord(rec, now) {
     if (!Array.isArray(v)) throw new Error(`${k} must be an array`);
     out[k] = v;
   }
+  // filedById links each approved proposal id to the refs it filed; absent on records from before it, which stay valid.
+  if (rec.filedById != null) {
+    const byId = rec.filedById;
+    const isRefs = (v) => typeof v === 'string' || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+    if (typeof byId !== 'object' || Array.isArray(byId) || !Object.values(byId).every(isRefs)) {
+      throw new Error('filedById must map each proposal id to a ref or a list of refs');
+    }
+  }
   return out;
+}
+
+/**
+ * Validate and normalize a measurement record (one per metric per repo per pass). Only the shared keys are checked: a
+ * metric's own fields are the producer's to validate, and pass through untouched.
+ * @param {object} rec
+ * @param {() => string} now  injectable clock (ISO string) for tests
+ */
+function normalizeMeasureRecord(rec, now) {
+  for (const k of REQUIRED_MEASURE) {
+    if (rec[k] === undefined || rec[k] === null) throw new Error(`missing required key: ${k}`);
+  }
+  return { ...rec, kind: 'measure', ts: rec.ts || now() };
 }
 
 /** Append one validated record as a JSON line; creates the state dir if needed. */
@@ -258,7 +284,7 @@ export function readRecords(path = telemetryPath()) {
  * `legacyDeath` is not read: the historical rows stay model errors here.
  */
 export function report(records, { minSample = 20 } = {}) {
-  const issues = records.filter((r) => r.kind !== 'retro');
+  const issues = records.filter(isIssueRecord);
   const retros = records.filter((r) => r.kind === 'retro');
   // A failureReason: "rate-limited" record is an infra death (the wrapper's
   // wait/resume cycle killed the attempt), not a model-quality signal. Exclude
@@ -514,7 +540,7 @@ export function ingestWave(reportPath, outcomes, { path = telemetryPath(), warn 
   }
 
   // Read outside the try below: an unreadable log is not a malformed report.
-  const existing = readRecords(path);
+  const existing = readRecords(path).filter(isIssueRecord);
   let records;
   try {
     // A sidecar entry carries its wave's tuningVersion; a wave without one ran before the sidecar
@@ -624,7 +650,7 @@ function waveWindow(stateDir, { report, startedAt, id }, familyReports, { owns, 
 export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords(telemetryPath()), warn = (m) => console.error(m) } = {}) {
   const out = { runId, dirs: runFamilyDirs(runId, baseDir), terminalRows: 0, prRows: { total: 0, uncovered: 0 }, engineDied: [], notIngested: [], unreadable: [], neverReported: { sidecar: [], configs: [] } };
   if (!out.dirs.length) throw new Error(`no dir under ${baseDir} belongs to run ${runId}`);
-  const logged = records.filter((r) => sameRun(r.runId, runId));
+  const logged = records.filter((r) => isIssueRecord(r) && sameRun(r.runId, runId));
   // Quiet: an unreadable report is named in `unreadable`, so it is not warned about as well.
   const reads = out.dirs.map((dir) => readWaveReports(dir, { warn: () => {} }));
   const family = reads.flat();
@@ -673,7 +699,9 @@ function main(argv) {
     const norm = appendRecord(JSON.parse(readArg(src)), { path: telemetryPath() });
     const what = norm.kind === 'retro'
       ? `retro (wave ${norm.wave}, ${norm.filed.length} filed)`
-      : `${norm.repo}#${norm.issue} (${norm.finalState})`;
+      : norm.kind === 'measure'
+        ? `measure (wave ${norm.wave}, ${norm.repo}, ${norm.metric}: ${norm.status})`
+        : `${norm.repo}#${norm.issue} (${norm.finalState})`;
     process.stderr.write(`appended ${what} → ${telemetryPath()}\n`);
     return;
   }

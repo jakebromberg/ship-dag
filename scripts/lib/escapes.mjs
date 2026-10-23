@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { ghCli, ghJson, withBackoff } from './gh.mjs';
+import { isIssueRecord } from './log-order.mjs';
 import { formatRef, issueKey, parsePr, parseRef, refKey, sameRepo } from './ref.mjs';
 import { groupBy } from './stats.mjs';
 import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
@@ -216,7 +217,7 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
   const covered = new Set(); // issue refs some source gave a PR for, or a skipped report withheld one from
   const add = (p, tuningVersion) => { const k = refKey(formatRef(p.repo, p.pr)); if (!byPr.has(k)) byPr.set(k, { ...p, tuningVersion }); };
   for (const r of records.toReversed()) {
-    const p = r.kind === 'retro' ? null : parsePr(r.pr, r.repo);
+    const p = isIssueRecord(r) ? parsePr(r.pr, r.repo) : null;
     if (!p) continue;
     covered.add(issueKey(r));
     add(p, r.tuningVersion ?? 0);
