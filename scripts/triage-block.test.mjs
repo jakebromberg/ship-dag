@@ -2,12 +2,9 @@
 // for comments has to live in the block itself.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { docLine, docSection } from './lib/doc-pins.mjs';
 
-const skill = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'SKILL.md'), 'utf8');
-const block = skill.split('### Triage (Haiku, read-only)')[1].split(/\n### |\n## /)[0];
+const block = docSection('### Triage (Haiku, read-only)');
 const step = (n) => {
   const line = block.split('\n').find((l) => l.startsWith(`> ${n}. `));
   assert.ok(line, `SKILL.md's Triage block has no step ${n}; update this pin to wherever the trust rule moved`);
@@ -28,7 +25,7 @@ for (const [n, phrase] of [
 
 // `triagedAt` and `baseSha` come back from the Haiku subagent, but only the main agent builds the spec, so the
 // instruction to copy them has to sit in the main agent's own steps (3c and 4a), never in the pasted block.
-const stepLine = (marker) => skill.split('\n').find((l) => l.startsWith(marker));
+const stepLine = docLine;
 test('triage returns triagedAt and baseSha, and the block itself says nothing about the spec', () => {
   const ret = block.split('\n').find((l) => l.startsWith('> **Return:**'));
   assert.match(ret, /triagedAt: "[^"]*UTC[^"]*Z[^"]*"/);
@@ -55,7 +52,7 @@ test('step 4a says a space-separated or zone-less triagedAt is read as UTC', () 
   assert.match(stepLine('**a. Emit the engine config.**'), /2026-10-20 15:00:00`\) is read as UTC/);
 });
 test('step 5 names the same ref inputs as emit-config: the digest, the decisions and the findings', () => {
-  const line = skill.split('\n').find((l) => l.startsWith('- **Blocking finding**'));
+  const line = docLine('- **Blocking finding**');
   assert.match(line, /digest, the decisions you quote and these findings/);
   assert.match(line, /read every other bare `#N` against the issue's own repo, whatever word comes before it/);
   assert.match(line, /`owner\/repo#N` against its own repo, always/);

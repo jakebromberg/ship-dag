@@ -9,6 +9,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { docLine } from './lib/doc-pins.mjs';
 import { coHome, coDistPath } from './lib/co-home.mjs';
 import { ghStubBin, graphqlFailure, restFailure } from './lib/gh-fixture.mjs';
 import { composeCiLine, cliArgs, commandsFor, exitCodeFor, runCiProfile, setupProblem, spawnFailure } from './run-ci-profile.mjs';
@@ -238,8 +239,7 @@ test('exit 75 when no slot frees within the wait cap', real, async () => {
 });
 
 test('SKILL.md step 6.2 re-runs local CI through run-ci-profile.mjs', () => {
-  const skill = readFileSync(join(HERE, '..', 'SKILL.md'), 'utf8');
-  const step = skill.split('\n').find((l) => l.startsWith('2. **If the rebase moved the base**'));
+  const step = docLine('2. **If the rebase moved the base**');
   assert.match(step, /scripts\/run-ci-profile\.mjs/);
   // The 15-minute bound routes through the preflight with the summed wait, so critical pressure reaches point F.
   assert.match(step, /15 minutes[^.]*resource-preflight\.mjs" check[^.]*--waited-minutes/);
@@ -251,7 +251,6 @@ test('SKILL.md step 6.2 re-runs local CI through run-ci-profile.mjs', () => {
   assert.match(step, /30 minutes[^.]*whatever the pressure[^.]*point F/);
   // Step 6's no-loop rule and the Guardrails name the same cap, not the preflight alone.
   for (const marker of ['**Never loop-retry a failing CI or merge.**', '- **No auto-retry loops**']) {
-    const line = skill.split('\n').find((l) => l.startsWith(marker));
-    assert.match(line, /run-ci-profile\.mjs` exit 75 in step 6\.2 is bounded[^.]*30-minute cap/, marker);
+    assert.match(docLine(marker), /run-ci-profile\.mjs` exit 75 in step 6\.2 is bounded[^.]*30-minute cap/, marker);
   }
 });
