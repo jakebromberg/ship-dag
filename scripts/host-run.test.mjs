@@ -446,3 +446,18 @@ test('the CLI exits 1, never 255 or a --collect-only resume, when the worktree r
   assert.doesNotMatch(lines.join(''), /collect-only/);
   assert.equal(existsSync(join(dir, 'l')), false);
 });
+
+// The four modes are alternatives: any two together exit 2 naming both, before an ssh call (the runner throws if called).
+const MODE_FLAGS = [['--plan'], ['--preflight'], ['--collect-only'], WORKTREE];
+for (const [i, a] of MODE_FLAGS.entries()) {
+  for (const b of MODE_FLAGS.slice(i + 1)) {
+    test(`the CLI exits 2 for ${a[0]} with ${b[0]}, naming both and making no call`, async () => {
+      const lines = [];
+      const config = join(mkdtempSync(join(tmpdir(), 'host-run-modes-')), 'c.json');
+      writeFileSync(config, JSON.stringify({ configDir: `${stateDir}/state`, worktreeDir: `${stateDir}/wt` }));
+      assert.equal(await entry(['box', config, '--state', 's', ...a, ...b], { hosts: { box }, run: { ssh: boom, rsync: boom }, err: (m) => lines.push(m) }), 2);
+      const shown = lines.join('');
+      assert.ok(shown.includes(a[0]) && shown.includes(b[0]), shown);
+    });
+  }
+}
