@@ -1,8 +1,8 @@
 # Tuning decision log
 
-One entry per decision in #64 (D1–D8) and #291 (D9), then the cross-cutting tripwire that guards no single decision, then the metric definitions the tripwires are computed under, then the dismissals. SKILL.md step 7 runs `telemetry.mjs tripwires` and answers a tripped tripwire here. D1–D8 and the cross-cutting tripwire were decided on 2026-10-08 ("go with recommendations", #64), so their first review date is 2026-12-07, 60 days later; D9 was decided on 2026-10-20 (#291), so its first review date is 2026-12-19.
+One entry per decision in #64 (D1–D8), #291 (D9) and #256 (D10), then the cross-cutting tripwire that guards no single decision, then the metric definitions the tripwires are computed under, then the dismissals. SKILL.md step 7 runs `telemetry.mjs tripwires` and answers a tripped tripwire here. D1–D8 and the cross-cutting tripwire were decided on 2026-10-08 ("go with recommendations", #64), so their first review date is 2026-12-07, 60 days later; D9 was decided on 2026-10-20 (#291), so its first review date is 2026-12-19; D10 was decided on 2026-10-16 (#256), so its first review date is 2026-12-15.
 
-Each entry's *Review date* is also the `reviewDate` of every row in `references/tripwires.json` whose `decision` names that entry: `D1`–`D9` name a decision, and `all` names the entry of the row's own id under *Cross-cutting tripwires*. `tripwires` reports `reviewOverdue` once that date has passed. Change the two together; `scripts/lib/tripwires.test.mjs` fails when they disagree. When a review is answered, move the date to the answer date + 60 days in both places, or every later wave reports it overdue again.
+Each entry's *Review date* is also the `reviewDate` of every row in `references/tripwires.json` whose `decision` names that entry: `D1`–`D10` name a decision, and `all` names the entry of the row's own id under *Cross-cutting tripwires*. `tripwires` reports `reviewOverdue` once that date has passed. Change the two together; `scripts/lib/tripwires.test.mjs` fails when they disagree. When a review is answered, move the date to the answer date + 60 days in both places, or every later wave reports it overdue again.
 
 ## Decisions
 
@@ -78,6 +78,14 @@ Each entry's *Review date* is also the `reviewDate` of every row in `references/
 - **Baseline:** 1130 of 1156 proposals approved (97.8%) over the 196 retro records in the log on 2026-10-20, as a frozen cohort. The 2 records with legacy keys are left out of the baseline and of the window: `sd-20260916-213414` (`approvedAll`) and `sd-20261002-211445` (`refactorsProposed`, `adjustmentsProposed`). The newest 100 proposals read 104 of 104, so it is expected to trip on the first wave after it ships.
 - **PR:** none yet; it closes #291.
 - **Review date:** 2026-12-19.
+
+### D10: a CONFIRMED `correctness` finding about text only blocks only when flagged `blocking`
+
+- **Choice:** a CONFIRMED `correctness` finding about text only (a comment, docblock or doc) no longer blocks by itself. It blocks only when the reviewer marks it `blocking: true`; otherwise it is a nit. A `correctness` finding about code is unchanged: CONFIRMED still blocks whatever the reviewer's flag. The gate needs a way to tell the two apart, such as a reviewer-set `subject: text|code` field or a separate category, whichever keeps the schema simplest. Until #256 lands, `ALWAYS_BLOCK` in `scripts/review-gate.mjs` still blocks every CONFIRMED `correctness` finding.
+- **Decided:** 2026-10-16, in the comment on #256. Evidence: WXYC/Backend-Service#2035, #2260 and #2378 each spent a full fix round on a wrong comment filed as `correctness`.
+- **Tripwire:** none. Escapes of text-only findings show up under T-escapes.
+- **PR:** none yet; #256 implements it, after #46, #42 and #157.
+- **Review date:** 2026-12-15.
 
 ## Cross-cutting tripwires
 
