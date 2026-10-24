@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // host-sync-claude.mjs <host> [--dry-run] — sync this machine's Claude config (CLAUDE.md, lease hook entries in
-// settings.json, skills/) to a host from references/hosts.json. Exits 0 when the sync finished (with --dry-run, when
+// settings.json, skills/) to a host from the host registry (scripts/lib/hosts.mjs). Exits 0 when the sync finished (with --dry-run, when
 // nothing is pending), 1 if a step failed, 2 on usage (the registry is read after the arguments pass), 3 when every failure was a dropped connection before anything on
 // the host changed, and 10 when --dry-run found changes pending.
 import { spawnSync } from 'node:child_process';

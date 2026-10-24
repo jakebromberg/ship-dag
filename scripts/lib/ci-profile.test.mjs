@@ -4,7 +4,8 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { REPO_CI_COMMAND, ciProfileFor, inWorktree, loadProfiles, repoCiScript, resolveCiProfile } from './ci-profile.mjs';
-import { TOOLCHAINS, loadHosts } from './hosts.mjs';
+import { TOOLCHAINS } from './hosts.mjs';
+import { testHost } from './host-fixture.mjs';
 import { splitByHost, toolchainsNeeded } from './split-by-host.mjs';
 import { graphqlAnswer, graphqlFailure, restFailure } from './gh-fixture.mjs';
 
@@ -159,12 +160,12 @@ test('every toolchain the shipped profiles declare is one hosts.json can list', 
   }
 });
 
-test('wxyc-ios-64 declares xcode, since test-affected.sh hides its xcodebuild, and an issue pinned to mini is routed there', () => {
+test('wxyc-ios-64 declares xcode, since test-affected.sh hides its xcodebuild, and an issue pinned to an Xcode host is routed there', () => {
   const profile = resolveCiProfile('WXYC/wxyc-ios-64', loadProfiles());
   assert.deepEqual(toolchainsNeeded({ commands: profile.commands }).toolchains, [], 'the commands alone imply no toolchain');
   assert.deepEqual(toolchainsNeeded(profile), { toolchains: ['xcode'], unrecognized: [] });
   const spec = { repo: 'WXYC/wxyc-ios-64', stateDir: '/s/ship-dag/engine/run1', projectRoot: '/p', promptTemplate: '/p.md', repos: { 'WXYC/wxyc-ios-64': profile }, issues: [{ number: 1, host: 'mini' }, { number: 2 }] };
-  const split = splitByHost(spec, loadHosts());
+  const split = splitByHost(spec, { mini: testHost('/h', { toolchains: ['node', 'xcode'] }, 'mini') });
   assert.deepEqual(Object.keys(split), ['mini', 'local']);
   assert.deepEqual(split.mini.issues.map((i) => i.number), [1]);
 });

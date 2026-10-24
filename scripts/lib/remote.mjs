@@ -16,7 +16,7 @@ export const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 /**
  * `cmd`, to run over ssh on a host and find node, gh and claude. It is returned unchanged: over plain non-interactive
- * ssh, `command -v node gh claude` on mini resolves all three to /Users/me/.local/bin, which ~/.zshenv
+ * ssh, `command -v node gh claude` on the first registered host resolves all three to ~/.local/bin, which ~/.zshenv
  * puts on PATH ($SHELL is /bin/zsh; /opt/homebrew/bin exists but holds none of them), checked 2026-10-21. A login
  * shell (`$SHELL -lc`) is not needed there; a host whose .zshenv lacks the PATH would need it added here, once.
  */

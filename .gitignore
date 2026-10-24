@@ -3,3 +3,4 @@ node_modules/
 .test-scratch/
 plugins/*/.claude-plugin/types/
 plugins/*/tsconfig.json
+references/hosts.json
