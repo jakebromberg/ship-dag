@@ -16,8 +16,11 @@ export function homePaths(text) {
   return [...text.matchAll(/\/(?:Users|home)\/([A-Za-z][\w.-]*)/g)].filter(([, name]) => !PLACEHOLDER_HOMES.includes(name)).map(([path]) => path);
 }
 
+// Built from parts, so this file holds no literal home path for the scan below to find.
+const [U, H] = ['/Users/', '/home/'];
+
 for (const [name, text, expected] of [
-  ['a real home', 'cd /Users/alice/Developer && ls /home/bob', ['/Users/alice', '/home/bob']],
+  ['a real home', `cd ${U}alice/Developer && ls ${H}bob`, [`${U}alice`, `${H}bob`]],
   ['a placeholder home', 'ssh mini ls /Users/me/Developer /home/you', []],
   ['a variable home', 'cd "$HOME/Developer" ~/.config ${h.home}/D', []],
 ]) {
