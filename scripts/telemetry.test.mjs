@@ -1946,7 +1946,6 @@ describe('SKILL.md telemetry wiring', () => {
 // Step 6.3's --outcomes table, cell by cell: each JSON cell (with <ref> and N filled in) must pass validateOutcomes and
 // derive the events the row's situation calls for, so a renamed field or a changed rule fails here, not in a live wave.
 describe("SKILL.md step 6.3's --outcomes table", () => {
-  const skill = readFileSync(fileURLToPath(new URL('../SKILL.md', import.meta.url)), 'utf8');
   const section = docSection('### 6.3 Ingest the wave');
   const rows = section.split('\n').filter((l) => l.startsWith('| ') && l.includes('{"<ref>"'))
     .map((l) => ({ situation: l.split('|')[1].trim(), cells: [...l.matchAll(/`(\{"<ref>":[^`]*\})`/g)].map((m) => JSON.parse(m[1].replaceAll('<ref>', REF).replace(/\bN\b/g, '2'))) }));
