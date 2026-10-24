@@ -51,7 +51,7 @@
 //   node emit-config.mjs <spec.json|-> --by-host <dir>   # write <dir>/config.<host>.json for each host that has an issue (config.local.json included), print their paths
 //
 // Hosts (--by-host only): an issue runs on its own `host`, else its repo's `repos[repo].host`, else `local`; see
-// lib/split-by-host.mjs for the toolchain guard and the paths a remote host's config takes from references/hosts.json.
+// lib/split-by-host.mjs for the toolchain guard and the paths a remote host's config takes from the host registry (scripts/lib/hosts.mjs).
 // An unknown host, or an explicit issue `host` that lacks a toolchain its CI needs, exits 2 naming the issue. `host` never reaches the engine config.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
