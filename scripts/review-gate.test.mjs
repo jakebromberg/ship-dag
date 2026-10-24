@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { docBetween } from './lib/doc-pins.mjs';
 import {
   gateReview,
   parseBlockOn,
@@ -873,9 +874,7 @@ test('the Review block, step 6.2 and the schema still name the merge-order note 
 // the full review. The machinery that tried to resolve siblings is gone, and
 // the reports path is the one the engine writes.
 test('step 6.2 states the fail-closed escalation rule and carries none of the sibling-resolution machinery', () => {
-  const raw = readFileSync(join(REPO_ROOT, 'SKILL.md'), 'utf8');
-  const step = raw.slice(raw.indexOf('**Escalation rule.**'), raw.indexOf('3. `gh pr merge --rebase`'));
-  assert.ok(step.length > 0, 'step 6.2 no longer has an **Escalation rule.** paragraph');
+  const step = docBetween('   **Escalation rule.**', '3. `gh pr merge --rebase`');
   for (const needle of ['`mergeOrder`', '`meta.head`', 'whole digit run', 'in doubt', '`{CARRIED_NOTES}`', 'round file']) {
     assert.ok(step.includes(needle), `step 6.2's escalation rule no longer says ${needle}`);
   }

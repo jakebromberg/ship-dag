@@ -1,9 +1,10 @@
 // Tests for the doc-pin helper: the pins find text in SKILL.md or any references/ file, and fail when it is gone or ambiguous.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { docBetween, docLine, docSection } from './doc-pins.mjs';
 
 const SKILL = ['# Title', '', '## A', 'a body', '### A1', 'a1 body', '```', '# not a heading', '```', '## B', 'b body', ''].join('\n');
@@ -83,4 +84,18 @@ test('moving a pinned section into references/ keeps the pins green', () => {
 test('the real docs resolve a known section and line', () => {
   assert.match(docSection('### 5. Reconcile each result'), /Blocking finding/);
   assert.match(docLine('**Status board.**'), /board\.mjs/);
+});
+
+test('the default root resolves under a checkout path with a space or a non-ASCII character', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'doc pins é-'));
+  try {
+    mkdirSync(join(root, 'scripts/lib'), { recursive: true });
+    copyFileSync(fileURLToPath(new URL('./doc-pins.mjs', import.meta.url)), join(root, 'scripts/lib/doc-pins.mjs'));
+    writeFileSync(join(root, 'SKILL.md'), SKILL);
+    const copied = await import(pathToFileURL(join(root, 'scripts/lib/doc-pins.mjs')).href);
+    assert.match(copied.docSection('## B'), /b body/);
+    assert.equal(copied.docLine('b body'), 'b body');
+  } finally {
+    rmSync(root, { recursive: true });
+  }
 });

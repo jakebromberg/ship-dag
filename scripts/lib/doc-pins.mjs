@@ -3,8 +3,9 @@
 // was copied fails instead of silently passing. Markdown docs only; tests of workflow.js, prompt.md or the README read their own.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('../..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
 /** The docs under `root` as `{ file, lines }`: SKILL.md, then every .md under references/. */
 function docs(root) {

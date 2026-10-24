@@ -176,7 +176,7 @@ test("SKILL.md's Implement block has a {DECISIONS} slot beside {DIGEST}", () => 
 test("SKILL.md's {DECISIONS} fill rule sits in the step text, outside the verbatim block, with withDecisions' heading", () => {
   assert.ok(!copies["SKILL.md's Implement block"].includes('fill from triage'));
   const fillRule = `\`{DECISIONS}\` with the line \`${DECISIONS_HEADING}\``;
-  assert.ok(skill.includes(fillRule));
+  assert.ok(docSection('### 4. Implement fan-out').includes(fillRule));
   assert.ok(!docSection('### Implement (Sonnet, own worktree)').includes(fillRule));
 });
 
