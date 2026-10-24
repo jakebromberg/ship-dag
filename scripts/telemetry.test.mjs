@@ -405,9 +405,13 @@ for (const [name, bad] of [
   ['null-valued entry', { R1: null }],
   ['a number-valued entry', { R1: 77 }],
   ['a list holding a non-string', { R1: ['WXYC/x#77', 7] }],
+  ['a bare number-sign value', { R1: '#77' }],
+  ['an empty-string value', { R1: '' }],
+  ['an empty list', { R1: [] }],
+  ['a list holding a non-ref string', { R1: ['WXYC/x#77', '#78'] }],
 ]) {
   test(`normalizeRecord: a retro record's filedById that is ${name} is refused`, () => {
-    assert.throws(() => normalizeRecord(retroBase({ filedById: bad }), FIXED), /filedById must map each proposal id to a ref or a list of refs/);
+    assert.throws(() => normalizeRecord(retroBase({ filedById: bad }), FIXED), /filedById must map each proposal id to a ref or a non-empty list of refs/);
   });
 }
 
@@ -418,6 +422,13 @@ test('isIssueRecord is exported by telemetry.mjs: kind issue or no kind', () => 
 test('report: a measure record changes no per-issue indicator and adds no section', () => {
   const recs = fixture8().map((r) => normalizeRecord(r, FIXED));
   assert.deepEqual(report([...recs, normalizeRecord(measureBase({ repo: 'WXYC/x', issue: 1, finalState: 'merged' }), FIXED)]), report(recs));
+});
+
+test('report: a measure record written first, spelled differently from the issue records, does not rename the repo in byRepo', () => {
+  const recs = fixture8().map((r) => normalizeRecord(r, FIXED));
+  const measure = normalizeRecord(measureBase({ repo: 'wxyc/X' }), FIXED);
+  assert.deepEqual(Object.keys(report([measure, ...recs]).byRepo), Object.keys(report(recs).byRepo));
+  assert.deepEqual(Object.keys(report([measure, ...recs]).byRepo), ['WXYC/x']);
 });
 
 test('ingest-wave: a measure record that mimics the row\'s own event is no existing record, so the row is still recorded', () => withStateDir({
@@ -1611,6 +1622,9 @@ describe('audit', () => {
     // A record with no parseable ts sorts before every timed one.
     assert.deepEqual(audit_(base, [death, logged({ ts: undefined })]).engineDied, [REF]);
     assert.deepEqual(audit_(base, [death, logged({ ts: T2, repo: 'wxyc/dj-site' })]).engineDied, []);
+    // A measure record written first, in another spelling of the repo, does not choose the spelling of the named ref.
+    const measure = { kind: 'measure', runId: RUN_A, wave: 1, repo: REF.split('#')[0].toLowerCase(), metric: 'duplication', status: 'ok' };
+    assert.deepEqual(audit_(base, [measure, death]).engineDied, [REF]);
     // An outcome that keeps the death's reason (a point-F hold) is an outcome, not the death.
     assert.deepEqual(audit_(base, [death, logged({ ts: T2, reportId: 'w1', implStatus: 'error', finalState: 'blocked-hitl', failureReason: 'engine-died' })]).engineDied, []);
   }));
