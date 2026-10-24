@@ -169,7 +169,7 @@ test('readRecords: missing file → []', () => {
 test('telemetryPath: SHIP_DAG_TELEMETRY > XDG_STATE_HOME > HOME/.local/state', () => {
   assert.equal(telemetryPath({ SHIP_DAG_TELEMETRY: '/x/y.jsonl' }), '/x/y.jsonl');
   assert.equal(telemetryPath({ XDG_STATE_HOME: '/state' }), '/state/ship-dag/runs.jsonl');
-  assert.equal(telemetryPath({ HOME: '/home/j' }), '/home/j/.local/state/ship-dag/runs.jsonl');
+  assert.equal(telemetryPath({ HOME: '/home/me' }), '/home/me/.local/state/ship-dag/runs.jsonl');
 });
 
 // The canonical 8-record indicator fixture, shared by the plain report test and

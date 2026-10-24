@@ -12,7 +12,7 @@
 // specifics: the gh-fetch wrapper, the recursive sub-issue walk and the
 // container-edge rewriting it requires, body-prose edge parsing, spec→core
 // conversion, and the human-readable table. Set `CO_HOME` to your claude-orchestrator
-// checkout (default `/Users/me/Developer/claude-orchestrator`); the core must
+// checkout (default `~/Developer/claude-orchestrator`); the core must
 // be built (`npm run build` there — `dist/` is committed, so a fresh checkout
 // already has it).
 //

@@ -2,7 +2,7 @@
 //
 // /ship-dag hands the claude-orchestrator engine per-repo worktrees created as
 // siblings under a single "repos dir" (the org checkout root that holds each
-// repo checkout, e.g. `/Users/me/Developer/daisyguide` holding `backend/`).
+// repo checkout, e.g. `~/Developer/daisyguide` holding `backend/`).
 // hooks.mts threads the result into deriveWorktreeHooks({ reposDir }); passing
 // `undefined` lets the engine keep its own default, so a run that sets neither
 // env var is unchanged.

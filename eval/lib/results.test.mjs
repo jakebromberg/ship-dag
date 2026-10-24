@@ -23,7 +23,7 @@ function memFs() {
 test('resultsDir: env resolution order', () => {
   assert.equal(resultsDir({ SHIP_DAG_EVAL_RESULTS: '/x' }), '/x');
   assert.equal(resultsDir({ XDG_STATE_HOME: '/s' }), '/s/ship-dag/eval-results');
-  assert.equal(resultsDir({ HOME: '/home/j' }), '/home/j/.local/state/ship-dag/eval-results');
+  assert.equal(resultsDir({ HOME: '/home/me' }), '/home/me/.local/state/ship-dag/eval-results');
 });
 
 test('writeResults: writes <runId>.json and round-trips', () => {
