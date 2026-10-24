@@ -1,18 +1,41 @@
-// Tests for the host registry (references/hosts.json) and its validation.
+// Tests for the host registry (hosts.json, kept outside the repo; see hostsPath) and its validation.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadHosts, validateHosts } from './hosts.mjs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { hostsPath, loadHosts, validateHosts } from './hosts.mjs';
 
-const GOOD = { ssh: 'box', home: '/Users/jake', reposDir: '/Users/jake/Developer', sdHome: '/Users/jake/Developer/ship-dag' };
+const GOOD = { ssh: 'box', home: '/Users/me', reposDir: '/Users/me/Developer', sdHome: '/Users/me/Developer/ship-dag' };
 
-test('the shipped hosts.json loads, listing funlandresearch with the node and xcode toolchains', () => {
-  assert.deepEqual(Object.keys(loadHosts()), ['funlandresearch']);
-  assert.deepEqual(loadHosts().funlandresearch.toolchains, ['node', 'xcode']);
+for (const [name, env, expected] of [
+  ['SHIP_DAG_HOSTS names the file outright', { SHIP_DAG_HOSTS: '/x/h.json', XDG_CONFIG_HOME: '/xdg' }, '/x/h.json'],
+  ['XDG_CONFIG_HOME holds ship-dag/hosts.json', { XDG_CONFIG_HOME: '/xdg' }, '/xdg/ship-dag/hosts.json'],
+  ['the default is ~/.config/ship-dag/hosts.json', {}, '/home/me/.config/ship-dag/hosts.json'],
+  ['an empty SHIP_DAG_HOSTS or XDG_CONFIG_HOME is unset', { SHIP_DAG_HOSTS: '', XDG_CONFIG_HOME: '' }, '/home/me/.config/ship-dag/hosts.json'],
+]) {
+  test(`hostsPath: ${name}`, () => {
+    assert.equal(hostsPath(env, '/home/me'), expected);
+  });
+}
+
+test('loadHosts reads a missing registry as no remote hosts', () => {
+  assert.deepEqual(loadHosts(join(mkdtempSync(join(tmpdir(), 'hosts-')), 'hosts.json')), {});
+});
+
+test('loadHosts validates the registry it reads', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'hosts-')), 'hosts.json');
+  writeFileSync(path, JSON.stringify({ hosts: { box: { ...GOOD, toolchains: ['rust'] } } }));
+  assert.throws(() => loadHosts(path), /box: toolchains must be an array/);
+});
+
+test('the shipped hosts.example.json is a valid registry', () => {
+  assert.deepEqual(loadHosts(new URL('../../references/hosts.example.json', import.meta.url)).mini.toolchains, ['node', 'xcode']);
 });
 
 test('validateHosts accepts a full entry, defaulting toolchains to none and coHome under home', () => {
   const full = { ...GOOD, coHome: '/c', sessionSlots: 2, leaseSlots: 1, toolchains: ['node', 'python'] };
-  assert.deepEqual(validateHosts({ a: full, b: GOOD }), { a: full, b: { ...GOOD, coHome: '/Users/jake/Developer/claude-orchestrator', toolchains: [] } });
+  assert.deepEqual(validateHosts({ a: full, b: GOOD }), { a: full, b: { ...GOOD, coHome: '/Users/me/Developer/claude-orchestrator', toolchains: [] } });
 });
 
 // The default row uses a home other than this Mac's, so it shows coHome is derived from `home`, not a fixed path.
