@@ -210,7 +210,7 @@
     "jakebromberg/PhaseMatrix": {
       "baseBranch": "main",
       "commands": [
-        "cp -R /Users/jake/Developer/PhaseMatrix/.build .build 2>/dev/null || true",
+        "cp -R $HOME/Developer/PhaseMatrix/.build .build 2>/dev/null || true",
         "find .build -maxdepth 4 -type d -name 'ModuleCache*' -prune -exec rm -rf {} + 2>/dev/null || true",
         "swift build --build-tests",
         "swift test --skip-build --skip allocationProbe",
@@ -223,7 +223,7 @@
         "xcrun swift build",
         "xcrun swift test"
       ],
-      "_note": "Verified green 2026-09-15 in a clean detached worktree: build 44s, 340 tests in 67 suites, both exit 0 (the suite had grown to 351 tests in 68 suites by 2026-10-12). Engine worktrees land beside the checkout as Shared/Wallpaper--<slug> (scripts/engine/repo-layout.mjs). `xcrun` is load-bearing — swiftly puts Swift 6.2 first on PATH (/Users/jake/.swiftly/bin/swift) while the SDK is Xcode 27's, and bare `swift build` dies with 'unknown argument: -target-arch-variant' before compiling anything. xcrun selects the Xcode toolchain (6.4) and the mismatch disappears. This repo is a SUBMODULE of WXYC/wxyc-ios-64 (Shared/Wallpaper), and its Package.swift takes six `../` path dependencies (Analytics, Caching, ColorPalette, Core, Logger, WXUI). They resolve only because PROJECT_ROOT derives to .../wxyc-ios-64/Shared, which is where those siblings live — so worktrees MUST land under Shared/. The package's own CLAUDE.md says swift build cannot resolve from a standalone clone; that is true of a bare clone and NOT of a worktree in the submodule layout. `swift test` never compiles .metal, so shader changes need the sample app (Examples/WallpaperSampleApp) by hand. The repo has no GitHub Actions CI of its own — this profile is the only automated check, so do not weaken it."
+      "_note": "Verified green 2026-09-15 in a clean detached worktree: build 44s, 340 tests in 67 suites, both exit 0 (the suite had grown to 351 tests in 68 suites by 2026-10-12). Engine worktrees land beside the checkout as Shared/Wallpaper--<slug> (scripts/engine/repo-layout.mjs). `xcrun` is load-bearing — swiftly puts Swift 6.2 first on PATH (~/.swiftly/bin/swift) while the SDK is Xcode 27's, and bare `swift build` dies with 'unknown argument: -target-arch-variant' before compiling anything. xcrun selects the Xcode toolchain (6.4) and the mismatch disappears. This repo is a SUBMODULE of WXYC/wxyc-ios-64 (Shared/Wallpaper), and its Package.swift takes six `../` path dependencies (Analytics, Caching, ColorPalette, Core, Logger, WXUI). They resolve only because PROJECT_ROOT derives to .../wxyc-ios-64/Shared, which is where those siblings live — so worktrees MUST land under Shared/. The package's own CLAUDE.md says swift build cannot resolve from a standalone clone; that is true of a bare clone and NOT of a worktree in the submodule layout. `swift test` never compiles .metal, so shader changes need the sample app (Examples/WallpaperSampleApp) by hand. The repo has no GitHub Actions CI of its own — this profile is the only automated check, so do not weaken it."
     },
     "WXYC/media-worker": {
       "baseBranch": "main",

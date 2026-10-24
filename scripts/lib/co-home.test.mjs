@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { coHome, coDistPath, coDistPathIn, importCo } from './co-home.mjs';
 
@@ -13,6 +13,11 @@ test('coHome: CO_HOME wins; unset and empty fall back to the default checkout', 
   assert.equal(coHome({ CO_HOME: '/x' }), '/x');
   assert.equal(coHome({}), DEFAULT);
   assert.equal(coHome({ CO_HOME: '' }), DEFAULT);
+});
+
+test("coHome: the default checkout is under the given home, which defaults to this user's", () => {
+  assert.ok(coHome({}, '/h').startsWith('/h/'), coHome({}, '/h'));
+  assert.equal(coHome({}), coHome({}, homedir()));
 });
 
 test('coDistPath: joins segments under dist/src', () => {

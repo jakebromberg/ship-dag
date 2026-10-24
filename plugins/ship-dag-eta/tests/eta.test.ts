@@ -7,7 +7,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const MIN = 60_000
 const NOW = Date.parse('2026-10-17T18:00:00Z')
-const BASE = '/home/dj/.local/state/ship-dag/engine'
+const BASE = '/home/me/.local/state/ship-dag/engine'
 const RUN = 'sd-20261017-080000'
 
 type Tree = Record<string, { text?: string; mtimeMs: number }>
@@ -52,7 +52,7 @@ function world(on: On, tree: Tree, passes: Record<string, number> = {}, { dirMti
     return [...names]
   }
   const newest = (dir: string) => Math.max(0, ...Object.entries(tree).filter(([p]) => p.startsWith(`${dir}/`)).map(([, f]) => f.mtimeMs))
-  mock.env(on, { HOME: '/home/dj' })
+  mock.env(on, { HOME: '/home/me' })
   mock.store(on)
   on('fs.list', ($, e) => ({ value: children(e.path).map(([name, kind]) => ({ name, kind, size: 0, mtimeMs: kind === 'file' ? tree[`${e.path}/${name}`]!.mtimeMs : 0, isLink: false })) }))
   on('fs.read', ($, e) => {
@@ -147,7 +147,7 @@ test('the command prints the whole estimate, for a named run whatever its age', 
   expect(text).toMatch(/0 blocked, not counted/)
 })
 
-const GATE = '/home/dj/.claude/skills/ship-dag/scripts/eta/review-passes.mjs'
+const GATE = '/home/me/.claude/skills/ship-dag/scripts/eta/review-passes.mjs'
 
 test('depth runs from each ticket\'s latest engine start to its review pass, read through the ship-dag skill\'s review gate', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })

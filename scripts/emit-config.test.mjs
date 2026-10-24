@@ -17,7 +17,7 @@ function spec(overrides = {}) {
     name: 'ship-dag-run1',
     repo: 'WXYC/library-metadata-lookup',
     stateDir: '/state/run1',
-    projectRoot: '/Users/jake/Developer/WXYC',
+    projectRoot: '/Users/me/Developer/WXYC',
     promptTemplate: '/skill/scripts/engine/prompt.md',
     repos: {
       'WXYC/library-metadata-lookup': { baseBranch: 'main', commands: ['ruff check .', 'pytest -q'] },
@@ -50,7 +50,7 @@ test('buildConfig sets the engine-invocation defaults', () => {
   assert.equal(c.name, 'ship-dag-run1');
   assert.equal(c.configDir, '/state/run1/state');
   assert.equal(c.worktreeDir, '/state/run1/worktrees');
-  assert.equal(c.projectRoot, '/Users/jake/Developer/WXYC');
+  assert.equal(c.projectRoot, '/Users/me/Developer/WXYC');
   assert.equal(c.promptTemplate, '/skill/scripts/engine/prompt.md');
   assert.equal(c.branchPrefix, 'orchestrator/');
   assert.equal(c.defaultRepo, 'WXYC/library-metadata-lookup');
@@ -495,7 +495,7 @@ test('the unverified-repo warning names both remedies: the repo declaring script
 
 // ---- hosts: --by-host splits the wave into one config per host ---------
 
-const BOX = { box: testHost('/Users/jake', { toolchains: ['node', 'python'] }) };
+const BOX = { box: testHost('/Users/me', { toolchains: ['node', 'python'] }) };
 const NODE_REPO = 'o/web';
 const XCODE_REPO = 'o/ios';
 const OPAQUE_REPO = 'o/opaque';
@@ -545,12 +545,12 @@ test('buildConfigsByHost: with no hosts the one local config is exactly what bui
 test("buildConfigsByHost: a remote host's config takes its paths from the registry, the local config keeps the spec's", () => {
   const s = hostSpec({ [NODE_REPO]: { host: 'box' } }, [{ number: 1 }, { number: 2, repo: XCODE_REPO }]);
   const { box, local } = Object.fromEntries(buildConfigsByHost(s, BOX).map((c) => [c.host, c.config]));
-  assert.equal(box.configDir, '/Users/jake/.local/state/ship-dag/engine/run1/state');
-  assert.equal(box.worktreeDir, '/Users/jake/.local/state/ship-dag/engine/run1/worktrees');
-  assert.equal(box.projectRoot, '/Users/jake/D');
-  assert.equal(box.promptTemplate, '/Users/jake/sd/scripts/engine/prompt.md');
+  assert.equal(box.configDir, '/Users/me/.local/state/ship-dag/engine/run1/state');
+  assert.equal(box.worktreeDir, '/Users/me/.local/state/ship-dag/engine/run1/worktrees');
+  assert.equal(box.projectRoot, '/Users/me/D');
+  assert.equal(box.promptTemplate, '/Users/me/sd/scripts/engine/prompt.md');
   assert.deepEqual(Object.keys(box.repos), [NODE_REPO]);
-  assert.deepEqual([local.configDir, local.worktreeDir, local.projectRoot, local.promptTemplate], ['/state/ship-dag/engine/run1/state', '/state/ship-dag/engine/run1/worktrees', '/Users/jake/Developer/WXYC', '/skill/scripts/engine/prompt.md']);
+  assert.deepEqual([local.configDir, local.worktreeDir, local.projectRoot, local.promptTemplate], ['/state/ship-dag/engine/run1/state', '/state/ship-dag/engine/run1/worktrees', '/Users/me/Developer/WXYC', '/skill/scripts/engine/prompt.md']);
   assert.deepEqual(Object.keys(local.repos), [XCODE_REPO]);
 });
 
