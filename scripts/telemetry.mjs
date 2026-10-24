@@ -10,7 +10,7 @@
 // Record schema: references/telemetry-schema.md is the one authored description of the issue, retro and
 // measure records (every key, the closed `skipReason` set, both accepted `findings` shapes and the legacy ones
 // that stay readable but that `append` refuses). Records carry a `kind` discriminator — "issue" (default;
-// stamped when absent, so pre-existing logs stay valid) "retro" (one run-scoped record per step-6.5 pass) or "measure" (one measurement of a metric).
+// stamped when absent, so pre-existing logs stay valid), "retro" (one run-scoped record per step-6.5 pass), or "measure" (one measurement of a metric).
 // normalizeRecord refuses a bad `skipReason` / `findings` with `bad skipReason` / `bad findings`;
 // readRecords does not normalize, so older rows stay readable.
 //
@@ -59,8 +59,6 @@ import { configDirs, readWaveReport, readWaveReports, reportOwnership, runFamily
 import { readSidecar, SIDECAR_NAME, waveConfigs } from './lib/wave-sidecar.mjs';
 import { defaultBaseDir } from './rate-limit-preflight.mjs';
 import { isIssueRecord, latestByRef, outcomeOf } from './lib/log-order.mjs';
-
-export { isIssueRecord };
 import { reviewRoundFiles } from './lib/review-rounds.mjs';
 import { CATEGORIES } from './review-gate.mjs';
 import { isFindingObject } from './lib/finding.mjs';
@@ -68,6 +66,8 @@ import { escapeReport, findEscapes, shipDagPrs } from './lib/escapes.mjs';
 import { digestPathForRef, logPathForRef } from './diagnose-failure.mjs';
 import { evaluateAll, loadTripwires, tripwireContext } from './lib/tripwires.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
+
+export { isIssueRecord };
 
 const COMPLEXITIES = new Set(['mechanical', 'normal', 'complex']);
 const PATHS = new Set(['engine', 'inline', 'workflow']);
@@ -213,9 +213,9 @@ function normalizeRetroRecord(rec, now) {
   // filedById links each approved proposal id to the refs it filed; absent on records from before it, which stay valid.
   if (rec.filedById != null) {
     const byId = rec.filedById;
-    const isRefs = (v) => typeof v === 'string' || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+    const isRefs = (v) => parseRef(v) !== null || (Array.isArray(v) && v.length > 0 && v.every((x) => parseRef(x) !== null));
     if (typeof byId !== 'object' || Array.isArray(byId) || !Object.values(byId).every(isRefs)) {
-      throw new Error('filedById must map each proposal id to a ref or a list of refs');
+      throw new Error('filedById must map each proposal id to a ref or a non-empty list of refs');
     }
   }
   return out;
@@ -308,8 +308,8 @@ export function report(records, { minSample = 20 } = {}) {
   const miss = missOf(cleared);
   const blocking = blockingOf(reached);
   const byRepo = {};
-  const clearedByRepo = groupByRepo(records, cleared);
-  for (const [repo, rs] of groupByRepo(records, reached)) {
+  const clearedByRepo = groupByRepo(issues, cleared);
+  for (const [repo, rs] of groupByRepo(issues, reached)) {
     const clearedHere = clearedByRepo.get(repo) ?? [];
     const tiers = groupBy((r) => r.complexity, rs);
     const tierOf = (tier) => {
@@ -686,7 +686,7 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
   // nothing followed was never resumed into the log. The death is its deferral with implStatus "error"; an outcome
   // that keeps the reason (a point-F hold) is not. A ref deferred at point F stays named: its deferral is the death.
   const last = latestByRef(logged);
-  const spelled = repoSpellings(records);
+  const spelled = repoSpellings(records.filter(isIssueRecord));
   out.engineDied = [...last.values()].filter((r) => outcomeOf(r) === ENGINE_DIED).map((r) => formatRef(spelled.get(refKey(r.repo)), r.issue));
   return out;
 }
