@@ -156,6 +156,51 @@ export function shippedBefore(groups, exclude = []) {
   });
 }
 
+/** The GitHub label that makes a run ticket a milestone of its own (a point the operator auditions or signs off). */
+export const MILESTONE_LABEL = 'hitl-gate';
+
+/**
+ * The run's milestones, in the order they come: reached ones (shipped) oldest first, then open ones in step order
+ * (the order `projectWaves` walks), then ones that can't be ordered. A ticket carrying `MILESTONE_LABEL` is one, named
+ * by its title; board-notes' `milestones` (`ref → value`) renames one or adds any run ticket with a non-empty string,
+ * and suppresses one with `false`; any other value is ignored, as is a ref that is no ticket of the run. A ticket
+ * closed without shipping is never one. Each row: `state` (`reached` | `open` | `unorderable`), `before` (the open run
+ * tickets among its ancestors), `outside` (the outside nodes among them, sorted), `wave` (the projected wave, or for a
+ * reached one the wave it shipped in), and `next`, true on the first open orderable row only.
+ *
+ * @param {{tickets:Array<{ref:string,title:string,status:string,labels?:string[],closedAt?:string|null,shippedWave?:string}>,
+ *   graph:ReturnType<typeof buildGraph>, waves:ReturnType<typeof projectWaves>, notes?:{milestones?:Record<string,unknown>}}} v
+ */
+export function milestones({ tickets, graph, waves, notes }) {
+  const extra = notes?.milestones ?? {};
+  const rows = [];
+  for (const t of tickets) {
+    const note = Object.hasOwn(extra, t.ref) ? extra[t.ref] : undefined;
+    const named = typeof note === 'string' && note.trim() ? note : null;
+    if (t.status === 'dropped' || note === false || (!named && !(t.labels ?? []).includes(MILESTONE_LABEL))) continue;
+    const reached = t.status === 'shipped';
+    const anc = [...(graph.ancestors.get(t.ref) ?? [])];
+    rows.push({
+      ref: t.ref, name: named ?? t.title, closedAt: t.closedAt,
+      state: reached ? 'reached' : graph.stepOf.has(t.ref) ? 'open' : 'unorderable',
+      before: anc.filter((r) => !graph.outside.has(r)).length,
+      outside: anc.filter((r) => graph.outside.has(r)).sort(compareRefs),
+      wave: reached ? { label: t.shippedWave ?? null, now: false } : waves.get(t.ref) ?? null,
+    });
+  }
+  const rank = { reached: 0, open: 1, unorderable: 2 };
+  const key = (m) => (m.state === 'open' ? [graph.stepOf.get(m.ref), m.before + m.outside.length] : []);
+  rows.sort((a, b) => rank[a.state] - rank[b.state] || (a.closedAt || '').localeCompare(b.closedAt || '')
+    || compareKeys(key(a), key(b)) || compareRefs(a.ref, b.ref));
+  const next = rows.find((m) => m.state === 'open');
+  return rows.map((m) => ({ ...m, next: m === next }));
+}
+
+/** The road to a milestone: `ref` and every ancestor of it, outside nodes included; empty for null or an unorderable ref. */
+export function roadTo(graph, ref) {
+  return graph.stepOf.has(ref) ? new Set([ref, ...graph.ancestors.get(ref)]) : new Set();
+}
+
 /** The number a wave id starts with: `"31b"` → 31, `"1′"` → 1, none → 0. */
 export function leadingWaveNumber(id) {
   const m = /^(\d+)/.exec(String(id ?? ''));

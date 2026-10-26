@@ -3,9 +3,9 @@
    so colour is never the only signal. Carried over unchanged from the board first built
    for run sd-20261002-211445; the palette was chosen with the dataviz skill. */
 :root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1f;--ink2:#55565b;--muted:#8a8b90;--line:#e3e1dc;--accent:#2f5bd3;
---ship:#2e7d4f;--ship-bg:#e6f2ea;--flight:#2f5bd3;--flight-bg:#e7edfb;--ready:#7a5a00;--ready-bg:#fbf1d6;--block:#a33a2b;--block-bg:#f8e6e2;--queued:#5e5f66;--queued-bg:#ecebe8;--outside:#4a5a78;--outside-bg:#e8ecf4;}
+--ship:#2e7d4f;--ship-bg:#e6f2ea;--flight:#2f5bd3;--flight-bg:#e7edfb;--ready:#7a5a00;--ready-bg:#fbf1d6;--block:#a33a2b;--block-bg:#f8e6e2;--queued:#5e5f66;--queued-bg:#ecebe8;--outside:#4a5a78;--outside-bg:#e8ecf4;--ms:#7a3fb0;--ms-bg:#f1e8f9;}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#141416;--card:#1d1d21;--ink:#ececef;--ink2:#b4b5bb;--muted:#85868d;--line:#2f2f35;--accent:#8aa8ff;
---ship:#7fd09c;--ship-bg:#1d3326;--flight:#9db6ff;--flight-bg:#1f2840;--ready:#e8c768;--ready-bg:#3a3018;--block:#f0998b;--block-bg:#3d221e;--queued:#b4b5bb;--queued-bg:#2a2a2f;--outside:#a9b8d6;--outside-bg:#252b38;}}
+--ship:#7fd09c;--ship-bg:#1d3326;--flight:#9db6ff;--flight-bg:#1f2840;--ready:#e8c768;--ready-bg:#3a3018;--block:#f0998b;--block-bg:#3d221e;--queued:#b4b5bb;--queued-bg:#2a2a2f;--outside:#a9b8d6;--outside-bg:#252b38;--ms:#c9a2f0;--ms-bg:#2e2340;}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
 main{max-width:1180px;margin:0 auto;padding:28px 16px 64px}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:34px 0 12px;display:flex;gap:10px;align-items:baseline}h2 small{color:var(--muted);font-weight:400;font-size:13px}
@@ -92,3 +92,9 @@ details summary{cursor:pointer;color:var(--ink2);margin:8px 0}footer{margin-top:
 .burn .end{left:auto;right:4px;transform:translateY(-130%);background:var(--card);padding:1px 3px;border-radius:4px}
 .burn .tip{left:0!important;right:0!important;width:auto;max-width:none}}
 @media (prefers-reduced-motion: reduce){.burn .tip{transition:none}}
+/* Milestones (issue #518): the badge on a milestone's card, its Next chip, and the road to the next one, which a dashed
+   outline marks beside the longest chain's accent ring rather than in place of it. */
+.ms{align-self:flex-start;font-size:11.5px;font-weight:600;color:var(--ms);background:var(--ms-bg);border-radius:6px;padding:1px 7px}
+.ms-next{color:var(--ms);background:var(--ms-bg);margin-left:8px}.ms-row.next td{font-weight:600}
+.node.mpath{outline:2px dashed var(--ms);outline-offset:2px}.path.ms-road a{border-color:var(--ms)}
+.dag path.ms{stroke:var(--ms);stroke-opacity:.85;stroke-width:2.2;stroke-dasharray:5 3}.dag path.ms.crit{stroke:var(--accent);stroke-dasharray:none}

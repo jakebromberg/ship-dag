@@ -6,7 +6,7 @@
 // with its zone label. The stylesheet and road-ahead script are inlined from
 // assets.mjs so the page needs nothing beside it.
 
-import { orderSteps, formatPacific, compareRefs, leadingWaveNumber } from './model.mjs';
+import { orderSteps, formatPacific, compareRefs, leadingWaveNumber, roadTo } from './model.mjs';
 import { STAGES } from './stage.mjs';
 import { parseRef } from '../lib/ref.mjs';
 import { PAGE_CSS, ROAD_JS, BURN_JS } from './assets.mjs';
@@ -83,7 +83,7 @@ export function waveSpan(labels) {
  * @param {string} v.runId
  * @param {{url:string,label:string,title:string}|null} v.scope  link to the epic / label / set the run ships
  * @param {string} v.now  ISO instant the page was built
- * @param {Array<{ref:string,title:string,url:string,status:string,stage?:string,note?:string,
+ * @param {Array<{ref:string,title:string,url:string,status:string,stage?:string,note?:string,labels?:string[],
  *   prs:Array<{number:number,url:string,state:'open'|'merged'|'closed'}>,closedAt?:string,shippedWave?:string,
  *   remote?:ReturnType<import('./remote.mjs').remoteSource>}>} v.tickets  `remote`: where a remote host's ticket was read (`hostLine`)
  * @param {ReturnType<import('./model.mjs').buildGraph>} v.graph  over the open tickets and the open blockers outside the run
@@ -96,6 +96,8 @@ export function waveSpan(labels) {
  *   a callout's `text` is plain text, escaped like everything else
  * @param {Array<{ref:string,url:string,title:string,dropped:number,shipped:Array<{ref:string,title:string,url:string,closedAt?:string}>}>} [v.before]
  *   `shippedBefore`'s result: what the predecessor epics shipped before this run. Counted in the headline, listed in a collapsed section.
+ * @param {ReturnType<import('./model.mjs').milestones>} [v.milestones]  the run's milestones, in order: a Milestones section,
+ *   a badge on each one's card, and the road to the `next` one highlighted in the road ahead
  * @param {string} v.rebuild  the command that rebuilds this page
  * @param {string} [v.startedAt]  ISO instant the run started (board.json); with a parseable one, the page draws the burn-up, which
  *   reads each ticket's `createdAt` (absent: it was in scope from the start)
@@ -113,6 +115,8 @@ export function renderBoard(v) {
   counts.shipped = (counts.shipped || 0) + earlier; // the headline and the bar count the whole project
   const total = v.tickets.length - (counts.dropped || 0) + earlier;
   const notes = v.notes || {};
+  const ms = new Map((v.milestones || []).map((m) => [m.ref, m]));
+  const badge = (ref) => (ms.has(ref) ? html`<div class="ms">Milestone: ${ms.get(ref).name}</div>` : '');
 
   const h = [html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`
     + html`<meta http-equiv="refresh" content="120"><title>${v.title}</title><style>${raw(PAGE_CSS)}</style></head><body><main>`];
@@ -132,11 +136,13 @@ export function renderBoard(v) {
     h.push(html`<h2>Needs attention</h2><div class="callouts">${notes.callouts.map((c) => html`<div class="callout${c.owner === 'you' ? ' you' : ''}"><b>${c.title}</b>${c.text}</div>`)}</div>`);
   }
 
+  if (ms.size) h.push(milestoneTable(v, byRef, link));
+
   const flight = v.tickets.filter((t) => t.status === 'flight').sort((a, b) => compareRefs(a.ref, b.ref));
   const defaultSubtitle = v.current ? `wave ${v.current.id}` : '';
   h.push(html`<h2>In flight <small>${notes.wave || defaultSubtitle}</small></h2>`);
   h.push(flight.length
-    ? html`<div class="cards">${flight.map((t) => html`<div class="card"><div class="top">${link(t.ref)}${chip('flight', t.stage)}</div>${hostLine(t.remote)}<div class="t">${t.title}</div><div>${list(prLinks(t, ['open', 'merged']), ' ')}</div>${t.note && html`<div class="note">${t.note}</div>`}</div>`)}</div>`
+    ? html`<div class="cards">${flight.map((t) => html`<div class="card"><div class="top">${link(t.ref)}${chip('flight', t.stage)}</div>${badge(t.ref)}${hostLine(t.remote)}<div class="t">${t.title}</div><div>${list(prLinks(t, ['open', 'merged']), ' ')}</div>${t.note && html`<div class="note">${t.note}</div>`}</div>`)}</div>`
     : html`<p class="sub">No PR open right now.</p>`);
   const just = v.current ? v.tickets.filter((t) => t.status === 'shipped' && v.current.refs.has(t.ref)) : [];
   if (just.length) {
@@ -144,7 +150,7 @@ export function renderBoard(v) {
   }
 
   h.push(html`<h2>Road ahead <small>every open ticket, in dependency order</small></h2>`);
-  h.push(roadAhead(v, byRef, display, link, notes.gates || {}));
+  h.push(roadAhead(v, byRef, display, link, notes.gates || {}, badge));
 
   const shipped = v.tickets.filter((t) => t.status === 'shipped').sort((a, b) => (b.closedAt || '').localeCompare(a.closedAt || ''));
   h.push(html`<h2>Shipped <small>${plural(shipped.length, 'ticket')}, newest first</small></h2><details><summary>Show all ${shipped.length}</summary>`
@@ -184,7 +190,26 @@ function repoBars(tickets, repoLabel) {
   return html`<div class="repos">${[...repos].sort((a, b) => size(b[1]) - size(a[1])).map(([repo, c]) => html`<div class="repo"><b>${repoLabel(repo)}</b> · ${c.shipped || 0}/${size(c)} shipped${bar(c, size(c))}</div>`)}</div>`;
 }
 
-function roadAhead(v, byRef, display, link, gates) {
+/** The Milestones table: one row per milestone, in `milestones`' order, with its state and projected wave. */
+function milestoneTable(v, byRef, link) {
+  const state = (m) => {
+    if (m.state === 'reached') return html`Reached ${formatPacific(m.closedAt)}`;
+    if (m.state === 'unorderable') return html`Can't be ordered`;
+    const out = m.outside.length ? html`waits on outside ${list(m.outside.map((r) => link(r)), ', ')}` : '';
+    const count = m.before ? `${plural(m.before, 'open ticket')} before it` : out ? '' : 'nothing open before it';
+    return html`${m.next ? 'Next up: ' : ''}${count}${count && out ? '; ' : ''}${out}`;
+  };
+  const wave = (m) => (m.state === 'reached' ? (m.wave?.label ? `shipped in wave ${m.wave.label}` : '—')
+    : !m.wave ? '—' : m.wave.label === null ? 'Yours' : `Wave ${m.wave.label}${m.wave.now ? ' · building now' : ''}`);
+  const rows = v.milestones.map((m) => {
+    const t = byRef.get(m.ref) || {};
+    return html`<tr class="ms-row${m.next ? ' next' : ''}"><td>${m.name}${m.next ? html`<span class="chip ms-next">Next</span>` : ''}</td><td class="n">${link(m.ref)} ${chip(t.status, t.stage)}</td><td>${state(m)}</td><td class="n">${wave(m)}</td></tr>`;
+  });
+  return html`<h2>Milestones <small>points to audition or sign off, in the order they come</small></h2>`
+    + html`<div class="tw"><table class="ms-table"><thead><tr><th>Milestone</th><th>Ticket</th><th>State</th><th>Wave</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function roadAhead(v, byRef, display, link, gates, badge) {
   const g = v.graph;
   const h = [];
   const sorted = (refs) => [...refs].sort(compareRefs);
@@ -195,6 +220,8 @@ function roadAhead(v, byRef, display, link, gates) {
   const rows = orderSteps(g);
   const chain = new Set(g.chain);
   const chainEdges = new Set(g.chain.slice(1).map((r, i) => `${g.chain[i]}>${r}`));
+  const next = (v.milestones || []).find((m) => m.next);
+  const road = roadTo(g, next?.ref ?? null);
   const status = (r) => (g.outside.has(r) ? 'outside' : byRef.get(r)?.status);
   const wave = (r) => v.waves.get(r) || { label: null, now: false };
   const waveText = (r) => (g.outside.has(r) ? 'Outside this run' : wave(r).label === null ? 'Yours, not an engine wave' : `Wave ${wave(r).label}${wave(r).now ? ' · building now' : ''}`);
@@ -220,8 +247,14 @@ function roadAhead(v, byRef, display, link, gates) {
   h.push(html`<p class="road-sum"><b>${left}</b> A step is the earliest a ticket can start: once every ticket it points up to has shipped. Tickets in the same step can be built at the same time.</p>`);
   h.push(html`<p class="howto"><b>Waves</b> continue the run's count.${v.current && html` Wave ${v.current.id} is building now;`} the later numbers are a projection that assumes each wave ships before the next starts. A ticket moves to a later wave if review sends it back, or if a wave launches without it. A ticket of yours, such as a release you cut, takes no wave: what waits on it goes in the next wave after you finish it. A dashed Outside node is an open issue owned by another run; the waves after it assume that run ships one wave for each step and keeps pace.</p>`);
   h.push(html`<div class="path"><span class="meta tight">Longest chain:</span>${list(g.chain.map((r) => link(r)), '<span class="arr">→</span>')}<span class="meta tight">(${plural(g.chain.length, 'ticket')}, one after another${split})</span></div>`);
+  if (road.size) {
+    const steps = [...road].sort((a, b) => g.stepOf.get(a) - g.stepOf.get(b) || compareRefs(a, b));
+    const away = [...road].filter((r) => g.outside.has(r)).length;
+    h.push(html`<div class="path ms-road"><span class="meta tight">Road to ${next.name}:</span>${list(steps.map((r) => link(r)), '<span class="arr">→</span>')}<span class="meta tight">(${plural(road.size - away, 'ticket')}${away ? `, ${away} outside` : ''}; outlined below)</span></div>`);
+  }
   h.push('<p class="howto">Lines show direct dependencies only; one implied by a longer chain is left out. The blue chain is the longest one: nothing finishes before it does. Hover or tab to a ticket to trace everything it waits on and everything waiting on it.</p>');
-  const edges = rows.flat().flatMap((r) => sorted(g.direct.get(r)).map((p) => [p, r, chainEdges.has(`${p}>${r}`)]));
+  // The road holds a milestone and all its ancestors, so every edge into a road node starts on the road too.
+  const edges = rows.flat().flatMap((r) => sorted(g.direct.get(r)).map((p) => [p, r, chainEdges.has(`${p}>${r}`), road.has(r)]));
   h.push(html`<div class="dag" id="dag" data-edges="${JSON.stringify(edges)}"><svg aria-hidden="true"></svg>`);
   rows.forEach((row, i) => {
     h.push(html`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${rowWaves(row)}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}</div><div class="ns">`);
@@ -230,7 +263,7 @@ function roadAhead(v, byRef, display, link, gates) {
       const title = display.get(r)?.title ?? '';
       const st = status(r);
       const after = [...g.direct.get(r)].sort((a, b) => g.stepOf.get(a) - g.stepOf.get(b) || compareRefs(a, b)).map((p) => v.shortRef(p)).join(', ');
-      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${r}"><div class="top">${link(r)}${chip(st, t.stage)}</div>${hostLine(t.remote)}<div class="t" title="${title}">${title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${runDesc(r) ? `unblocks ${runDesc(r)}` : 'nothing waits on it'}</div></div>`);
+      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}${road.has(r) ? ' mpath' : ''}" tabindex="0" data-ref="${r}"><div class="top">${link(r)}${chip(st, t.stage)}</div>${badge(r)}${hostLine(t.remote)}<div class="t" title="${title}">${title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${runDesc(r) ? `unblocks ${runDesc(r)}` : 'nothing waits on it'}</div></div>`);
     }
     h.push('</div></div>');
   });
