@@ -355,3 +355,35 @@ test('roadTo is the milestone and its ancestors, outside nodes included; empty f
   assert.equal(roadTo(graph, null).size, 0);
   assert.equal(roadTo(graph, R(7)).size, 0);
 });
+
+/**
+ * A run where ref order and step order disagree: #12 and #14 start now (step 1); #11 waits on #12 (step 2);
+ * #10 waits on #12 and #14 (step 2, one more ancestor than #11). Every ticket but #13 is a milestone.
+ */
+function reversedRun(labelled = [10, 11, 12, 14]) {
+  const nums = [10, 11, 12, 14];
+  const tickets = nums.map((n) => ({ ref: R(n), title: `Ticket ${n}`, status: n >= 12 ? 'ready' : 'blocked', labels: labelled.includes(n) ? ['hitl-gate'] : [] }));
+  const graph = buildGraph(nums.map(R), edgesOf([[12, 11], [12, 10], [14, 10]]), []);
+  const waves = projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), { id: '3', refs: new Set([R(12)]) });
+  return { tickets, graph, waves };
+}
+
+test('milestones: open rows are in step order, then fewest tickets before them, then ref order (issue #518)', () => {
+  const rows = milestones(reversedRun());
+  // #12, #14: step 1 (ref order); #11 (1 ticket before it) beats #10 (2) though #10 sorts first by ref.
+  assert.deepEqual(rows.map((m) => m.ref), [R(12), R(14), R(11), R(10)]);
+  assert.deepEqual(rows.filter((m) => m.next).map((m) => m.ref), [R(12)]);
+});
+
+test('milestones: next is the earliest step, not the lowest ref, and the road to it is its own ancestry (issue #518)', () => {
+  const run = reversedRun([11, 12]);
+  const rows = milestones(run);
+  assert.deepEqual(rows.map((m) => m.ref), [R(12), R(11)], '#11 sorts first by ref, but #12 comes first in the run');
+  assert.equal(rows.find((m) => m.next).ref, R(12));
+  assert.deepEqual([...roadTo(run.graph, rows.find((m) => m.next).ref)], [R(12)]);
+});
+
+test('milestones: a named milestone is stored trimmed (issue #518)', () => {
+  const rows = milestones({ ...msRun({ notes: { [R(3)]: '  Trace tool \n' } }) });
+  assert.deepEqual(names(rows), [[R(3), 'Trace tool']]);
+});

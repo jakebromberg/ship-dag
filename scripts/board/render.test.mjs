@@ -70,7 +70,7 @@ test('renderBoard shows counts, the in-flight stage and note, and the wave build
 
 test('renderBoard ships each edge once and no per-node ancestor or descendant sets', () => {
   const html = renderBoard(view());
-  assert.match(html, /id="dag" data-edges="\[\[&quot;o\/r#2&quot;,&quot;o\/r#3&quot;,(?:true|false),(?:true|false)\]/);
+  assert.match(html, /id="dag" data-edges="\[\[&quot;o\/r#2&quot;,&quot;o\/r#3&quot;,(?:true|false)\]/);
   assert.doesNotMatch(html, /data-anc|data-desc/);
 });
 
@@ -474,9 +474,9 @@ test('renderBoard leaves the Milestones section out when there are none (issue #
 
 test('renderBoard badges a milestone\'s road-ahead node and in-flight card (issue #518)', () => {
   const html = renderBoard(msView({ notes: { 'o/r#2': 'Wire it up' } }));
-  assert.match(html, /<div class="card">(?:(?!<div class="card">)[\s\S])*?<div class="ms">Milestone: Wire it up<\/div>/, 'in-flight card');
-  assert.match(html, /data-ref="o\/r#3"(?:(?!data-ref)[\s\S])*?<div class="ms">Milestone: Ticket 3<\/div>/, 'road-ahead node');
-  assert.doesNotMatch(html, /data-ref="o\/r#4"(?:(?!data-ref)[\s\S])*?class="ms"/, 'no badge on a ticket that is no milestone');
+  assert.match(html, /<div class="card">(?:(?!<div class="card">)[\s\S])*?<div class="ms-badge">Milestone: Wire it up<\/div>/, 'in-flight card');
+  assert.match(html, /data-ref="o\/r#3"(?:(?!data-ref)[\s\S])*?<div class="ms-badge">Milestone: Ticket 3<\/div>/, 'road-ahead node');
+  assert.doesNotMatch(html, /data-ref="o\/r#4"(?:(?!data-ref)[\s\S])*?class="ms-badge"/, 'no badge on a ticket that is no milestone');
 });
 
 test('renderBoard highlights the road to the next milestone: its line, its nodes and its edges (issue #518)', () => {
@@ -510,4 +510,68 @@ test('renderBoard names a milestone\'s outside blockers and escapes every milest
 test('renderBoard shows a dash for a milestone reached outside any wave (issue #518)', () => {
   const html = renderBoard(msView({ labels: { 1: ['hitl-gate'] }, tickets: (ts) => ts.map((t) => (t.ref === 'o/r#1' ? { ...t, shippedWave: undefined } : t)) }));
   assert.match(section(html), /Reached Oct 8, 1:02 PM PDT<\/td><td class="n">—<\/td>/);
+});
+
+test('renderBoard gives a data-edges triple no road flag when no milestone is next, and a fourth element when one is (issue #518)', () => {
+  const edges = (html) => JSON.parse(html.match(/data-edges="([^"]*)"/)[1].replaceAll('&quot;', '"'));
+  for (const html of [renderBoard(view()), renderBoard(msView({ labels: {} })), renderBoard(msView({ labels: { 1: ['hitl-gate'] } }))]) {
+    assert.ok(edges(html).every((e) => e.length === 3), 'a run with no road renders its edges exactly as before');
+  }
+  assert.ok(edges(renderBoard(msView())).every((e) => e.length === 4), 'with a road, every triple carries the flag');
+});
+
+test('the milestone badge has its own class, apart from the road-edge class the script gives a path (issue #518)', () => {
+  const html = renderBoard(msView());
+  assert.match(html, /<div class="ms-badge">Milestone: Ticket 3<\/div>/);
+  assert.doesNotMatch(html, /class="ms"/, 'no element is classed ms; that class belongs to path.ms in the road script');
+  assert.match(PAGE_CSS, /\.ms-badge\{/);
+  assert.doesNotMatch(PAGE_CSS, /(^|[\s,}])\.ms\s*\{/m, 'a bare .ms rule would also style the road\'s path.ms');
+});
+
+/** A run whose milestone, #4, waits on the open ticket #9 of another run, so its road runs #9 (step 1) → #4 (step 2). */
+function blockedView(milestoneRows) {
+  const base = view();
+  const tickets = base.tickets.map((t) => ({ ...t, labels: [] }));
+  const graph = buildGraph([...base.graph.steps.flat(), 'o/r#6', 'o/r#7'], [
+    { blockedBy: 'o/r#2', blocked: 'o/r#3' }, { blockedBy: 'o/r#6', blocked: 'o/r#7' }, { blockedBy: 'o/r#7', blocked: 'o/r#6' }, { blockedBy: 'o/r#9', blocked: 'o/r#4' },
+  ], ['o/r#1', 'o/r#5'], { outside: ['o/r#9'] });
+  const waves = projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), base.current);
+  const v = { ...base, tickets, graph, waves, outsideTickets: [{ ref: 'o/r#9', title: 'Elsewhere', url: 'u9' }], notes: { milestones: { 'o/r#4': 'Hear it' } } };
+  return { ...v, milestones: milestoneRows ? milestoneRows(milestones(v)) : milestones(v) };
+}
+
+// The State and Wave cells of one milestone row, by what the row says (issue #518).
+for (const [name, patch, state, wave] of [
+  ['open tickets and outside blockers are joined by a semicolon', { next: true, before: 2, outside: ['o/r#9'] }, 'Next up: 2 open tickets before it; waits on outside <a href="u9">r#9</a>', 'Wave 5'],
+  ['only outside blockers read as waiting on them, not as nothing before it', { next: true, before: 0, outside: ['o/r#9'] }, 'Next up: waits on outside <a href="u9">r#9</a>', 'Wave 5'],
+  ['nothing open before it', { next: true, before: 0, outside: [] }, 'Next up: nothing open before it', 'Wave 5'],
+  ['a row that is not next has no Next up prefix', { next: false, before: 1, outside: [] }, '1 open ticket before it', 'Wave 5'],
+  ['a milestone of yours has no wave number', { wave: { label: null, now: false } }, '', 'Yours'],
+  ['a milestone in the wave building now says so', { wave: { label: '4b', now: true } }, '', 'Wave 4b · building now'],
+  ['an open milestone with no projected wave shows a dash', { wave: null }, '', '—'],
+]) {
+  test(`renderBoard Milestones row: ${name} (issue #518)`, () => {
+    const html = renderBoard(blockedView((rows) => rows.map((m) => ({ ...m, ...patch }))));
+    const cells = section(html).match(/<tr class="ms-row[^>]*>(?:<td[^>]*>.*?<\/td>){2}<td>(.*?)<\/td><td class="n">(.*?)<\/td><\/tr>/s);
+    assert.ok(cells, 'one row');
+    if (state) assert.equal(cells[1], state);
+    assert.equal(cells[2], wave);
+  });
+}
+
+test('renderBoard marks a building-now milestone and no other (issue #518)', () => {
+  const html = renderBoard(blockedView((rows) => rows.map((m) => ({ ...m, wave: { label: '4b', now: true } }))));
+  assert.match(section(html), /<td class="n">Wave 4b · building now<\/td>/);
+  assert.doesNotMatch(section(renderBoard(blockedView())), /building now/);
+});
+
+test('the Road to line lists the road in step order, not ref order, and counts outside nodes apart (issue #518)', () => {
+  const html = renderBoard(blockedView());
+  const line = html.match(/<div class="path ms-road">.*?<\/div>/s)[0];
+  assert.match(line, /Road to Hear it:/);
+  // #4 sorts before #9 by ref, but #9 (outside) is the earlier step.
+  assert.ok(line.indexOf('r#9') > 0 && line.indexOf('r#9') < line.indexOf('r#4'), line);
+  assert.match(line, /\(1 ticket, 1 outside; outlined below\)/);
+  const noOutside = renderBoard(msView()).match(/<div class="path ms-road">.*?<\/div>/s)[0];
+  assert.match(noOutside, /\(2 tickets; outlined below\)/, 'no ", N outside" when none is');
 });
