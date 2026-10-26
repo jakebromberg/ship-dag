@@ -28,7 +28,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchSpec as planWavesFetchSpec } from './plan-waves.mjs';
 import { renderBoard } from './board/render.mjs';
-import { buildGraph, classify, makeRepoLabel, makeShortRef, projectWaves, shippedBefore } from './board/model.mjs';
+import { buildGraph, classify, makeRepoLabel, makeShortRef, milestones, projectWaves, shippedBefore } from './board/model.mjs';
 import { fetchPredecessors } from './board/predecessors.mjs';
 import { readBoard, readJson, readNotes, readRetros, resolveRun, runBaseDir, runWaves } from './board/run.mjs';
 import { deriveStage, readFamily } from './board/stage.mjs';
@@ -46,7 +46,7 @@ import { telemetryPath } from './telemetry.mjs';
 const EX_USAGE = 64;
 const BATCH = 40; // refs per GraphQL query
 const CLOSURE_ROUNDS = 5; // extra rounds that look up open blockers outside the set
-const FIELDS = 'number title url state stateReason createdAt closedAt closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
+const FIELDS = 'number title url state stateReason createdAt closedAt labels(first:20){nodes{name}} closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
   + 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
 
 const SCRIPT = fileURLToPath(import.meta.url);
@@ -224,7 +224,8 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     const remote = wave && remoteSource(wave, family.dirs, ref);
     const engineDir = remote?.dir && !remote.unreachable ? remote.dir : wave?.dir;
     const derived = wave && deriveStage({ dir: engineDir, ref, waveTs: wave.mtimeMs, family, blockOn: board.blockOn, prOpen: !!open, openPr: open?.number });
-    return { ref, title: issue.title, url: issue.url, status, stage: derived || item.stage, note: item.note, prs, createdAt: issue.createdAt, closedAt: issue.closedAt, shippedWave: latest.get(ref)?.id, ...(remote && { remote }) };
+    const labels = issue.labels?.nodes.map((l) => l.name) ?? []; // a hitl-gate label makes a milestone (issue #518)
+    return { ref, title: issue.title, url: issue.url, labels, status, stage: derived || item.stage, note: item.note, prs, createdAt: issue.createdAt, closedAt: issue.closedAt, shippedWave: latest.get(ref)?.id, ...(remote && { remote }) };
   });
 
   const openRefs = tickets.filter((t) => t.status !== 'shipped' && t.status !== 'dropped').map((t) => t.ref);
@@ -240,6 +241,9 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     graph = buildGraph(openRefs, allEdges, closedRefs, { outside });
   }
   const outsideTickets = outside.map((ref) => ({ ref, title: info.get(ref).title, url: info.get(ref).url }));
+  for (const ref of Object.keys(notes.milestones ?? {}).filter((r) => !tickets.some((t) => t.ref === r))) {
+    warn(`board-notes milestones names ${ref}, which is not a ticket of this run`);
+  }
   const newest = waves[waves.length - 1];
   const current = { id: newest.id, refs: new Set(newest.refs) };
   const before = shippedBefore(await walk, refs); // only the run's own tickets: a closed blocker outside them still shipped before
@@ -247,10 +251,11 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const shortRef = makeShortRef(repos, board.abbreviations);
   const scope = epic ? { url: info.get(epic).url, label: shortRef(epic), title: info.get(epic).title }
     : board.issueSet?.label ? { url: `https://github.com/${board.issueSet.repo}/issues?q=label%3A${encodeURIComponent(board.issueSet.label)}`, label: board.issueSet.label, title: board.issueSet.repo } : null;
+  const projected = projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), current);
   return {
     title: board.title, runId: board.runId ?? run.runId, scope, now: deps.now().toISOString(), tickets, outsideTickets, graph, current,
     out: flag('--out') ?? board.out ?? join(dir, 'board.html'),
-    waves: projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), current), shortRef,
+    waves: projected, milestones: milestones({ tickets, graph, waves: projected, notes }), shortRef,
     repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild, before, startedAt: board.startedAt,
   };
 }

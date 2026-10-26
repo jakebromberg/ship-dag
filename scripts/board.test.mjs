@@ -76,6 +76,7 @@ function fakeGh(table) {
       return [`r${i}`, { issue: {
         number, title: `Title ${number}`, url: `https://github.com/${repo}/issues/${number}`, state: row.state ?? 'OPEN',
         stateReason: row.stateReason ?? null, closedAt: row.closedAt ?? null, ...(row.createdAt && { createdAt: row.createdAt }),
+        ...(row.labels && { labels: { nodes: row.labels.map((name) => ({ name })) } }),
         closedByPullRequestsReferences: { nodes: (row.prs ?? []).map((p) => ({ url: `https://github.com/${repo}/pull/${p.number}`, ...p })) },
         blockedBy: { nodes: (row.blockers ?? []).map((b) => ({ number: parseRef(b).number, state: stateOf(b), repository: { nameWithOwner: parseRef(b).repo } })) },
       } }];
@@ -744,4 +745,22 @@ test('SKILL.md tells a resumed run to run init when board.json is absent, and do
   assert.match(rule, /run it first if `\$STATE\/board\.json` is absent/);
   assert.match(rule, /explicit set/);
   assert.match(rule, /render --spec/);
+});
+
+// A hitl-gate label on a run ticket makes it a milestone, read from the batched lookup that already runs (issue #518).
+test('a hitl-gate ticket is a milestone, its label read in the same batched query; a notes milestone outside the run warns (issue #518)', async () => {
+  const s = setUp({ files: { 'board-notes.json': { milestones: { [R(1)]: 'Trace tool', [R(42)]: 'Nowhere' } } } });
+  const gh = fakeGh({ ...TABLE, [R(2)]: { labels: ['enhancement', 'hitl-gate'], blockers: [] } });
+  const queries = [];
+  const runGh = async (args) => { queries.push(args.find((a) => a.startsWith('query=')) ?? ''); return gh.runGh(args); };
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.deepEqual(gh.calls.map((c) => c.sort()), [[R(1), R(2), R(9)]], 'no extra query');
+  assert.ok(queries.every((q) => q.includes('labels(first:20){nodes{name}}')), 'the lookup asks for labels');
+  const section = html.slice(html.indexOf('<h2>Milestones'), html.indexOf('<h2>In flight'));
+  assert.match(section, /<td>Trace tool<span class="chip ms-next">Next<\/span>/);
+  assert.match(section, /<td>Trace tool[\s\S]*?<td>Next up: nothing open before it<\/td>/);
+  assert.match(section, /<td>Title 2<\/td>[\s\S]*?<td>1 open ticket before it<\/td>/);
+  assert.match(html, /data-ref="o\/r#2"(?:(?!data-ref)[\s\S])*?<div class="ms">Milestone: Title 2<\/div>/);
+  assert.ok(err.includes('[board] board-notes milestones names o/r#42, which is not a ticket of this run'), err.join('\n'));
 });

@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, makeRepoLabel, formatPacific, compareRefs, shippedBefore, closedKind,
+  classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, makeRepoLabel, formatPacific, compareRefs, shippedBefore, closedKind, milestones, roadTo,
 } from './model.mjs';
 
 const R = (n) => `o/r#${n}`;
@@ -283,4 +283,75 @@ test('the close-reason table is not exported, so importers cannot mutate it', as
   assert.equal(state.CLOSED_UNDONE, undefined);
   assert.equal(state.isClosedUndone('DUPLICATE'), true);
   assert.equal(state.isClosedUndone('COMPLETED'), false);
+});
+
+// ---- milestones / roadTo (issue #518) ------------------------------------
+
+/**
+ * A run for the milestone tests: 1 shipped, 2 → 3 → 4 open in a chain, 5 open behind outside 8, 6 dropped, 7 in a
+ * self-cycle. `labels` maps a ticket number to its labels; `notes` is board-notes' `milestones`.
+ */
+function msRun({ labels = {}, notes, closedAt = {} } = {}) {
+  const status = { 1: 'shipped', 2: 'ready', 3: 'blocked', 4: 'blocked', 5: 'blocked', 6: 'dropped', 7: 'blocked', 9: 'shipped' };
+  const tickets = Object.entries(status).map(([n, s]) => ({
+    ref: R(n), title: `Ticket ${n}`, status: s, labels: labels[n] ?? [], closedAt: closedAt[n] ?? (s === 'shipped' ? `2026-10-0${n}T12:00:00Z` : null), shippedWave: s === 'shipped' ? String(n) : undefined,
+  }));
+  const open = tickets.filter((t) => !['shipped', 'dropped'].includes(t.status)).map((t) => t.ref);
+  const graph = buildGraph(open, edgesOf([[2, 3], [3, 4], [8, 5], [7, 7]]), [R(1), R(6), R(9)], { outside: [R(8)] });
+  const waves = projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), { id: '4', refs: new Set([R(2)]) });
+  return { tickets, graph, waves, notes: notes === undefined ? {} : { milestones: notes } };
+}
+const names = (rows) => rows.map((m) => [m.ref, m.name]);
+
+for (const [name, opts, want] of [
+  ['a hitl-gate ticket is a milestone named by its title', { labels: { 4: ['hitl-gate'] } }, [[R(4), 'Ticket 4']]],
+  ['a notes string renames an automatic milestone', { labels: { 4: ['enhancement', 'hitl-gate'] }, notes: { [R(4)]: 'First listen' } }, [[R(4), 'First listen']]],
+  ['a notes string adds a ticket that is not a gate', { notes: { [R(3)]: 'Trace tool' } }, [[R(3), 'Trace tool']]],
+  ['false suppresses an automatic milestone', { labels: { 4: ['hitl-gate'] }, notes: { [R(4)]: false } }, []],
+  ['a value that is neither a non-empty string nor false is ignored', { labels: { 4: ['hitl-gate'] }, notes: { [R(4)]: '  ', [R(3)]: 7, [R(2)]: null } }, [[R(4), 'Ticket 4']]],
+  ['a dropped ticket is never a milestone', { labels: { 6: ['hitl-gate'] }, notes: { [R(6)]: 'Gone' } }, []],
+  ['a notes key outside the run names nothing', { notes: { [R(99)]: 'Nowhere' } }, []],
+  ['a label is matched exactly', { labels: { 4: ['HITL-gate', 'hitl-gates'] } }, []],
+]) {
+  test(`milestones: ${name}`, () => {
+    assert.deepEqual(names(milestones(msRun(opts))), want);
+  });
+}
+
+test('milestones: before counts the open run tickets ahead of it, outside names the outside ones, and the wave is projected', () => {
+  const rows = milestones(msRun({ labels: { 3: ['hitl-gate'], 4: ['hitl-gate'], 5: ['hitl-gate'] } }));
+  const by = Object.fromEntries(rows.map((m) => [m.ref, m]));
+  assert.deepEqual([by[R(4)].before, by[R(4)].outside], [2, []]);
+  assert.deepEqual([by[R(3)].before, by[R(3)].outside], [1, []]);
+  assert.deepEqual([by[R(5)].before, by[R(5)].outside], [0, [R(8)]], 'an outside blocker is named, never counted');
+  assert.deepEqual(by[R(4)].wave, { label: '6', now: false });
+  assert.equal(by[R(4)].state, 'open');
+});
+
+test('milestones: reached rows first by closedAt, then open ones in step order, then unorderable ones; next is the first open orderable row', () => {
+  const rows = milestones(msRun({ labels: { 1: ['hitl-gate'], 9: ['hitl-gate'], 4: ['hitl-gate'], 3: ['hitl-gate'], 7: ['hitl-gate'] }, closedAt: { 1: '2026-10-05T00:00:00Z', 9: '2026-10-02T00:00:00Z' } }));
+  assert.deepEqual(rows.map((m) => [m.ref, m.state]), [[R(9), 'reached'], [R(1), 'reached'], [R(3), 'open'], [R(4), 'open'], [R(7), 'unorderable']]);
+  assert.deepEqual(rows.filter((m) => m.next).map((m) => m.ref), [R(3)], 'exactly one next');
+  assert.deepEqual(rows[0].wave, { label: '9', now: false }, 'a reached milestone shows the wave it shipped in');
+});
+
+test('milestones: no row is next when every milestone is reached or unorderable', () => {
+  const rows = milestones(msRun({ labels: { 1: ['hitl-gate'], 7: ['hitl-gate'] } }));
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((m) => !m.next));
+});
+
+test('milestones: no notes and no labels is no rows', () => {
+  const run = msRun();
+  delete run.notes;
+  run.tickets.forEach((t) => { delete t.labels; });
+  assert.deepEqual(milestones(run), []);
+});
+
+test('roadTo is the milestone and its ancestors, outside nodes included; empty for null or an unorderable ref', () => {
+  const { graph } = msRun();
+  assert.deepEqual([...roadTo(graph, R(4))].sort(compareRefs), [R(2), R(3), R(4)]);
+  assert.deepEqual([...roadTo(graph, R(5))].sort(compareRefs), [R(5), R(8)]);
+  assert.equal(roadTo(graph, null).size, 0);
+  assert.equal(roadTo(graph, R(7)).size, 0);
 });

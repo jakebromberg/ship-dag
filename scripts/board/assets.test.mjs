@@ -112,9 +112,9 @@ function fakeDag({ ro = true, edges = [['a', 'b', 0], ['b', 'c', 1]] } = {}) {
   const svg = {
     setAttribute() {},
     set innerHTML(html) {
-      paths = [...html.matchAll(/<path data-a="(\w+)" data-b="(\w+)" class="(\w*)" marker-end="([^"]*)"/g)].map(([, a, b, cls, m]) => {
+      paths = [...html.matchAll(/<path data-a="(\w+)" data-b="(\w+)" class="([\w ]*)" marker-end="([^"]*)"/g)].map(([, a, b, cls, m]) => {
         const p = { dataset: { a, b }, classList: classes(), attrs: { 'marker-end': m } };
-        if (cls) p.classList.add(cls);
+        for (const c of cls.split(' ').filter(Boolean)) p.classList.add(c);
         p.setAttribute = (k, v) => { p.attrs[k] = v; };
         return p;
       });
@@ -133,6 +133,15 @@ function fakeDag({ ro = true, edges = [['a', 'b', 0], ['b', 'c', 1]] } = {}) {
     doc, win, (ev) => { if (ev === 'resize') calls.resize++; }, win.ResizeObserver);
   return { nodes, dag, doc, calls, run, paths: () => paths };
 }
+
+test('an edge on the road to the next milestone gets class ms, beside crit, and keeps it through a trace (issue #518)', () => {
+  const page = fakeDag({ edges: [['a', 'b', 0, 1], ['b', 'c', 1, 1], ['c', 'd', 0, 0]] });
+  page.run();
+  assert.deepEqual(page.paths().map((p) => [p.classList.has('ms'), p.classList.has('crit')]), [[true, false], [true, true], [false, false]]);
+  page.nodes.a.h.mouseenter();
+  page.nodes.a.h.mouseleave();
+  assert.deepEqual(page.paths().map((p) => p.classList.has('ms')), [true, true, false]);
+});
 
 test('each node is measured once per draw, however many edges touch it', () => {
   const page = fakeDag();

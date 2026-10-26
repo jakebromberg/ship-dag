@@ -3,7 +3,7 @@
 // time is Pacific with its zone — not byte-for-byte, so styling can move freely.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildGraph, projectWaves, makeShortRef, makeRepoLabel, classify } from './model.mjs';
+import { buildGraph, projectWaves, makeShortRef, makeRepoLabel, classify, milestones } from './model.mjs';
 import { renderBoard, STATUSES, stageStatus, waveSpan } from './render.mjs';
 import * as render from './render.mjs';
 import { STAGES } from './stage.mjs';
@@ -70,7 +70,7 @@ test('renderBoard shows counts, the in-flight stage and note, and the wave build
 
 test('renderBoard ships each edge once and no per-node ancestor or descendant sets', () => {
   const html = renderBoard(view());
-  assert.match(html, /id="dag" data-edges="\[\[&quot;o\/r#2&quot;,&quot;o\/r#3&quot;,(?:true|false)\]/);
+  assert.match(html, /id="dag" data-edges="\[\[&quot;o\/r#2&quot;,&quot;o\/r#3&quot;,(?:true|false),(?:true|false)\]/);
   assert.doesNotMatch(html, /data-anc|data-desc/);
 });
 
@@ -443,4 +443,71 @@ test('the burn-up escapes a ticket title in its tooltip and its table', () => {
   const c = chart(renderBoard(v));
   assert.ok(!c.includes(evil));
   assert.equal(c.split('&lt;img src=x onerror=alert(1)&gt;').length - 1, 2, 'once in the tooltip, once in the table');
+});
+
+// ---- milestones ----------------------------------------------------------
+
+/** The example run with milestones: #1 reached, #3 next (behind #2, which is in flight), #7 can't be ordered; `notes` adds or renames. */
+function msView({ labels = { 1: ['hitl-gate'], 3: ['hitl-gate'], 7: ['hitl-gate'] }, notes = {}, tickets = (t) => t } = {}) {
+  const base = view();
+  const ts = tickets(base.tickets.map((t) => ({ ...t, labels: labels[t.ref.split('#')[1]] ?? [] })));
+  const v = { ...base, tickets: ts, notes: { ...base.notes, milestones: notes } };
+  return { ...v, milestones: milestones(v) };
+}
+const section = (html) => html.slice(html.indexOf('<h2>Milestones'), html.indexOf('<h2>In flight'));
+
+test('renderBoard draws a Milestones section before In flight, one row per milestone, with link, state and wave (issue #518)', () => {
+  const html = renderBoard(msView());
+  assert.ok(html.indexOf('<h2>Milestones') > 0 && html.indexOf('<h2>Milestones') < html.indexOf('<h2>In flight'), 'before In flight');
+  const s = section(html);
+  assert.equal((s.match(/<tr class="ms-row/g) || []).length, 3);
+  assert.match(s, /Ticket 1[\s\S]*?href="https:\/\/github.com\/o\/r\/issues\/1"[\s\S]*?Reached Oct 8, 1:02 PM PDT[\s\S]*?shipped in wave 3/);
+  assert.match(s, /Ticket 3<span class="chip ms-next">Next<\/span>[\s\S]*?Next up: 1 open ticket before it[\s\S]*?Wave 5</);
+  assert.match(s, /Ticket 7[\s\S]*?Can't be ordered/);
+  assert.equal((s.match(/ms-next/g) || []).length, 1, 'one Next chip');
+});
+
+test('renderBoard leaves the Milestones section out when there are none (issue #518)', () => {
+  assert.ok(!renderBoard(view()).includes('<h2>Milestones'));
+  assert.ok(!renderBoard(msView({ labels: {} })).includes('<h2>Milestones'));
+});
+
+test('renderBoard badges a milestone\'s road-ahead node and in-flight card (issue #518)', () => {
+  const html = renderBoard(msView({ notes: { 'o/r#2': 'Wire it up' } }));
+  assert.match(html, /<div class="card">(?:(?!<div class="card">)[\s\S])*?<div class="ms">Milestone: Wire it up<\/div>/, 'in-flight card');
+  assert.match(html, /data-ref="o\/r#3"(?:(?!data-ref)[\s\S])*?<div class="ms">Milestone: Ticket 3<\/div>/, 'road-ahead node');
+  assert.doesNotMatch(html, /data-ref="o\/r#4"(?:(?!data-ref)[\s\S])*?class="ms"/, 'no badge on a ticket that is no milestone');
+});
+
+test('renderBoard highlights the road to the next milestone: its line, its nodes and its edges (issue #518)', () => {
+  const html = renderBoard(msView());
+  assert.match(html, /<div class="path ms-road"><span class="meta tight">Road to Ticket 3:<\/span>[\s\S]*?r#2[\s\S]*?r#3/);
+  const road = [...html.matchAll(/<div class="node [^"]*\bmpath\b[^"]*"[^>]*data-ref="([^"]+)"/g)].map((m) => m[1]).sort();
+  assert.deepEqual(road, ['o/r#2', 'o/r#3']);
+  const edges = JSON.parse(html.match(/data-edges="([^"]*)"/)[1].replaceAll('&quot;', '"'));
+  assert.deepEqual(edges.filter((e) => e[3]).map((e) => `${e[0]}>${e[1]}`), ['o/r#2>o/r#3'], 'the fourth element marks road edges only');
+});
+
+test('renderBoard draws no road when no milestone is next (issue #518)', () => {
+  const html = renderBoard(msView({ labels: { 1: ['hitl-gate'] } }));
+  assert.doesNotMatch(html.slice(html.indexOf('</style>')), /ms-road|\bmpath\b/);
+});
+
+test('renderBoard names a milestone\'s outside blockers and escapes every milestone name (issue #518)', () => {
+  const evil = '<script>alert(1)</script>';
+  const base = view();
+  const tickets = [...base.tickets.map((t) => ({ ...t, labels: [] })), ticket(8, 'blocked', { title: evil, labels: ['hitl-gate'] })];
+  const graph = buildGraph([...base.graph.steps.flat(), 'o/r#6', 'o/r#7', 'o/r#8'], [
+    { blockedBy: 'o/r#2', blocked: 'o/r#3' }, { blockedBy: 'o/r#6', blocked: 'o/r#7' }, { blockedBy: 'o/r#7', blocked: 'o/r#6' }, { blockedBy: 'o/r#9', blocked: 'o/r#8' },
+  ], ['o/r#1', 'o/r#5'], { outside: ['o/r#9'] });
+  const waves = projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), base.current);
+  const v = { ...base, tickets, graph, waves, outsideTickets: [{ ref: 'o/r#9', title: 'Elsewhere', url: 'u9' }], notes: { milestones: { 'o/r#4': evil } } };
+  const html = renderBoard({ ...v, milestones: milestones(v) });
+  assert.ok(!html.includes(evil), 'no raw script from a title or a note');
+  assert.match(section(html), /waits on outside <a href="u9">r#9<\/a>/);
+});
+
+test('renderBoard shows a dash for a milestone reached outside any wave (issue #518)', () => {
+  const html = renderBoard(msView({ labels: { 1: ['hitl-gate'] }, tickets: (ts) => ts.map((t) => (t.ref === 'o/r#1' ? { ...t, shippedWave: undefined } : t)) }));
+  assert.match(section(html), /Reached Oct 8, 1:02 PM PDT<\/td><td class="n">—<\/td>/);
 });
