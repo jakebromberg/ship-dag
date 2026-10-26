@@ -33,7 +33,7 @@ test('the road-ahead script parses', () => {
 // A chip shows a status in the colours its legend swatch and node border use:
 // waiting on other tickets is grey, waiting on you is red.
 const CHIP_TOKENS = [
-  ['shipped', 'ship'], ['flight', 'flight'], ['ready', 'ready'], ['you', 'block'], ['blocked', 'queued'], ['dropped', 'queued'],
+  ['shipped', 'ship'], ['flight', 'flight'], ['ready', 'ready'], ['you', 'block'], ['blocked', 'queued'], ['dropped', 'queued'], ['outside', 'outside'],
 ];
 const RULES = [...PAGE_CSS.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, sel, body]) => ({ sels: sel.split(',').map((s) => s.trim()), body }));
 for (const [status, token] of CHIP_TOKENS) {
@@ -44,6 +44,13 @@ for (const [status, token] of CHIP_TOKENS) {
     assert.equal(colouring[0].body, `color:var(--${token});background:var(--${token}-bg)`);
   });
 }
+
+// An outside node is drawn dashed, so it reads as not ours even where the wave line is hover-only (issue #515).
+test('an outside node has a dashed border (issue #515)', () => {
+  const rule = RULES.find((r) => r.sels.includes('.node.s-outside'));
+  assert.match(rule?.body ?? '', /border:\s*1px dashed var\(--muted\)/);
+  assert.match(rule.body, /border-left:\s*4px dashed/);
+});
 
 // The burn-up's end labels sit in the plot's right margin (`.end` is placed at
 // `left: calc(100% + 8px)`), so that margin must hold the longest one. Width is

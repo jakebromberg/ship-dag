@@ -123,13 +123,71 @@ test('lookups go 40 refs to a query', async () => {
   assert.deepEqual(gh.calls.map((c) => c.length), [40, 40, 7]); // the 85 nodes and the wave's refs 1 and 2
 });
 
-test('an open blocker outside the set is looked up in a closure round, a closed one is not, and its dependent cannot be ordered', async () => {
+test('an open blocker outside the set is looked up in a closure round, a closed one is not, and its dependent is drawn in a step', async () => {
   const s = setUp();
   const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7), R(8)] }, [R(7)]: { blockers: [R(6)] }, [R(6)]: { state: 'CLOSED' }, [R(8)]: { state: 'CLOSED' } });
   const { code, html } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
   assert.equal(code, 0);
   assert.deepEqual(gh.calls.map((c) => c.sort()), [[R(1), R(2), R(9)], [R(7)]]);
-  assert.match(html, /Can't be ordered/);
+  assert.doesNotMatch(html, /Can't be ordered/, 'the dependent is drawn in a step now (issue #515)');
+  assert.match(html, /<div class="node s-outside[ "][^>]*data-ref="o\/r#7"/);
+});
+
+// The outside blocker the closure read is drawn, counted apart from the run's tickets, and left out of their counts (issue #515).
+test('an outside blocker is a node of its own, and the run\'s counts leave it out (issue #515)', async () => {
+  const s = setUp();
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)] }, [R(7)]: {} });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(html, /<b>2 tickets left, in 2 steps; plus 1 open blocker outside this run\.<\/b>/);
+  assert.match(html, /<b>1\/3<\/b><span>shipped<\/span>/, 'the headline counts the run\'s three tickets');
+  assert.ok(err.some((m) => m.endsWith('(3 tickets)')), err.join('\n'));
+  assert.match(html, /<div class="t" title="Title 7">Title 7<\/div>/, 'the node shows the title the closure read');
+});
+
+// The outside refs join the repo list the short labels come from: two owners' `r` repos need their owners (issue #515).
+test('an outside blocker\'s repo counts when short labels are made, so a repo name shared with another owner stays unambiguous (issue #515)', async () => {
+  const s = setUp();
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: ['p/r#7'] }, 'p/r#7': {} });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.ok(html.includes('>p/r#7</a>'), 'the outside ref carries its owner');
+  assert.ok(html.includes('>o/r#1</a>'), 'and so does the run\'s own');
+});
+
+// An outside node is kept only while an orderable ticket of the run waits behind it (issue #515).
+const FIVE_ROUNDS = (() => { // r#10 … r#20 chained; the closure reads r#10 … r#15 and stops, leaving r#16 unread
+  const rows = {};
+  for (let n = 10; n < 20; n += 1) rows[R(n)] = { blockers: [R(n + 1)] };
+  return rows;
+})();
+
+for (const [name, table] of [
+  ['a cycle through it', { [R(2)]: { blockers: [R(7)] }, [R(7)]: { blockers: [R(2)] } }],
+  ['a blocker the closure never read', { [R(2)]: { blockers: [R(10)] }, ...FIVE_ROUNDS }],
+  ['a blocker of its own that the closure never read, behind its only dependent', { [R(2)]: { blockers: [R(7), R(10)] }, [R(7)]: {}, ...FIVE_ROUNDS }],
+]) {
+  test(`an outside blocker with no orderable dependent is not drawn, and its run ticket is in the callout: ${name} (issue #515)`, async () => {
+    const s = setUp();
+    const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, ...table }).runGh });
+    assert.equal(code, 0, err.join('\n'));
+    assert.doesNotMatch(html, /data-ref="o\/r#(7|1\d)"/, 'no outside node');
+    assert.doesNotMatch(html, /plus \d+ open blockers? outside this run/);
+    const callout = html.slice(html.indexOf("Can't be ordered"), html.indexOf('Longest chain'));
+    assert.ok(callout.includes('r#2'), 'the run ticket behind it is listed');
+    assert.ok(!/r#(7|1\d)</.test(callout), 'and so is nothing outside the run');
+  });
+}
+
+// Neither the run's own epic nor the open blocker of a member that already closed is a blocker of anything open (issue #515).
+test('with an epic issue set, neither the epic nor an open blocker of a closed member becomes an outside node (issue #515)', async () => {
+  const s = setUp({ files: { 'board.json': { ...BOARD, issueSet: { epic: R(50) } } } });
+  const table = { ...TABLE, [R(50)]: {}, [R(9)]: { state: 'CLOSED', closedAt: '2026-10-08T13:00:00.000Z', blockers: [R(60)] }, [R(60)]: {} };
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh(table).runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.doesNotMatch(html, /data-ref="o\/r#(50|60)"/);
+  assert.doesNotMatch(html, /plus \d+ open blockers? outside/);
+  assert.doesNotMatch(html, /Can't be ordered/);
 });
 
 test('the closure stops after five rounds and says so', async () => {

@@ -14,9 +14,9 @@ import { html, raw, list } from './html.mjs';
 import { burnupSeries, bucketPoints, pacificTicks, yScale } from './burnup.mjs';
 
 /**
- * Every status `classify` returns, in legend order: the CSS token its bar
- * segment, swatch and chip (`.c-<status>`) use, its tile and legend labels, and
- * its chip label. A dropped ticket has no tile, bar segment or legend entry.
+ * Every status `classify` returns, in legend order, plus the board-only `outside` (an open issue of another run, drawn
+ * in the road ahead; `classify` never returns it): the CSS token its bar segment, swatch and chip (`.c-<status>`) use,
+ * its tile and legend labels, and its chip label. A dropped or outside ticket has no tile, bar segment or legend entry.
  */
 export const STATUSES = [
   { status: 'shipped', token: 'ship', tile: 'shipped', legend: 'Shipped', chip: 'Shipped' },
@@ -25,6 +25,7 @@ export const STATUSES = [
   { status: 'you', token: 'block', tile: 'waiting on you', legend: 'Waiting on you', chip: 'Yours' },
   { status: 'blocked', token: 'queued', tile: 'waiting on other tickets', legend: 'Waiting on other tickets', chip: 'Waiting' },
   { status: 'dropped', token: 'queued', tile: null, legend: null, chip: 'Dropped' },
+  { status: 'outside', token: 'outside', tile: null, legend: null, chip: 'Outside' },
 ];
 const SHOWN = STATUSES.filter((s) => s.legend);
 const CHIP = Object.fromEntries(STATUSES.map((s) => [s.status, s.chip]));
@@ -85,9 +86,10 @@ export function waveSpan(labels) {
  * @param {Array<{ref:string,title:string,url:string,status:string,stage?:string,note?:string,
  *   prs:Array<{number:number,url:string,state:'open'|'merged'|'closed'}>,closedAt?:string,shippedWave?:string,
  *   remote?:ReturnType<import('./remote.mjs').remoteSource>}>} v.tickets  `remote`: where a remote host's ticket was read (`hostLine`)
- * @param {ReturnType<import('./model.mjs').buildGraph>} v.graph  over the open tickets
+ * @param {ReturnType<import('./model.mjs').buildGraph>} v.graph  over the open tickets and the open blockers outside the run
+ * @param {Array<{ref:string,title:string,url:string}>} [v.outsideTickets]  the graph's `outside` nodes, which `tickets` leaves out
  * @param {{id:string, refs:Set<string>}|null} v.current  the wave building now
- * @param {Map<string,{label:string|null,now:boolean}>} v.waves  projectWaves() result
+ * @param {Map<string,{label:string|null,now:boolean,outside?:true}>} v.waves  projectWaves() result
  * @param {(ref:string) => string} v.shortRef
  * @param {(repo:string) => string} v.repoLabel  `makeRepoLabel`'s labeller, over the same repos as `shortRef`
  * @param {{callouts?:Array<{owner?:string,title:string,text?:string}>, wave?:string, gates?:Record<string,string>}} v.notes
@@ -101,7 +103,8 @@ export function waveSpan(labels) {
  */
 export function renderBoard(v) {
   const byRef = new Map(v.tickets.map((t) => [t.ref, t]));
-  const link = (ref, label, url = byRef.get(ref)?.url) => html`<a href="${url || ''}">${label || v.shortRef(ref)}</a>`;
+  const display = new Map([...v.tickets, ...(v.outsideTickets || [])].map((t) => [t.ref, t])); // title and link, outside nodes too
+  const link = (ref, label, url = display.get(ref)?.url) => html`<a href="${url || ''}">${label || v.shortRef(ref)}</a>`;
   const prLinks = (t, only) => t.prs.filter((p) => only.includes(p.state))
     .map((p) => html`<a class="pr pr-${p.state}" href="${p.url}" title="${p.state}">#${p.number}</a>`);
   const counts = {};
@@ -141,7 +144,7 @@ export function renderBoard(v) {
   }
 
   h.push(html`<h2>Road ahead <small>every open ticket, in dependency order</small></h2>`);
-  h.push(roadAhead(v, byRef, link, notes.gates || {}));
+  h.push(roadAhead(v, byRef, display, link, notes.gates || {}));
 
   const shipped = v.tickets.filter((t) => t.status === 'shipped').sort((a, b) => (b.closedAt || '').localeCompare(a.closedAt || ''));
   h.push(html`<h2>Shipped <small>${plural(shipped.length, 'ticket')}, newest first</small></h2><details><summary>Show all ${shipped.length}</summary>`
@@ -181,44 +184,53 @@ function repoBars(tickets, repoLabel) {
   return html`<div class="repos">${[...repos].sort((a, b) => size(b[1]) - size(a[1])).map(([repo, c]) => html`<div class="repo"><b>${repoLabel(repo)}</b> · ${c.shipped || 0}/${size(c)} shipped${bar(c, size(c))}</div>`)}</div>`;
 }
 
-function roadAhead(v, byRef, link, gates) {
+function roadAhead(v, byRef, display, link, gates) {
   const g = v.graph;
   const h = [];
   const sorted = (refs) => [...refs].sort(compareRefs);
   if (g.unorderable.size) {
-    h.push(html`<div class="callouts"><div class="callout you"><b>Can't be ordered</b>These tickets are in a dependency cycle, or wait behind one or behind an open ticket outside this board, so no step can start them: ${list(sorted(g.unorderable).map((r) => link(r)), ', ')}.</div></div>`);
+    h.push(html`<div class="callouts"><div class="callout you"><b>Can't be ordered</b>These tickets are in a dependency cycle, or wait behind one or behind an open issue outside this run that the board could not place (never read, or caught in a cycle), so no step can start them: ${list(sorted(g.unorderable).map((r) => link(r)), ', ')}.</div></div>`);
   }
   if (!g.steps.length) return [...h, html`<p class="sub">${g.unorderable.size ? 'Nothing can be ordered.' : 'Nothing left open.'}</p>`].join('\n');
   const rows = orderSteps(g);
   const chain = new Set(g.chain);
   const chainEdges = new Set(g.chain.slice(1).map((r, i) => `${g.chain[i]}>${r}`));
-  const status = (r) => byRef.get(r)?.status;
+  const status = (r) => (g.outside.has(r) ? 'outside' : byRef.get(r)?.status);
   const wave = (r) => v.waves.get(r) || { label: null, now: false };
-  const waveText = (r) => (wave(r).label === null ? 'Yours, not an engine wave' : `Wave ${wave(r).label}${wave(r).now ? ' · building now' : ''}`);
+  const waveText = (r) => (g.outside.has(r) ? 'Outside this run' : wave(r).label === null ? 'Yours, not an engine wave' : `Wave ${wave(r).label}${wave(r).now ? ' · building now' : ''}`);
   const rowWaves = (row) => {
-    const labels = [...new Set(row.map((r) => wave(r).label).filter((l) => l !== null))];
-    const yours = row.some((r) => wave(r).label === null) ? ' + yours' : '';
-    return labels.length ? waveSpan(labels) + yours : 'yours';
+    const mine = row.filter((r) => !g.outside.has(r)); // an outside node names no wave of this run
+    const labels = [...new Set(mine.map((r) => wave(r).label).filter((l) => l !== null))];
+    const yours = mine.some((r) => wave(r).label === null) ? ' + yours' : '';
+    const outside = mine.length < row.length ? ' + outside' : '';
+    return labels.length ? waveSpan(labels) + yours + outside : mine.length ? `yours${outside}` : 'outside this run';
   };
-  // Every open ticket, the unorderable ones too, so the count agrees with the callout above.
-  const count = g.steps.flat().length;
+  // Every open ticket of the run, the unorderable ones too, so the count agrees with the callout above; the open blockers
+  // outside the run are counted apart, so neither number includes the other.
+  const placed = g.steps.flat();
+  const count = placed.filter((r) => !g.outside.has(r)).length;
+  const beyond = placed.length - count;
+  const plus = beyond ? `; plus ${plural(beyond, 'open blocker')} outside this run` : '';
   const left = g.unorderable.size
-    ? html`${plural(count + g.unorderable.size, 'ticket')} left: ${count} in ${plural(rows.length, 'step')}, ${g.unorderable.size} can't be ordered.`
-    : html`${plural(count, 'ticket')} left, in ${plural(rows.length, 'step')}.`;
+    ? html`${plural(count + g.unorderable.size, 'ticket')} left: ${count} in ${plural(rows.length, 'step')}, ${g.unorderable.size} can't be ordered${plus}.`
+    : html`${plural(count, 'ticket')} left, in ${plural(rows.length, 'step')}${plus}.`;
+  const runDesc = (r) => [...g.descendants.get(r)].filter((d) => !g.outside.has(d)).length; // only our tickets count as unblocked
+  const outsideInChain = g.chain.filter((r) => g.outside.has(r)).length;
+  const split = outsideInChain ? `: ${g.chain.length - outsideInChain} in this run, ${outsideInChain} outside` : '';
   h.push(html`<p class="road-sum"><b>${left}</b> A step is the earliest a ticket can start: once every ticket it points up to has shipped. Tickets in the same step can be built at the same time.</p>`);
-  h.push(html`<p class="howto"><b>Waves</b> continue the run's count.${v.current && html` Wave ${v.current.id} is building now;`} the later numbers are a projection that assumes each wave ships before the next starts. A ticket moves to a later wave if review sends it back, or if a wave launches without it. A ticket of yours, such as a release you cut, takes no wave: what waits on it goes in the next wave after you finish it.</p>`);
-  h.push(html`<div class="path"><span class="meta tight">Longest chain:</span>${list(g.chain.map((r) => link(r)), '<span class="arr">→</span>')}<span class="meta tight">(${plural(g.chain.length, 'ticket')}, one after another)</span></div>`);
+  h.push(html`<p class="howto"><b>Waves</b> continue the run's count.${v.current && html` Wave ${v.current.id} is building now;`} the later numbers are a projection that assumes each wave ships before the next starts. A ticket moves to a later wave if review sends it back, or if a wave launches without it. A ticket of yours, such as a release you cut, takes no wave: what waits on it goes in the next wave after you finish it. A dashed Outside node is an open issue owned by another run; the waves after it assume that run ships one wave for each step and keeps pace.</p>`);
+  h.push(html`<div class="path"><span class="meta tight">Longest chain:</span>${list(g.chain.map((r) => link(r)), '<span class="arr">→</span>')}<span class="meta tight">(${plural(g.chain.length, 'ticket')}, one after another${split})</span></div>`);
   h.push('<p class="howto">Lines show direct dependencies only; one implied by a longer chain is left out. The blue chain is the longest one: nothing finishes before it does. Hover or tab to a ticket to trace everything it waits on and everything waiting on it.</p>');
   const edges = rows.flat().flatMap((r) => sorted(g.direct.get(r)).map((p) => [p, r, chainEdges.has(`${p}>${r}`)]));
   h.push(html`<div class="dag" id="dag" data-edges="${JSON.stringify(edges)}"><svg aria-hidden="true"></svg>`);
   rows.forEach((row, i) => {
     h.push(html`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${rowWaves(row)}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}</div><div class="ns">`);
     for (const r of row) {
-      const t = byRef.get(r) || { title: '' };
+      const t = byRef.get(r) || {};
+      const title = display.get(r)?.title ?? '';
       const st = status(r);
       const after = [...g.direct.get(r)].sort((a, b) => g.stepOf.get(a) - g.stepOf.get(b) || compareRefs(a, b)).map((p) => v.shortRef(p)).join(', ');
-      const desc = g.descendants.get(r);
-      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${r}"><div class="top">${link(r)}${chip(st, t.stage)}</div>${hostLine(t.remote)}<div class="t" title="${t.title}">${t.title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${desc.size ? `unblocks ${desc.size}` : 'nothing waits on it'}</div></div>`);
+      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}" tabindex="0" data-ref="${r}"><div class="top">${link(r)}${chip(st, t.stage)}</div>${hostLine(t.remote)}<div class="t" title="${title}">${title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${runDesc(r) ? `unblocks ${runDesc(r)}` : 'nothing waits on it'}</div></div>`);
     }
     h.push('</div></div>');
   });
@@ -227,7 +239,7 @@ function roadAhead(v, byRef, link, gates) {
   rows.forEach((row, i) => {
     for (const r of row) {
       const waits = sorted(g.direct.get(r)).map((p) => link(p));
-      h.push(html`<tr><td class="n">${i + 1}</td><td class="n">${wave(r).label ?? 'yours'}</td><td class="n">${link(r)}</td><td>${byRef.get(r)?.title}</td><td>${waits.length ? list(waits, ', ') : '—'}</td><td class="n">${g.descendants.get(r).size}</td></tr>`);
+      h.push(html`<tr><td class="n">${i + 1}</td><td class="n">${g.outside.has(r) ? 'outside' : wave(r).label ?? 'yours'}</td><td class="n">${link(r)}</td><td>${display.get(r)?.title}</td><td>${waits.length ? list(waits, ', ') : '—'}</td><td class="n">${runDesc(r)}</td></tr>`);
     }
   });
   h.push('</tbody></table></div></details>');
