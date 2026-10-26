@@ -46,7 +46,7 @@ import { telemetryPath } from './telemetry.mjs';
 const EX_USAGE = 64;
 const BATCH = 40; // refs per GraphQL query
 const CLOSURE_ROUNDS = 5; // extra rounds that look up open blockers outside the set
-const FIELDS = 'number title url state stateReason createdAt closedAt labels(first:20){nodes{name}} closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
+const FIELDS = 'number title url state stateReason createdAt closedAt labels(first:100){nodes{name}} closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
   + 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
 
 const SCRIPT = fileURLToPath(import.meta.url);
@@ -241,8 +241,13 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     graph = buildGraph(openRefs, allEdges, closedRefs, { outside });
   }
   const outsideTickets = outside.map((ref) => ({ ref, title: info.get(ref).title, url: info.get(ref).url }));
-  for (const ref of Object.keys(notes.milestones ?? {}).filter((r) => !tickets.some((t) => t.ref === r))) {
-    warn(`board-notes milestones names ${ref}, which is not a ticket of this run`);
+  const named = notes.milestones;
+  if (named !== undefined && named !== null && (typeof named !== 'object' || Array.isArray(named))) {
+    warn('board-notes milestones must be an object of ref to name (or false); it is ignored');
+  } else {
+    for (const ref of Object.keys(named ?? {}).filter((r) => !tickets.some((t) => t.ref === r))) {
+      warn(`board-notes milestones names ${ref}, which is not a ticket of this run`);
+    }
   }
   const newest = waves[waves.length - 1];
   const current = { id: newest.id, refs: new Set(newest.refs) };

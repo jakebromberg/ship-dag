@@ -116,7 +116,7 @@ export function renderBoard(v) {
   const total = v.tickets.length - (counts.dropped || 0) + earlier;
   const notes = v.notes || {};
   const ms = new Map((v.milestones || []).map((m) => [m.ref, m]));
-  const badge = (ref) => (ms.has(ref) ? html`<div class="ms">Milestone: ${ms.get(ref).name}</div>` : '');
+  const badge = (ref) => (ms.has(ref) ? html`<div class="ms-badge">Milestone: ${ms.get(ref).name}</div>` : '');
 
   const h = [html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`
     + html`<meta http-equiv="refresh" content="120"><title>${v.title}</title><style>${raw(PAGE_CSS)}</style></head><body><main>`];
@@ -254,7 +254,8 @@ function roadAhead(v, byRef, display, link, gates, badge) {
   }
   h.push('<p class="howto">Lines show direct dependencies only; one implied by a longer chain is left out. The blue chain is the longest one: nothing finishes before it does. Hover or tab to a ticket to trace everything it waits on and everything waiting on it.</p>');
   // The road holds a milestone and all its ancestors, so every edge into a road node starts on the road too.
-  const edges = rows.flat().flatMap((r) => sorted(g.direct.get(r)).map((p) => [p, r, chainEdges.has(`${p}>${r}`), road.has(r)]));
+  // The flag is appended only when there is a road, so a run with no milestone renders its edges exactly as before.
+  const edges = rows.flat().flatMap((r) => sorted(g.direct.get(r)).map((p) => [p, r, chainEdges.has(`${p}>${r}`), ...(road.size ? [road.has(r)] : [])]));
   h.push(html`<div class="dag" id="dag" data-edges="${JSON.stringify(edges)}"><svg aria-hidden="true"></svg>`);
   rows.forEach((row, i) => {
     h.push(html`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${rowWaves(row)}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}</div><div class="ns">`);

@@ -176,7 +176,7 @@ export function milestones({ tickets, graph, waves, notes }) {
   const rows = [];
   for (const t of tickets) {
     const note = Object.hasOwn(extra, t.ref) ? extra[t.ref] : undefined;
-    const named = typeof note === 'string' && note.trim() ? note : null;
+    const named = typeof note === 'string' && note.trim() ? note.trim() : null;
     if (t.status === 'dropped' || note === false || (!named && !(t.labels ?? []).includes(MILESTONE_LABEL))) continue;
     const reached = t.status === 'shipped';
     const anc = [...(graph.ancestors.get(t.ref) ?? [])];

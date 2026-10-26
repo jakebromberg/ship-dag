@@ -756,11 +756,24 @@ test('a hitl-gate ticket is a milestone, its label read in the same batched quer
   const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh });
   assert.equal(code, 0, err.join('\n'));
   assert.deepEqual(gh.calls.map((c) => c.sort()), [[R(1), R(2), R(9)]], 'no extra query');
-  assert.ok(queries.every((q) => q.includes('labels(first:20){nodes{name}}')), 'the lookup asks for labels');
+  assert.ok(queries.every((q) => q.includes('labels(first:100){nodes{name}}')), 'the lookup asks for labels, up to 100 so a crowded ticket keeps its hitl-gate');
   const section = html.slice(html.indexOf('<h2>Milestones'), html.indexOf('<h2>In flight'));
   assert.match(section, /<td>Trace tool<span class="chip ms-next">Next<\/span>/);
   assert.match(section, /<td>Trace tool[\s\S]*?<td>Next up: nothing open before it<\/td>/);
   assert.match(section, /<td>Title 2<\/td>[\s\S]*?<td>1 open ticket before it<\/td>/);
-  assert.match(html, /data-ref="o\/r#2"(?:(?!data-ref)[\s\S])*?<div class="ms">Milestone: Title 2<\/div>/);
+  assert.match(html, /data-ref="o\/r#2"(?:(?!data-ref)[\s\S])*?<div class="ms-badge">Milestone: Title 2<\/div>/);
   assert.ok(err.includes('[board] board-notes milestones names o/r#42, which is not a ticket of this run'), err.join('\n'));
 });
+
+// A `milestones` that is not an object is ignored with one warning, not one per character or index (issue #518).
+for (const [name, value] of [['a string', 'Trace tool'], ['an array', [R(1), R(2)]], ['a number', 7], ['null', null]]) {
+  test(`board-notes milestones as ${name} is ignored with one warning (issue #518)`, async () => {
+    const s = setUp({ files: { 'board-notes.json': { milestones: value } } });
+    const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh(TABLE).runGh });
+    assert.equal(code, 0, err.join('\n'));
+    assert.ok(!html.includes('<h2>Milestones'));
+    const warns = err.filter((l) => l.includes('milestones'));
+    assert.equal(warns.length, value === null ? 0 : 1, warns.join('\n'));
+    if (value !== null) assert.ok(warns[0].includes('board-notes milestones must be an object of ref to name'), warns[0]);
+  });
+}
