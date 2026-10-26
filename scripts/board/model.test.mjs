@@ -104,6 +104,47 @@ test('buildGraph on no open tickets is empty', () => {
   assert.deepEqual(g.chain, []);
 });
 
+// An open blocker outside the run that the closure read joins the node set as an `outside` ref: it gets a step and
+// what waits on it follows (issue #515).
+test('buildGraph with outside places the blocker and its dependents in steps (issue #515)', () => {
+  // 9 (outside) → 2 → 3, and 4 stands alone.
+  const g = buildGraph([2, 3, 4].map(R), edgesOf([[9, 2], [2, 3]]), [], { outside: [R(9)] });
+  assert.deepEqual(g.steps, [[R(4), R(9)], [R(2)], [R(3)]]);
+  assert.equal(g.stepOf.get(R(9)), 0);
+  assert.equal(g.stepOf.get(R(3)), 2);
+  assert.deepEqual([...g.outside], [R(9)]);
+  assert.deepEqual([...g.unorderable], []);
+  assert.deepEqual([...g.preds.get(R(2))], [R(9)], 'the edge from an outside node is drawn');
+  assert.deepEqual([...g.descendants.get(R(9))].sort(), [R(2), R(3)]);
+  assert.deepEqual(g.chain, [R(9), R(2), R(3)]);
+});
+
+test('buildGraph with outside keeps today\'s result when outside is empty or absent (issue #515)', () => {
+  const g = buildGraph([R(2)], edgesOf([[1, 2]]), [], { outside: [] });
+  assert.deepEqual([...g.unorderable], [R(2)]);
+  assert.deepEqual([...g.outside], []);
+  assert.deepEqual([...buildGraph([R(2)], edgesOf([[1, 2]]), []).outside], []);
+});
+
+test('buildGraph keeps an outside blocker behind an unread open ref unorderable, and what waits on it (issue #515)', () => {
+  // 8 is open and was never read; 9 (outside) waits on it; 2 waits on 9.
+  const g = buildGraph([2, 4].map(R), edgesOf([[8, 9], [9, 2]]), [], { outside: [R(9)] });
+  assert.deepEqual(g.steps, [[R(4)]]);
+  assert.deepEqual([...g.unorderable].sort(), [R(2), R(9)]);
+});
+
+test('buildGraph keeps a cycle through an outside node unorderable (issue #515)', () => {
+  const g = buildGraph([2, 4].map(R), edgesOf([[9, 2], [2, 9]]), [], { outside: [R(9)] });
+  assert.deepEqual(g.steps, [[R(4)]]);
+  assert.deepEqual([...g.unorderable].sort(), [R(2), R(9)]);
+});
+
+test('buildGraph reads an outside ref that is closed as done, and one that is also a run ticket as the run\'s (issue #515)', () => {
+  const g = buildGraph([R(2), R(3)], edgesOf([[9, 2], [2, 3]]), [R(9)], { outside: [R(9), R(2)] });
+  assert.deepEqual(g.steps, [[R(2)], [R(3)]]);
+  assert.deepEqual([...g.outside], []);
+});
+
 // ---- orderSteps ----------------------------------------------------------
 
 test('orderSteps puts the ticket that unblocks most first, then keeps children under their parents', () => {
@@ -144,6 +185,24 @@ test('projectWaves: a ticket of yours takes no wave, and what waits on it goes a
   const w = projectWaves(g, status, { id: '5', refs: new Set([R(1)]) });
   assert.deepEqual(w.get(R(2)), { label: null, now: false });
   assert.deepEqual(w.get(R(3)), { label: '6', now: false });
+});
+
+// An outside node is one wave of its home run: the current wave when nothing open precedes it, else one after its
+// blockers; the run ticket behind it is one after that (issue #515).
+test('projectWaves: outside nodes cost a wave each along a chain, and carry no label (issue #515)', () => {
+  // 8 (outside) → 9 (outside) → 2 (ours); the current wave is 5.
+  const g = buildGraph([R(2)], edgesOf([[8, 9], [9, 2]]), [], { outside: [R(8), R(9)] });
+  const w = projectWaves(g, new Map([[R(2), 'blocked']]), { id: '5', refs: new Set() });
+  assert.deepEqual(w.get(R(8)), { label: null, now: false, outside: true });
+  assert.deepEqual(w.get(R(9)), { label: null, now: false, outside: true });
+  assert.deepEqual(w.get(R(2)), { label: '7', now: false }, 'cur, cur + 1, then cur + 2');
+});
+
+test('projectWaves: a root outside node sits in the current wave, so its dependent is one after it (issue #515)', () => {
+  const g = buildGraph([R(2), R(3)], edgesOf([[9, 3]]), [], { outside: [R(9)] });
+  const w = projectWaves(g, new Map([[R(2), 'ready'], [R(3), 'blocked']]), { id: '5', refs: new Set() });
+  assert.equal(w.get(R(2)).label, '6');
+  assert.equal(w.get(R(3)).label, '6', 'cur is 5 for the outside root, so its dependent is 6');
 });
 
 test('projectWaves with no wave yet starts at 1, and skips unorderable tickets', () => {

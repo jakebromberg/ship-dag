@@ -126,6 +126,29 @@ async function lookup(refs, deps, moved) {
   return found;
 }
 
+/**
+ * The open issues outside the run that `from` (the run's open tickets) wait on, directly or through each other: the
+ * ancestors over `edges` that are open, read by the closure (`info`) and not run tickets. The walk goes on through each
+ * one it keeps, and stops at a closed or unread blocker. Left out are the run's own epic, which blocks nothing, and the
+ * open blockers of a closed member, whose edges the graph drops.
+ *
+ * @returns {string[]}
+ */
+function outsideAncestors(from, edges, run, info, state) {
+  const blockers = new Map();
+  for (const { blocked, blockedBy } of edges) blockers.set(blocked, [...(blockers.get(blocked) ?? []), blockedBy]);
+  const found = new Set();
+  const stack = [...from];
+  while (stack.length) {
+    for (const b of blockers.get(stack.pop()) ?? []) {
+      if (found.has(b) || run.has(b) || !info.has(b) || state.get(b) !== 'OPEN') continue;
+      found.add(b);
+      stack.push(b);
+    }
+  }
+  return [...found];
+}
+
 /** Everything `render` reads, the tickets' GitHub state included, turned into `renderBoard`'s input. */
 async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const waves = runWaves({ runId: run.runId, runDir: dir }, { warn, dirs });
@@ -205,16 +228,27 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   });
 
   const openRefs = tickets.filter((t) => t.status !== 'shipped' && t.status !== 'dropped').map((t) => t.ref);
-  const graph = buildGraph(openRefs, allEdges, [...state].filter(([, s]) => s === 'CLOSED').map(([ref]) => ref));
+  const closedRefs = [...state].filter(([, s]) => s === 'CLOSED').map(([ref]) => ref);
+  // The open issues outside the run that open run tickets wait on, as far as the closure read them, are drawn as nodes of
+  // their own; one with no orderable run ticket behind it (it sits in a cycle, or its dependents wait on an unread blocker
+  // too) would be an orphan, so the graph is rebuilt without it. `descendants` is transitive, so one pass is enough.
+  let outside = outsideAncestors(openRefs, allEdges, new Set(refs), info, state);
+  let graph = buildGraph(openRefs, allEdges, closedRefs, { outside });
+  const placed = outside.filter((r) => [...(graph.descendants.get(r) ?? [])].some((d) => !graph.outside.has(d)));
+  if (placed.length < outside.length) {
+    outside = placed;
+    graph = buildGraph(openRefs, allEdges, closedRefs, { outside });
+  }
+  const outsideTickets = outside.map((ref) => ({ ref, title: info.get(ref).title, url: info.get(ref).url }));
   const newest = waves[waves.length - 1];
   const current = { id: newest.id, refs: new Set(newest.refs) };
   const before = shippedBefore(await walk, refs); // only the run's own tickets: a closed blocker outside them still shipped before
-  const repos = [...refs, ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
+  const repos = [...refs, ...outside, ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
   const shortRef = makeShortRef(repos, board.abbreviations);
   const scope = epic ? { url: info.get(epic).url, label: shortRef(epic), title: info.get(epic).title }
     : board.issueSet?.label ? { url: `https://github.com/${board.issueSet.repo}/issues?q=label%3A${encodeURIComponent(board.issueSet.label)}`, label: board.issueSet.label, title: board.issueSet.repo } : null;
   return {
-    title: board.title, runId: board.runId ?? run.runId, scope, now: deps.now().toISOString(), tickets, graph, current,
+    title: board.title, runId: board.runId ?? run.runId, scope, now: deps.now().toISOString(), tickets, outsideTickets, graph, current,
     out: flag('--out') ?? board.out ?? join(dir, 'board.html'),
     waves: projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), current), shortRef,
     repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild, before, startedAt: board.startedAt,

@@ -46,24 +46,29 @@ export function classify({ state, stateReason, hasOpenPr, owned, openBlockers })
  * `unorderable`. `preds` holds only the edges between two open tickets, since
  * only those are drawn; `direct` is its transitive reduction (an edge implied by
  * a longer path is dropped). `chain` is the longest path, end to end. A ref in
- * both `openRefs` and `done` is done, as the engine reads it.
+ * both `openRefs` and `done` is done, as the engine reads it. `outside` in the
+ * result holds the `outside` refs that joined the graph.
  *
  * @param {string[]} openRefs
  * @param {Array<{blocked:string, blockedBy:string}>} edges  any edges; only those into an open ticket count
  * @param {string[]} done  required: closed refs, as the engine's `done[]` (the board's closed members and
  *   closed blockers). Pass `[]` when nothing is closed; a forgotten argument would leave every ticket behind
  *   a closed blocker unorderable, so its absence throws.
+ * @param {{outside?: string[]}} [options]  `outside`: open refs that are not run tickets (issue #515)
  */
-export function buildGraph(openRefs, edges, done) {
+export function buildGraph(openRefs, edges, done, { outside = [] } = {}) {
   if (!Array.isArray(done)) throw new TypeError('buildGraph: done is required (pass [] when nothing is closed)');
   const closed = new Set(done);
   openRefs = openRefs.filter((r) => !closed.has(r)); // one set for preds, planWaves and the ancestry
-  const open = new Set(openRefs);
-  const preds = new Map(openRefs.map((r) => [r, new Set()]));
+  const run = new Set(openRefs);
+  const outsideRefs = new Set(outside.filter((r) => !closed.has(r) && !run.has(r)));
+  const nodes = [...openRefs, ...outsideRefs];
+  const open = new Set(nodes);
+  const preds = new Map(nodes.map((r) => [r, new Set()]));
   for (const { blocked, blockedBy } of edges) {
     if (open.has(blocked) && open.has(blockedBy)) preds.get(blocked).add(blockedBy);
   }
-  const plan = planWaves({ nodes: openRefs, edges: edges.filter((e) => open.has(e.blocked)), done });
+  const plan = planWaves({ nodes, edges: edges.filter((e) => open.has(e.blocked)), done });
   const steps = plan.waves.map((w) => [...w]);
   const stepOf = new Map(steps.flatMap((row, i) => row.map((r) => [r, i])));
   const unorderable = new Set([...plan.cyclic, ...plan.blocked.map((b) => b.ref)]);
@@ -83,7 +88,7 @@ export function buildGraph(openRefs, edges, done) {
     return [r, new Set(ps.filter((p) => !ps.some((q) => q !== p && ancestors.get(q).has(p))))];
   }));
 
-  return { steps, stepOf, preds, direct, ancestors, descendants, unorderable, chain: longestChain(steps, stepOf, direct, ancestors, descendants) };
+  return { steps, stepOf, preds, direct, ancestors, descendants, unorderable, outside: outsideRefs, chain: longestChain(steps, stepOf, direct, ancestors, descendants) };
 }
 
 /** Deepest ticket (ties: most ancestors, then ref), walked back through the deepest direct parent each time. */
@@ -161,14 +166,16 @@ export function leadingWaveNumber(id) {
  * Project the wave each open, orderable ticket ships in. A ticket in the wave
  * building now is that wave (its id, verbatim — `"31b"`); any other ticket goes
  * one after the latest wave among its blockers, counting from the current
- * wave's leading number. A ticket of the operator's (`status: "you"`) takes no
+ * wave's leading number. An `outside` node (an open issue of another run, issue #515) is one wave of
+ * its home run: the current wave when nothing open precedes it, else one after its blockers; it takes no
+ * label (`outside: true`), and the run ticket behind it goes one after that. A ticket of the operator's (`status: "you"`) takes no
  * wave, and what waits on it goes after *its* blockers. The projection assumes
  * each wave ships before the next starts.
  *
  * @param {ReturnType<typeof buildGraph>} g
  * @param {Map<string,string>} status  ref → classify() result
  * @param {{id:string, refs:Set<string>}|null} current  the wave building now, if any
- * @returns {Map<string,{label:string|null, now:boolean}>}
+ * @returns {Map<string,{label:string|null, now:boolean, outside?:true}>}
  */
 export function projectWaves(g, status, current) {
   const cur = current ? leadingWaveNumber(current.id) : 0;
@@ -177,7 +184,10 @@ export function projectWaves(g, status, current) {
   for (const r of g.steps.flat()) { // step order: every blocker is projected first
     const ps = [...g.preds.get(r)];
     const base = ps.length ? Math.max(...ps.map((p) => eff.get(p))) : null;
-    if (status.get(r) === 'you') {
+    if (g.outside.has(r)) {
+      eff.set(r, base === null ? cur : base + 1);
+      out.set(r, { label: null, now: false, outside: true });
+    } else if (status.get(r) === 'you') {
       eff.set(r, base ?? cur);
       out.set(r, { label: null, now: false });
     } else if (current && current.refs.has(r)) {

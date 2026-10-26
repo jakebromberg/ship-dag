@@ -235,6 +235,105 @@ for (const { status, token } of STATUSES) {
   });
 }
 
+// ---- outside blockers (issue #515) ----------------------------------------
+
+const O = (n) => `x/y#${n}`;
+const outsideTicket = (n) => ({ ref: O(n), title: `Outside ${n}`, url: `https://github.com/x/y/issues/${n}` });
+
+/** Two outside blockers in a chain ahead of our tickets: O90 → O91 → r#2 → r#3, with r#4 ready beside O90. */
+function outsideView(over = {}) {
+  const tickets = [ticket(2, 'blocked'), ticket(3, 'blocked'), ticket(4, 'ready')];
+  const outside = [O(90), O(91)];
+  const graph = buildGraph(tickets.map((t) => t.ref), [
+    { blockedBy: O(90), blocked: O(91) }, { blockedBy: O(91), blocked: R(2) }, { blockedBy: R(2), blocked: R(3) },
+  ], [], { outside });
+  const current = { id: '4b', refs: new Set([R(4)]) };
+  return {
+    ...view(), tickets, graph, current, outsideTickets: outside.map((r) => outsideTicket(Number(r.split('#')[1]))),
+    waves: projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), current),
+    shortRef: makeShortRef(['o/r', 'x/y']), repoLabel: makeRepoLabel(['o/r', 'x/y']), notes: {}, ...over,
+  };
+}
+
+/** The markup of the node for `ref`: from its opening tag to the next node's (or the end of the step layout). */
+function nodeOf(html, ref) {
+  const at = html.indexOf(`data-ref="${ref}"`);
+  assert.notEqual(at, -1, `no node for ${ref}`);
+  const next = html.indexOf('data-ref=', at + 1);
+  return html.slice(at, next === -1 ? html.indexOf('</details>', at) : next);
+}
+
+test('renderBoard draws an outside blocker as a node: s-outside, an Outside chip, "Outside this run" and its real link (issue #515)', () => {
+  const html = renderBoard(outsideView());
+  const node = nodeOf(html, O(90));
+  assert.match(html, /<div class="node s-outside[ "][^>]*data-ref="x\/y#90"/);
+  assert.ok(node.includes('<span class="chip c-outside">Outside</span>'), node);
+  assert.ok(node.includes('Outside this run'));
+  assert.ok(node.includes('href="https://github.com/x/y/issues/90"'));
+  assert.doesNotMatch(html, /c-undefined|s-undefined/);
+  const chain = html.slice(html.indexOf('Longest chain:'), html.indexOf('Lines show direct'));
+  assert.ok(chain.includes('href="https://github.com/x/y/issues/90"'), 'the longest-chain bar links it');
+  const table = html.slice(html.indexOf('Order of work as a table'));
+  assert.ok(table.includes('href="https://github.com/x/y/issues/90"'), 'the table links it');
+  assert.ok(!html.includes('href=""'), 'no link is left without a target');
+});
+
+test('renderBoard shows an outside blocker\'s title in its node and in the table (issue #515)', () => {
+  const html = renderBoard(outsideView());
+  assert.ok(nodeOf(html, O(90)).includes('title="Outside 90">Outside 90</div>'));
+  assert.match(html.slice(html.indexOf('Order of work as a table')), /<td>Outside 91<\/td>/);
+});
+
+test('renderBoard labels a step of only outside nodes "outside this run" and a mixed step "+ outside" (issue #515)', () => {
+  const html = renderBoard(outsideView());
+  const labels = [...html.matchAll(/<span class="wv">([^<]*)<\/span>/g)].map((m) => m[1]);
+  assert.deepEqual(labels, ['wave 4b + outside', 'outside this run', 'wave 6', 'wave 7'], 'step 1 holds ready r#4 (wave 4b) beside O90; step 2 only O91');
+});
+
+test('renderBoard names both counts in the road summary, and splits the chain label (issue #515)', () => {
+  const html = renderBoard(outsideView());
+  assert.match(html, /<b>3 tickets left, in 4 steps; plus 2 open blockers outside this run\.<\/b>/);
+  assert.match(html, /\(4 tickets, one after another: 2 in this run, 2 outside\)/);
+});
+
+test('renderBoard pins the combined unorderable-plus-outside summary (issue #515)', () => {
+  const v = outsideView();
+  const tickets = [ticket(2, 'blocked'), ticket(3, 'ready'), ticket(4, 'ready'), ticket(6, 'blocked'), ticket(7, 'blocked')];
+  const graph = buildGraph(tickets.map((t) => t.ref), [
+    { blockedBy: O(90), blocked: R(2) }, { blockedBy: R(6), blocked: R(7) }, { blockedBy: R(7), blocked: R(6) },
+  ], [], { outside: [O(90)] });
+  const html = renderBoard({ ...v, tickets, graph, waves: new Map() });
+  assert.match(html, /<b>5 tickets left: 3 in 2 steps, 2 can't be ordered; plus 1 open blocker outside this run\.<\/b>/);
+});
+
+test('renderBoard counts only our tickets under "unblocks", in the node and in the table (issue #515)', () => {
+  const html = renderBoard(outsideView());
+  assert.ok(nodeOf(html, O(90)).includes('unblocks 2'), 'r#2 and r#3, not O91');
+  const row = html.slice(html.indexOf('Order of work as a table')).split('<tr>').find((r) => r.includes('issues/90'));
+  assert.match(row, /<td class="n">2<\/td><\/tr>/, 'the table\'s Unblocks column');
+});
+
+test('renderBoard writes "outside" in the table\'s Wave column (issue #515)', () => {
+  const html = renderBoard(outsideView());
+  const row = html.slice(html.indexOf('Order of work as a table')).split('<tr>').find((r) => r.includes('issues/90'));
+  assert.match(row, /^<td class="n">1<\/td><td class="n">outside<\/td>/);
+});
+
+test('renderBoard\'s how-to and callout say what an Outside node is and what stays unplaced (issue #515)', () => {
+  assert.match(renderBoard(outsideView()), /A dashed Outside node is an open issue owned by another run; the waves after it assume that run/);
+  assert.match(renderBoard(view()), /outside this run that the board could not place \(never read, or caught in a cycle\)/);
+});
+
+test('renderBoard has no "Can\'t be ordered" callout when everything was placed (issue #515)', () => {
+  assert.doesNotMatch(renderBoard(outsideView()), /Can't be ordered/);
+});
+
+test('renderBoard leaves today\'s summary and chain strings alone when nothing is outside (issue #515)', () => {
+  const html = renderBoard(view());
+  assert.doesNotMatch(html, /plus \d+ open blockers? outside/);
+  assert.doesNotMatch(html, /one after another:/);
+});
+
 // ---- predecessor epics ---------------------------------------------------
 
 const before = (epicRef, leaves, dropped = 0) => ({ ref: epicRef, url: 'https://github.com/o/r/issues/50', title: 'The first epic', dropped,
