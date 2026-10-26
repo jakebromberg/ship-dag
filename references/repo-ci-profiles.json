@@ -212,9 +212,9 @@
       "commands": [
         "cp -R $HOME/Developer/PhaseMatrix/.build .build 2>/dev/null || true",
         "find .build -maxdepth 4 -type d -name 'ModuleCache*' -prune -exec rm -rf {} + 2>/dev/null || true",
-        "swift build --build-tests",
-        "swift test --skip-build --skip allocationProbe",
-        "swift test --skip-build --filter allocationProbe --no-parallel"
+        "xcrun swift build --build-tests",
+        "xcrun swift test --skip-build --skip allocationProbe",
+        "xcrun swift test --skip-build --filter allocationProbe --no-parallel"
       ]
     },
     "WXYC/wallpaper-ios": {
