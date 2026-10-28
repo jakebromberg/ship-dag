@@ -182,9 +182,11 @@ for (const [name, table] of [
 // Neither the run's own epic nor the open blocker of a member that already closed is a blocker of anything open (issue #515).
 test('with an epic issue set, neither the epic nor an open blocker of a closed member becomes an outside node (issue #515)', async () => {
   const s = setUp({ files: { 'board.json': { ...BOARD, issueSet: { epic: R(50) } } } });
-  const table = { ...TABLE, [R(50)]: {}, [R(9)]: { state: 'CLOSED', closedAt: '2026-10-08T13:00:00.000Z', blockers: [R(60)] }, [R(60)]: {} };
-  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh(table).runGh });
+  const table = { ...TABLE, [R(50)]: { blockers: [R(61)] }, [R(61)]: {}, [R(9)]: { state: 'CLOSED', closedAt: '2026-10-08T13:00:00.000Z', blockers: [R(60)] }, [R(60)]: {} };
+  const gh = fakeGh(table);
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
   assert.equal(code, 0, err.join('\n'));
+  assert.deepEqual(gh.calls.flat().filter((r) => r === R(60) || r === R(61)), [], 'the closure follows only open tickets other than the epic, so neither chain is read (issue #522)');
   assert.doesNotMatch(html, /data-ref="o\/r#(50|60)"/);
   assert.doesNotMatch(html, /plus \d+ open blockers? outside/);
   assert.doesNotMatch(html, /Can't be ordered/);

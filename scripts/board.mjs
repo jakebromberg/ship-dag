@@ -15,7 +15,8 @@
 // Cost of one refresh: about L+2 GraphQL queries and L REST calls for L open leaves, plus ceil(T/40) GraphQL queries to render T tickets
 // (the fetch is a `gh issue view` and a `dependencies/blocked_by` read per leaf, one sub-issues query per epic and one list per label
 // state; each sub-epic or out-of-set blocker adds one more; the render adds closure and predecessor rounds). The closure reads open
-// blockers outside the set to a fixed point, one round per level, under a safety cap of `CLOSURE_CAP` rounds that warns when hit.
+// blockers of open tickets to a fixed point, one round (ceil(width/40) queries) per level of outside blockers, under a
+// safety cap of `CLOSURE_CAP` rounds that warns when hit.
 // Exit codes: 0 = done; 1 = failed (stderr says why; the old board.html is untouched); 64 = usage.
 //
 // Usage: board.mjs init   (--state-dir <dir> | --run-id <id>) [--title T] [--epic owner/repo#N | --label L --repo owner/repo]
@@ -182,6 +183,9 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const native = []; // GitHub's own blockedBy edges
   const known = new Map(); // a transferred issue's new ref → the ref the run knows it by
   const canon = (ref) => known.get(refKey(ref)) ?? ref; // the one name the board uses for an issue
+  // Only an open ticket's open blockers can be drawn, so the closure follows those alone: never a closed ticket's, nor the
+  // epic's, which blocks nothing in the run.
+  const pending = new Set();
   let todo = wanted;
   for (let round = 0; todo.length; round += 1) {
     if (round >= CLOSURE_CAP) { warn(`closure hit its safety cap of ${CLOSURE_CAP} rounds; ${todo.length} open blocker${todo.length === 1 ? '' : 's'} unread`); break; }
@@ -192,14 +196,16 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
       if (issue.transferredTo) known.set(refKey(issue.transferredTo), ref);
     }
     for (const [ref, issue] of found) {
+      const follow = issue.state === 'OPEN' && ref !== epic;
       for (const b of issue.blockedBy.nodes) {
         const at = formatRef(b.repository.nameWithOwner, b.number);
         const blocker = canon(at); // GitHub names a moved blocker by its new ref
         native.push({ blocked: ref, blockedBy: blocker });
         if (!state.has(blocker)) state.set(blocker, b.state);
+        if (follow && b.state === 'OPEN') pending.add(blocker);
       }
     }
-    todo = [...state].filter(([ref, s]) => s === 'OPEN' && !info.has(ref)).map(([ref]) => ref);
+    todo = [...pending].filter((ref) => !info.has(ref));
   }
 
   // The spec may name a transferred issue by its new ref while the waves name it by its old one: the board uses the old.
