@@ -758,6 +758,16 @@ test('render asks for createdAt in its batched lookup and draws the burn-up from
     'r#1 and r#9 from the start, r#9 shipped at 6 AM, r#2 filed at 8 AM');
 });
 
+test('an outside ticket carries its createdAt, so the burn-up counts it from when it was filed (issue #522 follow-up)', async () => {
+  const s = setUp();
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(8)] }, [R(8)]: { createdAt: DURING_RUN } });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(html, /aria-label="Burn-up: 1 of 4 shipped this run as of Oct 8, 1:30 PM PDT; 3 in scope when the run started, Oct 8, 5:00 AM PDT\."/,
+    'r#1, r#2 and r#9 from the start, r#8 filed at 7 AM');
+  assert.match(html, /<td class="n">Oct 8, 7:00 AM PDT<\/td><td class="n">4<\/td>/);
+});
+
 // ---- refresh: fetch the run's graph spec, write spec-board.json, render ----
 
 /** `run`, with the extra deps `refresh` takes (`fetchSpec`, `runGhSync`), and `spec-board.json` read back (null if absent). */
