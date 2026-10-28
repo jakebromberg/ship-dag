@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { waveSidecar as wave_, waveContextMatches, readSidecar, appendWave, findWaveContext, findWaveConfig, waveConfigs, entryFromConfig, specBlockOn, SIDECAR_NAME } from './wave-sidecar.mjs';
+import { waveSidecar as wave_, waveContextMatches, readSidecar, appendWave, findWaveContext, findWaveConfig, waveConfigs, entryFromConfig, specBlockOn, newestEntries, SIDECAR_NAME } from './wave-sidecar.mjs';
 import { parseRef } from './ref.mjs';
 import { load as loadTuning } from './tuning.mjs';
 import { buildConfig } from '../emit-config.mjs';
@@ -300,4 +300,53 @@ test('findWaveConfig names the path of the file it read as configFile, and waveC
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- newestEntries: each ref's newest sidecar entry across an engine base dir (issue #522) ----
+
+/** A base dir holding one run dir per key of `runs`, each with a sidecar of the given entries (a string is written as a raw line). */
+function baseWith(runs) {
+  const base = mkdtempSync(join(tmpdir(), 'newest-entries-'));
+  for (const [run, lines] of Object.entries(runs)) {
+    const dir = join(base, run);
+    appendWave(dir, { runId: run, issues: [] }, { warn: () => {} }); // creates the dir
+    writeFileSync(join(dir, SIDECAR_NAME), lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n');
+  }
+  return base;
+}
+const entry = (runId, emittedAt, refs) => ({ runId, emittedAt, issues: refs.map((ref) => ({ ref })) });
+
+test('newestEntries keeps each ref\'s newest entry by emittedAt across run dirs, keyed case-insensitively', () => {
+  const base = baseWith({
+    'sd-a': [entry('sd-a', '2026-10-01T00:00:00Z', ['O/r#1', 'o/r#2']), entry('sd-a', '2026-10-03T00:00:00Z', ['o/r#2'])],
+    'sd-b': [entry('sd-b', '2026-10-02T00:00:00Z', ['o/r#1', 'o/r#2'])],
+  });
+  try {
+    const got = newestEntries(base, { warn: () => {} });
+    assert.equal(got.get('o/r#1').entry.runId, 'sd-b');
+    assert.equal(got.get('o/r#1').ref, 'o/r#1');
+    assert.equal(got.get('o/r#1').dir, join(base, 'sd-b'));
+    assert.equal(got.get('o/r#2').entry.runId, 'sd-a');
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test('newestEntries: on an equal emittedAt the later-listed entry wins, and an unparseable emittedAt counts as the epoch', () => {
+  const base = baseWith({ 'sd-a': [entry('sd-a', '2026-10-01T00:00:00Z', ['o/r#1']), entry('sd-a2', '2026-10-01T00:00:00Z', ['o/r#1']), entry('sd-a', 'nope', ['o/r#3']), entry('sd-a3', null, ['o/r#3'])] });
+  try {
+    const got = newestEntries(base, { warn: () => {} });
+    assert.equal(got.get('o/r#1').entry.runId, 'sd-a2');
+    assert.equal(got.get('o/r#3').entry.runId, 'sd-a3', 'both read as 0, so the later wins');
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test('newestEntries leaves out what skip rejects, warns once per unreadable sidecar, and reads a missing base as empty', () => {
+  const base = baseWith({ 'sd-a': [entry('sd-a', '2026-10-05T00:00:00Z', ['o/r#1'])], 'sd-b': [entry('sd-b', '2026-10-01T00:00:00Z', ['o/r#1']), '{torn'] });
+  try {
+    const warns = [];
+    const got = newestEntries(base, { warn: (m) => warns.push(m), skip: (dir, e) => e.runId === 'sd-a' });
+    assert.equal(got.get('o/r#1').entry.runId, 'sd-b');
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /skipped 1 unreadable line/);
+    assert.equal(newestEntries(join(base, 'absent'), { warn: () => {} }).size, 0);
+  } finally { rmSync(base, { recursive: true, force: true }); }
 });

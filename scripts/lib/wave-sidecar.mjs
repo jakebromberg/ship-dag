@@ -16,7 +16,7 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { parseBlockOn } from '../review-gate.mjs';
-import { formatRef } from './ref.mjs';
+import { formatRef, refKey } from './ref.mjs';
 import { runIdFromConfigName } from './run-id.mjs';
 import { load as loadTuning } from './tuning.mjs';
 
@@ -109,6 +109,30 @@ export function readSidecar(path, { warn = (m) => console.error(m) } = {}) {
   }
   if (bad) warn(`wave sidecar ${path}: skipped ${bad} unreadable line${bad === 1 ? '' : 's'}`);
   return entries;
+}
+
+/** The names in `dir`, or [] when it cannot be read. */
+export const lsdir = (dir) => { try { return readdirSync(dir); } catch { return []; } };
+
+/**
+ * Each ref's newest sidecar entry across the run dirs of an engine base dir (`<baseDir>/<run>/ship-dag-wave.jsonl`), as
+ * `Map(refKey → {ref, entry, dir})`: the newest by `emittedAt`, an unparseable one counting as the epoch, and on a tie
+ * the later-read entry. `skip(dir, entry)` leaves an entry out; `warn` gets `readSidecar`'s warnings.
+ * @param {string} baseDir
+ * @param {{warn?: (m: string) => void, skip?: (dir: string, entry: object) => boolean}} [opts]
+ * @returns {Map<string, {ref: string, entry: object, dir: string}>}
+ */
+export function newestEntries(baseDir, { warn = (m) => console.error(m), skip = () => false } = {}) {
+  const newest = new Map();
+  for (const run of lsdir(baseDir)) {
+    const dir = join(baseDir, run);
+    for (const entry of readSidecar(join(dir, SIDECAR_NAME), { warn })) {
+      if (skip(dir, entry)) continue;
+      const at = Date.parse(entry.emittedAt) || 0;
+      for (const i of entry.issues ?? []) if (!(newest.get(refKey(i.ref))?.at > at)) newest.set(refKey(i.ref), { ref: i.ref, entry, dir, at });
+    }
+  }
+  return new Map([...newest].map(([k, { at, ...v }]) => [k, v]));
 }
 
 /**
