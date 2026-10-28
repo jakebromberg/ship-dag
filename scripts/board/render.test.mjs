@@ -451,6 +451,19 @@ test('the burn-up table lists every point, newest first', () => {
   ]);
 });
 
+test('the burn-up counts the required set: an outside ticket enters scope when filed, and one shipped outside counts as done (issue #522 follow-up)', () => {
+  const v = outsideView({ startedAt: STARTED });
+  v.outsideTickets[1] = { ...v.outsideTickets[1], createdAt: '2026-10-08T15:00:00Z' }; // O91, filed at 8 AM PDT
+  const shippedOut = { ref: O(80), title: 'Done elsewhere', url: 'https://github.com/x/y/issues/80', status: 'shipped', closedAt: '2026-10-08T19:00:00Z' };
+  const c = chart(renderBoard({ ...v, outsideTickets: [...v.outsideTickets, shippedOut] }));
+  assert.match(c, /<span class="end s"[^>]*>Scope this run 6<\/span>/, 'three run tickets, two open outside, one shipped outside');
+  assert.match(c, /<span class="end d"[^>]*>Shipped this run 1<\/span>/);
+  assert.match(c, /aria-label="Burn-up: 1 of 6 shipped this run as of Oct 8, 1:30 PM PDT; 5 in scope when the run started, Oct 8, 5:00 AM PDT\."/);
+  assert.match(c, /Filed <a[^>]*>y#91<\/a> <em>Outside 91<\/em>/);
+  assert.match(c, /Shipped <a[^>]*>y#80<\/a> <em>Done elsewhere<\/em>/);
+  assert.match(c, /the outside tickets they wait on/);
+});
+
 test('the burn-up escapes a ticket title in its tooltip and its table', () => {
   const evil = '<img src=x onerror=alert(1)>';
   const v = view({ startedAt: STARTED });

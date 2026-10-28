@@ -313,7 +313,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const outsideTickets = [...outside.map((ref) => [ref, 'outside']), ...done.map((ref) => [ref, 'shipped'])].map(([ref, status]) => {
     const issue = info.get(ref);
     const by = emitted.get(refKey(ref)) ?? (issue.transferredTo && emitted.get(refKey(issue.transferredTo))); // a sidecar may name its new ref
-    return { ref, status, ...(status === 'shipped' && { closedAt: issue.closedAt }), title: issue.title, url: issue.url, prs: prsOf(issue),
+    return { ref, status, createdAt: issue.createdAt, ...(status === 'shipped' && { closedAt: issue.closedAt }), title: issue.title, url: issue.url, prs: prsOf(issue),
       owner: { home: topParent(issue, shared), run: by?.runId ?? null } };
   });
   const named = notes.milestones;

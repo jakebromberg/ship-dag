@@ -150,7 +150,7 @@ export function renderBoard(v) {
   h.push(html`<div class="legend">${shown.map(({ token, legend }) => html`<span><i style="background:var(--${token})"></i>${legend}</span>`)}</div>`);
   h.push(repoBars(required, v.repoLabel));
   const burn = Number.isFinite(Date.parse(v.startedAt ?? '')); // a hand-edited startedAt that is not a date skips the chart
-  if (burn) { h.push(burnup(v, link)); }
+  if (burn) { h.push(burnup(v, required, link)); }
 
   if (notes.callouts?.length) {
     h.push(html`<h2>Needs attention</h2><div class="callouts">${notes.callouts.map((c) => html`<div class="callout${c.owner === 'you' ? ' you' : ''}"><b>${c.title}</b>${c.text}</div>`)}</div>`);
@@ -307,14 +307,15 @@ const BUCKET_GAP = 0.005; // steps closer than this share of the run's span are 
 const pct = (n) => `${Number(n.toFixed(2))}%`;
 
 /**
- * The burn-up: scope and shipped over the run as an inline SVG step chart. The SVG holds only the lines (in a
+ * The burn-up: scope and shipped over the run as an inline SVG step chart, counting the required set (the run's tickets and
+ * the outside ones it waits on, issue #522). The SVG holds only the lines (in a
  * 0–100 viewBox stretched to the plot, strokes kept at their pixel width); every label is HTML placed by percent, so
  * text stays readable at any width. Each hover target is a column from the midpoint before its step to the midpoint
  * after, so pointing anywhere snaps to the nearest step; its tooltip is the next sibling, shown by CSS on hover or
  * focus. One column is in the tab order and the arrow keys move between them (burn.js). A table repeats the data.
  */
-function burnup(v, link) {
-  const points = burnupSeries({ tickets: v.tickets, startedAt: v.startedAt, now: v.now });
+function burnup(v, required, link) {
+  const points = burnupSeries({ tickets: required, startedAt: v.startedAt, now: v.now });
   const first = points[0];
   const last = points[points.length - 1];
   const [t0, t1] = [first.t, last.t];
@@ -373,7 +374,7 @@ function burnup(v, link) {
     + html`<div class="chart" role="group" aria-label="${summary}"><div class="bl"><span><i class="ks"></i>Scope</span><span><i class="kd"></i>Shipped</span></div>`
     + html`<div class="plot">${svg}${labels}${ends}${cols}</div>`
     + '<p class="note">Each step is a ticket filed, shipped or closed without shipping. Point at one, or tab to the chart and use the arrow keys, to see which. '
-    + 'Tickets filed before the run count from its start; one closed without shipping leaves the scope. Times are Pacific.</p></div>'
+    + 'Scope is the run\'s tickets and the outside tickets they wait on. Tickets filed before the run count from its start; one closed without shipping leaves the scope. Times are Pacific.</p></div>'
     + '<details><summary>The burn-up as a table</summary><div class="tw"><table><thead><tr><th>When</th><th>Scope this run</th><th>Shipped this run</th><th>To go</th><th>What changed</th></tr></thead>'
     + html`<tbody>${rows}</tbody></table></div></details></section>`;
 }
