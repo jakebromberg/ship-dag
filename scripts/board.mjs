@@ -26,7 +26,7 @@
 // (render and refresh fall back to $SHIP_DAG_RUN_ID when neither --state-dir nor --run-id is given; init needs one of them.)
 
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchSpec as planWavesFetchSpec } from './plan-waves.mjs';
 import { renderBoard } from './board/render.mjs';
@@ -43,7 +43,7 @@ import { readArg } from './lib/read-arg.mjs';
 import { REPO_RE, formatRef, parseRef, refKey } from './lib/ref.mjs';
 import { parseBlockOn } from './review-gate.mjs';
 import { runFamilyStateDirs } from './lib/wave-reports.mjs';
-import { newestEntries } from './lib/wave-sidecar.mjs';
+import { entryRunId, newestEntries } from './lib/wave-sidecar.mjs';
 import { sameRun } from './lib/run-id.mjs';
 import { telemetryPath } from './telemetry.mjs';
 
@@ -57,6 +57,8 @@ const parentField = (depth) => (depth ? `parent{number title url repository{name
 const FIELDS = 'number title url state stateReason createdAt closedAt labels(first:100){nodes{name}} closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
   + `blockedBy(first:50){nodes{number state stateReason closedAt repository{nameWithOwner}}} ${parentField(PARENT_DEPTH)}`;
 const SUB_ISSUES = ['-H', 'GraphQL-Features: sub_issues']; // `parent` and `subIssues` are sub-issue fields
+/** A lookup error on a sub-issue `parent` the token cannot read: GitHub answers it as null, and the board names no epic. */
+const unreadableParent = (e) => e?.path?.includes('parent');
 
 const SCRIPT = fileURLToPath(import.meta.url);
 
@@ -68,13 +70,13 @@ const shellWord = (w) => (/^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replaceAll("'",
 const asRef = (ref) => parseRef(ref) ?? (() => { throw new Error(`not an owner/repo#N ref: ${JSON.stringify(ref)}`); })();
 
 /**
- * One GraphQL answer. gh exits 1 when any alias is NOT_FOUND, or when a sub-issue `parent` is one the token cannot read;
- * that body's `data` still answers everything else (the unreadable parent as null), so it is used.
+ * One GraphQL answer. gh exits 1 when any alias is NOT_FOUND; that body's `data` still answers every other alias, so it is
+ * used. So is a body whose other errors all pass the caller's `partial(error)`, for a field it can do without.
  */
-async function answer(query, { runGh, sleep }, extra = []) {
+async function answer(query, { runGh, sleep }, extra = [], { partial = () => false } = {}) {
   try { return JSON.parse(await withBackoff(() => runGh(['api', 'graphql', ...extra, '-f', `query=${query}`]), { repo: 'GitHub', sleep })); } catch (err) {
-    const parentOnly = ghErrorBody(err)?.errors?.every?.((e) => e?.type === 'NOT_FOUND' || e?.path?.includes('parent'));
-    if ((ghNotFound(err) || parentOnly) && ghErrorBody(err).data) return ghErrorBody(err);
+    const body = ghErrorBody(err);
+    if (body?.data && (ghNotFound(err) || body.errors?.every?.((e) => e?.type === 'NOT_FOUND' || partial(e)))) return body;
     throw err;
   }
 }
@@ -126,7 +128,7 @@ async function lookup(refs, deps, moved) {
       const [owner, name] = repo.split('/');
       return `r${j}:repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}){issue(number:${number}){${FIELDS}}}`;
     }).join(' ')}}`;
-    const { data } = await answer(query, deps, SUB_ISSUES);
+    const { data } = await answer(query, deps, SUB_ISSUES, { partial: unreadableParent });
     batch.forEach((ref, j) => (data?.[`r${j}`]?.issue ? found.push([ref, data[`r${j}`].issue]) : missing.push(ref)));
   }
   const homes = await Promise.all(missing.map(async (ref) => [ref, await moved(ref)]));
@@ -165,6 +167,12 @@ function outsideAncestors(from, edges, run, info, state) {
 /** An issue's closing PRs, their states lower-cased. */
 const prsOf = (issue) => issue.closedByPullRequestsReferences.nodes.map((p) => ({ ...p, state: p.state.toLowerCase() }));
 
+/** The `owner/repo#N` of an issue node GitHub returned with `number` and `repository{nameWithOwner}`. */
+const nodeRef = (n) => formatRef(n.repository.nameWithOwner, n.number);
+
+/** An issue's sub-issue parents, nearest first, as far as the lookup read them. */
+function* parents(issue) { for (let p = issue?.parent; p; p = p.parent) yield p; }
+
 /**
  * The top of an issue's sub-issue parents, as far as the lookup read them, as `{ref, title, url}`; null for an issue with
  * none. The climb stops below a parent in `shared` (refKeys of the run's epic and its parents), so a ticket under a
@@ -172,11 +180,11 @@ const prsOf = (issue) => issue.closedByPullRequestsReferences.nodes.map((p) => (
  */
 function topParent(issue, shared) {
   let top = null;
-  for (let p = issue.parent; p; p = p.parent) {
-    if (top && shared.has(refKey(formatRef(p.repository.nameWithOwner, p.number)))) break;
+  for (const p of parents(issue)) {
+    if (top && shared.has(refKey(nodeRef(p)))) break;
     top = p;
   }
-  return top && { ref: formatRef(top.repository.nameWithOwner, top.number), title: top.title, url: top.url };
+  return top && { ref: nodeRef(top), title: top.title, url: top.url };
 }
 
 /** Whether a ticket closed as shipped (not without shipping) at or after `startedAt` (epoch ms): a null `closedAt` never is. */
@@ -242,8 +250,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
       const open = issue.state === 'OPEN';
       const follow = open ? ref !== epic : roots.has(ref) && closedKind(issue.stateReason) === 'shipped';
       for (const b of issue.blockedBy.nodes) {
-        const at = formatRef(b.repository.nameWithOwner, b.number);
-        const blocker = canon(at); // GitHub names a moved blocker by its new ref
+        const blocker = canon(nodeRef(b)); // GitHub names a moved blocker by its new ref
         native.push({ blocked: ref, blockedBy: blocker });
         if (!state.has(blocker)) state.set(blocker, b.state);
         if (follow && !info.has(blocker) && (b.state === 'OPEN' ? open : shippedSince(b, startedAt))) next.add(blocker);
@@ -298,19 +305,17 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const live = new Set([...openRefs, ...outside, ...tickets.filter((t) => t.status === 'shipped').map((t) => t.ref)]);
   const done = [...new Set(allEdges.filter((e) => live.has(e.blocked)).map((e) => e.blockedBy))]
     .filter((ref) => !runSet.has(ref) && info.has(ref) && shippedSince(info.get(ref), startedAt));
-  const outsideTickets = [...outside.map((ref) => ({ ref, status: 'outside' })), ...done.map((ref) => ({ ref, status: 'shipped', closedAt: info.get(ref).closedAt }))]
-    .map((t) => ({ ...t, title: info.get(t.ref).title, url: info.get(t.ref).url, prs: prsOf(info.get(t.ref)) }));
   // Each outside ticket's owner (issue #522): its top epic, and the other run whose wave sidecar emitted it last, if any.
-  const emitted = outsideTickets.length ? newestEntries(dirname(dir), {
-    warn: (m) => warn(`a wave sidecar read for owner labels: ${m}`), skip: (d, e) => sameRun(e.runId ?? basename(d), run.runId),
+  const emitted = outside.length || done.length ? newestEntries(dirname(dir), {
+    warn: (m) => warn(`a wave sidecar read for owner labels: ${m}`), skip: (d, e) => sameRun(entryRunId(d, e), run.runId),
   }) : new Map();
-  const shared = new Set(epic ? [refKey(epic)] : []); // the run's epic and its parents
-  for (let p = epic && info.get(epic).parent; p; p = p.parent) shared.add(refKey(formatRef(p.repository.nameWithOwner, p.number)));
-  for (const t of outsideTickets) {
-    const issue = info.get(t.ref);
-    const by = emitted.get(refKey(t.ref)) ?? (issue.transferredTo && emitted.get(refKey(issue.transferredTo))); // a sidecar may name its new ref
-    t.owner = { home: topParent(issue, shared), run: by ? by.entry.runId ?? basename(by.dir) : null };
-  }
+  const shared = new Set((epic ? [epic, ...[...parents(info.get(epic))].map(nodeRef)] : []).map(refKey)); // the run's epic and its parents
+  const outsideTickets = [...outside.map((ref) => [ref, 'outside']), ...done.map((ref) => [ref, 'shipped'])].map(([ref, status]) => {
+    const issue = info.get(ref);
+    const by = emitted.get(refKey(ref)) ?? (issue.transferredTo && emitted.get(refKey(issue.transferredTo))); // a sidecar may name its new ref
+    return { ref, status, ...(status === 'shipped' && { closedAt: issue.closedAt }), title: issue.title, url: issue.url, prs: prsOf(issue),
+      owner: { home: topParent(issue, shared), run: by?.runId ?? null } };
+  });
   const named = notes.milestones;
   if (named !== undefined && named !== null && (typeof named !== 'object' || Array.isArray(named))) {
     warn('board-notes milestones must be an object of ref to name (or false); it is ignored');
@@ -323,7 +328,8 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const current = { id: newest.id, refs: new Set(newest.refs) };
   // The run's own tickets and the outside ones it counts (issue #522) are left out: any other closed blocker still shipped before.
   const before = shippedBefore(await walk, [...refs, ...done]);
-  const repos = [...refs, ...outside, ...done, ...outsideTickets.flatMap((t) => (t.owner.home ? [t.owner.home.ref] : [])), ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
+  const repos = [...refs, ...outsideTickets.flatMap((t) => [t.ref, ...(t.owner.home ? [t.owner.home.ref] : [])]),
+    ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
   const shortRef = makeShortRef(repos, board.abbreviations);
   const scope = epic ? { url: info.get(epic).url, label: shortRef(epic), title: info.get(epic).title }
     : board.issueSet?.label ? { url: `https://github.com/${board.issueSet.repo}/issues?q=label%3A${encodeURIComponent(board.issueSet.label)}`, label: board.issueSet.label, title: board.issueSet.repo } : null;

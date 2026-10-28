@@ -14,7 +14,7 @@
 // written is ever rewritten, overlapping emits can't drop an entry, and a corrupt
 // line costs only itself.
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import { parseBlockOn } from '../review-gate.mjs';
 import { formatRef, refKey } from './ref.mjs';
 import { runIdFromConfigName } from './run-id.mjs';
@@ -114,14 +114,17 @@ export function readSidecar(path, { warn = (m) => console.error(m) } = {}) {
 /** The names in `dir`, or [] when it cannot be read. */
 export const lsdir = (dir) => { try { return readdirSync(dir); } catch { return []; } };
 
+/** The run that wrote a sidecar entry: its own `runId`, else the run its dir is named for (`ship-dag-` prefix dropped). */
+export const entryRunId = (dir, entry) => entry.runId ?? runIdFromConfigName(basename(dir));
+
 /**
  * Each ref's newest sidecar entry across the run dirs of an engine base dir (`<baseDir>/<run>/ship-dag-wave.jsonl`), as
- * `Map(refKey → {ref, entry, dir})`: the newest by `emittedAt`, an unparseable one counting as the epoch, and on a tie
+ * `Map(refKey → {ref, entry, dir, runId})` (`runId`: `entryRunId`): the newest by `emittedAt`, an unparseable one counting as the epoch, and on a tie
  * the later-read entry, run dirs read in name order. An entry whose `issues` is not an array, or an issue with no `ref`, is
  * skipped (a `ref` that is no `owner/repo#N` is kept, for the caller to judge). `skip(dir, entry)` (`dir` the run dir's path) leaves an entry out; `warn` gets `readSidecar`'s warnings.
  * @param {string} baseDir
  * @param {{warn?: (m: string) => void, skip?: (dir: string, entry: object) => boolean}} [opts]
- * @returns {Map<string, {ref: string, entry: object, dir: string}>}
+ * @returns {Map<string, {ref: string, entry: object, dir: string, runId: string|null}>}
  */
 export function newestEntries(baseDir, { warn = (m) => console.error(m), skip = () => false } = {}) {
   const newest = new Map();
@@ -135,7 +138,7 @@ export function newestEntries(baseDir, { warn = (m) => console.error(m), skip = 
         const key = refKey(ref);
         if (when.get(key) > at) continue;
         when.set(key, at);
-        newest.set(key, { ref, entry, dir });
+        newest.set(key, { ref, entry, dir, runId: entryRunId(dir, entry) });
       }
     }
   }
