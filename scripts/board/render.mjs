@@ -93,7 +93,7 @@ export function waveSpan(labels) {
  *   `outside`, the default) and the closed outside blockers that shipped since the run started (status `shipped`). Each
  *   counts in the headline, tiles, bar and repo bars; a shipped one is listed under Shipped, marked as outside the run.
  *   `owner` (`{home: {ref,title,url}|null, run: string|null}`) names its top epic and the other run shipping it, if any:
- *   shown on its node, its Shipped row and a milestone row that names it (`ownerLabel`).
+ *   shown on its node, its Shipped row and a milestone row that names it (`owned`); a shipped one with no run names none.
  * @param {{id:string, refs:Set<string>}|null} v.current  the wave building now
  * @param {Map<string,{label:string|null,now:boolean,outside?:true}>} v.waves  projectWaves() result
  * @param {(ref:string) => string} v.shortRef
@@ -115,10 +115,16 @@ export function renderBoard(v) {
   const required = [...v.tickets, ...outside]; // the required set: the run's tickets and the outside ones it waits on (issue #522)
   const display = new Map(required.map((t) => [t.ref, t])); // title and link, outside nodes too
   const link = (ref, label, url = display.get(ref)?.url) => html`<a href="${url || ''}">${label || v.shortRef(ref)}</a>`;
-  /** An outside ticket's owner: `<epic title> <epic link> · run <id>`, or `no epic` and `not scheduled` for what is unknown; '' with no owner. */
+  /**
+   * An outside ticket's owner: `<epic title> <epic link> · run <id>`, with `no epic` for no parent and `not scheduled` for
+   * an open ticket no other run emitted (a shipped one just leaves the run out); '' with no owner.
+   */
   const owned = (ref) => {
-    const o = display.get(ref)?.owner;
-    return o ? html`${o.home ? html`${o.home.title} ${link(o.home.ref, null, o.home.url)}` : 'no epic'} · ${o.run ? `run ${o.run}` : 'not scheduled'}` : '';
+    const { owner: o, status } = display.get(ref) ?? {};
+    if (!o) return '';
+    const home = o.home ? html`${o.home.title} ${link(o.home.ref, null, o.home.url)}` : 'no epic';
+    const by = o.run ? `run ${o.run}` : status === 'shipped' ? '' : 'not scheduled';
+    return by ? html`${home} · ${by}` : home;
   };
   const prLinks = (t, only) => t.prs.filter((p) => only.includes(p.state))
     .map((p) => html`<a class="pr pr-${p.state}" href="${p.url}" title="${p.state}">#${p.number}</a>`);
@@ -170,7 +176,7 @@ export function renderBoard(v) {
   h.push(html`<h2>Shipped <small>${plural(shipped.length, 'ticket')}, newest first</small></h2><details><summary>Show all ${shipped.length}</summary>`
     + html`<div class="tw"><table><thead><tr><th>Ticket</th><th>Title</th><th>PR</th><th>Wave</th><th>Closed</th></tr></thead><tbody>${shipped.map((t) => {
       const merged = prLinks(t, ['merged']);
-      return html`<tr><td class="n">${link(t.ref)}</td><td>${t.title}${t.outside ? html` <span class="owner">outside this run${t.owner ? html` · ${owned(t.ref)}` : ''}</span>` : ''}</td><td class="n">${merged.length ? list(merged, ' ') : html`<span class="meta">—</span>`}</td><td class="n">${t.shippedWave || ''}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`;
+      return html`<tr><td class="n">${link(t.ref)}</td><td>${t.title}${t.outside ? html` <span class="owner">${list(['outside this run', owned(t.ref)].filter(Boolean), ' · ')}</span>` : ''}</td><td class="n">${merged.length ? list(merged, ' ') : html`<span class="meta">—</span>`}</td><td class="n">${t.shippedWave || ''}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`;
     })}</tbody></table></div></details>`);
   for (const g of v.before || []) {
     h.push(html`<details><summary>Shipped before this run: ${link(g.ref, null, g.url)} — ${g.title} `
@@ -210,7 +216,7 @@ function milestoneTable(v, byRef, link, owned) {
     if (m.state === 'reached') return html`Reached ${formatPacific(m.closedAt)}`;
     if (m.state === 'unorderable') return html`Can't be ordered`;
     const n = m.before + m.outside.length; // the required tickets before it, the run's and the outside ones (issue #522)
-    const split = m.outside.length ? html`: ${m.before} in this run, ${m.outside.length} outside it (${list(m.outside.map((r) => html`${link(r)}${owned(r) && html` — ${owned(r)}`}`), ', ')})` : '';
+    const split = m.outside.length ? html`: ${m.before} in this run, ${m.outside.length} outside it (${list(m.outside.map((r) => list([link(r), owned(r)].filter(Boolean), ' — ')), ', ')})` : '';
     return html`${m.next ? 'Next up: ' : ''}${n ? html`${plural(n, 'open ticket')} before it${split}` : 'nothing open before it'}`;
   };
   const wave = (m) => (m.state === 'reached' ? (m.wave?.label ? `shipped in wave ${m.wave.label}` : '—')
