@@ -36,7 +36,8 @@ const WIRE = /repository\(owner:"([^"]+)",name:"([^"]+)"\)\{issue\(number:(\d+)\
 
 /**
  * A fake `gh api graphql` over `table` (ref → `{state, stateReason, closedAt, prs, blockers}`, a blocker being a ref whose
- * `blockedBy` node carries its row's state, stateReason and closedAt, and a `parent` ref whose own row may name a parent;
+ * `blockedBy` node carries its row's state, stateReason and closedAt, and a `parent` ref whose own row may name a parent
+ * (`parentForbidden: true` answers the parent as GitHub does one the token cannot read: null, with a FORBIDDEN error);
  * `{missing: true}` for an issue GitHub does not have, or `{missing: 410}` for a deleted one (403: one the token cannot read); `{moved: ref}` for one
  * transferred to `ref`; `{pull: true}` for a number that is a pull request): answers each aliased lookup as gh 2.102.0
  * does (`graphqlAnswer`: a NOT_FOUND alias makes gh exit 1 with the body on stdout), answers the REST
@@ -73,6 +74,7 @@ function fakeGh(table) {
       const row = table[ref];
       if (!row) throw new Error(`unexpected lookup of ${ref}`);
       const { number, repo } = parseRef(ref);
+      if (row.parentForbidden) errors.push({ type: 'FORBIDDEN', path: [`r${i}`, 'issue', 'parent'], message: 'Resource not accessible by integration' });
       if (row.missing || row.moved || row.pull) {
         errors.push({ type: 'NOT_FOUND', path: [`r${i}`, 'issue'], message: `Could not resolve to an Issue with the number of ${number}.` });
         return [`r${i}`, { issue: null }];
@@ -80,7 +82,7 @@ function fakeGh(table) {
       return [`r${i}`, { issue: {
         number, title: `Title ${number}`, url: `https://github.com/${repo}/issues/${number}`, state: row.state ?? 'OPEN',
         stateReason: row.stateReason ?? null, closedAt: row.closedAt ?? null, ...(row.createdAt && { createdAt: row.createdAt }),
-        ...(row.labels && { labels: { nodes: row.labels.map((name) => ({ name })) } }), parent: parentNode(row.parent),
+        ...(row.labels && { labels: { nodes: row.labels.map((name) => ({ name })) } }), parent: row.parentForbidden ? null : parentNode(row.parent),
         closedByPullRequestsReferences: { nodes: (row.prs ?? []).map((p) => ({ url: `https://github.com/${repo}/pull/${p.number}`, ...p })) },
         blockedBy: { nodes: (row.blockers ?? []).map((b) => ({ number: parseRef(b).number, state: stateOf(b), stateReason: table[b]?.stateReason ?? null, closedAt: table[b]?.closedAt ?? null, repository: { nameWithOwner: parseRef(b).repo } })) },
       } }];
@@ -240,7 +242,7 @@ for (const [name, row, counted] of [
     assert.match(html, counted ? /<b>2\/4<\/b><span>shipped<\/span>/ : /<b>1\/3<\/b><span>shipped<\/span>/);
     const rows = shippedRows(html);
     assert.equal(rows.includes('issues/8"'), counted, rows);
-    if (counted) assert.match(rows, /Title 8 <span class="owner">outside this run · no epic · not scheduled<\/span>/);
+    if (counted) assert.match(rows, /Title 8 <span class="owner">outside this run · no epic<\/span>/, 'a shipped ticket is never "not scheduled"');
     assert.match(html, counted ? /<h2>Shipped <small>2 tickets, newest first/ : /<h2>Shipped <small>1 ticket, newest first/);
   });
 }
@@ -362,6 +364,39 @@ test('a shipped outside ticket and a milestone\'s outside ticket carry the owner
   assert.equal(code, 0, err.join('\n'));
   assert.match(shippedRows(html), /Title 8 <span class="owner">outside this run · Title 80 <a href="https:\/\/github.com\/o\/r\/issues\/80">r#80<\/a> · run sd-20261001-090000<\/span>/);
   assert.match(html, /1 outside it \(<a href="https:\/\/github.com\/o\/r\/issues\/7">r#7<\/a> — Title 70 <a href="https:\/\/github.com\/o\/r\/issues\/70">r#70<\/a> · not scheduled\)/);
+});
+
+test('an outside ticket\'s top epic stops below an ancestor it shares with the run\'s epic (issue #522 review)', async () => {
+  const s = setUp({ files: { 'board.json': { ...BOARD, issueSet: { epic: R(50) } } } });
+  const gh = fakeGh({ ...TABLE, [R(50)]: { parent: R(90) }, [R(90)]: {}, [R(2)]: { blockers: [R(7), R(6)] }, [R(7)]: { parent: R(70) }, [R(70)]: { parent: R(90) }, [R(6)]: { parent: R(90) } });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(html, /<div class="wn">Title 70 <a href="https:\/\/github.com\/o\/r\/issues\/70">r#70<\/a> · not scheduled<\/div>/, 'the sibling epic, not the shared initiative');
+  assert.match(html, /<div class="wn">Title 90 <a href="https:\/\/github.com\/o\/r\/issues\/90">r#90<\/a> · not scheduled<\/div>/, 'a ticket right under the initiative names it');
+});
+
+test('a transferred outside ticket finds the run that emitted it under its new ref (issue #522 review)', async () => {
+  const s = setUp({ siblings: { [`ship-dag/engine/${OTHER}`]: sidecarIn(OTHER, ['q/s#9']) } });
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)] }, [R(7)]: { moved: 'q/s#9' }, 'q/s#9': {} });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(html, /<div class="wn">no epic · run sd-20261001-090000<\/div>/);
+});
+
+test('a parent the token cannot read leaves the refresh standing, with no epic named (issue #522 review)', async () => {
+  const s = setUp();
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)] }, [R(7)]: { parentForbidden: true } }).runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(html, /<div class="wn">no epic · not scheduled<\/div>/);
+});
+
+test('an unreadable line in another run\'s sidecar warns once, saying why the board read it (issue #522 review)', async () => {
+  const s = setUp({ siblings: { [`ship-dag/engine/${OTHER}`]: { files: { 'ship-dag-wave.jsonl': '{torn\n' } } } });
+  const { code, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)] }, [R(7)]: {} }).runGh });
+  assert.equal(code, 0, err.join('\n'));
+  const warns = err.filter((m) => m.includes('unreadable line'));
+  assert.equal(warns.length, 1, err.join('\n'));
+  assert.match(warns[0], /^\[board\] a wave sidecar read for owner labels: wave sidecar .*sd-20261001-090000/);
 });
 
 for (const [name, issueSet, want] of [

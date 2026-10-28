@@ -67,10 +67,14 @@ const shellWord = (w) => (/^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replaceAll("'",
 
 const asRef = (ref) => parseRef(ref) ?? (() => { throw new Error(`not an owner/repo#N ref: ${JSON.stringify(ref)}`); })();
 
-/** One GraphQL answer. gh exits 1 when any alias is NOT_FOUND; that body's `data` still answers every other alias. */
+/**
+ * One GraphQL answer. gh exits 1 when any alias is NOT_FOUND, or when a sub-issue `parent` is one the token cannot read;
+ * that body's `data` still answers everything else (the unreadable parent as null), so it is used.
+ */
 async function answer(query, { runGh, sleep }, extra = []) {
   try { return JSON.parse(await withBackoff(() => runGh(['api', 'graphql', ...extra, '-f', `query=${query}`]), { repo: 'GitHub', sleep })); } catch (err) {
-    if (ghNotFound(err) && ghErrorBody(err).data) return ghErrorBody(err);
+    const parentOnly = ghErrorBody(err)?.errors?.every?.((e) => e?.type === 'NOT_FOUND' || e?.path?.includes('parent'));
+    if ((ghNotFound(err) || parentOnly) && ghErrorBody(err).data) return ghErrorBody(err);
     throw err;
   }
 }
@@ -161,10 +165,17 @@ function outsideAncestors(from, edges, run, info, state) {
 /** An issue's closing PRs, their states lower-cased. */
 const prsOf = (issue) => issue.closedByPullRequestsReferences.nodes.map((p) => ({ ...p, state: p.state.toLowerCase() }));
 
-/** The top of an issue's sub-issue parents, as far as the lookup read them, as `{ref, title, url}`; null for an issue with none. */
-function topParent(issue) {
+/**
+ * The top of an issue's sub-issue parents, as far as the lookup read them, as `{ref, title, url}`; null for an issue with
+ * none. The climb stops below a parent in `shared` (refKeys of the run's epic and its parents), so a ticket under a
+ * sibling epic is named by that epic, not by the initiative both share; a ticket directly under a shared one names it.
+ */
+function topParent(issue, shared) {
   let top = null;
-  for (let p = issue.parent; p; p = p.parent) top = p;
+  for (let p = issue.parent; p; p = p.parent) {
+    if (top && shared.has(refKey(formatRef(p.repository.nameWithOwner, p.number)))) break;
+    top = p;
+  }
   return top && { ref: formatRef(top.repository.nameWithOwner, top.number), title: top.title, url: top.url };
 }
 
@@ -290,10 +301,15 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const outsideTickets = [...outside.map((ref) => ({ ref, status: 'outside' })), ...done.map((ref) => ({ ref, status: 'shipped', closedAt: info.get(ref).closedAt }))]
     .map((t) => ({ ...t, title: info.get(t.ref).title, url: info.get(t.ref).url, prs: prsOf(info.get(t.ref)) }));
   // Each outside ticket's owner (issue #522): its top epic, and the other run whose wave sidecar emitted it last, if any.
-  const emitted = outsideTickets.length ? newestEntries(dirname(dir), { warn, skip: (d, e) => sameRun(e.runId ?? basename(d), run.runId) }) : new Map();
+  const emitted = outsideTickets.length ? newestEntries(dirname(dir), {
+    warn: (m) => warn(`a wave sidecar read for owner labels: ${m}`), skip: (d, e) => sameRun(e.runId ?? basename(d), run.runId),
+  }) : new Map();
+  const shared = new Set(epic ? [refKey(epic)] : []); // the run's epic and its parents
+  for (let p = epic && info.get(epic).parent; p; p = p.parent) shared.add(refKey(formatRef(p.repository.nameWithOwner, p.number)));
   for (const t of outsideTickets) {
-    const by = emitted.get(refKey(t.ref));
-    t.owner = { home: topParent(info.get(t.ref)), run: by ? by.entry.runId ?? basename(by.dir) : null };
+    const issue = info.get(t.ref);
+    const by = emitted.get(refKey(t.ref)) ?? (issue.transferredTo && emitted.get(refKey(issue.transferredTo))); // a sidecar may name its new ref
+    t.owner = { home: topParent(issue, shared), run: by ? by.entry.runId ?? basename(by.dir) : null };
   }
   const named = notes.milestones;
   if (named !== undefined && named !== null && (typeof named !== 'object' || Array.isArray(named))) {
