@@ -2,7 +2,7 @@
 // the CLI's batched GraphQL queries from a table of issues and records every query it is asked.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { CLOSURE_CAP, main } from './board.mjs';
 import { ghExecError, graphqlAnswer, restFailure } from './lib/gh-fixture.mjs';
@@ -36,7 +36,7 @@ const WIRE = /repository\(owner:"([^"]+)",name:"([^"]+)"\)\{issue\(number:(\d+)\
 
 /**
  * A fake `gh api graphql` over `table` (ref → `{state, stateReason, closedAt, prs, blockers}`, a blocker being a ref whose
- * `blockedBy` node carries its row's state, stateReason and closedAt;
+ * `blockedBy` node carries its row's state, stateReason and closedAt, and a `parent` ref whose own row may name a parent;
  * `{missing: true}` for an issue GitHub does not have, or `{missing: 410}` for a deleted one (403: one the token cannot read); `{moved: ref}` for one
  * transferred to `ref`; `{pull: true}` for a number that is a pull request): answers each aliased lookup as gh 2.102.0
  * does (`graphqlAnswer`: a NOT_FOUND alias makes gh exit 1 with the body on stdout), answers the REST
@@ -48,6 +48,9 @@ function fakeGh(table) {
   const calls = [];
   const rest = [];
   const stateOf = (ref) => table[ref]?.state ?? 'OPEN';
+  /** `ref`'s issue as a `parent` selection, its own parent from its table row, or null for none. */
+  const parentNode = (ref) => (ref ? { number: parseRef(ref).number, title: `Title ${parseRef(ref).number}`, url: `https://github.com/${parseRef(ref).repo}/issues/${parseRef(ref).number}`,
+    repository: { nameWithOwner: parseRef(ref).repo }, parent: parentNode(table[ref]?.parent) } : null);
   const runGh = async (args) => {
     const path = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/.exec(args[1]);
     if (args[0] === 'api' && path) {
@@ -77,7 +80,7 @@ function fakeGh(table) {
       return [`r${i}`, { issue: {
         number, title: `Title ${number}`, url: `https://github.com/${repo}/issues/${number}`, state: row.state ?? 'OPEN',
         stateReason: row.stateReason ?? null, closedAt: row.closedAt ?? null, ...(row.createdAt && { createdAt: row.createdAt }),
-        ...(row.labels && { labels: { nodes: row.labels.map((name) => ({ name })) } }),
+        ...(row.labels && { labels: { nodes: row.labels.map((name) => ({ name })) } }), parent: parentNode(row.parent),
         closedByPullRequestsReferences: { nodes: (row.prs ?? []).map((p) => ({ url: `https://github.com/${repo}/pull/${p.number}`, ...p })) },
         blockedBy: { nodes: (row.blockers ?? []).map((b) => ({ number: parseRef(b).number, state: stateOf(b), stateReason: table[b]?.stateReason ?? null, closedAt: table[b]?.closedAt ?? null, repository: { nameWithOwner: parseRef(b).repo } })) },
       } }];
@@ -237,7 +240,7 @@ for (const [name, row, counted] of [
     assert.match(html, counted ? /<b>2\/4<\/b><span>shipped<\/span>/ : /<b>1\/3<\/b><span>shipped<\/span>/);
     const rows = shippedRows(html);
     assert.equal(rows.includes('issues/8"'), counted, rows);
-    if (counted) assert.match(rows, /Title 8 <span class="owner">outside this run<\/span>/);
+    if (counted) assert.match(rows, /Title 8 <span class="owner">outside this run · no epic · not scheduled<\/span>/);
     assert.match(html, counted ? /<h2>Shipped <small>2 tickets, newest first/ : /<h2>Shipped <small>1 ticket, newest first/);
   });
 }
@@ -318,7 +321,47 @@ test('a milestone counts the open outside tickets before it beside the run\'s (i
   const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)], labels: ['hitl-gate'] }, [R(7)]: {} });
   const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
   assert.equal(code, 0, err.join('\n'));
-  assert.match(html, /2 open tickets before it: 1 in this run, 1 outside it \(<a href="https:\/\/github.com\/o\/r\/issues\/7">r#7<\/a>\)/);
+  assert.match(html, /2 open tickets before it: 1 in this run, 1 outside it \(<a href="https:\/\/github.com\/o\/r\/issues\/7">r#7<\/a> — no epic · not scheduled\)/);
+});
+
+// ---- the owner label: each outside ticket's top epic and the run shipping it (issue #522) ----
+
+const OTHER = 'sd-20261001-090000'; // another run, in the same engine base dir
+const sidecarIn = (runId, refs, emittedAt = '2026-10-08T13:00:00.000Z') => ({ sidecar: [{ runId, wave: 3, emittedAt, issues: refs.map((ref) => ({ ref })) }] });
+
+test('an outside node names its top epic, read in the same batched lookup, and the other run whose sidecar emitted it (issue #522)', async () => {
+  const s = setUp({ siblings: { [`ship-dag/engine/${OTHER}`]: sidecarIn(OTHER, [R(7)]) } });
+  const queries = [];
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)] }, [R(7)]: { parent: R(70) }, [R(70)]: { parent: R(71) } });
+  const runGh = async (args) => { queries.push(args); return gh.runGh(args); };
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.equal(gh.calls.length, 2, 'no extra query: the parent chain rides the lookup');
+  assert.ok(queries.every((a) => a.includes('GraphQL-Features: sub_issues') && a.find((x) => x.startsWith('query=')).includes('parent{')));
+  const node = html.slice(html.indexOf('data-ref="o/r#7"'), html.indexOf('data-ref=', html.indexOf('data-ref="o/r#7"') + 1));
+  assert.match(node, /<div class="wn">Title 71 <a href="https:\/\/github.com\/o\/r\/issues\/71">r#71<\/a> · run sd-20261001-090000<\/div>/);
+});
+
+for (const [name, siblings, own] of [
+  ['no run emitted it', {}, []],
+  ['only this run\'s own sidecar names it', {}, [R(7)]],
+]) {
+  test(`an outside node with no parent and no other run reads "no epic · not scheduled": ${name} (issue #522)`, async () => {
+    const s = setUp({ siblings });
+    if (own.length) appendFileSync(join(s.dir, 'ship-dag-wave.jsonl'), `${JSON.stringify(sidecarIn(RUN, own).sidecar[0])}\n`);
+    const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)] }, [R(7)]: {} }).runGh });
+    assert.equal(code, 0, err.join('\n'));
+    assert.match(html, /<div class="wn">no epic · not scheduled<\/div>/);
+  });
+}
+
+test('a shipped outside ticket and a milestone\'s outside ticket carry the owner label too (issue #522)', async () => {
+  const s = setUp({ siblings: { [`ship-dag/engine/${OTHER}`]: sidecarIn(OTHER, [R(8)]) } });
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7), R(8)], labels: ['hitl-gate'] }, [R(7)]: { parent: R(70) }, [R(70)]: {}, [R(8)]: { state: 'CLOSED', closedAt: DURING_RUN, parent: R(80) } });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(shippedRows(html), /Title 8 <span class="owner">outside this run · Title 80 <a href="https:\/\/github.com\/o\/r\/issues\/80">r#80<\/a> · run sd-20261001-090000<\/span>/);
+  assert.match(html, /1 outside it \(<a href="https:\/\/github.com\/o\/r\/issues\/7">r#7<\/a> — Title 70 <a href="https:\/\/github.com\/o\/r\/issues\/70">r#70<\/a> · not scheduled\)/);
 });
 
 for (const [name, issueSet, want] of [
