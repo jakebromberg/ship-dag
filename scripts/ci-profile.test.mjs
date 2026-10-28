@@ -77,7 +77,9 @@ test('the Backend-Service profile runs typecheck:tests and the dummy-env audit-c
 test('the Backend-Service profile lints the changed files, never the whole repo, and does not skip a missing script', async () => {
   const commands = await backendServiceCommands();
   assert.ok(commands.includes('npm run lint:changed'));
-  assert.ok(!commands.some((c) => /^npm run lint( |$)/.test(c) || /eslint \./.test(c)));
+  // Every whole-repo alias: bare lint, lint:fast and lint:fix (all `eslint .` with a 12 GB heap), or a literal `eslint .`.
+  const wholeRepoLint = /^npm run lint(:fast|:fix)?( |$)|eslint \./;
+  assert.deepEqual(commands.filter((c) => wholeRepoLint.test(c)), []);
   assert.ok(!commands.some((c) => c.includes('--if-present')));
 });
 
