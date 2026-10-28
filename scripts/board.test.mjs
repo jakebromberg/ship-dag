@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { main } from './board.mjs';
+import { CLOSURE_CAP, main } from './board.mjs';
 import { ghExecError, graphqlAnswer, restFailure } from './lib/gh-fixture.mjs';
 import { RUN, T0, T1, engineConfig, scopedEngineFixture, stamped } from './lib/engine-fixture.mjs';
 import { parseRef } from './lib/ref.mjs';
@@ -157,26 +157,25 @@ test('an outside blocker\'s repo counts when short labels are made, so a repo na
 });
 
 // An outside node is kept only while an orderable ticket of the run waits behind it (issue #515).
-const FIVE_ROUNDS = (() => { // r#10 … r#20 chained; the closure reads r#10 … r#15 and stops, leaving r#16 unread
-  const rows = {};
-  for (let n = 10; n < 20; n += 1) rows[R(n)] = { blockers: [R(n + 1)] };
-  return rows;
-})();
+/** `n` outside blockers chained from r#`from`: each waits on the next, and the last on nothing. */
+const chain = (from, n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [R(from + i), i < n - 1 ? { blockers: [R(from + i + 1)] } : {}]));
+// r#10 … r#109 chained: one more than the cap's 99 levels, so the closure stops and leaves r#109 unread.
+const PAST_CAP = chain(10, CLOSURE_CAP);
 
 for (const [name, table] of [
   ['a cycle through it', { [R(2)]: { blockers: [R(7)] }, [R(7)]: { blockers: [R(2)] } }],
-  ['a blocker the closure never read', { [R(2)]: { blockers: [R(10)] }, ...FIVE_ROUNDS }],
-  ['a blocker of its own that the closure never read, behind its only dependent', { [R(2)]: { blockers: [R(7), R(10)] }, [R(7)]: {}, ...FIVE_ROUNDS }],
+  ['a blocker the closure never read', { [R(2)]: { blockers: [R(10)] }, ...PAST_CAP }],
+  ['a blocker of its own that the closure never read, behind its only dependent', { [R(2)]: { blockers: [R(7), R(10)] }, [R(7)]: {}, ...PAST_CAP }],
 ]) {
   test(`an outside blocker with no orderable dependent is not drawn, and its run ticket is in the callout: ${name} (issue #515)`, async () => {
     const s = setUp();
     const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, ...table }).runGh });
     assert.equal(code, 0, err.join('\n'));
-    assert.doesNotMatch(html, /data-ref="o\/r#(7|1\d)"/, 'no outside node');
+    assert.doesNotMatch(html, /data-ref="o\/r#(7|\d{2,3})"/, 'no outside node');
     assert.doesNotMatch(html, /plus \d+ open blockers? outside this run/);
     const callout = html.slice(html.indexOf("Can't be ordered"), html.indexOf('Longest chain'));
     assert.ok(callout.includes('r#2'), 'the run ticket behind it is listed');
-    assert.ok(!/r#(7|1\d)</.test(callout), 'and so is nothing outside the run');
+    assert.ok(!/r#(7|\d{2,3})</.test(callout), 'and so is nothing outside the run');
   });
 }
 
@@ -191,14 +190,26 @@ test('with an epic issue set, neither the epic nor an open blocker of a closed m
   assert.doesNotMatch(html, /Can't be ordered/);
 });
 
-test('the closure stops after five rounds and says so', async () => {
-  const s = setUp({ files: { 'dag.json': { nodes: [{ ref: R(1) }], edges: [], done: [] } } });
-  const table = { ...TABLE, [R(1)]: { blockers: [R(10)] } };
-  for (let n = 10; n < 20; n += 1) table[R(n)] = { blockers: [R(n + 1)] };
-  const { code, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh(table).runGh });
-  assert.equal(code, 0);
-  assert.ok(err.some((m) => /closure/.test(m)), err.join('\n'));
+test('a chain of outside blockers deeper than five is read and drawn whole (issue #522)', async () => {
+  const s = setUp();
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, [R(2)]: { blockers: [R(10)] }, ...chain(10, 12) }).runGh });
+  assert.equal(code, 0, err.join('\n'));
+  for (let n = 10; n < 22; n += 1) assert.match(html, new RegExp(`data-ref="o/r#${n}"`), `r#${n} is drawn`);
+  assert.doesNotMatch(html, /Can't be ordered/);
+  assert.ok(!err.some((m) => /closure/.test(m)), err.join('\n'));
 });
+
+for (const [name, depth, warns] of [['a chain of 99 reads whole, silently', CLOSURE_CAP - 1, false], ['a chain of 100 hits the cap and says so', CLOSURE_CAP, true]]) {
+  test(`the closure runs to a fixed point under a safety cap of ${CLOSURE_CAP} rounds: ${name} (issue #522)`, async () => {
+    const s = setUp({ files: { 'dag.json': { nodes: [{ ref: R(1) }], edges: [], done: [] } } });
+    const gh = fakeGh({ ...TABLE, [R(1)]: { blockers: [R(10)] }, ...chain(10, depth) });
+    const { code, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+    assert.equal(code, 0, err.join('\n'));
+    assert.equal(gh.calls.length, CLOSURE_CAP, 'round 0 and one round per level, up to the cap');
+    const cap = err.filter((m) => /closure/.test(m));
+    assert.deepEqual(cap, warns ? [`[board] closure hit its safety cap of ${CLOSURE_CAP} rounds; 1 open blocker unread`] : []);
+  });
+}
 
 for (const [name, issueSet, want] of [
   ['a label run drops a member closed before startedAt', { repo: 'o/r', label: 'wave' }, '1/3'],
