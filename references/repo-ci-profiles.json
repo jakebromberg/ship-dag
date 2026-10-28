@@ -43,7 +43,7 @@
       "baseBranch": "main",
       "commands": [
         "npm ci --include=dev --no-audit --no-fund --prefer-offline",
-        "npm run lint",
+        "npm run lint:changed",
         "npm run format:check",
         "npm run typecheck",
         "npm run typecheck:tests",
@@ -57,8 +57,8 @@
         "node scripts/check-sql-claim-docs.mjs",
         "NODE_ENV=test npm run test:unit"
       ],
-      "_note": "npm test is the INTEGRATION suite: it dotenvx-runs jest against a live stack (wait-on localhost:8080/8082 healthchecks) and times out in a bare engine worktree (ship-dag-bs1990-1991-20260807 wave-1 lesson, 2026-08-07). Engine checks stay stack-free (test:unit); the merge queue runs `npm run ci:testmock` (Docker) per PR before merging. CI lint-and-typecheck also runs prettier --check (format:check) — added 2026-08-08 after PR#2041 caught it in CI only.",
-      "_note2": "The seven checks after audit-coverage run bare in .github/workflows/test.yml (three also have npm aliases, but CI calls all seven bare). A `npm run`-only sweep reports false green and the failure only appears in billed CI (BS#2591, 2026-09-18: check-bulk-update-analyze --strict exited 1 after five npm scripts passed). They are cheap static checks, so they run before the unit suite to fail fast. typecheck:tests and check:audit-coverage:ci (with the dummy DB_* env and NODE_ENV=test, CI's bare-tsx form rather than the pre-push hook's dotenvx one) mirror the lint-and-typecheck steps of the same name in test.yml: tests/tsconfig.json is strict:false and catches errors the root typecheck never sees (BS#3453, BS#3455 passed the engine and failed there), and audit-coverage must follow typecheck because lint:prebuild builds the dists it imports. Still CI-only: the Type check: jobs, lint:migrations and build. On the pre-push hook only: check:better-auth-mock-sync and check:db-mock-sync."
+      "_note": "npm test is the INTEGRATION suite: it dotenvx-runs jest against a live stack (wait-on localhost:8080/8082 healthchecks) and times out in a bare engine worktree (ship-dag-bs1990-1991-20260807 wave-1 lesson, 2026-08-07). Engine checks stay stack-free (test:unit); the merge queue runs `npm run ci:testmock` (Docker) per PR before merging. CI lint-and-typecheck also runs prettier --check (format:check) — added 2026-08-08 after PR#2041 caught it in CI only. Lint is `npm run lint:changed` (BS#3556), not the 12 GB whole-repo `npm run lint`, which runs in CI; a missing script must fail loudly, so no --if-present. Still CI-only on purpose: the Type check: jobs, `npm run lint:migrations` and `npm run build`.",
+      "_note2": "The seven checks after audit-coverage run bare in .github/workflows/test.yml (three also have npm aliases, but CI calls all seven bare). A `npm run`-only sweep reports false green and the failure only appears in billed CI (BS#2591, 2026-09-18: check-bulk-update-analyze --strict exited 1 after five npm scripts passed). They are cheap static checks, so they run before the unit suite to fail fast. typecheck:tests and check:audit-coverage:ci (with the dummy DB_* env and NODE_ENV=test, CI's bare-tsx form rather than the pre-push hook's dotenvx one) match the npm scripts behind the lint-and-typecheck steps 'Type check tests (BS#3509)' and 'Account-audit route coverage (BS#2537)' in test.yml: tests/tsconfig.json is strict:false and catches errors the root typecheck never sees (BS#3453, BS#3455 passed the engine and failed there), and audit-coverage must follow typecheck because lint:prebuild builds the dists it imports. Still CI-only on purpose: the Type check: jobs, lint:migrations and build. check:better-auth-mock-sync and check:db-mock-sync run in the session's push through the pre-push hook, and in CI's lint-and-typecheck job."
     },
     "WXYC/dj-site": {
       "baseBranch": "main",
