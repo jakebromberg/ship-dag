@@ -185,7 +185,6 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const canon = (ref) => known.get(refKey(ref)) ?? ref; // the one name the board uses for an issue
   // Only an open ticket's open blockers can be drawn, so the closure follows those alone: never a closed ticket's, nor the
   // epic's, which blocks nothing in the run.
-  const pending = new Set();
   let todo = wanted;
   for (let round = 0; todo.length; round += 1) {
     if (round >= CLOSURE_CAP) { warn(`closure hit its safety cap of ${CLOSURE_CAP} rounds; ${todo.length} open blocker${todo.length === 1 ? '' : 's'} unread`); break; }
@@ -195,6 +194,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
       state.set(ref, issue.state);
       if (issue.transferredTo) known.set(refKey(issue.transferredTo), ref);
     }
+    const next = new Set(); // the next round's refs: blockers this round queued that no round has read
     for (const [ref, issue] of found) {
       const follow = issue.state === 'OPEN' && ref !== epic;
       for (const b of issue.blockedBy.nodes) {
@@ -202,10 +202,10 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
         const blocker = canon(at); // GitHub names a moved blocker by its new ref
         native.push({ blocked: ref, blockedBy: blocker });
         if (!state.has(blocker)) state.set(blocker, b.state);
-        if (follow && b.state === 'OPEN') pending.add(blocker);
+        if (follow && b.state === 'OPEN' && !info.has(blocker)) next.add(blocker);
       }
     }
-    todo = [...pending].filter((ref) => !info.has(ref));
+    todo = [...next];
   }
 
   // The spec may name a transferred issue by its new ref while the waves name it by its old one: the board uses the old.
