@@ -26,7 +26,7 @@
 // (render and refresh fall back to $SHIP_DAG_RUN_ID when neither --state-dir nor --run-id is given; init needs one of them.)
 
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchSpec as planWavesFetchSpec } from './plan-waves.mjs';
 import { renderBoard } from './board/render.mjs';
@@ -43,14 +43,20 @@ import { readArg } from './lib/read-arg.mjs';
 import { REPO_RE, formatRef, parseRef, refKey } from './lib/ref.mjs';
 import { parseBlockOn } from './review-gate.mjs';
 import { runFamilyStateDirs } from './lib/wave-reports.mjs';
+import { newestEntries } from './lib/wave-sidecar.mjs';
+import { sameRun } from './lib/run-id.mjs';
 import { telemetryPath } from './telemetry.mjs';
 
 const EX_USAGE = 64;
 const BATCH = 40; // refs per GraphQL query
 /** The closure's safety cap: at most this many lookup rounds, round 0 (the run's own refs) included, so a chain of up to 99 outside blockers is read whole. */
 export const CLOSURE_CAP = 100;
+/** How many sub-issue parents up the lookup reads, to name an outside ticket's top epic (issue #522). */
+const PARENT_DEPTH = 4;
+const parentField = (depth) => (depth ? `parent{number title url repository{nameWithOwner} ${parentField(depth - 1)}}` : '');
 const FIELDS = 'number title url state stateReason createdAt closedAt labels(first:100){nodes{name}} closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
-  + 'blockedBy(first:50){nodes{number state stateReason closedAt repository{nameWithOwner}}}';
+  + `blockedBy(first:50){nodes{number state stateReason closedAt repository{nameWithOwner}}} ${parentField(PARENT_DEPTH)}`;
+const SUB_ISSUES = ['-H', 'GraphQL-Features: sub_issues']; // `parent` and `subIssues` are sub-issue fields
 
 const SCRIPT = fileURLToPath(import.meta.url);
 
@@ -116,7 +122,7 @@ async function lookup(refs, deps, moved) {
       const [owner, name] = repo.split('/');
       return `r${j}:repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}){issue(number:${number}){${FIELDS}}}`;
     }).join(' ')}}`;
-    const { data } = await answer(query, deps);
+    const { data } = await answer(query, deps, SUB_ISSUES);
     batch.forEach((ref, j) => (data?.[`r${j}`]?.issue ? found.push([ref, data[`r${j}`].issue]) : missing.push(ref)));
   }
   const homes = await Promise.all(missing.map(async (ref) => [ref, await moved(ref)]));
@@ -155,6 +161,13 @@ function outsideAncestors(from, edges, run, info, state) {
 /** An issue's closing PRs, their states lower-cased. */
 const prsOf = (issue) => issue.closedByPullRequestsReferences.nodes.map((p) => ({ ...p, state: p.state.toLowerCase() }));
 
+/** The top of an issue's sub-issue parents, as far as the lookup read them, as `{ref, title, url}`; null for an issue with none. */
+function topParent(issue) {
+  let top = null;
+  for (let p = issue.parent; p; p = p.parent) top = p;
+  return top && { ref: formatRef(top.repository.nameWithOwner, top.number), title: top.title, url: top.url };
+}
+
 /** Whether a ticket closed as shipped (not without shipping) at or after `startedAt` (epoch ms): a null `closedAt` never is. */
 const shippedSince = ({ state, stateReason, closedAt }, startedAt) => state === 'CLOSED' && closedKind(stateReason) === 'shipped' && closedAt != null && Date.parse(closedAt) >= startedAt;
 
@@ -179,7 +192,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   // The walk needs nothing the lookups below return, so it runs beside them; a no-op catch keeps an early failure of
   // theirs from leaving its rejection unhandled, and the await below still throws it.
   const moved = transfers(deps, warn);
-  const walk = fetchPredecessors(predecessors, (q) => answer(q, deps, ['-H', 'GraphQL-Features: sub_issues']), { transferredTo: moved });
+  const walk = fetchPredecessors(predecessors, (q) => answer(q, deps, SUB_ISSUES), { transferredTo: moved });
   walk.catch(() => {});
   // The run's tickets, as the spec and the run's files name them: the members, then what the waves, retros and notes add.
   // They are the roots of the required set (issue #522).
@@ -276,6 +289,12 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     .filter((ref) => !runSet.has(ref) && info.has(ref) && shippedSince(info.get(ref), startedAt));
   const outsideTickets = [...outside.map((ref) => ({ ref, status: 'outside' })), ...done.map((ref) => ({ ref, status: 'shipped', closedAt: info.get(ref).closedAt }))]
     .map((t) => ({ ...t, title: info.get(t.ref).title, url: info.get(t.ref).url, prs: prsOf(info.get(t.ref)) }));
+  // Each outside ticket's owner (issue #522): its top epic, and the other run whose wave sidecar emitted it last, if any.
+  const emitted = outsideTickets.length ? newestEntries(dirname(dir), { warn, skip: (d, e) => sameRun(e.runId ?? basename(d), run.runId) }) : new Map();
+  for (const t of outsideTickets) {
+    const by = emitted.get(refKey(t.ref));
+    t.owner = { home: topParent(info.get(t.ref)), run: by ? by.entry.runId ?? basename(by.dir) : null };
+  }
   const named = notes.milestones;
   if (named !== undefined && named !== null && (typeof named !== 'object' || Array.isArray(named))) {
     warn('board-notes milestones must be an object of ref to name (or false); it is ignored');
@@ -288,7 +307,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const current = { id: newest.id, refs: new Set(newest.refs) };
   // The run's own tickets and the outside ones it counts (issue #522) are left out: any other closed blocker still shipped before.
   const before = shippedBefore(await walk, [...refs, ...done]);
-  const repos = [...refs, ...outside, ...done, ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
+  const repos = [...refs, ...outside, ...done, ...outsideTickets.flatMap((t) => (t.owner.home ? [t.owner.home.ref] : [])), ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
   const shortRef = makeShortRef(repos, board.abbreviations);
   const scope = epic ? { url: info.get(epic).url, label: shortRef(epic), title: info.get(epic).title }
     : board.issueSet?.label ? { url: `https://github.com/${board.issueSet.repo}/issues?q=label%3A${encodeURIComponent(board.issueSet.label)}`, label: board.issueSet.label, title: board.issueSet.repo } : null;
