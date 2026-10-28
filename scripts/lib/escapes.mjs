@@ -3,14 +3,14 @@
 // window (five `gh search` calls), cached once that day's window has closed and settled, and matched to
 // merged PRs locally. `gh` is injected (`async (args) => stdout`) and the engine base dir is a parameter, so
 // nothing here touches GitHub or the real state dir unless asked to.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { defaultBaseDir } from '../rate-limit-preflight.mjs';
 import { ghCli, ghJson, withBackoff } from './gh.mjs';
 import { isIssueRecord } from './log-order.mjs';
 import { formatRef, issueKey, parsePr, parseRef, refKey, sameRepo } from './ref.mjs';
 import { groupBy } from './stats.mjs';
-import { readSidecar, SIDECAR_NAME } from './wave-sidecar.mjs';
+import { lsdir, newestEntries } from './wave-sidecar.mjs';
 import { readWaveReports, waveContextFor } from './wave-reports.mjs';
 
 const DAY = 86_400_000;
@@ -36,7 +36,6 @@ const repoDir = (cacheDir, repo) => join(cacheDir, `v${CACHE_VERSION}`, refKey(r
 /** The JSON cached at `file`, or undefined when absent or unreadable. */
 const readCached = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return undefined; } };
 const writeCached = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
-const lsdir = (dir) => { try { return readdirSync(dir); } catch { return []; } };
 
 /** The GraphQL query for issue `$n` of `$owner/$name`'s state and the PRs that close it, merged or not. */
 export const CLOSING_PRS_QUERY = 'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){issue(number:$n){state closedByPullRequestsReferences(first:50,includeClosedPrs:true){nodes{number headRefName mergedAt repository{nameWithOwner}}}}}}';
@@ -222,9 +221,7 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
     covered.add(issueKey(r));
     add(p, r.tuningVersion ?? 0);
   }
-  const sidecarRefs = new Map(); // refKey → [ref, tuningVersion, emittedAt] of its newest entry
   for (const run of lsdir(baseDir)) {
-    const entries = readSidecar(join(baseDir, run, SIDECAR_NAME), { warn });
     for (const read of readWaveReports(join(baseDir, run), { warn: (m) => warn(`escapes: ${m}; skipped`) })) {
       if (read.error) { // skipped, as ingest-wave refuses it; a parsed report's PRs must not come back through the closing-PR fallback
         for (const row of read.report?.issues ?? []) if (rowPr(row)) covered.add(refKey(row.ref));
@@ -239,12 +236,9 @@ export async function shipDagPrs(records, { baseDir = defaultBaseDir(), cacheDir
         add(p, tuningVersion);
       }
     }
-    for (const e of entries) {
-      const at = Date.parse(e.emittedAt) || 0;
-      for (const i of e.issues ?? []) if (!(sidecarRefs.get(refKey(i.ref))?.[2] > at)) sidecarRefs.set(refKey(i.ref), [i.ref, e.tuningVersion ?? 0, at]);
-    }
   }
-  for (const [key, [ref, tuningVersion]] of sidecarRefs) {
+  for (const [key, { ref, entry }] of newestEntries(baseDir, { warn })) {
+    const tuningVersion = entry.tuningVersion ?? 0;
     if (covered.has(key)) continue;
     const parsed = parseRef(ref);
     if (!parsed) { warn(`escapes: ${ref}: not an owner/repo#N ref; skipped`); continue; }
