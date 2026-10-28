@@ -109,12 +109,12 @@ export function waveSpan(labels) {
  */
 export function renderBoard(v) {
   const byRef = new Map(v.tickets.map((t) => [t.ref, t]));
-  const display = new Map([...v.tickets, ...(v.outsideTickets || [])].map((t) => [t.ref, t])); // title and link, outside nodes too
+  const outside = (v.outsideTickets || []).map((t) => ({ prs: [], ...t, status: t.status ?? 'outside', outside: true }));
+  const required = [...v.tickets, ...outside]; // the required set: the run's tickets and the outside ones it waits on (issue #522)
+  const display = new Map(required.map((t) => [t.ref, t])); // title and link, outside nodes too
   const link = (ref, label, url = display.get(ref)?.url) => html`<a href="${url || ''}">${label || v.shortRef(ref)}</a>`;
   const prLinks = (t, only) => t.prs.filter((p) => only.includes(p.state))
     .map((p) => html`<a class="pr pr-${p.state}" href="${p.url}" title="${p.state}">#${p.number}</a>`);
-  const outside = (v.outsideTickets || []).map((t) => ({ prs: [], ...t, status: t.status ?? 'outside', outside: true }));
-  const required = [...v.tickets, ...outside]; // the required set: the run's tickets and the outside ones it waits on (issue #522)
   const counts = {};
   for (const t of required) counts[t.status] = (counts[t.status] || 0) + 1;
   const earlier = (v.before || []).reduce((n, g) => n + g.shipped.length, 0);
