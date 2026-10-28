@@ -117,22 +117,29 @@ export const lsdir = (dir) => { try { return readdirSync(dir); } catch { return 
 /**
  * Each ref's newest sidecar entry across the run dirs of an engine base dir (`<baseDir>/<run>/ship-dag-wave.jsonl`), as
  * `Map(refKey → {ref, entry, dir})`: the newest by `emittedAt`, an unparseable one counting as the epoch, and on a tie
- * the later-read entry. `skip(dir, entry)` leaves an entry out; `warn` gets `readSidecar`'s warnings.
+ * the later-read entry, run dirs read in name order. An entry whose `issues` is not an array, or an issue with no `ref`, is
+ * skipped (a `ref` that is no `owner/repo#N` is kept, for the caller to judge). `skip(dir, entry)` (`dir` the run dir's path) leaves an entry out; `warn` gets `readSidecar`'s warnings.
  * @param {string} baseDir
  * @param {{warn?: (m: string) => void, skip?: (dir: string, entry: object) => boolean}} [opts]
  * @returns {Map<string, {ref: string, entry: object, dir: string}>}
  */
 export function newestEntries(baseDir, { warn = (m) => console.error(m), skip = () => false } = {}) {
   const newest = new Map();
-  for (const run of lsdir(baseDir)) {
+  const when = new Map(); // refKey → the epoch ms of its newest entry
+  for (const run of lsdir(baseDir).sort()) {
     const dir = join(baseDir, run);
     for (const entry of readSidecar(join(dir, SIDECAR_NAME), { warn })) {
-      if (skip(dir, entry)) continue;
+      if (!Array.isArray(entry.issues) || skip(dir, entry)) continue;
       const at = Date.parse(entry.emittedAt) || 0;
-      for (const i of entry.issues ?? []) if (!(newest.get(refKey(i.ref))?.at > at)) newest.set(refKey(i.ref), { ref: i.ref, entry, dir, at });
+      for (const { ref } of entry.issues.filter((i) => i?.ref != null)) {
+        const key = refKey(ref);
+        if (when.get(key) > at) continue;
+        when.set(key, at);
+        newest.set(key, { ref, entry, dir });
+      }
     }
   }
-  return new Map([...newest].map(([k, { at, ...v }]) => [k, v]));
+  return newest;
 }
 
 /**

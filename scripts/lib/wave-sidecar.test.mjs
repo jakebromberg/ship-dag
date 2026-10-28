@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -309,7 +309,7 @@ function baseWith(runs) {
   const base = mkdtempSync(join(tmpdir(), 'newest-entries-'));
   for (const [run, lines] of Object.entries(runs)) {
     const dir = join(base, run);
-    appendWave(dir, { runId: run, issues: [] }, { warn: () => {} }); // creates the dir
+    mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, SIDECAR_NAME), lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n');
   }
   return base;
@@ -348,5 +348,24 @@ test('newestEntries leaves out what skip rejects, warns once per unreadable side
     assert.equal(warns.length, 1);
     assert.match(warns[0], /skipped 1 unreadable line/);
     assert.equal(newestEntries(join(base, 'absent'), { warn: () => {} }).size, 0);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test('newestEntries breaks a tie across run dirs by dir name, the later name winning, whatever order the file system lists them in', () => {
+  const at = '2026-10-01T00:00:00Z';
+  const base = baseWith({ 'sd-b': [entry('sd-b', at, ['o/r#1'])], 'sd-a': [entry('sd-a', at, ['o/r#1'])], 'sd-c': [entry('sd-c', 'nope', ['o/r#1'])] });
+  try {
+    assert.equal(newestEntries(base, { warn: () => {} }).get('o/r#1').entry.runId, 'sd-b');
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test('newestEntries hands skip the run dir\'s full path, and skips an entry whose issues are not an array or hold no ref, without throwing', () => {
+  const base = baseWith({ 'sd-a': [entry('sd-a', '2026-10-02T00:00:00Z', ['o/r#1'])], 'sd-b': [entry('sd-b', '2026-10-01T00:00:00Z', ['o/r#1']), { runId: 'sd-b', issues: { ref: 'o/r#2' } }, { runId: 'sd-b', issues: [null, 7, {}, { ref: 'o/r#3' }] }] });
+  try {
+    const seen = [];
+    const got = newestEntries(base, { warn: () => {}, skip: (dir) => { seen.push(dir); return dir === join(base, 'sd-a'); } });
+    assert.ok(seen.includes(join(base, 'sd-a')) && seen.includes(join(base, 'sd-b')), JSON.stringify(seen));
+    assert.equal(got.get('o/r#1').entry.runId, 'sd-b');
+    assert.deepEqual([...got.keys()].sort(), ['o/r#1', 'o/r#3']);
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
