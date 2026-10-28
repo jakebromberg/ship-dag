@@ -181,13 +181,14 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const moved = transfers(deps, warn);
   const walk = fetchPredecessors(predecessors, (q) => answer(q, deps, ['-H', 'GraphQL-Features: sub_issues']), { transferredTo: moved });
   walk.catch(() => {});
-  const wanted = [...new Set([...(spec.members ?? [...nodes, ...(spec.done ?? [])]), ...nodes, ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? []),
-    ...(spec.edges ?? []).flatMap((e) => [e.blocked, e.blockedBy]), ...(epic ? [epic] : [])])];
-
-  // The run's tickets are the roots of the required set (issue #522): the closure reads the blockers of a root or of an open
-  // ticket, and nothing behind a closed ticket that is not a root, so a closed outside ticket is a leaf.
-  const roots = new Set([...(spec.members ?? [...nodes, ...(spec.done ?? [])]), ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? [])]);
+  // The run's tickets, as the spec and the run's files name them: the members, then what the waves, retros and notes add.
+  // They are the roots of the required set (issue #522).
+  const memberRefs = spec.members ?? [...nodes, ...(spec.done ?? [])];
+  const added = [...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? [])];
+  const roots = new Set([...memberRefs, ...added]);
+  const wanted = [...new Set([...roots, ...nodes, ...(spec.edges ?? []).flatMap((e) => [e.blocked, e.blockedBy]), ...(epic ? [epic] : [])])];
   const startedAt = Date.parse(board.startedAt);
+  if (Number.isNaN(startedAt)) warn(`board.json startedAt ${JSON.stringify(board.startedAt)} is not a date: closed outside blockers are not counted`);
   const info = new Map(); // ref → the issue GitHub returned
   const state = new Map(); // ref → OPEN | CLOSED, also for a blocker no one has looked up
   const native = []; // GitHub's own blockedBy edges
@@ -198,9 +199,14 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   // epic, which blocks nothing in the run, so a closed outside ticket is a leaf.
   let todo = wanted;
   for (let round = 0; todo.length; round += 1) {
-    const open = todo.filter((ref) => state.get(ref) === 'OPEN').length;
-    // Past the cap only closed leaves are read, and they queue nothing, so the loop still ends.
-    if (round >= CLOSURE_CAP && open) { warn(`closure hit its safety cap of ${CLOSURE_CAP} rounds; ${open} open blocker${open === 1 ? '' : 's'} unread`); break; }
+    if (round >= CLOSURE_CAP) {
+      // Past the cap the open blockers are left unread, but the closed leaves due this round are still read: they queue
+      // nothing, so the loop ends.
+      const open = todo.filter((ref) => state.get(ref) === 'OPEN').length;
+      if (open) warn(`closure hit its safety cap of ${CLOSURE_CAP} rounds; ${open} open blocker${open === 1 ? '' : 's'} unread`);
+      todo = todo.filter((ref) => state.get(ref) !== 'OPEN');
+      if (!todo.length) break;
+    }
     const found = await lookup(todo, deps, moved);
     for (const [ref, issue] of found) {
       info.set(ref, issue);
@@ -223,10 +229,10 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   }
 
   // The spec may name a transferred issue by its new ref while the waves name it by its old one: the board uses the old.
-  const members = (spec.members ?? [...nodes, ...(spec.done ?? [])]).map(canon);
+  const members = memberRefs.map(canon);
   const edges = (spec.edges ?? []).map((e) => ({ blocked: canon(e.blocked), blockedBy: canon(e.blockedBy) }));
   const dropped = (ref) => board.issueSet?.label && info.get(ref).state === 'CLOSED' && Date.parse(info.get(ref).closedAt) < startedAt;
-  const refs = [...new Set([...members.filter((r) => !dropped(r)), ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? [])].map(canon))];
+  const refs = [...new Set([...members.filter((r) => !dropped(r)), ...added].map(canon))];
   const allEdges = [...edges, ...native];
   const family = readFamily(dir, { runId: run.runId, warn, dirs });
   const latest = new Map(waves.flatMap((w) => w.refs.map((ref) => [ref, w]))); // oldest first, so the newest wave wins
@@ -262,8 +268,9 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     outside = placed;
     graph = buildGraph(openRefs, allEdges, closedRefs, { outside });
   }
-  // A closed outside ticket that shipped since the run started, and that a placed open ticket or a shipped run ticket waits
-  // on, is required work already done (issue #522). It is a leaf: only tickets the closure read count.
+  // A closed outside ticket that shipped since the run started, and that an open run ticket (orderable or not), a drawn
+  // outside ticket or a shipped run ticket waits on, is required work already done (issue #522). It is a leaf: only
+  // tickets the closure read count.
   const live = new Set([...openRefs, ...outside, ...tickets.filter((t) => t.status === 'shipped').map((t) => t.ref)]);
   const done = [...new Set(allEdges.filter((e) => live.has(e.blocked)).map((e) => e.blockedBy))]
     .filter((ref) => !runSet.has(ref) && info.has(ref) && shippedSince(info.get(ref), startedAt));

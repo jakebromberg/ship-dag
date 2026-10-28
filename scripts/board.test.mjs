@@ -294,6 +294,25 @@ test('the closure reads a closed leaf past the cap\'s last open level without wa
   assert.ok(shippedRows(html).includes('issues/500"'));
 });
 
+test('at the cap the closure still reads the closed leaves due that round, and counts them (issue #522 review)', async () => {
+  const s = setUp({ files: { 'dag.json': { nodes: [{ ref: R(1) }, { ref: R(2) }], edges: [], done: [] } } });
+  const a = chain(10, CLOSURE_CAP - 1); // r#10 … r#108, read whole by round 99
+  a[R(10 + CLOSURE_CAP - 2)] = { blockers: [R(500)] };
+  const gh = fakeGh({ ...TABLE, [R(1)]: { blockers: [R(10)] }, [R(2)]: { blockers: [R(200)] }, ...a, ...chain(200, CLOSURE_CAP), [R(500)]: { state: 'CLOSED', closedAt: DURING_RUN } });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.ok(err.includes(`[board] closure hit its safety cap of ${CLOSURE_CAP} rounds; 1 open blocker unread`), err.join('\n'));
+  assert.deepEqual(gh.calls[CLOSURE_CAP], [R(500)], 'the last round reads the leaf alone');
+  assert.ok(shippedRows(html).includes('issues/500"'));
+});
+
+test('a board.json startedAt that is not a date warns that closed outside blockers are not counted (issue #522 review)', async () => {
+  const s = setUp({ files: { 'board.json': { ...BOARD, startedAt: 'yesterday' } } });
+  const { code, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, [R(2)]: { blockers: [R(8)] }, [R(8)]: { state: 'CLOSED', closedAt: DURING_RUN } }).runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.ok(err.some((m) => /startedAt .*not a date.*closed outside blockers are not counted/.test(m)), err.join('\n'));
+});
+
 test('a milestone counts the open outside tickets before it beside the run\'s (issue #522)', async () => {
   const s = setUp();
   const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)], labels: ['hitl-gate'] }, [R(7)]: {} });
