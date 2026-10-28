@@ -14,7 +14,8 @@
 // and exits 1 when there is no dag.json either (pass `--spec` to `render`, or `init` with --epic/--label).
 // Cost of one refresh: about L+2 GraphQL queries and L REST calls for L open leaves, plus ceil(T/40) GraphQL queries to render T tickets
 // (the fetch is a `gh issue view` and a `dependencies/blocked_by` read per leaf, one sub-issues query per epic and one list per label
-// state; each sub-epic or out-of-set blocker adds one more; the render adds closure and predecessor rounds).
+// state; each sub-epic or out-of-set blocker adds one more; the render adds closure and predecessor rounds). The closure reads open
+// blockers outside the set to a fixed point, one round per level, under a safety cap of `CLOSURE_CAP` rounds that warns when hit.
 // Exit codes: 0 = done; 1 = failed (stderr says why; the old board.html is untouched); 64 = usage.
 //
 // Usage: board.mjs init   (--state-dir <dir> | --run-id <id>) [--title T] [--epic owner/repo#N | --label L --repo owner/repo]
@@ -45,7 +46,8 @@ import { telemetryPath } from './telemetry.mjs';
 
 const EX_USAGE = 64;
 const BATCH = 40; // refs per GraphQL query
-const CLOSURE_ROUNDS = 5; // extra rounds that look up open blockers outside the set
+/** The closure's safety cap: at most this many lookup rounds, round 0 (the run's own refs) included, so a chain of up to 99 outside blockers is read whole. */
+export const CLOSURE_CAP = 100;
 const FIELDS = 'number title url state stateReason createdAt closedAt labels(first:100){nodes{name}} closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
   + 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
 
@@ -182,7 +184,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const canon = (ref) => known.get(refKey(ref)) ?? ref; // the one name the board uses for an issue
   let todo = wanted;
   for (let round = 0; todo.length; round += 1) {
-    if (round > CLOSURE_ROUNDS) { warn(`closure stopped after ${CLOSURE_ROUNDS} rounds; ${todo.length} open blockers unread`); break; }
+    if (round >= CLOSURE_CAP) { warn(`closure hit its safety cap of ${CLOSURE_CAP} rounds; ${todo.length} open blocker${todo.length === 1 ? '' : 's'} unread`); break; }
     const found = await lookup(todo, deps, moved);
     for (const [ref, issue] of found) {
       info.set(ref, issue);
