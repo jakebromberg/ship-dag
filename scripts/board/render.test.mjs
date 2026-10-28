@@ -290,9 +290,9 @@ test('renderBoard labels a step of only outside nodes "outside this run" and a m
   assert.deepEqual(labels, ['wave 4b + outside', 'outside this run', 'wave 6', 'wave 7'], 'step 1 holds ready r#4 (wave 4b) beside O90; step 2 only O91');
 });
 
-test('renderBoard names both counts in the road summary, and splits the chain label (issue #515)', () => {
+test('renderBoard counts the outside tickets in the road summary\'s total and names them apart, and splits the chain label (issues #515, #522)', () => {
   const html = renderBoard(outsideView());
-  assert.match(html, /<b>3 tickets left, in 4 steps; plus 2 open blockers outside this run\.<\/b>/);
+  assert.match(html, /<b>5 tickets left: 3 in this run, 2 outside it; in 4 steps\.<\/b>/);
   assert.match(html, /\(4 tickets, one after another: 2 in this run, 2 outside\)/);
 });
 
@@ -303,7 +303,7 @@ test('renderBoard pins the combined unorderable-plus-outside summary (issue #515
     { blockedBy: O(90), blocked: R(2) }, { blockedBy: R(6), blocked: R(7) }, { blockedBy: R(7), blocked: R(6) },
   ], [], { outside: [O(90)] });
   const html = renderBoard({ ...v, tickets, graph, waves: new Map() });
-  assert.match(html, /<b>5 tickets left: 3 in 2 steps, 2 can't be ordered; plus 1 open blocker outside this run\.<\/b>/);
+  assert.match(html, /<b>6 tickets left: 5 in this run, 1 outside it; 4 in 2 steps, 2 can't be ordered\.<\/b>/);
 });
 
 test('renderBoard counts only our tickets under "unblocks", in the node and in the table (issue #515)', () => {
@@ -328,10 +328,25 @@ test('renderBoard has no "Can\'t be ordered" callout when everything was placed 
   assert.doesNotMatch(renderBoard(outsideView()), /Can't be ordered/);
 });
 
-test('renderBoard leaves today\'s summary and chain strings alone when nothing is outside (issue #515)', () => {
+test('renderBoard leaves today\'s summary, chain strings, tiles and legend alone when nothing is outside (issues #515, #522)', () => {
   const html = renderBoard(view());
-  assert.doesNotMatch(html, /plus \d+ open blockers? outside/);
+  assert.doesNotMatch(html, /outside it|outside this run<\/span>/);
+  assert.doesNotMatch(html, /Open outside this run|open outside this run/);
   assert.doesNotMatch(html, /one after another:/);
+});
+
+test('renderBoard counts the required set: open outside tickets get a tile, legend entry and bar segment, shipped ones join Shipped, marked (issue #522)', () => {
+  const v = outsideView();
+  const shippedOut = { ref: O(80), title: 'Done elsewhere', url: 'https://github.com/x/y/issues/80', status: 'shipped', closedAt: '2026-10-08T19:00:00Z', prs: [{ number: 81, url: 'u81', state: 'merged' }] };
+  const html = renderBoard({ ...v, outsideTickets: [...v.outsideTickets, shippedOut] });
+  assert.match(html, /<b>1\/6<\/b><span>shipped<\/span>/, 'three run tickets, two open outside, one shipped outside');
+  assert.match(html, /<b>2<\/b><span>open outside this run<\/span>/);
+  assert.match(html, /<span><i style="background:var\(--outside\)"><\/i>Open outside this run<\/span>/);
+  assert.match(html, /<i style="flex:2;background:var\(--outside\)"><\/i>/);
+  assert.match(html, /<b>y<\/b> · 1\/3 shipped/, 'the outside repo gets a bar of its own');
+  const shipped = html.slice(html.indexOf('<h2>Shipped'));
+  assert.match(shipped, /<small>1 ticket, newest first/);
+  assert.match(shipped, /<td>Done elsewhere <span class="owner">outside this run<\/span><\/td><td class="n"><a class="pr pr-merged" href="u81"/);
 });
 
 // ---- predecessor epics ---------------------------------------------------
@@ -504,7 +519,7 @@ test('renderBoard names a milestone\'s outside blockers and escapes every milest
   const v = { ...base, tickets, graph, waves, outsideTickets: [{ ref: 'o/r#9', title: 'Elsewhere', url: 'u9' }], notes: { milestones: { 'o/r#4': evil } } };
   const html = renderBoard({ ...v, milestones: milestones(v) });
   assert.ok(!html.includes(evil), 'no raw script from a title or a note');
-  assert.match(section(html), /waits on outside <a href="u9">r#9<\/a>/);
+  assert.match(section(html), /1 outside it \(<a href="u9">r#9<\/a>\)/);
 });
 
 test('renderBoard shows a dash for a milestone reached outside any wave (issue #518)', () => {
@@ -542,8 +557,8 @@ function blockedView(milestoneRows) {
 
 // The State and Wave cells of one milestone row, by what the row says (issue #518).
 for (const [name, patch, state, wave] of [
-  ['open tickets and outside blockers are joined by a semicolon', { next: true, before: 2, outside: ['o/r#9'] }, 'Next up: 2 open tickets before it; waits on outside <a href="u9">r#9</a>', 'Wave 5'],
-  ['only outside blockers read as waiting on them, not as nothing before it', { next: true, before: 0, outside: ['o/r#9'] }, 'Next up: waits on outside <a href="u9">r#9</a>', 'Wave 5'],
+  ['open tickets count the run\'s and the outside ones together, then split them (issue #522)', { next: true, before: 2, outside: ['o/r#9'] }, 'Next up: 3 open tickets before it: 2 in this run, 1 outside it (<a href="u9">r#9</a>)', 'Wave 5'],
+  ['only outside tickets still count as open tickets before it, not as nothing (issue #522)', { next: true, before: 0, outside: ['o/r#9'] }, 'Next up: 1 open ticket before it: 0 in this run, 1 outside it (<a href="u9">r#9</a>)', 'Wave 5'],
   ['nothing open before it', { next: true, before: 0, outside: [] }, 'Next up: nothing open before it', 'Wave 5'],
   ['a row that is not next has no Next up prefix', { next: false, before: 1, outside: [] }, '1 open ticket before it', 'Wave 5'],
   ['a milestone of yours has no wave number', { wave: { label: null, now: false } }, '', 'Yours'],

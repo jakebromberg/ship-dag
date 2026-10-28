@@ -14,9 +14,10 @@ import { html, raw, list } from './html.mjs';
 import { burnupSeries, bucketPoints, pacificTicks, yScale } from './burnup.mjs';
 
 /**
- * Every status `classify` returns, in legend order, plus the board-only `outside` (an open issue of another run, drawn
- * in the road ahead; `classify` never returns it): the CSS token its bar segment, swatch and chip (`.c-<status>`) use,
- * its tile and legend labels, and its chip label. A dropped or outside ticket has no tile, bar segment or legend entry.
+ * Every status `classify` returns, in legend order, plus the board-only `outside` (an open issue outside the run that
+ * the run waits on, drawn in the road ahead; `classify` never returns it): the CSS token its bar segment, swatch and chip
+ * (`.c-<status>`) use, its tile and legend labels, and its chip label. A dropped ticket has no tile, bar segment or legend
+ * entry; the outside tile, legend entry and bar segment appear only on a board that has open outside tickets (issue #522).
  */
 export const STATUSES = [
   { status: 'shipped', token: 'ship', tile: 'shipped', legend: 'Shipped', chip: 'Shipped' },
@@ -25,7 +26,7 @@ export const STATUSES = [
   { status: 'you', token: 'block', tile: 'waiting on you', legend: 'Waiting on you', chip: 'Yours' },
   { status: 'blocked', token: 'queued', tile: 'waiting on other tickets', legend: 'Waiting on other tickets', chip: 'Waiting' },
   { status: 'dropped', token: 'queued', tile: null, legend: null, chip: 'Dropped' },
-  { status: 'outside', token: 'outside', tile: null, legend: null, chip: 'Outside' },
+  { status: 'outside', token: 'outside', tile: 'open outside this run', legend: 'Open outside this run', chip: 'Outside' },
 ];
 const SHOWN = STATUSES.filter((s) => s.legend);
 const CHIP = Object.fromEntries(STATUSES.map((s) => [s.status, s.chip]));
@@ -87,7 +88,10 @@ export function waveSpan(labels) {
  *   prs:Array<{number:number,url:string,state:'open'|'merged'|'closed'}>,closedAt?:string,shippedWave?:string,
  *   remote?:ReturnType<import('./remote.mjs').remoteSource>}>} v.tickets  `remote`: where a remote host's ticket was read (`hostLine`)
  * @param {ReturnType<import('./model.mjs').buildGraph>} v.graph  over the open tickets and the open blockers outside the run
- * @param {Array<{ref:string,title:string,url:string}>} [v.outsideTickets]  the graph's `outside` nodes, which `tickets` leaves out
+ * @param {Array<{ref:string,title:string,url:string,status?:'outside'|'shipped',closedAt?:string,prs?:Array<object>}>} [v.outsideTickets]
+ *   the required tickets outside the run (issue #522), which `tickets` leaves out: the graph's `outside` nodes (status
+ *   `outside`, the default) and the closed outside blockers that shipped since the run started (status `shipped`). Each
+ *   counts in the headline, tiles, bar and repo bars; a shipped one is listed under Shipped, marked as outside the run.
  * @param {{id:string, refs:Set<string>}|null} v.current  the wave building now
  * @param {Map<string,{label:string|null,now:boolean,outside?:true}>} v.waves  projectWaves() result
  * @param {(ref:string) => string} v.shortRef
@@ -109,11 +113,14 @@ export function renderBoard(v) {
   const link = (ref, label, url = display.get(ref)?.url) => html`<a href="${url || ''}">${label || v.shortRef(ref)}</a>`;
   const prLinks = (t, only) => t.prs.filter((p) => only.includes(p.state))
     .map((p) => html`<a class="pr pr-${p.state}" href="${p.url}" title="${p.state}">#${p.number}</a>`);
+  const outside = (v.outsideTickets || []).map((t) => ({ prs: [], ...t, status: t.status ?? 'outside', outside: true }));
+  const required = [...v.tickets, ...outside]; // the required set: the run's tickets and the outside ones it waits on (issue #522)
   const counts = {};
-  for (const t of v.tickets) counts[t.status] = (counts[t.status] || 0) + 1;
+  for (const t of required) counts[t.status] = (counts[t.status] || 0) + 1;
   const earlier = (v.before || []).reduce((n, g) => n + g.shipped.length, 0);
   counts.shipped = (counts.shipped || 0) + earlier; // the headline and the bar count the whole project
-  const total = v.tickets.length - (counts.dropped || 0) + earlier;
+  const total = required.length - (counts.dropped || 0) + earlier;
+  const shown = SHOWN.filter(({ status }) => status !== 'outside' || counts.outside);
   const notes = v.notes || {};
   const ms = new Map((v.milestones || []).map((m) => [m.ref, m]));
   const badge = (ref) => (ms.has(ref) ? html`<div class="ms-badge">Milestone: ${ms.get(ref).name}</div>` : '');
@@ -122,13 +129,13 @@ export function renderBoard(v) {
     + html`<meta http-equiv="refresh" content="120"><title>${v.title}</title><style>${raw(PAGE_CSS)}</style></head><body><main>`];
   h.push(html`<h1>${v.title}</h1>${v.scope && html`<p class="sub"><a href="${v.scope.url}">${v.scope.label}</a> — ${v.scope.title}</p>`}`
     + html`<p class="meta">Updated ${formatPacific(v.now, 'long')} · run ${v.runId} · reloads every 2 minutes</p>`);
-  h.push(html`<div class="tiles">${SHOWN.map(({ status, tile }) => {
+  h.push(html`<div class="tiles">${shown.map(({ status, tile }) => {
     const n = status === 'shipped' ? `${counts.shipped || 0}/${total}` : counts[status] || 0;
     return html`<div class="tile"><b>${n}</b><span>${tile}${status === 'shipped' && earlier ? ` (${earlier} before this run)` : ''}</span></div>`;
   })}</div>`);
   h.push(bar(counts, total));
-  h.push(html`<div class="legend">${SHOWN.map(({ token, legend }) => html`<span><i style="background:var(--${token})"></i>${legend}</span>`)}</div>`);
-  h.push(repoBars(v.tickets, v.repoLabel));
+  h.push(html`<div class="legend">${shown.map(({ token, legend }) => html`<span><i style="background:var(--${token})"></i>${legend}</span>`)}</div>`);
+  h.push(repoBars(required, v.repoLabel));
   const burn = Number.isFinite(Date.parse(v.startedAt ?? '')); // a hand-edited startedAt that is not a date skips the chart
   if (burn) { h.push(burnup(v, link)); }
 
@@ -152,11 +159,11 @@ export function renderBoard(v) {
   h.push(html`<h2>Road ahead <small>every open ticket, in dependency order</small></h2>`);
   h.push(roadAhead(v, byRef, display, link, notes.gates || {}, badge));
 
-  const shipped = v.tickets.filter((t) => t.status === 'shipped').sort((a, b) => (b.closedAt || '').localeCompare(a.closedAt || ''));
+  const shipped = required.filter((t) => t.status === 'shipped').sort((a, b) => (b.closedAt || '').localeCompare(a.closedAt || ''));
   h.push(html`<h2>Shipped <small>${plural(shipped.length, 'ticket')}, newest first</small></h2><details><summary>Show all ${shipped.length}</summary>`
     + html`<div class="tw"><table><thead><tr><th>Ticket</th><th>Title</th><th>PR</th><th>Wave</th><th>Closed</th></tr></thead><tbody>${shipped.map((t) => {
       const merged = prLinks(t, ['merged']);
-      return html`<tr><td class="n">${link(t.ref)}</td><td>${t.title}</td><td class="n">${merged.length ? list(merged, ' ') : html`<span class="meta">—</span>`}</td><td class="n">${t.shippedWave || ''}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`;
+      return html`<tr><td class="n">${link(t.ref)}</td><td>${t.title}${t.outside ? html` <span class="owner">outside this run</span>` : ''}</td><td class="n">${merged.length ? list(merged, ' ') : html`<span class="meta">—</span>`}</td><td class="n">${t.shippedWave || ''}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`;
     })}</tbody></table></div></details>`);
   for (const g of v.before || []) {
     h.push(html`<details><summary>Shipped before this run: ${link(g.ref, null, g.url)} — ${g.title} `
@@ -195,9 +202,9 @@ function milestoneTable(v, byRef, link) {
   const state = (m) => {
     if (m.state === 'reached') return html`Reached ${formatPacific(m.closedAt)}`;
     if (m.state === 'unorderable') return html`Can't be ordered`;
-    const out = m.outside.length ? html`waits on outside ${list(m.outside.map((r) => link(r)), ', ')}` : '';
-    const count = m.before ? `${plural(m.before, 'open ticket')} before it` : out ? '' : 'nothing open before it';
-    return html`${m.next ? 'Next up: ' : ''}${count}${count && out ? '; ' : ''}${out}`;
+    const n = m.before + m.outside.length; // the required tickets before it, the run's and the outside ones (issue #522)
+    const split = m.outside.length ? html`: ${m.before} in this run, ${m.outside.length} outside it (${list(m.outside.map((r) => link(r)), ', ')})` : '';
+    return html`${m.next ? 'Next up: ' : ''}${n ? html`${plural(n, 'open ticket')} before it${split}` : 'nothing open before it'}`;
   };
   const wave = (m) => (m.state === 'reached' ? (m.wave?.label ? `shipped in wave ${m.wave.label}` : '—')
     : !m.wave ? '—' : m.wave.label === null ? 'Yours' : `Wave ${m.wave.label}${m.wave.now ? ' · building now' : ''}`);
@@ -232,15 +239,16 @@ function roadAhead(v, byRef, display, link, gates, badge) {
     const outside = mine.length < row.length ? ' + outside' : '';
     return labels.length ? waveSpan(labels) + yours + outside : mine.length ? `yours${outside}` : 'outside this run';
   };
-  // Every open ticket of the run, the unorderable ones too, so the count agrees with the callout above; the open blockers
-  // outside the run are counted apart, so neither number includes the other.
+  // Every open required ticket: the run's, the unorderable ones too so the count agrees with the callout above, and the
+  // open ones outside the run it waits on (issue #522), which the total includes and the summary names apart.
   const placed = g.steps.flat();
-  const count = placed.filter((r) => !g.outside.has(r)).length;
-  const beyond = placed.length - count;
-  const plus = beyond ? `; plus ${plural(beyond, 'open blocker')} outside this run` : '';
-  const left = g.unorderable.size
-    ? html`${plural(count + g.unorderable.size, 'ticket')} left: ${count} in ${plural(rows.length, 'step')}, ${g.unorderable.size} can't be ordered${plus}.`
-    : html`${plural(count, 'ticket')} left, in ${plural(rows.length, 'step')}${plus}.`;
+  const beyond = placed.filter((r) => g.outside.has(r)).length;
+  const mine = placed.length - beyond + g.unorderable.size;
+  const all = plural(mine + beyond, 'ticket');
+  const steps = plural(rows.length, 'step');
+  const where = g.unorderable.size ? html`${placed.length} in ${steps}, ${g.unorderable.size} can't be ordered` : `in ${steps}`;
+  const left = !beyond ? html`${all} left${g.unorderable.size ? ': ' : ', '}${where}.`
+    : html`${all} left: ${mine} in this run, ${beyond} outside it; ${where}.`;
   const runDesc = (r) => [...g.descendants.get(r)].filter((d) => !g.outside.has(d)).length; // only our tickets count as unblocked
   const outsideInChain = g.chain.filter((r) => g.outside.has(r)).length;
   const split = outsideInChain ? `: ${g.chain.length - outsideInChain} in this run, ${outsideInChain} outside` : '';
