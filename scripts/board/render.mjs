@@ -124,7 +124,7 @@ export function renderBoard(v) {
     if (!o) return '';
     const home = o.home ? html`${o.home.title} ${link(o.home.ref, null, o.home.url)}` : 'no epic';
     const by = o.run ? `run ${o.run}` : status === 'shipped' ? '' : 'not scheduled';
-    return by ? html`${home} · ${by}` : home;
+    return list([home, by].filter(Boolean), ' · ');
   };
   const prLinks = (t, only) => t.prs.filter((p) => only.includes(p.state))
     .map((p) => html`<a class="pr pr-${p.state}" href="${p.url}" title="${p.state}">#${p.number}</a>`);
