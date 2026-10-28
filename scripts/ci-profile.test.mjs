@@ -15,6 +15,7 @@ const REGISTERED = 'jakebromberg/code-audit-pipeline';
 // GraphQL answers as recorded (see lib/ci-profile.test.mjs): an executable scripts/ci on the default branch, and a
 // missing one, which gh exits 1 on.
 const branch = (file) => ({ data: { repository: { defaultBranchRef: { name: 'main', target: { file } } } } });
+const MISSING_STDOUT = JSON.stringify(branch(null));
 const FILE = JSON.stringify(branch({ mode: 0o100755, type: 'blob' }));
 const MISSING = graphqlFailure({ ...branch(null), errors: [{ type: 'NOT_FOUND', path: ['repository', 'defaultBranchRef', 'target', 'file'], message: "Could not resolve file for path 'scripts/ci'." }] });
 
@@ -64,7 +65,7 @@ test("prints a registry entry's host, so a spec's repos map carries it to emit-c
 });
 
 test('the Backend-Service profile runs typecheck:tests and the dummy-env audit-coverage check right after typecheck, as test.yml does', async () => {
-  const { 'WXYC/Backend-Service': { commands } } = await reposMap(['WXYC/Backend-Service']);
+  const commands = await backendServiceCommands();
   const at = commands.indexOf('npm run typecheck');
   assert.notEqual(at, -1);
   assert.deepEqual(commands.slice(at + 1, at + 3), [
@@ -72,3 +73,21 @@ test('the Backend-Service profile runs typecheck:tests and the dummy-env audit-c
     'NODE_ENV=test DB_HOST=localhost DB_NAME=dummy DB_USERNAME=dummy DB_PASSWORD=dummy npm run check:audit-coverage:ci',
   ]);
 });
+
+test('the Backend-Service profile lints the changed files, never the whole repo, and does not skip a missing script', async () => {
+  const commands = await backendServiceCommands();
+  assert.ok(commands.includes('npm run lint:changed'));
+  assert.ok(!commands.some((c) => /^npm run lint( |$)/.test(c) || /eslint \./.test(c)));
+  assert.ok(!commands.some((c) => c.includes('--if-present')));
+});
+
+/** The Backend-Service commands from the real registry, with a stub gh so a lost entry cannot reach GitHub. */
+async function backendServiceCommands() {
+  const dir = mkdtempSync(join(tmpdir(), 'ci-profile-'));
+  const saved = process.env.PATH;
+  try {
+    process.env.PATH = `${ghStubBin(dir, { stdout: MISSING_STDOUT })}:${saved}`;
+    const { 'WXYC/Backend-Service': { commands } } = await reposMap(['WXYC/Backend-Service']);
+    return commands;
+  } finally { process.env.PATH = saved; rmSync(dir, { recursive: true, force: true }); }
+}
