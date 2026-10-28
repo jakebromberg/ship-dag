@@ -30,7 +30,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchSpec as planWavesFetchSpec } from './plan-waves.mjs';
 import { renderBoard } from './board/render.mjs';
-import { buildGraph, classify, makeRepoLabel, makeShortRef, milestones, projectWaves, shippedBefore } from './board/model.mjs';
+import { buildGraph, classify, closedKind, makeRepoLabel, makeShortRef, milestones, projectWaves, shippedBefore } from './board/model.mjs';
 import { fetchPredecessors } from './board/predecessors.mjs';
 import { readBoard, readJson, readNotes, readRetros, resolveRun, runBaseDir, runWaves } from './board/run.mjs';
 import { deriveStage, readFamily } from './board/stage.mjs';
@@ -50,7 +50,7 @@ const BATCH = 40; // refs per GraphQL query
 /** The closure's safety cap: at most this many lookup rounds, round 0 (the run's own refs) included, so a chain of up to 99 outside blockers is read whole. */
 export const CLOSURE_CAP = 100;
 const FIELDS = 'number title url state stateReason createdAt closedAt labels(first:100){nodes{name}} closedByPullRequestsReferences(first:20,includeClosedPrs:true){nodes{number url state}} '
-  + 'blockedBy(first:50){nodes{number state repository{nameWithOwner}}}';
+  + 'blockedBy(first:50){nodes{number state stateReason closedAt repository{nameWithOwner}}}';
 
 const SCRIPT = fileURLToPath(import.meta.url);
 
@@ -152,6 +152,12 @@ function outsideAncestors(from, edges, run, info, state) {
   return [...found];
 }
 
+/** An issue's closing PRs, their states lower-cased. */
+const prsOf = (issue) => issue.closedByPullRequestsReferences.nodes.map((p) => ({ ...p, state: p.state.toLowerCase() }));
+
+/** Whether a ticket closed as shipped (not without shipping) at or after `startedAt` (epoch ms): a null `closedAt` never is. */
+const shippedSince = ({ state, stateReason, closedAt }, startedAt) => state === 'CLOSED' && closedKind(stateReason) === 'shipped' && closedAt != null && Date.parse(closedAt) >= startedAt;
+
 /** Everything `render` reads, the tickets' GitHub state included, turned into `renderBoard`'s input. */
 async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const waves = runWaves({ runId: run.runId, runDir: dir }, { warn, dirs });
@@ -178,16 +184,23 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const wanted = [...new Set([...(spec.members ?? [...nodes, ...(spec.done ?? [])]), ...nodes, ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? []),
     ...(spec.edges ?? []).flatMap((e) => [e.blocked, e.blockedBy]), ...(epic ? [epic] : [])])];
 
+  // The run's tickets are the roots of the required set (issue #522): the closure reads the blockers of a root or of an open
+  // ticket, and nothing behind a closed ticket that is not a root, so a closed outside ticket is a leaf.
+  const roots = new Set([...(spec.members ?? [...nodes, ...(spec.done ?? [])]), ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? [])]);
+  const startedAt = Date.parse(board.startedAt);
   const info = new Map(); // ref → the issue GitHub returned
   const state = new Map(); // ref → OPEN | CLOSED, also for a blocker no one has looked up
   const native = []; // GitHub's own blockedBy edges
   const known = new Map(); // a transferred issue's new ref → the ref the run knows it by
   const canon = (ref) => known.get(refKey(ref)) ?? ref; // the one name the board uses for an issue
-  // Only an open ticket's open blockers can be drawn, so the closure follows those alone: never a closed ticket's, nor the
-  // epic's, which blocks nothing in the run.
+  // The closure reads an open ticket's open blockers (only those can be drawn) and its closed ones that shipped since the
+  // run started, and a shipped run ticket's closed ones; nothing behind a closed outside ticket, a dropped ticket or the
+  // epic, which blocks nothing in the run, so a closed outside ticket is a leaf.
   let todo = wanted;
   for (let round = 0; todo.length; round += 1) {
-    if (round >= CLOSURE_CAP) { warn(`closure hit its safety cap of ${CLOSURE_CAP} rounds; ${todo.length} open blocker${todo.length === 1 ? '' : 's'} unread`); break; }
+    const open = todo.filter((ref) => state.get(ref) === 'OPEN').length;
+    // Past the cap only closed leaves are read, and they queue nothing, so the loop still ends.
+    if (round >= CLOSURE_CAP && open) { warn(`closure hit its safety cap of ${CLOSURE_CAP} rounds; ${open} open blocker${open === 1 ? '' : 's'} unread`); break; }
     const found = await lookup(todo, deps, moved);
     for (const [ref, issue] of found) {
       info.set(ref, issue);
@@ -196,13 +209,14 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     }
     const next = new Set(); // the next round's refs: blockers this round queued that no round has read
     for (const [ref, issue] of found) {
-      const follow = issue.state === 'OPEN' && ref !== epic;
+      const open = issue.state === 'OPEN';
+      const follow = open ? ref !== epic : roots.has(ref) && closedKind(issue.stateReason) === 'shipped';
       for (const b of issue.blockedBy.nodes) {
         const at = formatRef(b.repository.nameWithOwner, b.number);
         const blocker = canon(at); // GitHub names a moved blocker by its new ref
         native.push({ blocked: ref, blockedBy: blocker });
         if (!state.has(blocker)) state.set(blocker, b.state);
-        if (follow && b.state === 'OPEN' && !info.has(blocker)) next.add(blocker);
+        if (follow && !info.has(blocker) && (b.state === 'OPEN' ? open : shippedSince(b, startedAt))) next.add(blocker);
       }
     }
     todo = [...next];
@@ -211,7 +225,6 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   // The spec may name a transferred issue by its new ref while the waves name it by its old one: the board uses the old.
   const members = (spec.members ?? [...nodes, ...(spec.done ?? [])]).map(canon);
   const edges = (spec.edges ?? []).map((e) => ({ blocked: canon(e.blocked), blockedBy: canon(e.blockedBy) }));
-  const startedAt = Date.parse(board.startedAt);
   const dropped = (ref) => board.issueSet?.label && info.get(ref).state === 'CLOSED' && Date.parse(info.get(ref).closedAt) < startedAt;
   const refs = [...new Set([...members.filter((r) => !dropped(r)), ...waves.flatMap((w) => w.refs), ...retro, ...(notes.extraRefs ?? [])].map(canon))];
   const allEdges = [...edges, ...native];
@@ -219,7 +232,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const latest = new Map(waves.flatMap((w) => w.refs.map((ref) => [ref, w]))); // oldest first, so the newest wave wins
   const tickets = refs.map((ref) => {
     const issue = info.get(ref);
-    const prs = issue.closedByPullRequestsReferences.nodes.map((p) => ({ ...p, state: p.state.toLowerCase() }));
+    const prs = prsOf(issue);
     const open = prs.find((p) => p.state === 'open');
     const item = notes.items?.[ref] ?? {};
     const status = classify({
@@ -241,14 +254,21 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   // The open issues outside the run that open run tickets wait on, as far as the closure read them, are drawn as nodes of
   // their own; one with no orderable run ticket behind it (it sits in a cycle, or its dependents wait on an unread blocker
   // too) would be an orphan, so the graph is rebuilt without it. `descendants` is transitive, so one pass is enough.
-  let outside = outsideAncestors(openRefs, allEdges, new Set(refs), info, state);
+  const runSet = new Set(refs);
+  let outside = outsideAncestors(openRefs, allEdges, runSet, info, state);
   let graph = buildGraph(openRefs, allEdges, closedRefs, { outside });
   const placed = outside.filter((r) => [...(graph.descendants.get(r) ?? [])].some((d) => !graph.outside.has(d)));
   if (placed.length < outside.length) {
     outside = placed;
     graph = buildGraph(openRefs, allEdges, closedRefs, { outside });
   }
-  const outsideTickets = outside.map((ref) => ({ ref, title: info.get(ref).title, url: info.get(ref).url }));
+  // A closed outside ticket that shipped since the run started, and that a placed open ticket or a shipped run ticket waits
+  // on, is required work already done (issue #522). It is a leaf: only tickets the closure read count.
+  const live = new Set([...openRefs, ...outside, ...tickets.filter((t) => t.status === 'shipped').map((t) => t.ref)]);
+  const done = [...new Set(allEdges.filter((e) => live.has(e.blocked)).map((e) => e.blockedBy))]
+    .filter((ref) => !runSet.has(ref) && info.has(ref) && shippedSince(info.get(ref), startedAt));
+  const outsideTickets = [...outside.map((ref) => ({ ref, status: 'outside' })), ...done.map((ref) => ({ ref, status: 'shipped', closedAt: info.get(ref).closedAt }))]
+    .map((t) => ({ ...t, title: info.get(t.ref).title, url: info.get(t.ref).url, prs: prsOf(info.get(t.ref)) }));
   const named = notes.milestones;
   if (named !== undefined && named !== null && (typeof named !== 'object' || Array.isArray(named))) {
     warn('board-notes milestones must be an object of ref to name (or false); it is ignored');
@@ -259,8 +279,9 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   }
   const newest = waves[waves.length - 1];
   const current = { id: newest.id, refs: new Set(newest.refs) };
-  const before = shippedBefore(await walk, refs); // only the run's own tickets: a closed blocker outside them still shipped before
-  const repos = [...refs, ...outside, ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
+  // The run's own tickets and the outside ones it counts (issue #522) are left out: any other closed blocker still shipped before.
+  const before = shippedBefore(await walk, [...refs, ...done]);
+  const repos = [...refs, ...outside, ...done, ...before.flatMap((g) => [g.ref, ...g.shipped.map((l) => l.ref)])].map((ref) => asRef(ref).repo);
   const shortRef = makeShortRef(repos, board.abbreviations);
   const scope = epic ? { url: info.get(epic).url, label: shortRef(epic), title: info.get(epic).title }
     : board.issueSet?.label ? { url: `https://github.com/${board.issueSet.repo}/issues?q=label%3A${encodeURIComponent(board.issueSet.label)}`, label: board.issueSet.label, title: board.issueSet.repo } : null;

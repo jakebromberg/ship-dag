@@ -98,3 +98,4 @@ details summary{cursor:pointer;color:var(--ink2);margin:8px 0}footer{margin-top:
 .ms-next{color:var(--ms);background:var(--ms-bg);margin-left:8px}.ms-row.next td{font-weight:600}
 .node.mpath{outline:2px dashed var(--ms);outline-offset:2px}.path.ms-road a{border-color:var(--ms)}
 .dag path.ms{stroke:var(--ms);stroke-opacity:.85;stroke-width:2.2;stroke-dasharray:5 3}.dag path.ms.crit{stroke:var(--accent);stroke-dasharray:none}
+.owner{color:var(--muted);font-size:12.5px;margin-left:6px}

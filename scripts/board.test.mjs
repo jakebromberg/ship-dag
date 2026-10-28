@@ -35,7 +35,8 @@ function setUp({ files = {}, siblings = {}, reviews = [] } = {}) {
 const WIRE = /repository\(owner:"([^"]+)",name:"([^"]+)"\)\{issue\(number:(\d+)\)/g;
 
 /**
- * A fake `gh api graphql` over `table` (ref → `{state, stateReason, closedAt, prs, blockers}`, a blocker being a ref;
+ * A fake `gh api graphql` over `table` (ref → `{state, stateReason, closedAt, prs, blockers}`, a blocker being a ref whose
+ * `blockedBy` node carries its row's state, stateReason and closedAt;
  * `{missing: true}` for an issue GitHub does not have, or `{missing: 410}` for a deleted one (403: one the token cannot read); `{moved: ref}` for one
  * transferred to `ref`; `{pull: true}` for a number that is a pull request): answers each aliased lookup as gh 2.102.0
  * does (`graphqlAnswer`: a NOT_FOUND alias makes gh exit 1 with the body on stdout), answers the REST
@@ -78,7 +79,7 @@ function fakeGh(table) {
         stateReason: row.stateReason ?? null, closedAt: row.closedAt ?? null, ...(row.createdAt && { createdAt: row.createdAt }),
         ...(row.labels && { labels: { nodes: row.labels.map((name) => ({ name })) } }),
         closedByPullRequestsReferences: { nodes: (row.prs ?? []).map((p) => ({ url: `https://github.com/${repo}/pull/${p.number}`, ...p })) },
-        blockedBy: { nodes: (row.blockers ?? []).map((b) => ({ number: parseRef(b).number, state: stateOf(b), repository: { nameWithOwner: parseRef(b).repo } })) },
+        blockedBy: { nodes: (row.blockers ?? []).map((b) => ({ number: parseRef(b).number, state: stateOf(b), stateReason: table[b]?.stateReason ?? null, closedAt: table[b]?.closedAt ?? null, repository: { nameWithOwner: parseRef(b).repo } })) },
       } }];
     }));
     return graphqlAnswer(errors.length ? { data, errors } : { data });
@@ -94,6 +95,8 @@ async function run(argv, { env, dir, runGh = async () => { throw new Error('no g
   return { code, err, html: existsSync(path) ? readFileSync(path, 'utf8') : null };
 }
 
+const BEFORE_RUN = '2026-10-08T11:00:00.000Z'; // before STARTED
+const DURING_RUN = '2026-10-08T14:00:00.000Z'; // after STARTED, before NOW
 const TABLE = { [R(1)]: {}, [R(2)]: {}, [R(9)]: { state: 'CLOSED', closedAt: '2026-10-08T13:00:00.000Z' } };
 
 test('render writes board.html beside board.json; a closed member with no edges counts as shipped, and nodes ∪ done are the members', async () => {
@@ -124,9 +127,9 @@ test('lookups go 40 refs to a query', async () => {
   assert.deepEqual(gh.calls.map((c) => c.length), [40, 40, 7]); // the 85 nodes and the wave's refs 1 and 2
 });
 
-test('an open blocker outside the set is looked up in a closure round, a closed one is not, and its dependent is drawn in a step', async () => {
+test('an open blocker outside the set is looked up in a closure round, a closed one that shipped before the run is not, and its dependent is drawn in a step', async () => {
   const s = setUp();
-  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7), R(8)] }, [R(7)]: { blockers: [R(6)] }, [R(6)]: { state: 'CLOSED' }, [R(8)]: { state: 'CLOSED' } });
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7), R(8)] }, [R(7)]: { blockers: [R(6)] }, [R(6)]: { state: 'CLOSED' }, [R(8)]: { state: 'CLOSED', closedAt: BEFORE_RUN } });
   const { code, html } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
   assert.equal(code, 0);
   assert.deepEqual(gh.calls.map((c) => c.sort()), [[R(1), R(2), R(9)], [R(7)]]);
@@ -134,14 +137,15 @@ test('an open blocker outside the set is looked up in a closure round, a closed 
   assert.match(html, /<div class="node s-outside[ "][^>]*data-ref="o\/r#7"/);
 });
 
-// The outside blocker the closure read is drawn, counted apart from the run's tickets, and left out of their counts (issue #515).
-test('an outside blocker is a node of its own, and the run\'s counts leave it out (issue #515)', async () => {
+// The outside blocker the closure read is drawn, and counted in the required set beside the run's tickets (issues #515, #522).
+test('an outside blocker is a node of its own, counted in the totals beside the run\'s tickets (issues #515, #522)', async () => {
   const s = setUp();
   const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)] }, [R(7)]: {} });
   const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
   assert.equal(code, 0, err.join('\n'));
-  assert.match(html, /<b>2 tickets left, in 2 steps; plus 1 open blocker outside this run\.<\/b>/);
-  assert.match(html, /<b>1\/3<\/b><span>shipped<\/span>/, 'the headline counts the run\'s three tickets');
+  assert.match(html, /<b>3 tickets left: 2 in this run, 1 outside it; in 2 steps\.<\/b>/, 'the summary counts the required set (issue #522)');
+  assert.match(html, /<b>1\/4<\/b><span>shipped<\/span>/, 'the headline counts the run\'s three tickets and the one outside (issue #522)');
+  assert.match(html, /<b>1<\/b><span>open outside this run<\/span>/);
   assert.ok(err.some((m) => m.endsWith('(3 tickets)')), err.join('\n'));
   assert.match(html, /<div class="t" title="Title 7">Title 7<\/div>/, 'the node shows the title the closure read');
 });
@@ -212,6 +216,91 @@ for (const [name, depth, warns] of [['a chain of 99 reads whole, silently', CLOS
     assert.deepEqual(cap, warns ? [`[board] closure hit its safety cap of ${CLOSURE_CAP} rounds; 1 open blocker unread`] : []);
   });
 }
+
+// ---- the required set: closed outside blockers (issue #522) ----
+
+/** The Shipped section's table body. */
+const shippedRows = (html) => html.slice(html.indexOf('<h2>Shipped'), html.indexOf('</details>', html.indexOf('<h2>Shipped')));
+
+for (const [name, row, counted] of [
+  ['one closed after the run started counts as shipped, marked outside', { state: 'CLOSED', closedAt: DURING_RUN }, true],
+  ['one closed before the run started is history, and is not read', { state: 'CLOSED', closedAt: BEFORE_RUN }, false],
+  ['one closed without shipping after the run started is not counted, and is not read', { state: 'CLOSED', stateReason: 'NOT_PLANNED', closedAt: DURING_RUN }, false],
+  ['one closed with no closedAt is not counted, and is not read', { state: 'CLOSED' }, false],
+]) {
+  test(`a closed outside blocker of an open run ticket: ${name} (issue #522)`, async () => {
+    const s = setUp();
+    const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(8)] }, [R(8)]: row });
+    const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+    assert.equal(code, 0, err.join('\n'));
+    assert.deepEqual(gh.calls.map((c) => c.sort()), counted ? [[R(1), R(2), R(9)], [R(8)]] : [[R(1), R(2), R(9)]]);
+    assert.match(html, counted ? /<b>2\/4<\/b><span>shipped<\/span>/ : /<b>1\/3<\/b><span>shipped<\/span>/);
+    const rows = shippedRows(html);
+    assert.equal(rows.includes('issues/8"'), counted, rows);
+    if (counted) assert.match(rows, /Title 8 <span class="owner">outside this run<\/span>/);
+    assert.match(html, counted ? /<h2>Shipped <small>2 tickets, newest first/ : /<h2>Shipped <small>1 ticket, newest first/);
+  });
+}
+
+for (const [name, when, counted] of [['after', DURING_RUN, true], ['before', BEFORE_RUN, false]]) {
+  test(`a closed outside blocker named by a spec edge is read in round 0, and counts only when it closed ${name} the run started (issue #522)`, async () => {
+    const s = setUp({ files: { 'dag.json': { ...SPEC, edges: [...SPEC.edges, { blocked: R(2), blockedBy: R(8) }] } } });
+    const gh = fakeGh({ ...TABLE, [R(8)]: { state: 'CLOSED', closedAt: when } });
+    const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+    assert.equal(code, 0, err.join('\n'));
+    assert.equal(gh.calls.length, 1);
+    assert.match(html, counted ? /<b>2\/4<\/b>/ : /<b>1\/3<\/b>/);
+  });
+}
+
+test('a closed outside ticket is a leaf: its own blockers, open or closed, are never read (issue #522)', async () => {
+  const s = setUp({ files: { 'dag.json': { ...SPEC, edges: [...SPEC.edges, { blocked: R(2), blockedBy: R(31) }] } } });
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(8)] }, [R(8)]: { state: 'CLOSED', closedAt: DURING_RUN, blockers: [R(30), R(32)] }, [R(30)]: {},
+    [R(31)]: { state: 'CLOSED', closedAt: DURING_RUN, blockers: [R(33)] }, [R(32)]: { state: 'CLOSED', closedAt: DURING_RUN }, [R(33)]: {} });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  for (const ref of [R(30), R(32), R(33)]) assert.ok(!gh.calls.flat().includes(ref), `${ref} is read: ${JSON.stringify(gh.calls)}`);
+  assert.doesNotMatch(html, /data-ref="o\/r#3[03]"/);
+  assert.match(html, /<b>3\/5<\/b>/, 'r#9, and the leaves r#8 and r#31');
+});
+
+test('a shipped run ticket\'s closed outside blocker, closed after the run started, counts too (issue #522)', async () => {
+  const s = setUp();
+  const gh = fakeGh({ ...TABLE, [R(9)]: { ...TABLE[R(9)], blockers: [R(8)] }, [R(8)]: { state: 'CLOSED', closedAt: DURING_RUN } });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(html, /<b>2\/4<\/b>/);
+});
+
+test('a closed outside blocker of an open outside ticket counts; one behind an outside ticket the board cannot place does not (issue #522)', async () => {
+  const s = setUp({ files: { 'dag.json': { ...SPEC, edges: [] } } }); // r#2 must not wait on r#1, whose cycle with r#40 leaves it unorderable
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)] }, [R(7)]: { blockers: [R(8)] }, [R(8)]: { state: 'CLOSED', closedAt: DURING_RUN },
+    [R(1)]: { blockers: [R(40)] }, [R(40)]: { blockers: [R(1), R(41)] }, [R(41)]: { state: 'CLOSED', closedAt: DURING_RUN } });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.ok(shippedRows(html).includes('issues/8"'));
+  assert.ok(!shippedRows(html).includes('issues/41"'), 'r#40 sits in a cycle with r#1, so it is not drawn, and its leaf is not counted');
+});
+
+test('the closure reads a closed leaf past the cap\'s last open level without warning (issue #522)', async () => {
+  const s = setUp({ files: { 'dag.json': { nodes: [{ ref: R(1) }], edges: [], done: [] } } });
+  const rows = chain(10, CLOSURE_CAP - 1);
+  rows[R(10 + CLOSURE_CAP - 2)] = { blockers: [R(500)] };
+  const gh = fakeGh({ ...TABLE, [R(1)]: { blockers: [R(10)] }, ...rows, [R(500)]: { state: 'CLOSED', closedAt: DURING_RUN } });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.ok(!err.some((m) => /closure/.test(m)), err.join('\n'));
+  assert.equal(gh.calls.length, CLOSURE_CAP + 1, 'the leaf takes one round past the cap');
+  assert.ok(shippedRows(html).includes('issues/500"'));
+});
+
+test('a milestone counts the open outside tickets before it beside the run\'s (issue #522)', async () => {
+  const s = setUp();
+  const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)], labels: ['hitl-gate'] }, [R(7)]: {} });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(html, /2 open tickets before it: 1 in this run, 1 outside it \(<a href="https:\/\/github.com\/o\/r\/issues\/7">r#7<\/a>\)/);
+});
 
 for (const [name, issueSet, want] of [
   ['a label run drops a member closed before startedAt', { repo: 'o/r', label: 'wave' }, '1/3'],
@@ -525,6 +614,14 @@ test('render counts a predecessor leaf that blocks a run ticket as shipped befor
   assert.equal(code, 0, err.join('\n'));
   assert.match(html, /<b>3\/5<\/b><span>shipped \(2 before this run\)<\/span>/, '#60 is a closed blocker the board looked up, not one of its tickets');
   assert.equal(html.split('<summary>Shipped before this run').length - 1, 1, 'a predecessor named twice is one section');
+});
+
+test('a predecessor leaf that is also a shipped outside blocker counts once (issue #522)', async () => {
+  const s = setUp({ files: { 'board.json': { ...BOARD, predecessors: [R(50)] } } });
+  const gh = withPredecessors({ ...TABLE, [R(2)]: { blockers: [R(60)] }, [R(60)]: { state: 'CLOSED', closedAt: DURING_RUN } }, { [R(50)]: [{ number: 60, closedAt: DURING_RUN }, { number: 61 }] });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+  assert.equal(code, 0, err.join('\n'));
+  assert.match(html, /<b>3\/5<\/b><span>shipped \(1 before this run\)<\/span>/, 'r#9 and r#60 this run, r#61 before it; r#60 is not also a predecessor leaf');
 });
 
 test('render with a predecessor GitHub does not have, through GraphQL or REST, exits 1 and names it', async () => {
