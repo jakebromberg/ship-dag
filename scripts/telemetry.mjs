@@ -69,6 +69,18 @@ const RETRO_COUNTS = ['proposedRefactors', 'approvedRefactors', 'declinedRefacto
 const RETRO_LISTS = ['filed', 'adjusted', 'declinedTitles'];
 // Metric-specific keys are the producing step's to validate; a measure record stays generic.
 const REQUIRED_MEASURE = ['runId', 'wave', 'repo', 'metric', 'status'];
+// Each closed-set issue key and the values normalizeRecord accepts (null: absent is fine), so `append --help` lists them from here.
+const ISSUE_ENUMS = {
+  complexity: COMPLEXITIES, complexitySource: new Set([...COMPLEXITY_SOURCES, null]), triageStatus: TRIAGE_STATUSES, path: PATHS,
+  finalState: FINAL_STATES, implStatus: IMPL_STATUSES, ciStatus: CI_STATUSES, reviewVerdict: REVIEW_VERDICTS,
+  failureReason: FAILURE_REASONS, skipReason: new Set([SKIP_REASON_DEPENDENCY, null]),
+};
+// Every record key by kind, as references/telemetry-schema.md documents them (a test holds the two equal); `[]` marks a list.
+export const RECORD_KEYS = {
+  issue: { required: REQUIRED, optional: ['implStatus', 'ciStatus', 'reviewVerdict', 'reviewPath', 'failureReason', 'skipReason', 'findings[]', 'bounces', 'hitl', 'pr',
+    'tuningVersion', 'tokens', 'cost', 'complexitySource', 'assignment', 'effort', 'effortSource', 'model', 'policySource', 'pressureOverride', 'reportId', 'ran', 'ts'] },
+  retro: { required: REQUIRED_RETRO, optional: [...RETRO_COUNTS, ...RETRO_LISTS, 'filedById', 'tokens', 'ts'] },
+};
 
 /** Resolve the telemetry log path from the environment (see module header). */
 export function telemetryPath(env = process.env) {
@@ -102,24 +114,11 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
   for (const k of REQUIRED) {
     if (rec[k] === undefined || rec[k] === null) throw new Error(`missing required key: ${k}`);
   }
-  if (!COMPLEXITIES.has(rec.complexity)) throw new Error(`bad complexity: ${rec.complexity}`);
-  if (rec.complexitySource != null && !COMPLEXITY_SOURCES.has(rec.complexitySource)) throw new Error(`bad complexitySource: ${rec.complexitySource}`);
+  for (const [k, values] of Object.entries(ISSUE_ENUMS)) if (!values.has(rec[k] ?? null)) throw new Error(`bad ${k}: ${rec[k]}`);
   // reportId decides whether two PR-less failures are one event, so only a report stem is let in.
   if (rec.reportId != null && (typeof rec.reportId !== 'string' || !rec.reportId)) throw new Error(`bad reportId: ${JSON.stringify(rec.reportId)}`);
   // ran (the report row's own fact, on a derived record) separates one report's event from the earlier one it re-lists.
   if (rec.ran != null && typeof rec.ran !== 'boolean') throw new Error(`bad ran: ${JSON.stringify(rec.ran)}`);
-  if (!PATHS.has(rec.path)) throw new Error(`bad path: ${rec.path}`);
-  if (!FINAL_STATES.has(rec.finalState)) throw new Error(`bad finalState: ${rec.finalState}`);
-  const implStatus = rec.implStatus ?? null;
-  if (!IMPL_STATUSES.has(implStatus)) throw new Error(`bad implStatus: ${rec.implStatus}`);
-  const reviewVerdict = rec.reviewVerdict ?? null;
-  if (!REVIEW_VERDICTS.has(reviewVerdict)) throw new Error(`bad reviewVerdict: ${rec.reviewVerdict}`);
-  if (!TRIAGE_STATUSES.has(rec.triageStatus)) throw new Error(`bad triageStatus: ${rec.triageStatus}`);
-  const ciStatus = rec.ciStatus ?? null;
-  if (!CI_STATUSES.has(ciStatus)) throw new Error(`bad ciStatus: ${rec.ciStatus}`);
-  const failureReason = rec.failureReason ?? null;
-  if (!FAILURE_REASONS.has(failureReason)) throw new Error(`bad failureReason: ${rec.failureReason}`);
-  if (rec.skipReason != null && rec.skipReason !== SKIP_REASON_DEPENDENCY) throw new Error(`bad skipReason: ${JSON.stringify(rec.skipReason)}`);
   if (rec.findings != null && !Array.isArray(rec.findings)) throw new Error(`bad findings: not an array: ${JSON.stringify(rec.findings)}`);
   const badFinding = (rec.findings ?? []).findIndex((f) => typeof f !== 'string' && !isFindingObject(f));
   if (badFinding >= 0) throw new Error(`bad findings: entry ${badFinding} is ${JSON.stringify(rec.findings[badFinding])}`);
@@ -128,10 +127,10 @@ export function normalizeRecord(rec, now = () => new Date().toISOString()) {
     ...rec,
     kind: 'issue',
     ts: rec.ts || now(),
-    implStatus,
-    ciStatus,
-    reviewVerdict,
-    failureReason,
+    implStatus: rec.implStatus ?? null,
+    ciStatus: rec.ciStatus ?? null,
+    reviewVerdict: rec.reviewVerdict ?? null,
+    failureReason: rec.failureReason ?? null,
     findings: rec.findings ?? [],
     bounces: rec.bounces ?? 0,
     hitl: { pointA: !!(rec.hitl && rec.hitl.pointA), pointB: !!(rec.hitl && rec.hitl.pointB) },
@@ -212,7 +211,11 @@ function normalizeMeasureRecord(rec, now) {
 
 /** Append one validated record as a JSON line; creates the state dir if needed. */
 export function appendRecord(rec, { path = telemetryPath(), now } = {}) {
-  const norm = normalizeRecord(rec, now);
+  return writeRecord(normalizeRecord(rec, now), path);
+}
+
+/** Append an already normalized record as a JSON line; creates the state dir if needed. */
+function writeRecord(norm, path) {
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, `${JSON.stringify(norm)}\n`);
   return norm;
@@ -679,31 +682,32 @@ export const USAGE = {
   half-supplied wave; 3: malformed report, or no run id; 1: anything else.`,
   escapes: `usage: telemetry.mjs escapes [--now ISO]
   Escape rate of merged PRs (revert / bug follow-up within 30 days) by month and tuningVersion, with the
-  strong-citation sub-rate; PRs from the log and the engine state dir's reports and sidecars. Searches
-  GitHub; cache in $SHIP_DAG_ESCAPES_DIR.`,
+  strong-citation sub-rate (strong, strongRate) beside the headline; PRs from the log and the engine state
+  dir's reports and sidecars. Searches GitHub; cache in $SHIP_DAG_ESCAPES_DIR.`,
   audit: `usage: telemetry.mjs audit <runId>
-  Name the waves of a run family whose terminal rows have no record in the log, unreadable reports, and
-  sidecar entries and configs no report matches.`,
+  Name the waves of a run family (every dir under the engine base dir that sameRun the id) whose terminal
+  rows have no record in the log, unreadable reports, and sidecar entries and configs no report matches.`,
   tripwires: `usage: telemetry.mjs tripwires [--escapes <file>] [--now ISO]
-  Evaluate references/tripwires.json against the current tuningVersion's records: tripped, holding,
-  insufficient-data or pending-instrumentation, with past-due review dates. T-escapes reads a saved
-  escapes run (--escapes), never GitHub; T-coverage runs audit per run family.`,
+  Evaluate references/tripwires.json against the current tuningVersion's records (T-retro-approval instead
+  reads the retro records outside that window): tripped, holding, insufficient-data or
+  pending-instrumentation, with past-due review dates. T-escapes reads a saved escapes run (--escapes),
+  never GitHub; T-coverage runs audit per run family.`,
   'run-id': `usage: telemetry.mjs run-id [--label L]
   Print $SHIP_DAG_RUN_ID, else a freshly minted run id.`,
 };
 
+const str = { type: 'string' };
+// Each subcommand's parseArgs options (every one also takes --help / -h), and the one positional it requires, if any.
+const OPTIONS = { report: { since: str, 'min-sample': str }, 'ingest-wave': { outcomes: str }, escapes: { now: str }, tripwires: { escapes: str, now: str }, 'run-id': { label: str } };
+const POSITIONAL = { append: 'record', 'ingest-wave': 'report', audit: 'run id' };
+
 const enumLine = (name, values) => `    ${name}: ${[...values].map((v) => (v === null ? 'null' : v)).join(' | ')}`;
 
-/** append's help: its usage plus the record keys and enum values, rendered from the sets normalizeRecord checks. */
+/** append's help: its usage plus the record keys and enum values, rendered from the tables normalizeRecord checks against. */
 function appendHelp() {
-  return [USAGE.append, '', 'Record keys (references/telemetry-schema.md describes each one):',
-    enumLine('kind', KINDS), '  issue (the default kind)', `    required: ${REQUIRED.join(', ')}`,
-    '    optional: implStatus, ciStatus, reviewVerdict, failureReason, skipReason, findings[], bounces, hitl, tokens, cost, complexitySource, reportId, ran, ts',
-    enumLine('complexity', COMPLEXITIES), enumLine('triageStatus', TRIAGE_STATUSES), enumLine('path', PATHS),
-    enumLine('finalState', FINAL_STATES), enumLine('implStatus', IMPL_STATUSES), enumLine('ciStatus', CI_STATUSES),
-    enumLine('reviewVerdict', REVIEW_VERDICTS), enumLine('failureReason', FAILURE_REASONS),
-    enumLine('skipReason', [SKIP_REASON_DEPENDENCY, null]), enumLine('complexitySource', COMPLEXITY_SOURCES),
-    '  retro', `    required: ${REQUIRED_RETRO.join(', ')}`, `    optional: ${[...RETRO_COUNTS, ...RETRO_LISTS].join(', ')}, filedById, ts`,
+  const keys = (kind) => [`  ${kind}`, ...['required', 'optional'].map((k) => `    ${k}: ${RECORD_KEYS[kind][k].join(', ')}`)];
+  return [USAGE.append, '', 'Record keys (references/telemetry-schema.md describes each one):', enumLine('kind', KINDS),
+    ...keys('issue'), ...Object.entries(ISSUE_ENUMS).map(([k, v]) => enumLine(k, v)), ...keys('retro'),
     '  measure', `    required: ${REQUIRED_MEASURE.join(', ')} (metric-specific keys pass through)`].join('\n');
 }
 
@@ -718,18 +722,28 @@ const ALL_USAGE = Object.values(USAGE).map((u) => u.split('\n')[0]).join('\n');
 
 function main(argv) {
   const [cmd, ...rest] = argv;
-  const isHelp = (a) => a === '--help' || a === '-h';
-  if (isHelp(cmd)) usage(ALL_USAGE);
-  if (Object.hasOwn(USAGE, cmd) && rest.some(isHelp)) usage(cmd === 'append' ? appendHelp() : USAGE[cmd]);
+  if (['--help', '-h'].includes(cmd)) usage(ALL_USAGE);
+  if (!Object.hasOwn(USAGE, cmd)) usage(ALL_USAGE, cmd === undefined ? 'telemetry: no subcommand' : `telemetry: unknown subcommand ${cmd}`);
+  const fail = (message) => usage(USAGE[cmd], `${cmd}: ${message}`);
+  let values, positionals;
+  try {
+    ({ values, positionals } = parseArgs({ args: rest, options: { ...OPTIONS[cmd], help: { type: 'boolean', short: 'h' } }, allowPositionals: true }));
+  } catch (err) {
+    fail(err.message);
+  }
+  if (values.help) usage(cmd === 'append' ? appendHelp() : USAGE[cmd]);
+  const want = POSITIONAL[cmd];
+  if (positionals.length !== (want ? 1 : 0)) fail(want ? `expected one ${want}, got ${positionals.length}` : `unexpected argument ${positionals[0]}`);
+  const now = values.now === undefined ? Date.now() : Date.parse(values.now);
+  if (Number.isNaN(now)) fail('--now requires an ISO timestamp');
   if (cmd === 'append') {
-    if (rest.length !== 1) usage(USAGE.append, `append: expected one record, got ${rest.length}`);
-    let rec;
+    let norm;
     try {
-      rec = normalizeRecord(JSON.parse(readArg(rest[0])));
+      norm = normalizeRecord(JSON.parse(readArg(positionals[0])));
     } catch (err) {
-      usage(USAGE.append, `append: ${err.message} (append --help lists the record keys)`);
+      fail(`${err.message} (append --help lists the record keys)`);
     }
-    const norm = appendRecord(rec, { path: telemetryPath() });
+    writeRecord(norm, telemetryPath());
     const what = norm.kind === 'retro'
       ? `retro (wave ${norm.wave}, ${norm.filed.length} filed)`
       : norm.kind === 'measure'
@@ -739,37 +753,24 @@ function main(argv) {
     return;
   }
   if (cmd === 'report') {
-    let since = null;
-    let minSample = 20;
-    for (let i = 0; i < rest.length; i += 1) {
-      if (rest[i] === '--since') {
-        since = rest[++i];
-        if (!since) { process.stderr.write('--since requires an ISO timestamp\n'); process.exit(2); }
-      }
-      if (rest[i] === '--min-sample') {
-        minSample = Number(rest[++i]);
-        if (!Number.isInteger(minSample) || minSample < 1) { process.stderr.write('--min-sample requires a positive integer\n'); process.exit(2); }
-      }
-    }
+    const minSample = values['min-sample'] === undefined ? 20 : Number(values['min-sample']);
+    if (!Number.isInteger(minSample) || minSample < 1) fail('--min-sample requires a positive integer');
     let records = readRecords(telemetryPath());
-    if (since) records = records.filter((r) => r.ts >= since);
+    if (values.since) records = records.filter((r) => r.ts >= values.since);
     const rep = report(records, { minSample });
     process.stdout.write(`${JSON.stringify(rep, null, 2)}\n`);
     process.stderr.write(`${renderReport(rep)}\n`);
     return;
   }
   if (cmd === 'ingest-wave') {
-    let file, outcomes;
+    let outcomes;
     try {
-      const { values, positionals } = parseArgs({ args: rest, options: { outcomes: { type: 'string' } }, allowPositionals: true });
-      if (positionals.length !== 1) throw new Error(`expected one report, got ${positionals.length}`);
-      [file] = positionals;
       outcomes = values.outcomes === undefined ? {} : JSON.parse(readArg(values.outcomes));
     } catch (err) {
-      usage(USAGE['ingest-wave'], `ingest-wave: ${err.message}`);
+      fail(err.message);
     }
     try {
-      const { records, appended } = ingestWave(file, outcomes);
+      const { records, appended } = ingestWave(positionals[0], outcomes);
       process.stderr.write(`ingest-wave: ${records.length} new record(s), ${appended} appended → ${telemetryPath()}\n`);
     } catch (err) {
       process.stderr.write(`ingest-wave: ${err.message}\n`);
@@ -778,9 +779,6 @@ function main(argv) {
     return;
   }
   if (cmd === 'escapes') {
-    const i = rest.indexOf('--now');
-    const now = i >= 0 ? Date.parse(rest[i + 1]) : Date.now();
-    if (Number.isNaN(now)) { process.stderr.write('--now requires an ISO timestamp\n'); process.exit(2); }
     shipDagPrs(readRecords(telemetryPath()))
       .then((prs) => findEscapes(prs, { now }))
       .then((rows) => process.stdout.write(`${JSON.stringify(escapeReport(rows), null, 2)}\n`))
@@ -788,9 +786,8 @@ function main(argv) {
     return;
   }
   if (cmd === 'audit') {
-    if (rest.length !== 1) usage(USAGE.audit, `audit: expected one run id, got ${rest.length}`);
     try {
-      process.stdout.write(`${JSON.stringify(audit(rest[0]), null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(audit(positionals[0]), null, 2)}\n`);
     } catch (err) {
       process.stderr.write(`audit: ${err.message}\n`);
       process.exit(1);
@@ -798,18 +795,11 @@ function main(argv) {
     return;
   }
   if (cmd === 'tripwires') {
-    let values;
-    try {
-      ({ values } = parseArgs({ args: rest, options: { escapes: { type: 'string' }, now: { type: 'string' } } }));
-      if (values.now !== undefined && Number.isNaN(Date.parse(values.now))) throw new Error('--now requires an ISO timestamp');
-    } catch (err) {
-      usage(USAGE.tripwires, `tripwires: ${err.message}`);
-    }
     try {
       const records = readRecords(telemetryPath());
       const escapes = values.escapes === undefined ? undefined : JSON.parse(readFileSync(values.escapes, 'utf8'));
       const ctx = tripwireContext(records, {
-        version: loadTuning().version, now: values.now === undefined ? Date.now() : Date.parse(values.now), escapes,
+        version: loadTuning().version, now, escapes,
         audit: (runId) => audit(runId, { records, warn: () => {} }),
       });
       process.stdout.write(`${JSON.stringify(evaluateAll(loadTripwires(), ctx), null, 2)}\n`);
@@ -819,12 +809,7 @@ function main(argv) {
     }
     return;
   }
-  if (cmd === 'run-id') {
-    const i = rest.indexOf('--label');
-    process.stdout.write(`${process.env.SHIP_DAG_RUN_ID || mintRunId({ label: i >= 0 ? rest[i + 1] : undefined })}\n`);
-    return;
-  }
-  usage(ALL_USAGE, cmd === undefined ? 'telemetry: no subcommand' : `telemetry: unknown subcommand ${cmd}`);
+  if (cmd === 'run-id') process.stdout.write(`${process.env.SHIP_DAG_RUN_ID || mintRunId({ label: values.label })}\n`);
 }
 
 // Only run the CLI when invoked directly, not when imported by the test.
