@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { docBetween, docLine, docSection } from './lib/doc-pins.mjs';
+import { docBetween, docLine } from './lib/doc-pins.mjs';
 import {
   gateReview,
   parseBlockOn,
@@ -868,19 +868,16 @@ test('the Review block, step 6.2 and the schema still name the merge-order note 
   }
 });
 
-// A merge run spans repos, and a bare `gh` command resolves against the cwd's
-// repo: a bare merge there can hit a same-numbered, already-merged PR and read
-// `already merged`, which looks like success (issue #31). Every `gh` command
-// the main agent runs per PR names its repo (the Review subagent runs inside
-// the PR's checkout, so its bare `gh pr checkout {PR}` is cwd-correct); a bare `gh pr merge` in prose is
-// a mention, not a command.
-test('every gh command step 6, step 4c and the notIngested recovery run per PR names its repo, and the merge says why', () => {
-  const commands = [docSection('### 6. Merge queue'), docLine('**c. Read the report.**'), docLine('- `notIngested`')]
-    .flatMap((text) => text.match(/`gh [^`]*`/g) ?? [])
-    .filter((span) => span.split(' ').length > 3);
-  assert.ok(commands.some((c) => c.startsWith('`gh pr merge')), 'step 6 no longer holds its merge command');
-  for (const c of commands) assert.match(c, /--repo [^-\s]|gh repo view owner\/repo/, `${c} does not name its repo`);
-  assert.match(docLine('3. `gh pr merge'), /already merged/, 'step 6.3 no longer says why the merge names its repo');
+// A run spans repos, and a bare `gh` command resolves against the cwd's repo: a
+// bare merge can hit a same-numbered merged PR and print `already merged`, which
+// looks like success (issue #31). A span with no argument is a prose mention.
+const CWD_CORRECT_GH = '`gh repo view --json nameWithOwner -q .nameWithOwner`'; // setup reads the run's repo from the cwd
+test('every gh command in SKILL.md names its repo except the setup repo lookup, and the merge says why', () => {
+  const skill = readFileSync(new URL('../SKILL.md', import.meta.url), 'utf8');
+  for (const c of skill.match(/`gh [^`\s]+ [^`\s]+ [^`]+`/g)) {
+    if (c !== CWD_CORRECT_GH) assert.match(c, /--repo [^-\s]|gh repo view owner\/repo/, `${c} does not name its repo`);
+  }
+  assert.match(docLine('3. `gh pr merge'), /already merged/, 'step 6 item 3 no longer says why the merge names its repo');
 });
 
 // Step 6.2's escalation is one blunt rule, read from the round files: any
