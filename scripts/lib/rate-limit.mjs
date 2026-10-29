@@ -167,6 +167,9 @@ export function classifyFailureReason(reportRow, transcriptText) {
   return null;
 }
 
+/** Default `waitMaxMinutes` for `preflightDecision`: the whole five-hour window. */
+export const DEFAULT_RESET_WAIT_MAX_MINUTES = 300;
+
 /**
  * The step-4 preflight fork: given the newest known five-hour utilization
  * (possibly absent), decide whether to proceed, wait for the window to
@@ -186,9 +189,7 @@ export function classifyFailureReason(reportRow, transcriptText) {
  *   `hitl` (wait / defer the wave / stop the run).
  * @param {{utilization: number|null, resetsAt: string|null, now?: Date, threshold?: number, waitMaxMinutes?: number}} opts
  */
-export const DEFAULT_WAIT_MAX_MINUTES = 300;
-
-export function preflightDecision({ utilization, resetsAt, now = new Date(), threshold = 0.8, waitMaxMinutes = DEFAULT_WAIT_MAX_MINUTES }) {
+export function preflightDecision({ utilization, resetsAt, now = new Date(), threshold = 0.8, waitMaxMinutes = DEFAULT_RESET_WAIT_MAX_MINUTES }) {
   if (utilization == null) {
     return { action: 'proceed', reason: 'no-utilization-data', utilization: null };
   }
