@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { rmSync, readFileSync, readdirSync, existsSync, appendFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { WaveRefusal, deriveWaveRecords } from './lib/wave-records.mjs';
-import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit, isIssueRecord } from './telemetry.mjs';
+import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit, isIssueRecord, USAGE } from './telemetry.mjs';
 import { artifactStem } from './lib/failure.mjs';
 import { docSection } from './lib/doc-pins.mjs';
 import { writeFailureDigests } from './engine/failure-digest.mjs';
@@ -392,6 +392,58 @@ test('telemetry append CLI: a measure record is confirmed by its run, wave, repo
     rmSync(p, { force: true });
   }
 });
+
+// ---- --help on every subcommand (issue #38) --------------------------------
+
+const telemetryCli = (args, env = {}) => spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), ...args],
+  { env: { ...process.env, SHIP_DAG_TELEMETRY: join(tmpdir(), `ship-dag-tel-help-${process.pid}.jsonl`), ...env }, encoding: 'utf8' });
+
+for (const cmd of Object.keys(USAGE)) {
+  for (const flag of ['--help', '-h']) {
+    test(`telemetry ${cmd} ${flag}: exits 0 with its usage on stdout and writes nothing`, () => {
+      const res = telemetryCli([cmd, flag], { SHIP_DAG_TELEMETRY: join(tmpdir(), 'ship-dag-tel-help-absent', 'runs.jsonl') });
+      assert.equal(res.status, 0, res.stderr);
+      assert.match(res.stdout, new RegExp(`^usage: telemetry\\.mjs ${cmd}\\b`));
+      assert.equal(existsSync(join(tmpdir(), 'ship-dag-tel-help-absent')), false);
+    });
+  }
+}
+
+for (const args of [['--help'], ['-h']]) {
+  test(`telemetry ${args[0]}: exits 0 naming every subcommand`, () => {
+    const res = telemetryCli(args);
+    assert.equal(res.status, 0, res.stderr);
+    for (const cmd of Object.keys(USAGE)) assert.match(res.stdout, new RegExp(`telemetry\\.mjs ${cmd}\\b`));
+  });
+}
+
+test('telemetry append --help: names the required keys of each kind and the enum values append accepts', () => {
+  const { stdout } = telemetryCli(['append', '--help']);
+  for (const key of ['runId', 'repo', 'issue', 'complexity', 'triageStatus', 'path', 'finalState', 'wave', 'mergedPrs', 'metric', 'status']) assert.match(stdout, new RegExp(`\\b${key}\\b`));
+  // Each enum line is rendered from the validation sets: every listed value is accepted, so the help cannot drift from them.
+  for (const field of ['finalState', 'failureReason', 'kind']) {
+    const line = stdout.split('\n').find((l) => l.trim().startsWith(`${field}:`));
+    assert.ok(line, `no ${field} line in:\n${stdout}`);
+    const values = line.split(':')[1].trim().split(' | ').map((v) => (v === 'null' ? null : v));
+    assert.ok(values.length > 1, line);
+    const rec = (v) => (field === 'kind' ? { retro: retroBase(), measure: measureBase(), issue: base({ kind: 'issue' }) }[v] : base({ [field]: v }));
+    for (const v of values) assert.doesNotThrow(() => normalizeRecord(rec(v), FIXED), `${field} ${v}`);
+  }
+});
+
+for (const [name, payload, message] of [
+  ['unparseable JSON', '{nope', /^append: .*JSON/],
+  ['a missing @file', '@/nonexistent/ship-dag-rec.json', /^append: .*ENOENT/],
+  ['a record that fails validation', JSON.stringify(base({ finalState: 'shipped' })), /^append: bad finalState: shipped/],
+]) {
+  test(`telemetry append CLI: ${name} is a usage error (exit 2), not a stack trace`, () => {
+    const res = telemetryCli(['append', payload]);
+    assert.equal(res.status, 2, res.stderr);
+    assert.match(res.stderr, message);
+    assert.match(res.stderr, /usage: telemetry\.mjs append/);
+    assert.doesNotMatch(res.stderr, /\n\s+at /);
+  });
+}
 
 test('normalizeRecord: a retro record\'s filedById round-trips; one without it is unchanged', () => {
   const filedById = { R1: 'WXYC/x#77', P3: ['WXYC/x#78', 'WXYC/y#4'] };
@@ -1933,10 +1985,10 @@ describe('SKILL.md telemetry wiring', () => {
   });
 
   test('documents every telemetry.mjs subcommand the CLI dispatches', () => {
-    // The list comes from the CLI's own usage line, so a new subcommand fails here until SKILL.md documents it.
+    // The list comes from the CLI's own USAGE table, so a new subcommand fails here until SKILL.md documents it.
     const source = readFileSync(fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), 'utf8');
-    const cmds = source.match(/usage: telemetry\.mjs <([\w|-]+)>/)[1].split('|');
-    // ...and the usage line must name exactly the commands main() dispatches, so dropping one from it fails too.
+    const cmds = Object.keys(USAGE);
+    // ...and USAGE must name exactly the commands main() dispatches, so dropping one from it fails too.
     const dispatched = [...source.matchAll(/\bcmd === '([\w-]+)'/g)].map((m) => m[1]);
     assert.deepEqual([...cmds].sort(), [...new Set(dispatched)].sort());
     for (const cmd of cmds) assert.ok(skill.includes(`telemetry.mjs" ${cmd}`), cmd);

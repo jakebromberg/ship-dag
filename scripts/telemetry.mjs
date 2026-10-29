@@ -14,32 +14,8 @@
 // normalizeRecord refuses a bad `skipReason` / `findings` with `bad skipReason` / `bad findings`;
 // readRecords does not normalize, so older rows stay readable.
 //
-// Usage:
-//   node telemetry.mjs append '<json>'      # append one record (validates + stamps ts)
-//   node telemetry.mjs append @rec.json      # ...from a file
-//   node telemetry.mjs append -              # ...from stdin
-//   node telemetry.mjs report [--since ISO] [--min-sample N]
-//                                            # print leading indicators (JSON + table), in total, by complexity and by repo;
-//                                            # a repo under N reached rows (positive integer, default 20, else exit 2) shows its count, no rates
-//   node telemetry.mjs ingest-wave <stateDir>/state/reports/<id>.json [--outcomes <json|@file|->]
-//                                            # append a wave's records, derived from its engine artifacts;
-//                                            # exit 2: bad invocation or --outcomes, or a half-supplied
-//                                            # wave; 3: malformed report, or no run id; 1: anything else
-//   node telemetry.mjs escapes [--now ISO]  # escape rate of merged PRs (revert / bug follow-up within 30 days),
-//                                            # by month and tuningVersion, with the strong-citation sub-rate
-//                                            # (strong, strongRate) beside the headline; PRs from the log and the engine
-//                                            # state dir's reports and sidecars; cache in $SHIP_DAG_ESCAPES_DIR
-//   node telemetry.mjs audit <runId>         # name the waves of a run family (every dir under the engine base dir
-//                                            # that sameRun the id) whose terminal rows have no record in the log,
-//                                            # unreadable reports, and sidecar entries and configs no report matches
-//   node telemetry.mjs tripwires [--escapes <file>] [--now ISO]
-//                                            # evaluate references/tripwires.json against the current tuningVersion's
-//                                            # records (T-retro-approval instead reads the `retro` context field, the
-//                                            # retro records outside that window): tripped, holding, insufficient-data
-//                                            # or pending-instrumentation, with past-due review dates; T-escapes
-//                                            # reads a saved `escapes` run (--escapes), never GitHub, and T-coverage
-//                                            # runs `audit` per run family
-//   node telemetry.mjs run-id [--label L]    # print $SHIP_DAG_RUN_ID, else a freshly minted run id
+// Usage: `node telemetry.mjs [<subcommand>] --help` (or `-h`) prints the USAGE entry below; append's lists the
+// record keys and enum values from the validation sets themselves. A usage error exits 2.
 //
 // Path resolution: $SHIP_DAG_TELEMETRY, else $XDG_STATE_HOME/ship-dag/runs.jsonl,
 // else ~/.local/state/ship-dag/runs.jsonl.
@@ -691,12 +667,69 @@ export function audit(runId, { baseDir = defaultBaseDir(), records = readRecords
   return out;
 }
 
+// One usage entry per subcommand: `--help` prints it and every usage error ends with it.
+export const USAGE = {
+  append: `usage: telemetry.mjs append <json|@file|->
+  Append one record (validated, ts stamped when absent): the JSON itself, @file, or - for stdin.`,
+  report: `usage: telemetry.mjs report [--since ISO] [--min-sample N]
+  Print leading indicators (JSON to stdout, table to stderr), in total, by complexity and by repo; a repo
+  under N reached rows (positive integer, default 20) shows its count, no rates.`,
+  'ingest-wave': `usage: telemetry.mjs ingest-wave <stateDir>/state/reports/<id>.json [--outcomes <json|@file|->]
+  Append a wave's records, derived from its engine artifacts. Exit 2: bad invocation or --outcomes, or a
+  half-supplied wave; 3: malformed report, or no run id; 1: anything else.`,
+  escapes: `usage: telemetry.mjs escapes [--now ISO]
+  Escape rate of merged PRs (revert / bug follow-up within 30 days) by month and tuningVersion, with the
+  strong-citation sub-rate; PRs from the log and the engine state dir's reports and sidecars. Searches
+  GitHub; cache in $SHIP_DAG_ESCAPES_DIR.`,
+  audit: `usage: telemetry.mjs audit <runId>
+  Name the waves of a run family whose terminal rows have no record in the log, unreadable reports, and
+  sidecar entries and configs no report matches.`,
+  tripwires: `usage: telemetry.mjs tripwires [--escapes <file>] [--now ISO]
+  Evaluate references/tripwires.json against the current tuningVersion's records: tripped, holding,
+  insufficient-data or pending-instrumentation, with past-due review dates. T-escapes reads a saved
+  escapes run (--escapes), never GitHub; T-coverage runs audit per run family.`,
+  'run-id': `usage: telemetry.mjs run-id [--label L]
+  Print $SHIP_DAG_RUN_ID, else a freshly minted run id.`,
+};
+
+const enumLine = (name, values) => `    ${name}: ${[...values].map((v) => (v === null ? 'null' : v)).join(' | ')}`;
+
+/** append's help: its usage plus the record keys and enum values, rendered from the sets normalizeRecord checks. */
+function appendHelp() {
+  return [USAGE.append, '', 'Record keys (references/telemetry-schema.md describes each one):',
+    enumLine('kind', KINDS), '  issue (the default kind)', `    required: ${REQUIRED.join(', ')}`,
+    '    optional: implStatus, ciStatus, reviewVerdict, failureReason, skipReason, findings[], bounces, hitl, tokens, cost, complexitySource, reportId, ran, ts',
+    enumLine('complexity', COMPLEXITIES), enumLine('triageStatus', TRIAGE_STATUSES), enumLine('path', PATHS),
+    enumLine('finalState', FINAL_STATES), enumLine('implStatus', IMPL_STATUSES), enumLine('ciStatus', CI_STATUSES),
+    enumLine('reviewVerdict', REVIEW_VERDICTS), enumLine('failureReason', FAILURE_REASONS),
+    enumLine('skipReason', [SKIP_REASON_DEPENDENCY, null]), enumLine('complexitySource', COMPLEXITY_SOURCES),
+    '  retro', `    required: ${REQUIRED_RETRO.join(', ')}`, `    optional: ${[...RETRO_COUNTS, ...RETRO_LISTS].join(', ')}, filedById, ts`,
+    '  measure', `    required: ${REQUIRED_MEASURE.join(', ')} (metric-specific keys pass through)`].join('\n');
+}
+
+/** Print `text` to stdout and exit 0 (an asked-for help), or to stderr after `error` and exit 2 (a usage error). */
+function usage(text, error) {
+  if (error === undefined) { process.stdout.write(`${text}\n`); process.exit(0); }
+  process.stderr.write(`${error}\n${text}\n`);
+  process.exit(2);
+}
+
+const ALL_USAGE = Object.values(USAGE).map((u) => u.split('\n')[0]).join('\n');
+
 function main(argv) {
   const [cmd, ...rest] = argv;
+  const isHelp = (a) => a === '--help' || a === '-h';
+  if (isHelp(cmd)) usage(ALL_USAGE);
+  if (Object.hasOwn(USAGE, cmd) && rest.some(isHelp)) usage(cmd === 'append' ? appendHelp() : USAGE[cmd]);
   if (cmd === 'append') {
-    const src = rest[0];
-    if (!src) { process.stderr.write('usage: append <json|@file|->\n'); process.exit(2); }
-    const norm = appendRecord(JSON.parse(readArg(src)), { path: telemetryPath() });
+    if (rest.length !== 1) usage(USAGE.append, `append: expected one record, got ${rest.length}`);
+    let rec;
+    try {
+      rec = normalizeRecord(JSON.parse(readArg(rest[0])));
+    } catch (err) {
+      usage(USAGE.append, `append: ${err.message} (append --help lists the record keys)`);
+    }
+    const norm = appendRecord(rec, { path: telemetryPath() });
     const what = norm.kind === 'retro'
       ? `retro (wave ${norm.wave}, ${norm.filed.length} filed)`
       : norm.kind === 'measure'
@@ -733,8 +766,7 @@ function main(argv) {
       [file] = positionals;
       outcomes = values.outcomes === undefined ? {} : JSON.parse(readArg(values.outcomes));
     } catch (err) {
-      process.stderr.write(`ingest-wave: ${err.message}\nusage: ingest-wave <report> [--outcomes <json|@file|->]\n`);
-      process.exit(2);
+      usage(USAGE['ingest-wave'], `ingest-wave: ${err.message}`);
     }
     try {
       const { records, appended } = ingestWave(file, outcomes);
@@ -756,7 +788,7 @@ function main(argv) {
     return;
   }
   if (cmd === 'audit') {
-    if (rest.length !== 1) { process.stderr.write('usage: audit <runId>\n'); process.exit(2); }
+    if (rest.length !== 1) usage(USAGE.audit, `audit: expected one run id, got ${rest.length}`);
     try {
       process.stdout.write(`${JSON.stringify(audit(rest[0]), null, 2)}\n`);
     } catch (err) {
@@ -771,8 +803,7 @@ function main(argv) {
       ({ values } = parseArgs({ args: rest, options: { escapes: { type: 'string' }, now: { type: 'string' } } }));
       if (values.now !== undefined && Number.isNaN(Date.parse(values.now))) throw new Error('--now requires an ISO timestamp');
     } catch (err) {
-      process.stderr.write(`tripwires: ${err.message}\nusage: tripwires [--escapes <file>] [--now ISO]\n`);
-      process.exit(2);
+      usage(USAGE.tripwires, `tripwires: ${err.message}`);
     }
     try {
       const records = readRecords(telemetryPath());
@@ -793,8 +824,7 @@ function main(argv) {
     process.stdout.write(`${process.env.SHIP_DAG_RUN_ID || mintRunId({ label: i >= 0 ? rest[i + 1] : undefined })}\n`);
     return;
   }
-  process.stderr.write('usage: telemetry.mjs <append|report|ingest-wave|escapes|audit|tripwires|run-id> ...\n');
-  process.exit(2);
+  usage(ALL_USAGE, cmd === undefined ? 'telemetry: no subcommand' : `telemetry: unknown subcommand ${cmd}`);
 }
 
 // Only run the CLI when invoked directly, not when imported by the test.
