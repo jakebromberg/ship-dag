@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reposMap } from './ci-profile.mjs';
+import { loadProfiles } from './lib/ci-profile.mjs';
 import { ghStubBin, graphqlFailure, restFailure } from './lib/gh-fixture.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-profile.mjs', import.meta.url));
@@ -93,3 +94,27 @@ async function backendServiceCommands() {
     return commands;
   } finally { process.env.PATH = saved; rmSync(dir, { recursive: true, force: true }); }
 }
+
+test("prints a registry entry's localLint, so a spec's repos map carries it to emit-config", async () => {
+  const localLint = { command: 'npm run lint:changed', forbid: ['npm run lint'] };
+  const repos = await reposMap([REGISTERED], { profiles: { [REGISTERED]: { commands: ['npm test'], localLint } } });
+  assert.deepEqual(repos[REGISTERED].localLint, localLint);
+});
+
+test('the Backend-Service profile declares npm run lint:changed as its local lint, equal to the lint in its commands, and forbids every whole-repo lint', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ci-profile-'));
+  const saved = process.env.PATH;
+  try {
+    process.env.PATH = `${ghStubBin(dir, { stdout: MISSING_STDOUT })}:${saved}`;
+    const { 'WXYC/Backend-Service': { commands, localLint } } = await reposMap(['WXYC/Backend-Service']);
+    assert.equal(localLint.command, 'npm run lint:changed');
+    assert.ok(commands.includes(localLint.command));
+    assert.deepEqual(localLint.forbid, ['npm run lint', 'npm run lint:fast', 'npm run lint:fix', 'eslint .']);
+    assert.deepEqual(localLint.forbid.filter((f) => commands.includes(f)), []);
+  } finally { process.env.PATH = saved; rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('only Backend-Service declares a local lint', async () => {
+  const declared = Object.entries(loadProfiles()).filter(([, p]) => p.localLint).map(([repo]) => repo);
+  assert.deepEqual(declared, ['WXYC/Backend-Service']);
+});

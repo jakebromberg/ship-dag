@@ -33,7 +33,7 @@
 //     "wave":           "14b",                       // optional; the wave counter W (a number or a string such as "14b") — recorded in the wave sidecar
 //     "blockOn":        "correctness,security",      // optional; the run's --block-on, as that comma string or an array — recorded (parsed) in the wave sidecar; an unknown category exits 2
 //     "repos": {                                    // per-repo base branch + CI profile: ci-profile.mjs prints this map (its `source` is ignored)
-//       "owner/repo": { "baseBranch": "main", "commands": ["ruff check .", "pytest -q"] }
+//       "owner/repo": { "baseBranch": "main", "commands": ["ruff check .", "pytest -q"], "localLint": { "command": "npm run lint:changed", "forbid": ["npm run lint"] } }   // localLint optional: appended to each of the repo's issue descriptions
 //     },
 //     "issues": [
 //       { "number": 924, "repo": "owner/repo", "title": "...", "complexity": "normal",
@@ -145,6 +145,17 @@ export function withLineBudget(description, sourceEstimate) {
   const n = Number(sourceEstimate);
   if (!Number.isFinite(n) || n <= 0) return description;
   return `${description}\n\nSize budget: about ${Math.round(n)} added lines of production source. Tests, generated data, and docs sit outside the budget — do not trim them to fit. If the change runs more than half again past it, stop at the last green, coherent point and push that.`;
+}
+
+// A repo's local-lint declaration (`localLint: {command, forbid}` in its references/repo-ci-profiles.json entry) rides on
+// the description for the same reason: it is the one channel that reaches the implementer, and step 4 of the implement
+// prompt tells it to follow such a rule. A repo with no declaration (or one without a command) gets its description untouched.
+export function withLocalLint(description, localLint) {
+  const command = typeof localLint?.command === 'string' ? localLint.command.trim() : '';
+  if (!command) return description;
+  const forbid = (localLint.forbid ?? []).map((c) => `\`${c}\``);
+  const never = forbid.length > 0 ? ` Never run ${forbid.length > 1 ? `${forbid.slice(0, -1).join(', ')} or ${forbid.at(-1)}` : forbid[0]}: each lints the whole repo.` : '';
+  return `${description}\n\nLocal lint (binding): for the lint step of local CI, run \`${command}\`, which lints the changed files only.${never}`;
 }
 
 // Triage's `decisions` ride on the description for the same reason: the implementer reads
@@ -294,7 +305,7 @@ export function buildConfig(spec, tuning = loadTuning(), { readRef, warn } = {})
       repo: repoOfIssue(issue, spec),
       dependsOn: [], // every ready-wave issue is independent → one flat parallel wave
       description: withMergedSinceTriage(
-        withLineBudget(withDecisions(issue.digest || 'See the GitHub issue for the canonical spec.', issue.decisions), issue.sourceEstimate),
+        withLocalLint(withLineBudget(withDecisions(issue.digest || 'See the GitHub issue for the canonical spec.', issue.decisions), issue.sourceEstimate), spec.repos?.[repoOfIssue(issue, spec)]?.localLint),
         { texts: [issue.digest ?? '', ...(issue.decisions ?? [])], repo: repoOfIssue(issue, spec), self: number, base: repos[repoOfIssue(issue, spec)].baseBranch, triagedAt: issue.triagedAt, readRef: readOnce, warn },
       ),
     };
