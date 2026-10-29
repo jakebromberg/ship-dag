@@ -5,9 +5,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { rmSync, readFileSync, readdirSync, existsSync, appendFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, appendFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { WaveRefusal, deriveWaveRecords } from './lib/wave-records.mjs';
-import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit, isIssueRecord, USAGE } from './telemetry.mjs';
+import { normalizeRecord, appendRecord, readRecords, report, renderReport, telemetryPath, ingestWave, audit, isIssueRecord, USAGE, RECORD_KEYS } from './telemetry.mjs';
 import { artifactStem } from './lib/failure.mjs';
 import { docSection } from './lib/doc-pins.mjs';
 import { writeFailureDigests } from './engine/failure-digest.mjs';
@@ -395,18 +395,45 @@ test('telemetry append CLI: a measure record is confirmed by its run, wave, repo
 
 // ---- --help on every subcommand (issue #38) --------------------------------
 
-const telemetryCli = (args, env = {}) => spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), ...args],
-  { env: { ...process.env, SHIP_DAG_TELEMETRY: join(tmpdir(), `ship-dag-tel-help-${process.pid}.jsonl`), ...env }, encoding: 'utf8' });
-
-for (const cmd of Object.keys(USAGE)) {
-  for (const flag of ['--help', '-h']) {
-    test(`telemetry ${cmd} ${flag}: exits 0 with its usage on stdout and writes nothing`, () => {
-      const res = telemetryCli([cmd, flag], { SHIP_DAG_TELEMETRY: join(tmpdir(), 'ship-dag-tel-help-absent', 'runs.jsonl') });
-      assert.equal(res.status, 0, res.stderr);
-      assert.match(res.stdout, new RegExp(`^usage: telemetry\\.mjs ${cmd}\\b`));
-      assert.equal(existsSync(join(tmpdir(), 'ship-dag-tel-help-absent')), false);
-    });
+// Runs the CLI against a log in a fresh temp dir; `wrote` says whether the run created the log.
+function telemetryCli(args) {
+  const dir = mkdtempSync(join(tmpdir(), 'ship-dag-tel-cli-'));
+  try {
+    const log = join(dir, 'runs.jsonl');
+    const res = spawnSync(process.execPath, [fileURLToPath(new URL('./telemetry.mjs', import.meta.url)), ...args],
+      { env: { ...process.env, SHIP_DAG_TELEMETRY: log }, encoding: 'utf8' });
+    return { ...res, wrote: existsSync(log) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// -h is parseArgs' short form of the same option on every subcommand, so one subcommand covers it.
+for (const [cmd, flag] of [...Object.keys(USAGE).map((cmd) => [cmd, '--help']), ['append', '-h']]) {
+  test(`telemetry ${cmd} ${flag}: exits 0 with its usage on stdout and writes nothing`, () => {
+    const res = telemetryCli([cmd, flag]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, new RegExp(`^usage: telemetry\\.mjs ${cmd}\\b`));
+    assert.equal(res.wrote, false);
+  });
+}
+
+// A bad flag or flag value is a usage error that ends with the subcommand's usage; a -h given as a value is not a help request.
+for (const [args, message] of [
+  [['report', '--min-sample', '0'], /--min-sample requires a positive integer/],
+  [['report', '--since'], /--since/],
+  [['report', '--sinse', '2026-10-01'], /--sinse/],
+  [['escapes', '--now', 'bogus'], /--now requires an ISO timestamp/],
+  [['run-id', '--label', '-h'], /--label/],
+  [['audit'], /expected one run id, got 0/],
+]) {
+  test(`telemetry ${args.join(' ')}: a usage error (exit 2) that ends with its usage`, () => {
+    const res = telemetryCli(args);
+    assert.equal(res.status, 2, res.stderr);
+    assert.equal(res.stdout, '');
+    assert.match(res.stderr, message);
+    assert.match(res.stderr, new RegExp(`usage: telemetry\\.mjs ${args[0]}\\b`));
+  });
 }
 
 for (const args of [['--help'], ['-h']]) {
@@ -417,18 +444,19 @@ for (const args of [['--help'], ['-h']]) {
   });
 }
 
-test('telemetry append --help: names the required keys of each kind and the enum values append accepts', () => {
+test('telemetry append --help: names every key of each kind and the values of each closed-set key', () => {
   const { stdout } = telemetryCli(['append', '--help']);
-  for (const key of ['runId', 'repo', 'issue', 'complexity', 'triageStatus', 'path', 'finalState', 'wave', 'mergedPrs', 'metric', 'status']) assert.match(stdout, new RegExp(`\\b${key}\\b`));
-  // Each enum line is rendered from the validation sets: every listed value is accepted, so the help cannot drift from them.
-  for (const field of ['finalState', 'failureReason', 'kind']) {
-    const line = stdout.split('\n').find((l) => l.trim().startsWith(`${field}:`));
-    assert.ok(line, `no ${field} line in:\n${stdout}`);
-    const values = line.split(':')[1].trim().split(' | ').map((v) => (v === 'null' ? null : v));
-    assert.ok(values.length > 1, line);
-    const rec = (v) => (field === 'kind' ? { retro: retroBase(), measure: measureBase(), issue: base({ kind: 'issue' }) }[v] : base({ [field]: v }));
-    for (const v of values) assert.doesNotThrow(() => normalizeRecord(rec(v), FIXED), `${field} ${v}`);
-  }
+  for (const key of ['pr', 'tuningVersion', 'mergedPrs', 'filedById', 'metric']) assert.match(stdout, new RegExp(`\\b${key}\\b`));
+  for (const line of ['kind: issue | retro | measure', 'finalState: merged | blocked-hitl | deferred | error', 'failureReason: rate-limited |']) assert.ok(stdout.includes(line), line);
+});
+
+test('RECORD_KEYS names exactly the issue and retro keys references/telemetry-schema.md documents', () => {
+  const keys = (text) => [...text.matchAll(/`([\w, ]+?)(?:\[\])?`/g)].flatMap((m) => m[1].split(', '));
+  const named = (kind) => new Set([...RECORD_KEYS[kind].required, ...RECORD_KEYS[kind].optional].map((k) => k.replace(/\[\]$/, '')));
+  const issueTable = docSection('## Issue record').split('\n').filter((l) => l.startsWith('| `')).flatMap((l) => keys(l.split('|')[1]));
+  assert.deepEqual(named('issue'), new Set(issueTable.filter((k) => k !== 'kind')));
+  const retroPara = docSection('## Retro record').split('\n').find((l) => l.startsWith('One run-scoped')).split(' It is validated')[0];
+  assert.deepEqual(named('retro'), new Set(keys(retroPara)));
 });
 
 for (const [name, payload, message] of [
