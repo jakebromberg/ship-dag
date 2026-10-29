@@ -8,7 +8,7 @@
 // Usage: node ci-profile.mjs <owner/repo>...
 //        node ci-profile.mjs --local-lint-rule <owner/repo>   (the repo's "Local lint (binding)" rule, to append to a digest on the fallback paths; empty when undeclared)
 
-import { ciProfileFor, loadProfiles, localLintRule } from './lib/ci-profile.mjs';
+import { ciProfileFor, loadProfiles, localLintProblem, localLintRule } from './lib/ci-profile.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { REPO_RE } from './lib/ref.mjs';
 
@@ -23,12 +23,18 @@ export async function reposMap(repos, { profiles = loadProfiles(), ...opts } = {
 async function main(argv) {
   if (argv[0] === '--local-lint-rule' && argv.length === 2 && REPO_RE.test(argv[1])) {
     // The fallbacks' digest suffix: the registry's rule for the repo, or nothing for a repo that declares none.
-    const rule = localLintRule(loadProfiles()[argv[1]]?.localLint);
+    const localLint = loadProfiles(process.env.SHIP_DAG_CI_PROFILES || undefined)[argv[1]]?.localLint;
+    const problem = localLintProblem(localLint);
+    if (problem) {
+      process.stderr.write(`ci-profile: localLint on ${argv[1]} ${problem}\n`);
+      process.exit(2);
+    }
+    const rule = localLintRule(localLint);
     if (rule) process.stdout.write(`${rule}\n`);
     return;
   }
   if (argv.length === 0 || !argv.every((a) => REPO_RE.test(a))) {
-    process.stderr.write('usage: ci-profile.mjs <owner/repo>...\n');
+    process.stderr.write('usage: ci-profile.mjs <owner/repo>... | --local-lint-rule <owner/repo>\n');
     process.exit(EX_USAGE);
   }
   try {

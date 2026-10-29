@@ -19,6 +19,16 @@ export const REPO_CI_COMMAND = 'scripts/ci';
 const PROFILES = new URL('../../references/repo-ci-profiles.json', import.meta.url);
 const EXECUTABLE = 0o100755;
 
+/** What is wrong with a registry `localLint`, or '' when it is absent or well formed: an object with a non-blank string `command` (a typo'd key must not silently drop the rule), `forbid` an array of non-blank strings, `note` a string. */
+export function localLintProblem(l) {
+  if (l == null) return '';
+  if (typeof l !== 'object' || Array.isArray(l)) return 'must be an object';
+  if (typeof l.command !== 'string' || !l.command.trim()) return 'command must be a non-blank string';
+  if (l.forbid != null && !(Array.isArray(l.forbid) && l.forbid.every((f) => typeof f === 'string' && f.trim()))) return 'forbid must be an array of non-blank strings';
+  if (l.note != null && typeof l.note !== 'string') return 'note must be a string';
+  return '';
+}
+
 /**
  * The "Local lint (binding)" rule for a registry `localLint` (`{command, forbid?, note?}`), or '' when it declares no
  * command. The one renderer for every implement path: emit-config appends it to the engine description, and SKILL.md's

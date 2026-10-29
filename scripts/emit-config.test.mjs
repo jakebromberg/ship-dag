@@ -861,7 +861,7 @@ test('a declared local lint with no forbid list names the command and no prohibi
   assert.equal(d, `${TODAY_BUDGETED}\n\nLocal lint (binding): for the lint step of local CI, run \`npm run lint:changed\`.`);
 });
 
-for (const [name, localLint] of [['absent', undefined], ['null', null], ['without a command', { forbid: ['eslint .'] }], ['with a blank command', { command: '  ', forbid: ['eslint .'] }]]) {
+for (const [name, localLint] of [['absent', undefined], ['null', null]]) {
   test(`a local lint ${name} leaves the description exactly as today's`, () => {
     assert.equal(buildConfig(linted(localLint)).issues[0].description, TODAY_BUDGETED);
   });
@@ -891,6 +891,8 @@ test("a local lint never reaches the engine config's repos map", () => {
 for (const [name, localLint] of [
   ['a non-object', 'npm run lint:changed'],
   ['a non-string command', { command: 5 }],
+  ['missing its command (a typo)', { commnd: 'npm run lint:changed', forbid: ['eslint .'] }],
+  ['a blank command', { command: '  ', forbid: ['eslint .'] }],
   ['a string forbid', { command: 'x', forbid: 'eslint .' }],
   ['a non-string forbid entry', { command: 'x', forbid: ['eslint .', 7] }],
   ['a blank forbid entry', { command: 'x', forbid: ['  '] }],
