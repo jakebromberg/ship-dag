@@ -216,6 +216,17 @@ test("prompt.md step 2 does not send the implementer back to the issue body over
   assert.match(step2, /listed settled decision differs from the issue body, the decision overrides it\./);
 });
 
+// Step 6 opens the PR. A body file at a fixed shared path (/tmp/body.md) was once overwritten by another session's
+// before gh pr create read it, so a PR opened with another repo's body and a Closes line naming an unrelated issue.
+test('prompt.md step 6 writes the PR body to a mktemp file and reads the body back to check its Closes line', () => {
+  const prompt = readFileSync(fileURLToPath(new URL('./engine/prompt.md', import.meta.url)), 'utf8');
+  const step6 = prompt.split('\n').find((l) => l.startsWith('6. '));
+  assert.match(step6, /`mktemp`/);
+  assert.match(step6, /never a fixed path such as `\/tmp\/body\.md`/);
+  assert.match(step6, /`gh pr view --json body`/);
+  assert.match(step6, /first line is `Closes #\{\{ISSUE_NUMBER\}\}`/);
+});
+
 test('the sidecar records decisions exactly as the spec gave them, and the config carries them only in the description', () => {
   const decisions = ['use JSONL', 'no new dep'];
   const s = spec({ issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'x', decisions }] });
