@@ -23,7 +23,7 @@
 //
 // Usage:
 //   node rate-limit-preflight.mjs check [--base-dir DIR] [--threshold 0.8]
-//                                        [--wait-max-minutes 30]
+//                                        [--wait-max-minutes 300]
 // Prints the decision as JSON on stdout (SKILL.md step 4 reads `action`:
 // "proceed" | "wait" | "hitl") and a one-line human summary on stderr.
 // Exit codes: 2 = usage error (unknown subcommand, malformed flag).
@@ -32,7 +32,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseNumberOption } from './lib/cli-args.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { latestRateLimitEvent, preflightDecision } from './lib/rate-limit.mjs';
+import { DEFAULT_WAIT_MAX_MINUTES, latestRateLimitEvent, preflightDecision } from './lib/rate-limit.mjs';
 
 /** Default base dir holding every run's engine state (see SKILL.md step 4a). */
 export function defaultBaseDir(env = process.env) {
@@ -148,7 +148,7 @@ export function readLatestUtilization(baseDir, { maxCandidates = DEFAULT_MAX_CAN
  * @param {string[]} argv
  */
 export function parseArgs(argv) {
-  const opts = { baseDir: undefined, threshold: 0.8, waitMaxMinutes: 30 };
+  const opts = { baseDir: undefined, threshold: 0.8, waitMaxMinutes: DEFAULT_WAIT_MAX_MINUTES };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--base-dir') opts.baseDir = argv[++i];
@@ -167,7 +167,7 @@ export function parseArgs(argv) {
 function main(argv) {
   const [cmd, ...rest] = argv;
   if (cmd !== 'check') {
-    process.stderr.write('usage: rate-limit-preflight.mjs check [--base-dir DIR] [--threshold 0.8] [--wait-max-minutes 30]\n');
+    process.stderr.write('usage: rate-limit-preflight.mjs check [--base-dir DIR] [--threshold 0.8] [--wait-max-minutes 300]\n');
     process.exit(2);
   }
   let opts;

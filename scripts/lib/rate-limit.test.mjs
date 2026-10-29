@@ -177,7 +177,7 @@ test('preflightDecision: waits when above threshold and the window resets within
 });
 
 test('preflightDecision: surfaces a HITL fork when above threshold and the reset is far off', () => {
-  const d = preflightDecision({ utilization: 0.95, resetsAt: '2026-09-01T02:00:00Z', now: NOW });
+  const d = preflightDecision({ utilization: 0.95, resetsAt: '2026-09-01T02:00:00Z', now: NOW, waitMaxMinutes: 30 });
   assert.equal(d.action, 'hitl');
   assert.equal(d.reason, 'reset-far');
 });
@@ -194,8 +194,25 @@ test('preflightDecision: proceeds when the newest known reading is stale — res
   assert.equal(d.reason, 'window-already-reset');
 });
 
+// Issue #240: a known five-hour reset is waited out by default (waitMaxMinutes 300),
+// not forked to point E. `null` minutes means no resetsAt; a negative one is a past reset.
+for (const [minutesAhead, opts, action, reason] of [
+  [90, {}, 'wait', 'reset-soon'],
+  [299, {}, 'wait', 'reset-soon'],
+  [null, {}, 'hitl', 'above-threshold-no-reset-time'],
+  [-10, {}, 'proceed', 'window-already-reset'],
+  [90, { waitMaxMinutes: 30 }, 'hitl', 'reset-far'],
+]) {
+  test(`preflightDecision: 0.8 with reset ${minutesAhead ?? 'unknown'} min ahead, ${JSON.stringify(opts)} → ${action}`, () => {
+    const resetsAt = minutesAhead == null ? null : new Date(NOW.getTime() + minutesAhead * 60000).toISOString();
+    const d = preflightDecision({ utilization: 0.8, resetsAt, now: NOW, ...opts });
+    assert.equal(d.action, action);
+    assert.equal(d.reason, reason);
+  });
+}
+
 test('preflightDecision: custom threshold and waitMaxMinutes are honored', () => {
-  const d = preflightDecision({ utilization: 0.6, resetsAt: '2026-09-01T00:00:00Z', now: NOW, threshold: 0.5 });
+  const d = preflightDecision({ utilization: 0.6, resetsAt: '2026-09-01T00:00:00Z', now: NOW, threshold: 0.5, waitMaxMinutes: 30 });
   assert.equal(d.action, 'hitl');
   const d2 = preflightDecision({ utilization: 0.85, resetsAt: '2026-08-31T23:50:00Z', now: NOW, waitMaxMinutes: 60 });
   assert.equal(d2.action, 'wait');
