@@ -19,10 +19,12 @@ export const REPO_CI_COMMAND = 'scripts/ci';
 const PROFILES = new URL('../../references/repo-ci-profiles.json', import.meta.url);
 const EXECUTABLE = 0o100755;
 
-/** What is wrong with a registry `localLint`, or '' when it is absent or well formed: an object with a non-blank string `command` (a typo'd key must not silently drop the rule), `forbid` an array of non-blank strings, `note` a string. */
+/** What is wrong with a registry `localLint`, or '' when it is absent or well formed: an object with only the keys command, forbid and note, a non-blank string `command` (a typo'd key must not silently drop the rule), `forbid` an array of non-blank strings, `note` a string. */
 export function localLintProblem(l) {
   if (l == null) return '';
   if (typeof l !== 'object' || Array.isArray(l)) return 'must be an object';
+  const unknown = Object.keys(l).filter((k) => !['command', 'forbid', 'note'].includes(k));
+  if (unknown.length > 0) return `has unknown key(s) ${unknown.join(', ')} (known: command, forbid, note)`;
   if (typeof l.command !== 'string' || !l.command.trim()) return 'command must be a non-blank string';
   if (l.forbid != null && !(Array.isArray(l.forbid) && l.forbid.every((f) => typeof f === 'string' && f.trim()))) return 'forbid must be an array of non-blank strings';
   if (l.note != null && typeof l.note !== 'string') return 'note must be a string';

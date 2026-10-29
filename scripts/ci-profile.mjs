@@ -4,6 +4,7 @@
 // commands, else the repo's own executable `scripts/ci` on its base branch (the entry's, else the repo's default
 // branch), else none (`source: "none"`, `commands: []`, which emit-config warns about). Exit codes: 0 = printed;
 // 1 = a lookup failed (stderr names the repo; nothing on stdout, so a partial map never reaches a spec); 64 = usage.
+// `--local-lint-rule` exits 0 (rule printed, or nothing for an undeclared repo) or 2 (the repo's registry `localLint` is malformed: stderr names the repo, nothing on stdout).
 //
 // Usage: node ci-profile.mjs <owner/repo>...
 //        node ci-profile.mjs --local-lint-rule <owner/repo>   (the repo's "Local lint (binding)" rule, to append to a digest on the fallback paths; empty when undeclared)
@@ -20,17 +21,27 @@ export async function reposMap(repos, { profiles = loadProfiles(), ...opts } = {
   return Object.fromEntries(resolved.map(({ repo, ...profile }) => [repo, profile]));
 }
 
+/**
+ * `--local-lint-rule <repo>`: prints the registry's "Local lint (binding)" rule for `repo` (nothing when it declares
+ * none) and returns 0, or reports a malformed `localLint` on `err`, prints nothing and returns 2. `profiles` is
+ * injectable, as in host-run.mjs.
+ */
+export function localLintRuleCli(repo, { profiles = loadProfiles(), out = (t) => process.stdout.write(t), err = (t) => process.stderr.write(t) } = {}) {
+  const localLint = profiles[repo]?.localLint;
+  const problem = localLintProblem(localLint);
+  if (problem) {
+    err(`ci-profile: localLint on ${repo} ${problem}\n`);
+    return 2;
+  }
+  const rule = localLintRule(localLint);
+  if (rule) out(`${rule}\n`);
+  return 0;
+}
+
 async function main(argv) {
   if (argv[0] === '--local-lint-rule' && argv.length === 2 && REPO_RE.test(argv[1])) {
-    // The fallbacks' digest suffix: the registry's rule for the repo, or nothing for a repo that declares none.
-    const localLint = loadProfiles(process.env.SHIP_DAG_CI_PROFILES || undefined)[argv[1]]?.localLint;
-    const problem = localLintProblem(localLint);
-    if (problem) {
-      process.stderr.write(`ci-profile: localLint on ${argv[1]} ${problem}\n`);
-      process.exit(2);
-    }
-    const rule = localLintRule(localLint);
-    if (rule) process.stdout.write(`${rule}\n`);
+    const code = localLintRuleCli(argv[1]);
+    if (code !== 0) process.exit(code);
     return;
   }
   if (argv.length === 0 || !argv.every((a) => REPO_RE.test(a))) {

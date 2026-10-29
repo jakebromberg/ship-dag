@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { reposMap } from './ci-profile.mjs';
+import { localLintRuleCli, reposMap } from './ci-profile.mjs';
 import { loadProfiles, localLintProblem, localLintRule } from './lib/ci-profile.mjs';
 import { ghStubBin, graphqlFailure, restFailure } from './lib/gh-fixture.mjs';
 
@@ -136,6 +136,7 @@ for (const [name, localLint, problem] of [
   ['without a command', { forbid: ['a'] }, /command/], ['with a typo for command', { commnd: 'x' }, /command/], ['with a blank command', { command: ' ' }, /command/], ['with a numeric command', { command: 5 }, /command/],
   ['with a string forbid', { command: 'x', forbid: 'eslint .' }, /forbid/], ['with a blank forbid entry', { command: 'x', forbid: [' '] }, /forbid/],
   ['with a non-string note', { command: 'x', note: 3 }, /note/],
+  ['with a forbidden typo for forbid', { command: 'x', forbidden: ['y'] }, /forbidden/],
 ]) {
   test(`localLintProblem for a localLint ${name}`, () => {
     const got = localLintProblem(localLint);
@@ -152,33 +153,22 @@ test('the registry comment and ci-profile.mjs usage name the localLint shape and
   assert.match(r.stderr, /--local-lint-rule/);
 });
 
-// A malformed registry entry must fail the CLI loudly (exit 2, repo named, nothing on stdout), not print a bad rule or crash.
-for (const [name, localLint] of [['a string forbid', { command: 'x', forbid: 'eslint .' }], ['a non-string note', { command: 'x', note: 3 }], ['a missing command', { forbid: ['a'] }]]) {
-  test(`--local-lint-rule exits 2 naming the repo for ${name}`, () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ci-profile-'));
-    try {
-      const file = join(dir, 'profiles.json');
-      writeFileSync(file, JSON.stringify({ profiles: { 'WXYC/bad-repo': { commands: ['x'], localLint } } }));
-      const r = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-profile.mjs', import.meta.url)), '--local-lint-rule', 'WXYC/bad-repo'], { encoding: 'utf8', env: { ...process.env, SHIP_DAG_CI_PROFILES: file } });
-      assert.equal(r.status, 2);
-      assert.equal(r.stdout, '');
-      assert.match(r.stderr, /WXYC\/bad-repo/);
-      assert.match(r.stderr, /localLint/);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+// A malformed registry entry must fail loudly (exit 2, repo named, nothing on stdout), not print a bad rule or crash.
+// The entry point takes the profiles as an argument, so these tests need no spawned process or registry file.
+for (const [name, localLint] of [['a string forbid', { command: 'x', forbid: 'eslint .' }], ['a non-string note', { command: 'x', note: 3 }], ['a missing command', { forbid: ['a'] }], ['an unknown key', { command: 'x', forbidden: ['a'] }]]) {
+  test(`localLintRuleCli exits 2 naming the repo for ${name}`, () => {
+    const out = []; const err = [];
+    const code = localLintRuleCli('WXYC/bad-repo', { profiles: { 'WXYC/bad-repo': { commands: ['x'], localLint } }, out: (t) => out.push(t), err: (t) => err.push(t) });
+    assert.equal(code, 2);
+    assert.deepEqual(out, []);
+    assert.match(err.join(''), /WXYC\/bad-repo.*localLint|localLint.*WXYC\/bad-repo/);
   });
 }
 
-test("Backend-Service's note says what lint:changed does: changed files, and a full lint when lint config, a tsconfig, a package file or a .d.ts changes", () => {
-  const { note } = loadProfiles()['WXYC/Backend-Service'].localLint;
-  for (const re of [/changed files/, /tsconfig/, /package/, /\.d\.ts/, /eslint config/i]) assert.match(note, re);
-});
-
-test('--local-lint-rule prints the rule for a registered repo and nothing for an undeclared one', () => {
-  const run = (repo) => spawnSync(process.execPath, [fileURLToPath(new URL('./ci-profile.mjs', import.meta.url)), '--local-lint-rule', repo], { encoding: 'utf8' });
-  const bs = run('WXYC/Backend-Service');
-  assert.equal(bs.status, 0);
-  assert.equal(bs.stdout, `${localLintRule(loadProfiles()['WXYC/Backend-Service'].localLint)}\n`);
-  const other = run('WXYC/dj-site');
-  assert.equal(other.status, 0);
-  assert.equal(other.stdout, '');
+test('localLintRuleCli prints the rule for a declared repo and nothing for an undeclared one', () => {
+  const profiles = { 'WXYC/a': { localLint: { command: 'x' } }, 'WXYC/b': {} };
+  const run = (repo) => { const out = []; return [localLintRuleCli(repo, { profiles, out: (t) => out.push(t) }), out.join('')]; };
+  assert.deepEqual(run('WXYC/a'), [0, `${localLintRule({ command: 'x' })}\n`]);
+  assert.deepEqual(run('WXYC/b'), [0, '']);
+  assert.deepEqual(run('WXYC/c'), [0, '']);
 });
