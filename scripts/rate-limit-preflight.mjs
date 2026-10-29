@@ -32,7 +32,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseNumberOption } from './lib/cli-args.mjs';
 import { isMain } from './lib/is-main.mjs';
-import { DEFAULT_WAIT_MAX_MINUTES, latestRateLimitEvent, preflightDecision } from './lib/rate-limit.mjs';
+import { DEFAULT_RESET_WAIT_MAX_MINUTES, latestRateLimitEvent, preflightDecision } from './lib/rate-limit.mjs';
 
 /** Default base dir holding every run's engine state (see SKILL.md step 4a). */
 export function defaultBaseDir(env = process.env) {
@@ -148,26 +148,29 @@ export function readLatestUtilization(baseDir, { maxCandidates = DEFAULT_MAX_CAN
  * @param {string[]} argv
  */
 export function parseArgs(argv) {
-  const opts = { baseDir: undefined, threshold: 0.8, waitMaxMinutes: DEFAULT_WAIT_MAX_MINUTES };
+  const opts = { baseDir: undefined, threshold: 0.8, waitMaxMinutes: DEFAULT_RESET_WAIT_MAX_MINUTES };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--base-dir') opts.baseDir = argv[++i];
     else if (a === '--threshold') opts.threshold = parseNumberOption('threshold', argv[++i], { min: 0, max: 1 });
     else if (a === '--wait-max-minutes') {
       // "a positive number" (not merely non-negative) — 0 would make every
-      // above-threshold reading resolve to `hitl` (there being no wait window
-      // to bother sleeping through), which is what --wait-max-minutes exists
-      // to opt out of by omission, not by being handed a zero.
+      // above-threshold reading resolve to `hitl`. Lowering the cap (e.g. to
+      // 30) is how a caller sends far-off known resets to point E instead of
+      // waiting them out; a zero is a typo, not that choice.
       opts.waitMaxMinutes = parseNumberOption('wait-max-minutes', argv[++i], { exclusiveMin: 0 });
     }
   }
   return opts;
 }
 
+/** The `check` usage line, printed on a usage error. */
+export const USAGE = `usage: rate-limit-preflight.mjs check [--base-dir DIR] [--threshold 0.8] [--wait-max-minutes ${DEFAULT_RESET_WAIT_MAX_MINUTES}]`;
+
 function main(argv) {
   const [cmd, ...rest] = argv;
   if (cmd !== 'check') {
-    process.stderr.write('usage: rate-limit-preflight.mjs check [--base-dir DIR] [--threshold 0.8] [--wait-max-minutes 300]\n');
+    process.stderr.write(`${USAGE}\n`);
     process.exit(2);
   }
   let opts;

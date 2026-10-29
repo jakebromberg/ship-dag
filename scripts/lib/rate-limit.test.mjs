@@ -199,6 +199,8 @@ test('preflightDecision: proceeds when the newest known reading is stale — res
 for (const [minutesAhead, opts, action, reason] of [
   [90, {}, 'wait', 'reset-soon'],
   [299, {}, 'wait', 'reset-soon'],
+  [300, {}, 'wait', 'reset-soon'],
+  [301, {}, 'hitl', 'reset-far'],
   [null, {}, 'hitl', 'above-threshold-no-reset-time'],
   [-10, {}, 'proceed', 'window-already-reset'],
   [90, { waitMaxMinutes: 30 }, 'hitl', 'reset-far'],
