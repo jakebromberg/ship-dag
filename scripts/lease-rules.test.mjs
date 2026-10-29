@@ -228,9 +228,16 @@ for (const name of implementCopies) {
 
 // A repo that declares a local lint has the rule appended to its issues' descriptions (emit-config's withLocalLint),
 // so each implement copy has to tell the session to follow it, and not to read "the repo's local CI" as a whole-repo lint.
-const localLintRule = /When the issue names a "Local lint \(binding\)" rule, run its command for the lint step of local CI and never a command it says not to run\./;
+const localLintClause = /When the (?:plan|digest) above names a "Local lint \(binding\)" rule, run its command for the lint step of local CI and never a command it says not to run\./;
 for (const name of implementCopies) {
-  test(`${name} tells implementers to follow an issue's declared local lint`, () => {
-    assert.match(copies[name], localLintRule);
+  test(`${name} tells implementers to follow a plan's declared local lint`, () => {
+    assert.match(copies[name], localLintClause);
   });
 }
+
+// The fallbacks build prompts from the digest alone, so step 4's Fallback has the main agent append the rule (one renderer, ci-profile.mjs --local-lint-rule) to each digest.
+test("SKILL.md's step 4 Fallback appends the local-lint rule to each digest on the workflow.js and inline paths", () => {
+  const fallback = skill.split('**Fallback (engine unavailable')[1].split('\n')[0];
+  assert.match(fallback, /--local-lint-rule/);
+  assert.match(fallback, /append[^.]*to (each issue's|its) `?digest`?/i);
+});

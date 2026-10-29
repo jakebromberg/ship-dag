@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reposMap } from './ci-profile.mjs';
-import { loadProfiles } from './lib/ci-profile.mjs';
+import { loadProfiles, localLintRule } from './lib/ci-profile.mjs';
 import { ghStubBin, graphqlFailure, restFailure } from './lib/gh-fixture.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-profile.mjs', import.meta.url));
@@ -117,4 +117,30 @@ test('the Backend-Service profile declares npm run lint:changed as its local lin
 test('only Backend-Service declares a local lint', async () => {
   const declared = Object.entries(loadProfiles()).filter(([, p]) => p.localLint).map(([repo]) => repo);
   assert.deepEqual(declared, ['WXYC/Backend-Service']);
+});
+
+// One renderer for every implement path: emit-config appends it to the description, and the fallbacks append it to the digest.
+test('localLintRule names the command, every forbidden one and the registry note, and claims nothing else', () => {
+  assert.equal(localLintRule({ command: 'make lint', forbid: ['make all'] }), 'Local lint (binding): for the lint step of local CI, run `make lint`. Never run `make all` in this session.');
+  assert.equal(localLintRule({ command: 'make lint', forbid: ['a', 'b', 'c'], note: 'It is fast.' }), 'Local lint (binding): for the lint step of local CI, run `make lint`. Never run `a`, `b` or `c` in this session. It is fast.');
+  assert.equal(localLintRule({ command: ' make lint ' }), 'Local lint (binding): for the lint step of local CI, run `make lint`.');
+});
+
+for (const [name, localLint] of [['absent', undefined], ['null', null], ['without a command', { forbid: ['a'] }], ['with a blank command', { command: ' ' }]]) {
+  test(`localLintRule is empty for a localLint ${name}`, () => assert.equal(localLintRule(localLint), ''));
+}
+
+test("Backend-Service's note says what lint:changed does: changed files, and a full lint when lint config, a tsconfig, a package file or a .d.ts changes", () => {
+  const { note } = loadProfiles()['WXYC/Backend-Service'].localLint;
+  for (const re of [/changed files/, /tsconfig/, /package/, /\.d\.ts/, /eslint config/i]) assert.match(note, re);
+});
+
+test('--local-lint-rule prints the rule for a registered repo and nothing for an undeclared one', () => {
+  const run = (repo) => spawnSync(process.execPath, [fileURLToPath(new URL('./ci-profile.mjs', import.meta.url)), '--local-lint-rule', repo], { encoding: 'utf8' });
+  const bs = run('WXYC/Backend-Service');
+  assert.equal(bs.status, 0);
+  assert.equal(bs.stdout, `${localLintRule(loadProfiles()['WXYC/Backend-Service'].localLint)}\n`);
+  const other = run('WXYC/dj-site');
+  assert.equal(other.status, 0);
+  assert.equal(other.stdout, '');
 });
