@@ -180,12 +180,15 @@ export function classifyFailureReason(reportRow, transcriptText) {
  *   newest log the preflight found is stale, e.g. left over from a run whose
  *   window has since reset with no new session yet to report the fresh one).
  * - At/above `threshold` and the window resets within `waitMaxMinutes` →
- *   `wait` (the caller prints resetsAt and waits).
+ *   `wait` (the caller prints resetsAt and waits). The default, 300, is the
+ *   whole five-hour window, so any known reset is waited out (issue #240).
  * - At/above `threshold` and the reset is further off (or unknown) →
  *   `hitl` (wait / defer the wave / stop the run).
  * @param {{utilization: number|null, resetsAt: string|null, now?: Date, threshold?: number, waitMaxMinutes?: number}} opts
  */
-export function preflightDecision({ utilization, resetsAt, now = new Date(), threshold = 0.8, waitMaxMinutes = 30 }) {
+export const DEFAULT_WAIT_MAX_MINUTES = 300;
+
+export function preflightDecision({ utilization, resetsAt, now = new Date(), threshold = 0.8, waitMaxMinutes = DEFAULT_WAIT_MAX_MINUTES }) {
   if (utilization == null) {
     return { action: 'proceed', reason: 'no-utilization-data', utilization: null };
   }

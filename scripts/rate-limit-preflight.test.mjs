@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { newestLogFile, newestLogFiles, readLatestUtilization, parseArgs } from './rate-limit-preflight.mjs';
 
 let counter = 0;
@@ -197,7 +199,13 @@ test('readLatestUtilization: stays cheap — a reading past maxCandidates newer,
 // --- CLI arg validation (item 2) ---
 
 test('parseArgs: defaults when no flags are given', () => {
-  assert.deepEqual(parseArgs([]), { baseDir: undefined, threshold: 0.8, waitMaxMinutes: 30 });
+  assert.deepEqual(parseArgs([]), { baseDir: undefined, threshold: 0.8, waitMaxMinutes: 300 });
+});
+
+test('usage line states the 300-minute --wait-max-minutes default', () => {
+  const r = spawnSync(process.execPath, [fileURLToPath(new URL('./rate-limit-preflight.mjs', import.meta.url))], { encoding: 'utf8' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /\[--wait-max-minutes 300\]/);
 });
 
 test('parseArgs: accepts valid --threshold and --wait-max-minutes values', () => {
