@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { realRunGh } from './lib/gh.mjs';
 import { deriveSlug, buildConfig, buildConfigsByHost, unknownCiRepos, unknownComplexities, validateSpec, ghReadRef } from './emit-config.mjs';
+import { localLintRule } from './lib/ci-profile.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
 import { waveSidecar } from './lib/wave-sidecar.mjs';
 import { testHost } from './lib/host-fixture.mjs';
@@ -839,7 +840,7 @@ test('realRunGh forwards its options, so the timeout cuts off a stalled gh', () 
 // A repo that declares a local lint in its CI profile (`localLint: {command, forbid}`) has the rule appended to each
 // of its issues' descriptions, after the line budget; a repo with no declaration keeps today's description exactly.
 const LOCAL_LINT = { command: 'npm run lint:changed', forbid: ['npm run lint', 'npm run lint:fast', 'npm run lint:fix', 'eslint .'] };
-const LOCAL_LINT_RULE = 'Local lint (binding): for the lint step of local CI, run `npm run lint:changed`, which lints the changed files only. Never run `npm run lint`, `npm run lint:fast`, `npm run lint:fix` or `eslint .`: each lints the whole repo.';
+const LOCAL_LINT_RULE = localLintRule(LOCAL_LINT);
 const linted = (localLint) => spec({
   repos: { 'WXYC/library-metadata-lookup': { baseBranch: 'main', commands: ['npm run lint:changed'], localLint } },
   issues: [{ number: 924, repo: 'WXYC/library-metadata-lookup', digest: 'Cap it.', sourceEstimate: 120 }],
@@ -857,7 +858,7 @@ test('a declared local lint rides on the description alone, without a budget or 
 
 test('a declared local lint with no forbid list names the command and no prohibition', () => {
   const d = buildConfig(linted({ command: 'npm run lint:changed' })).issues[0].description;
-  assert.equal(d, `${TODAY_BUDGETED}\n\nLocal lint (binding): for the lint step of local CI, run \`npm run lint:changed\`, which lints the changed files only.`);
+  assert.equal(d, `${TODAY_BUDGETED}\n\nLocal lint (binding): for the lint step of local CI, run \`npm run lint:changed\`.`);
 });
 
 for (const [name, localLint] of [['absent', undefined], ['null', null], ['without a command', { forbid: ['eslint .'] }], ['with a blank command', { command: '  ', forbid: ['eslint .'] }]]) {
@@ -885,3 +886,18 @@ test("one repo's local lint stays off the description of another repo's issue in
 test("a local lint never reaches the engine config's repos map", () => {
   assert.deepEqual(buildConfig(linted(LOCAL_LINT)).repos['WXYC/library-metadata-lookup'], { baseBranch: 'main', postSessionCheck: { commands: ['npm run lint:changed'] } });
 });
+
+// A malformed localLint exits 2 naming the repo, like decisions, complexity and blockOn, instead of crashing or rendering `undefined`.
+for (const [name, localLint] of [
+  ['a non-object', 'npm run lint:changed'],
+  ['a non-string command', { command: 5 }],
+  ['a string forbid', { command: 'x', forbid: 'eslint .' }],
+  ['a non-string forbid entry', { command: 'x', forbid: ['eslint .', 7] }],
+  ['a blank forbid entry', { command: 'x', forbid: ['  '] }],
+  ['a non-string note', { command: 'x', note: 3 }],
+]) {
+  test(`a localLint that is ${name} is refused, naming the repo`, () => {
+    assert.throws(() => validateSpec(linted(localLint)), /localLint.*WXYC\/library-metadata-lookup|WXYC\/library-metadata-lookup.*localLint/);
+    assert.throws(() => buildConfig(linted(localLint)), /localLint/);
+  });
+}

@@ -19,6 +19,20 @@ export const REPO_CI_COMMAND = 'scripts/ci';
 const PROFILES = new URL('../../references/repo-ci-profiles.json', import.meta.url);
 const EXECUTABLE = 0o100755;
 
+/**
+ * The "Local lint (binding)" rule for a registry `localLint` (`{command, forbid?, note?}`), or '' when it declares no
+ * command. The one renderer for every implement path: emit-config appends it to the engine description, and SKILL.md's
+ * fallbacks append `ci-profile.mjs --local-lint-rule <repo>` to the digest. It claims only what the registry says;
+ * `note` is where a repo describes what its command lints.
+ */
+export function localLintRule(localLint) {
+  const command = typeof localLint?.command === 'string' ? localLint.command.trim() : '';
+  if (!command) return '';
+  const forbid = (localLint.forbid ?? []).map((c) => `\`${c}\``);
+  const list = forbid.length > 1 ? `${forbid.slice(0, -1).join(', ')} or ${forbid.at(-1)}` : forbid[0];
+  return `Local lint (binding): for the lint step of local CI, run \`${command}\`.${list ? ` Never run ${list} in this session.` : ''}${localLint.note ? ` ${localLint.note}` : ''}`;
+}
+
 /** The registry's `profiles` map, keyed by `owner/repo`. */
 export function loadProfiles(path = PROFILES) {
   return JSON.parse(readFileSync(path, 'utf8')).profiles;
