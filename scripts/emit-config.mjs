@@ -60,7 +60,7 @@ import { stringOption } from './lib/cli-args.mjs';
 import { loadHosts } from './lib/hosts.mjs';
 import { isMain } from './lib/is-main.mjs';
 import { realRunGh } from './lib/gh.mjs';
-import { localLintRule } from './lib/ci-profile.mjs';
+import { localLintProblem, localLintRule } from './lib/ci-profile.mjs';
 import { refKey } from './lib/ref.mjs';
 import { splitByHost } from './lib/split-by-host.mjs';
 import { load as loadTuning } from './lib/tuning.mjs';
@@ -148,7 +148,7 @@ export function withLineBudget(description, sourceEstimate) {
   return `${description}\n\nSize budget: about ${Math.round(n)} added lines of production source. Tests, generated data, and docs sit outside the budget — do not trim them to fit. If the change runs more than half again past it, stop at the last green, coherent point and push that.`;
 }
 
-// A repo's local-lint declaration (`localLint: {command, forbid}` in its references/repo-ci-profiles.json entry) rides on
+// A repo's local-lint declaration (`localLint: {command, forbid, note?}` in its references/repo-ci-profiles.json entry) rides on
 // the description for the same reason: it is the one channel that reaches the implementer, and step 4 of the implement
 // prompt tells it to follow such a rule. A repo with no declaration (or one without a command) gets its description untouched.
 export function withLocalLint(description, localLint) {
@@ -234,16 +234,6 @@ export function withMergedSinceTriage(description, { texts, repo, self, base, tr
 
 /** The real `readRef`: one `gh api` read of an issue or PR, via the issues endpoint that serves both, cut off after 15 s so a stalled `gh` cannot hold the emit. */
 export const ghReadRef = (repo, number, run = realRunGh) => JSON.parse(run(['api', `repos/${repo}/issues/${number}`], { timeout: 15000 }));
-
-// What is wrong with a repo's `localLint`, or '' when it is absent or well formed (command and note strings, forbid an array of non-blank strings).
-function localLintProblem(l) {
-  if (l == null) return '';
-  if (typeof l !== 'object' || Array.isArray(l)) return 'must be an object';
-  if (l.command != null && typeof l.command !== 'string') return 'command must be a string';
-  if (l.forbid != null && !(Array.isArray(l.forbid) && l.forbid.every((f) => typeof f === 'string' && f.trim()))) return 'forbid must be an array of non-blank strings';
-  if (l.note != null && typeof l.note !== 'string') return 'note must be a string';
-  return '';
-}
 
 /**
  * Refuse a spec the emitter must not run, throwing one error that lists every

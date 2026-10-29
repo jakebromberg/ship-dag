@@ -3,12 +3,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reposMap } from './ci-profile.mjs';
-import { loadProfiles, localLintRule } from './lib/ci-profile.mjs';
+import { loadProfiles, localLintProblem, localLintRule } from './lib/ci-profile.mjs';
 import { ghStubBin, graphqlFailure, restFailure } from './lib/gh-fixture.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-profile.mjs', import.meta.url));
@@ -126,8 +126,46 @@ test('localLintRule names the command, every forbidden one and the registry note
   assert.equal(localLintRule({ command: ' make lint ' }), 'Local lint (binding): for the lint step of local CI, run `make lint`.');
 });
 
-for (const [name, localLint] of [['absent', undefined], ['null', null], ['without a command', { forbid: ['a'] }], ['with a blank command', { command: ' ' }]]) {
+for (const [name, localLint] of [['absent', undefined], ['null', null]]) {
   test(`localLintRule is empty for a localLint ${name}`, () => assert.equal(localLintRule(localLint), ''));
+}
+
+for (const [name, localLint, problem] of [
+  ['absent', undefined, ''], ['null', null, ''], ['well formed', { command: 'x', forbid: ['y'], note: 'n' }, ''],
+  ['a string', 'x', /object/], ['an array', [], /object/],
+  ['without a command', { forbid: ['a'] }, /command/], ['with a typo for command', { commnd: 'x' }, /command/], ['with a blank command', { command: ' ' }, /command/], ['with a numeric command', { command: 5 }, /command/],
+  ['with a string forbid', { command: 'x', forbid: 'eslint .' }, /forbid/], ['with a blank forbid entry', { command: 'x', forbid: [' '] }, /forbid/],
+  ['with a non-string note', { command: 'x', note: 3 }, /note/],
+]) {
+  test(`localLintProblem for a localLint ${name}`, () => {
+    const got = localLintProblem(localLint);
+    if (problem === '') assert.equal(got, ''); else assert.match(got, problem);
+  });
+}
+
+test('the registry comment and ci-profile.mjs usage name the localLint shape and the --local-lint-rule form', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  assert.match(readFileSync(join(root, 'references/repo-ci-profiles.json'), 'utf8'), /\{command, forbid, note\?\}/);
+  assert.match(readFileSync(join(root, 'scripts/emit-config.mjs'), 'utf8'), /localLint: \{command, forbid, note\?\}/);
+  const r = spawnSync(process.execPath, [join(root, 'scripts/ci-profile.mjs')], { encoding: 'utf8' });
+  assert.equal(r.status, 64);
+  assert.match(r.stderr, /--local-lint-rule/);
+});
+
+// A malformed registry entry must fail the CLI loudly (exit 2, repo named, nothing on stdout), not print a bad rule or crash.
+for (const [name, localLint] of [['a string forbid', { command: 'x', forbid: 'eslint .' }], ['a non-string note', { command: 'x', note: 3 }], ['a missing command', { forbid: ['a'] }]]) {
+  test(`--local-lint-rule exits 2 naming the repo for ${name}`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ci-profile-'));
+    try {
+      const file = join(dir, 'profiles.json');
+      writeFileSync(file, JSON.stringify({ profiles: { 'WXYC/bad-repo': { commands: ['x'], localLint } } }));
+      const r = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-profile.mjs', import.meta.url)), '--local-lint-rule', 'WXYC/bad-repo'], { encoding: 'utf8', env: { ...process.env, SHIP_DAG_CI_PROFILES: file } });
+      assert.equal(r.status, 2);
+      assert.equal(r.stdout, '');
+      assert.match(r.stderr, /WXYC\/bad-repo/);
+      assert.match(r.stderr, /localLint/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 }
 
 test("Backend-Service's note says what lint:changed does: changed files, and a full lint when lint config, a tsconfig, a package file or a .d.ts changes", () => {
