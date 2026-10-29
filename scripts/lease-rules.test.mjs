@@ -240,4 +240,5 @@ test("SKILL.md's step 4 Fallback appends the local-lint rule to each digest on t
   const fallback = skill.split('**Fallback (engine unavailable')[1].split('\n')[0];
   assert.match(fallback, /--local-lint-rule/);
   assert.match(fallback, /append[^.]*to (each issue's|its) `?digest`?/i);
+  assert.match(fallback, /exits non-zero[^.]*stop and report the error[^.]*do not start implementers without the rule/i);
 });

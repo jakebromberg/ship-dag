@@ -837,7 +837,7 @@ test('realRunGh forwards its options, so the timeout cuts off a stalled gh', () 
   assert.ok(Date.now() - started < 5000);
 });
 
-// A repo that declares a local lint in its CI profile (`localLint: {command, forbid}`) has the rule appended to each
+// A repo that declares a local lint in its CI profile (`localLint: {command, forbid, note?}`) has the rule appended to each
 // of its issues' descriptions, after the line budget; a repo with no declaration keeps today's description exactly.
 const LOCAL_LINT = { command: 'npm run lint:changed', forbid: ['npm run lint', 'npm run lint:fast', 'npm run lint:fix', 'eslint .'] };
 const LOCAL_LINT_RULE = localLintRule(LOCAL_LINT);
