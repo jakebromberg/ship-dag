@@ -225,3 +225,12 @@ for (const name of implementCopies) {
     assert.ok(text.includes(`${testFirstRules[0]} ${testFirstRules[1]}`));
   });
 }
+
+// A repo that declares a local lint has the rule appended to its issues' descriptions (emit-config's withLocalLint),
+// so each implement copy has to tell the session to follow it, and not to read "the repo's local CI" as a whole-repo lint.
+const localLintRule = /When the issue names a "Local lint \(binding\)" rule, run its command for the lint step of local CI and never a command it says not to run\./;
+for (const name of implementCopies) {
+  test(`${name} tells implementers to follow an issue's declared local lint`, () => {
+    assert.match(copies[name], localLintRule);
+  });
+}

@@ -29,14 +29,14 @@ const registryCommands = (entry) => (Array.isArray(entry?.commands) && entry.com
 /**
  * `{ repo, baseBranch, commands, source }` for `repo`: the registry entry's commands (`source: 'registry'`), else
  * `[REPO_CI_COMMAND]` when `hasScript` (`'repo'`), else `[]` (`'none'`). `baseBranch` is the entry's, else
- * `defaultBranch` (the repo's, from `repoCiScript`), else `main`. The entry's `host` and `toolchains`, when it sets
+ * `defaultBranch` (the repo's, from `repoCiScript`), else `main`. The entry's `host`, `toolchains` and `localLint`, when it sets
  * them, ride along for split-by-host.mjs.
  */
 export function resolveCiProfile(repo, profiles, { hasScript = false, defaultBranch } = {}) {
   const entry = profiles[repo];
   const baseBranch = entry?.baseBranch || defaultBranch || 'main';
   const registry = registryCommands(entry);
-  const placement = Object.fromEntries(['host', 'toolchains'].filter((k) => entry?.[k] !== undefined).map((k) => [k, entry[k]]));
+  const placement = Object.fromEntries(['host', 'toolchains', 'localLint'].filter((k) => entry?.[k] !== undefined).map((k) => [k, entry[k]]));
   if (registry) return { repo, baseBranch, commands: registry, source: 'registry', ...placement };
   if (hasScript) return { repo, baseBranch, commands: [REPO_CI_COMMAND], source: 'repo', ...placement };
   return { repo, baseBranch, commands: [], source: 'none', ...placement };
