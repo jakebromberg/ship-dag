@@ -9,7 +9,7 @@
 import { orderSteps, formatPacific, compareRefs, leadingWaveNumber, roadTo } from './model.mjs';
 import { STAGES } from './stage.mjs';
 import { parseRef } from '../lib/ref.mjs';
-import { PAGE_CSS, ROAD_JS, BURN_JS } from './assets.mjs';
+import { PAGE_CSS, ROAD_JS, BURN_JS, RELOAD_JS } from './assets.mjs';
 import { html, raw, list } from './html.mjs';
 import { burnupSeries, bucketPoints, pacificTicks, yScale } from './burnup.mjs';
 
@@ -70,6 +70,9 @@ export const hostLine = (remote) => {
 };
 
 /** `1 ticket`, `2 tickets`. */
+// How often an open page reloads. reload.js does it by elapsed time while the page is visible; the meta refresh is
+// only the fallback for a browser with scripting off, since a background tab can leave its one timer unfired.
+const RELOAD_SECONDS = 120;
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** A step's wave labels as one span, ordered by wave number, then id: `wave 4b`, `waves 9–31b`. */
@@ -139,9 +142,9 @@ export function renderBoard(v) {
   const badge = (ref) => (ms.has(ref) ? html`<div class="ms-badge">Milestone: ${ms.get(ref).name}</div>` : '');
 
   const h = [html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`
-    + html`<meta http-equiv="refresh" content="120"><title>${v.title}</title><style>${raw(PAGE_CSS)}</style></head><body><main>`];
+    + html`<noscript><meta http-equiv="refresh" content="${RELOAD_SECONDS}"></noscript><title>${v.title}</title><style>${raw(PAGE_CSS)}</style></head><body><main>`];
   h.push(html`<h1>${v.title}</h1>${v.scope && html`<p class="sub"><a href="${v.scope.url}">${v.scope.label}</a> — ${v.scope.title}</p>`}`
-    + html`<p class="meta">Updated ${formatPacific(v.now, 'long')} · run ${v.runId} · reloads every 2 minutes</p>`);
+    + html`<p class="meta">Updated ${formatPacific(v.now, 'long')} · run ${v.runId} · reloads every ${RELOAD_SECONDS / 60} minutes</p>`);
   h.push(html`<div class="tiles">${shown.map(({ status, tile }) => {
     const n = status === 'shipped' ? `${counts.shipped || 0}/${total}` : counts[status] || 0;
     return html`<div class="tile"><b>${n}</b><span>${tile}${status === 'shipped' && earlier ? ` (${earlier} before this run)` : ''}</span></div>`;
@@ -188,7 +191,7 @@ export function renderBoard(v) {
     h.push(html`<details><summary>Closed without shipping (${dropped.length})</summary><div class="items">${dropped.map((t) => html`<span class="item">${link(t.ref)} <span class="x">${t.title}</span></span>`)}</div></details>`);
   }
   h.push(html`<footer>Times are Pacific. Rebuild with <code>${v.rebuild}</code>. Built from GitHub, the run's engine state, its review files and telemetry, and its board notes. Local file, not committed.</footer></main>`
-    + html`<script>${raw(ROAD_JS)}</script>${burn ? html`<script>${raw(BURN_JS)}</script>` : ''}</body></html>`);
+    + html`<script data-period="${RELOAD_SECONDS}">${raw(RELOAD_JS)}</script><script>${raw(ROAD_JS)}</script>${burn ? html`<script>${raw(BURN_JS)}</script>` : ''}</body></html>`);
   return h.join('\n');
 }
 

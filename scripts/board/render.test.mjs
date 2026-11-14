@@ -7,7 +7,7 @@ import { buildGraph, projectWaves, makeShortRef, makeRepoLabel, classify, milest
 import { renderBoard, STATUSES, stageStatus, waveSpan } from './render.mjs';
 import * as render from './render.mjs';
 import { STAGES } from './stage.mjs';
-import { PAGE_CSS } from './assets.mjs';
+import { PAGE_CSS, RELOAD_JS } from './assets.mjs';
 
 const R = (n) => `o/r#${n}`;
 const ticket = (n, status, extra = {}) => ({
@@ -102,6 +102,18 @@ test('renderBoard names the command that rebuilds it and says nothing is committ
   const html = renderBoard(view());
   assert.match(html, /node scripts\/board\.mjs render --run-id sd-20261008-120000/);
   assert.match(html, /Local file, not committed/);
+});
+
+// The meta refresh is one timer a background tab can lose, so the page reloads through reload.js and keeps the meta
+// refresh only for a browser with scripting off; both read one period (issue #542).
+test('renderBoard reloads through its script and keeps the meta refresh only inside noscript (issue #542)', () => {
+  const html = renderBoard(view());
+  const noscript = [...html.matchAll(/<noscript>([\s\S]*?)<\/noscript>/g)].map((m) => m[1]);
+  assert.deepEqual(noscript, ['<meta http-equiv="refresh" content="120">'], 'one noscript fallback, in the head');
+  assert.ok(html.indexOf('<noscript>') < html.indexOf('</head>'), 'the fallback is in the head');
+  assert.ok(!/http-equiv="refresh"/i.test(html.replace(/<noscript>[\s\S]*?<\/noscript>/g, '')), 'no meta refresh outside noscript');
+  assert.ok(html.includes(`<script data-period="120">${RELOAD_JS}</script>`), 'the reload script, with the same period');
+  assert.match(html, /reloads every 2 minutes/);
 });
 
 test('renderBoard with nothing open says so', () => {
