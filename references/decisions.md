@@ -1,6 +1,6 @@
 # Tuning decision log
 
-One entry per decision in #64 (D1–D8), #291 (D9) and #256 (D10), then the cross-cutting tripwire that guards no single decision, then the metric definitions the tripwires are computed under, then the dismissals. SKILL.md step 7 runs `telemetry.mjs tripwires` and answers a tripped tripwire here. D1–D8 and the cross-cutting tripwire were decided on 2026-10-08 ("go with recommendations", #64), so their first review date is 2026-12-07, 60 days later; D9 was decided on 2026-10-20 (#291), so its first review date is 2026-12-19; D10 was decided on 2026-10-16 (#256), so its first review date is 2026-12-15.
+One entry per decision in #64 (D1–D8), #291 (D9), #256 (D10) and the 2026-11-14 filing rules (D11), then the cross-cutting tripwire that guards no single decision, then the metric definitions the tripwires are computed under, then the dismissals. SKILL.md step 7 runs `telemetry.mjs tripwires` and answers a tripped tripwire here. D1–D8 and the cross-cutting tripwire were decided on 2026-10-08 ("go with recommendations", #64), so their first review date is 2026-12-07, 60 days later; D9 was decided on 2026-10-20 (#291), so its first review date is 2026-12-19; D10 was decided on 2026-10-16 (#256), so its first review date is 2026-12-15.
 
 Each entry's *Review date* is also the `reviewDate` of every row in `references/tripwires.json` whose `decision` names that entry: `D1`–`D10` name a decision, and `all` names the entry of the row's own id under *Cross-cutting tripwires*. `tripwires` reports `reviewOverdue` once that date has passed. Change the two together; `scripts/lib/tripwires.test.mjs` fails when they disagree. When a review is answered, move the date to the answer date + 60 days in both places, or every later wave reports it overdue again.
 
@@ -86,6 +86,14 @@ Each entry's *Review date* is also the `reviewDate` of every row in `references/
 - **Tripwire:** none. Escapes of text-only findings show up under T-escapes.
 - **PR:** none yet; #256 implements it, after #46, #42 and #157.
 - **Review date:** 2026-12-15.
+
+### D11: a retrospective files within six rules
+
+- **Choice:** the step 6.5 retrospective follows six filing rules (`references/retrospective-schema.md`, *Filing rules*): a CONFIRMED defect fix is always eligible; a helper or refactor needs two or more copies already in merged code; no test-only ticket that pins one feature's internals (a `respec` of the feature's next leaf instead); at most two filed tickets per pass, and only a defect fix may block a pending leaf; a retro-filed ticket open more than 7 days is scheduled into a wave or closed as not planned, with a comment, checked at each wave's step 6.5; no refactor and feature in the same files at the same time, so a refactor that touches files a pending leaf edits waits for that leaf unless the retrospective says why it goes first. Point D declines, and records as observations, a proposal that breaks rule 2, 3 or 4. Respecs stay uncapped, since they are comments.
+- **Decided:** 2026-11-14. Evidence: an analysis of the 65 tickets that PhaseMatrix retrospectives filed since 2026-10-13. The value was in defect fixes (10 of the 42 finished), in shared helpers already duplicated two or more times (one is now used in 58 files) and in the local gate script. Test-only tickets that pin one feature's internals cost more than they returned. A third of the tickets (22 of 65) were still open and unscheduled, and six days from ticket to merge for engine work was judged unacceptable.
+- **Tripwire:** none. T-retro-approval (D9) keeps watching the approval rate; a rule-5 close shows in the ticket's own history.
+- **PR:** the PR that adds this entry; no script changes, since `retro-pick.mjs` and the telemetry validators hard-code no ticket cap.
+- **Review date:** 2027-01-13.
 
 ## Cross-cutting tripwires
 
