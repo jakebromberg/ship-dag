@@ -3,8 +3,8 @@
 // Pure: the caller hands in every fact (tickets, the graph from model.mjs, the
 // projected waves, the notes) and the current time, and gets a page back. Every
 // interpolated string is escaped by the `html` template, notes included; every time is Pacific
-// with its zone label. The stylesheet and road-ahead script are inlined from
-// assets.mjs so the page needs nothing beside it.
+// with its zone label. The stylesheet and the page's scripts (road ahead, burn-up keys,
+// reload) are inlined from assets.mjs so the page needs nothing beside it.
 
 import { orderSteps, formatPacific, compareRefs, leadingWaveNumber, roadTo } from './model.mjs';
 import { STAGES } from './stage.mjs';
@@ -69,10 +69,11 @@ export const hostLine = (remote) => {
   return html`<div class="host">on ${remote.host} · ${read}</div>`;
 };
 
-/** `1 ticket`, `2 tickets`. */
 // How often an open page reloads. reload.js does it by elapsed time while the page is visible; the meta refresh is
 // only the fallback for a browser with scripting off, since a background tab can leave its one timer unfired.
 const RELOAD_SECONDS = 120;
+
+/** `1 ticket`, `2 tickets`. */
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** A step's wave labels as one span, ordered by wave number, then id: `wave 4b`, `waves 9–31b`. */

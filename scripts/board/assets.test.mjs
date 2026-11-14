@@ -1,5 +1,6 @@
 // Tests for the status board's static assets: the stylesheet's tokens are
-// complete in both themes, and the browser script at least parses.
+// complete in both themes, the road-ahead script parses, the burn-up keys move
+// focus, and the reload script reloads when it should (run against a stub page).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

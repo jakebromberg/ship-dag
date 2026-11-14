@@ -1,4 +1,4 @@
-// assets.mjs — the status board's stylesheet and browser script, inlined into
+// assets.mjs — the status board's stylesheet and browser scripts, inlined into
 // every page so the board stays one self-contained local file.
 //
 // They live as real files (page.css, road.js, burn.js, reload.js) so they read, lint and diff as CSS
