@@ -95,7 +95,7 @@ test('renderBoard shows every time in Pacific with its zone, never UTC', () => {
   const html = renderBoard(view());
   assert.match(html, /Updated Thu Oct 8, 1:30 PM PDT/);
   assert.match(html, /Oct 8, 1:02 PM PDT/, 'shipped close time');
-  assert.ok(!/UTC|GMT|Z"/.test(html.replace(/<script>[\s\S]*<\/script>/, '')), 'no UTC anywhere on the page');
+  assert.ok(!/UTC|GMT|Z"/.test(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')), 'no UTC anywhere on the page');
 });
 
 test('renderBoard names the command that rebuilds it and says nothing is committed', () => {
