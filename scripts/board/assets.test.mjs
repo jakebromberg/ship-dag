@@ -3,7 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { PAGE_CSS, ROAD_JS } from './assets.mjs';
+import vm from 'node:vm';
+import { PAGE_CSS, ROAD_JS, RELOAD_JS } from './assets.mjs';
 
 const declared = (css) => new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]));
 const lightBlock = PAGE_CSS.match(/^:root\{([^}]*)\}/m)[1];
@@ -306,3 +307,100 @@ test('a burn-up tooltip shows on hover or keyboard focus, not after a click leav
   assert.deepEqual(tipRule.sels, ['.burn .pt:hover+.tip', '.burn .pt:focus-visible+.tip']);
   assert.ok(!RULES.some((r) => r.sels.some((s) => /\.pt:focus(?!-)/.test(s))), 'no plain :focus rule on a step');
 });
+
+// ---- reload.js: reload by elapsed time while visible, and at once when the page is shown again (issue #542) ----
+// One meta refresh is one timer, which a browser can leave unfired in a frozen or suspended background tab and never
+// reschedules for a page restored from the back-forward cache. The script runs here in node:vm against a stub page:
+// a clock the test moves, a hidden flag, the listeners and interval it installs, and a count of reloads.
+
+/** Runs reload.js once, as the browser would at load, with the script tag's data-period set to `period` (no tag when null). */
+function reloadPage({ period = '120', hidden = false } = {}) {
+  const page = { now: 1_000_000, hidden, reloads: 0, intervals: [], listeners: {} };
+  const listen = (target) => (type, fn) => { (page.listeners[`${target}:${type}`] ||= []).push(fn); };
+  const document = {
+    get hidden() { return page.hidden; },
+    currentScript: period === null ? null : { dataset: { period } },
+    addEventListener: listen('document'),
+  };
+  const context = {
+    document,
+    location: { reload: () => { page.reloads += 1; } },
+    Date: { now: () => page.now },
+    setInterval: (fn, ms) => { page.intervals.push({ fn, ms }); return page.intervals.length; },
+  };
+  context.window = context;
+  context.addEventListener = listen('window');
+  vm.runInNewContext(RELOAD_JS, context);
+  page.wait = (seconds) => { page.now += seconds * 1000; };
+  page.tick = () => page.intervals.forEach(({ fn }) => fn());
+  page.fire = (key) => (page.listeners[key] || []).forEach((fn) => fn({ persisted: true }));
+  return page;
+}
+const RETURN_EVENTS = ['document:visibilitychange', 'window:focus', 'window:pageshow'];
+
+test('the reload script checks on one interval of at most 15 s (issue #542)', () => {
+  const page = reloadPage();
+  assert.equal(page.intervals.length, 1);
+  assert.ok(page.intervals[0].ms > 0 && page.intervals[0].ms <= 15_000, `interval ${page.intervals[0].ms} ms`);
+});
+
+test('the reload script listens for the page being shown again (issue #542)', () => {
+  const page = reloadPage();
+  for (const key of RETURN_EVENTS) assert.equal(page.listeners[key]?.length, 1, key);
+});
+
+test('a visible page does not reload before the period, on the interval or any return event (issue #542)', () => {
+  const page = reloadPage();
+  page.wait(119);
+  page.tick();
+  for (const key of RETURN_EVENTS) page.fire(key);
+  assert.equal(page.reloads, 0);
+});
+
+test('a visible page reloads on the interval once the period has passed (issue #542)', () => {
+  const page = reloadPage();
+  page.wait(120);
+  page.tick();
+  assert.equal(page.reloads, 1);
+});
+
+test('a hidden page never reloads, however long it has been open (issue #542)', () => {
+  const page = reloadPage({ hidden: true });
+  page.wait(3600);
+  page.tick();
+  for (const key of RETURN_EVENTS) page.fire(key);
+  assert.equal(page.reloads, 0);
+});
+
+for (const key of RETURN_EVENTS) {
+  test(`a page shown again after the period reloads at once on ${key}, with no interval tick (issue #542)`, () => {
+    const page = reloadPage({ hidden: true });
+    page.wait(600);
+    page.tick();
+    assert.equal(page.reloads, 0, 'not while hidden');
+    page.hidden = false;
+    page.fire(key);
+    assert.equal(page.reloads, 1);
+  });
+}
+
+test('the period comes from the script tag\'s data-period, in seconds (issue #542)', () => {
+  const page = reloadPage({ period: '300' });
+  page.wait(299);
+  page.tick();
+  assert.equal(page.reloads, 0, 'before 300 s');
+  page.wait(1);
+  page.tick();
+  assert.equal(page.reloads, 1, 'at 300 s');
+});
+
+for (const [name, period] of [['no script tag', null], ['an empty period', ''], ['a period that is not a number', 'soon'], ['a zero period', '0'], ['a negative period', '-5']]) {
+  test(`a page with ${name} installs nothing and never reloads (issue #542)`, () => {
+    const page = reloadPage({ period });
+    assert.equal(page.intervals.length, 0, 'no interval');
+    assert.deepEqual(Object.keys(page.listeners), [], 'no listeners');
+    page.wait(1e6);
+    for (const key of RETURN_EVENTS) page.fire(key);
+    assert.equal(page.reloads, 0);
+  });
+}
