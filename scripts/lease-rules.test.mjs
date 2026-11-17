@@ -16,11 +16,11 @@ const read = (p) => readFileSync(join(root, p), 'utf8');
 const unescaped = (src) => src.replaceAll('\\`', '`');
 const skill = read('SKILL.md');
 // The three copies of the implement prompt, which share the rules below.
-const implementCopies = ['prompt.md step 4', "SKILL.md's Implement block", "workflow.js's implementPrompt"];
+const implementCopies = ['prompt.md step 4', "subagent-blocks.md's Implement block", "workflow.js's implementPrompt"];
 const copies = {
   'prompt.md step 4': read('scripts/engine/prompt.md').split('\n').find((l) => l.startsWith('4. ')),
-  "SKILL.md's Implement block": docSection('### Implement (Sonnet, own worktree)'),
-  "SKILL.md's Review block": docSection('### Review (Opus, own worktree)'),
+  "subagent-blocks.md's Implement block": docSection('### Implement (Sonnet, own worktree)'),
+  "subagent-blocks.md's Review block": docSection('### Review (Opus, own worktree)'),
   "workflow.js's implementPrompt": unescaped(read('workflow.js')).split('function implementPrompt')[1].split('function reviewPathFor')[0],
   "workflow.js's reviewPrompt": unescaped(read('workflow.js')).split('function reviewPrompt')[1],
 };
@@ -44,7 +44,7 @@ for (const [name, text] of Object.entries(copies)) {
 
 test('step 4b sets CO_LEASE_HOOK=on as an inline prefix on the engine run, not an export', () => {
   assert.match(skill, /`SHIP_DAG_CONFIG="\$STATE\/config\.json" SHIP_DAG_PROJECT_ROOT="\$PROJECT_ROOT" CO_HOME="\$CO" CO_LEASE_HOOK=on npx /);
-  assert.doesNotMatch(skill, /export CO_LEASE_HOOK/);
+  assert.doesNotMatch(`${skill}\n${read('references/subagent-blocks.md')}`, /export CO_LEASE_HOOK/);
 });
 
 test('both retry rules carve out lease reruns', () => {
@@ -150,7 +150,7 @@ const checklist = [
   /name any test you could not make fail in the PR body/,
   /state in the PR body how each acceptance criterion is tested/,
 ];
-for (const name of ['prompt.md step 3', "SKILL.md's Implement block", "workflow.js's implementPrompt"]) {
+for (const name of ['prompt.md step 3', "subagent-blocks.md's Implement block", "workflow.js's implementPrompt"]) {
   const text = name === 'prompt.md step 3'
     ? read('scripts/engine/prompt.md').split('\n').find((l) => l.startsWith('3. '))
     : copies[name];
@@ -169,12 +169,12 @@ const implementPrompt = promptFrom(read('workflow.js'));
 const spread = '    ...decisionLines(iss.decisions),\n';
 const promptWithoutDecisions = promptFrom(read('workflow.js').replace(spread, ''));
 
-test("SKILL.md's Implement block has a {DECISIONS} slot beside {DIGEST}", () => {
-  assert.match(copies["SKILL.md's Implement block"], /\{DIGEST\}[\s\S]*\{DECISIONS\}/);
+test("subagent-blocks.md's Implement block has a {DECISIONS} slot beside {DIGEST}", () => {
+  assert.match(copies["subagent-blocks.md's Implement block"], /\{DIGEST\}[\s\S]*\{DECISIONS\}/);
 });
 
 test("SKILL.md's {DECISIONS} fill rule sits in the step text, outside the verbatim block, with withDecisions' heading", () => {
-  assert.ok(!copies["SKILL.md's Implement block"].includes('fill from triage'));
+  assert.ok(!copies["subagent-blocks.md's Implement block"].includes('fill from triage'));
   const fillRule = `\`{DECISIONS}\` with the line \`${DECISIONS_HEADING}\``;
   assert.ok(docSection('### 4. Implement fan-out').includes(fillRule));
   assert.ok(!docSection('### Implement (Sonnet, own worktree)').includes(fillRule));

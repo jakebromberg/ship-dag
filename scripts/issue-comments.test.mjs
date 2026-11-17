@@ -16,9 +16,9 @@ const unescaped = (src) => src.replaceAll('\\`', '`');
 
 const copies = {
   'prompt.md step 2': read('scripts/engine/prompt.md').split('\n').find((l) => l.startsWith('2. ')),
-  "SKILL.md's Implement block": docSection('### Implement (Sonnet, own worktree)'),
+  "subagent-blocks.md's Implement block": docSection('### Implement (Sonnet, own worktree)'),
   "workflow.js's implementPrompt": unescaped(read('workflow.js')).split('function implementPrompt')[1].split('function reviewPathFor')[0],
-  "SKILL.md's Retrospective plan pass": docSection('### Retrospective (Opus, read-only)').split('\n').find((l) => l.includes('For the plan pass')),
+  "subagent-blocks.md's Retrospective plan pass": docSection('### Retrospective (Opus, read-only)').split('\n').find((l) => l.includes('For the plan pass')),
 };
 
 const READ = /gh issue view \S+( --repo \S+)? --json title,body,labels,comments`/;

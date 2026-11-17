@@ -1983,6 +1983,7 @@ describe('SKILL.md telemetry wiring', () => {
     assert.match(skill, /^### 6\.3 Ingest the wave$/m);
     for (const cls of ['notIngested', 'unreadable', 'neverReported']) assert.ok(skill.includes(`\`${cls}\``), cls);
     assert.ok(!skill.includes('<url-encoded-ref>'));
+    assert.ok(!readFileSync(fileURLToPath(new URL('../references/subagent-blocks.md', import.meta.url)), 'utf8').includes('<url-encoded-ref>'));
   });
 
   test('has the Review block write meta.reportId beside meta.trigger', () => {
