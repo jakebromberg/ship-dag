@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { docBetween, docLine } from './lib/doc-pins.mjs';
+import { docBetween, docLine, docSection } from './lib/doc-pins.mjs';
 import {
   gateReview,
   parseBlockOn,
@@ -855,7 +855,8 @@ const MERGE_ORDER_SITES = {
   // The Review block says when to use the field, and how the sibling is found.
   // Step 6.2 reads notes from the files' own `findings[]`, names the wxyc-shared exception by repo, and
   // the Review block says what `{CARRIED_NOTES}` holds.
-  'SKILL.md': [/`mergeOrder`/, /`git merge-tree`/, /range-diff quick check/, /`git range-diff </, /info\.version/, /WXYC\/wxyc-shared/, /`tests\/api-spec\.test\.ts`/, /`\{CARRIED_NOTES\}` is `none`/, /`meta\.head`/],
+  'SKILL.md': [/`mergeOrder`/, /range-diff quick check/, /`git range-diff </, /info\.version/, /WXYC\/wxyc-shared/, /`tests\/api-spec\.test\.ts`/, /`meta\.head`/],
+  'references/subagent-blocks.md': [/`mergeOrder`/, /`git merge-tree`/, /`\{CARRIED_NOTES\}` is `none`/],
   'references/review-schema.md': [/`mergeOrder`/, /`meta\.head`/],
   'references/escalation-policy.md': [/merge-order/],
 };
@@ -897,7 +898,7 @@ test('step 6.2 states the fail-closed escalation rule and carries none of the si
 
 test('every round file records the head it reviewed: the Review block, the quick check and the schema say so', () => {
   const skill = readFileSync(join(REPO_ROOT, 'SKILL.md'), 'utf8');
-  assert.ok(skill.includes('meta: { trigger: "{TRIGGER}", reportId: "{REPORT_ID}", head: "<sha>" }'), 'the Review block does not write meta.head');
+  assert.ok(docSection('### Review (Opus, own worktree)').includes('meta: { trigger: "{TRIGGER}", reportId: "{REPORT_ID}", head: "<sha>" }'), 'the Review block does not write meta.head');
   assert.ok(skill.includes('method: "range-diff quick check", head: "<sha>" }'), 'the quick check does not write meta.head');
   assert.match(skill, /missing `meta\.head`/, 'step 6.2 does not escalate on a missing meta.head');
 });
@@ -923,7 +924,7 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ENUM_SITES = {
   'references/review-schema.md': 1, // the `category` line of the JSON block
   'references/retrospective-schema.md': 1, // the inherited-vocabulary sentence
-  'SKILL.md': 2, // the Review block: the "Cover ..." prose and the inline enum
+  'references/subagent-blocks.md': 2, // the Review block: the "Cover ..." prose and the inline enum
   'workflow.js': 2, // the mirrored Review prompt: the same two
 };
 
@@ -1091,12 +1092,12 @@ const OMISSION_FAILS_CLOSED = /omitting it fails toward blocking/;
 
 /**
  * Every copy of the Review subagent's prompt, and the schema it points the
- * reviewer at. `workflow.js` mirrors SKILL.md's block for the fallback path,
+ * reviewer at. `workflow.js` mirrors the Review block for the fallback path,
  * so an instruction added to one and not the other leaves half the runs
  * emitting the field.
  */
 const BLOCKING_INSTRUCTION_SITES = {
-  'SKILL.md': [EMITS_BLOCKING, WRITES_BLOCKING, OMISSION_FAILS_CLOSED],
+  'references/subagent-blocks.md': [EMITS_BLOCKING, WRITES_BLOCKING, OMISSION_FAILS_CLOSED],
   'workflow.js': [EMITS_BLOCKING, WRITES_BLOCKING, OMISSION_FAILS_CLOSED],
   // The schema block the prompts tell the reviewer to classify against.
   'references/review-schema.md': [/"blocking":\s*(?:true|false)/],
@@ -1112,7 +1113,7 @@ const BLOCKING_INSTRUCTION_SITES = {
  */
 const COUNT_IS_CHECKED = /`?findingCount`? is cross-checked against the file/;
 const PROMPT_INSTRUCTION_SITES = {
-  'SKILL.md': [COUNT_IS_CHECKED],
+  'references/subagent-blocks.md': [COUNT_IS_CHECKED],
   'workflow.js': [COUNT_IS_CHECKED],
 };
 
