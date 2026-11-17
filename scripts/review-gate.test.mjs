@@ -922,6 +922,7 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * file's other copy.
  */
 const ENUM_SITES = {
+  'SKILL.md': 0, // the Review block moved to references/subagent-blocks.md (issue #494)
   'references/review-schema.md': 1, // the `category` line of the JSON block
   'references/retrospective-schema.md': 1, // the inherited-vocabulary sentence
   'references/subagent-blocks.md': 2, // the Review block: the "Cover ..." prose and the inline enum

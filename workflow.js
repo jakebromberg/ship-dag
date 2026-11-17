@@ -28,8 +28,8 @@ const blockOn = (A && A.blockOn) || ['correctness', 'security', 'convention', 'c
 const repo = A && A.repo
 // Findings go to disk, not into the workflow's return value: the skill gates on
 // scripts/review-gate.mjs reading these files, so a wave's whole finding set
-// never has to pass back through main-session context. Mirrors SKILL.md's
-// Review block — keep the two in sync.
+// never has to pass back through main-session context. Mirrors the Review
+// block in references/subagent-blocks.md — keep the two in sync.
 const reviewDir = (A && A.reviewDir) || '.'
 
 // Map triage's complexity enum → implement effort (explicit implEffort wins).

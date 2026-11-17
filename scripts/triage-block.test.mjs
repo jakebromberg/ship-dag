@@ -7,7 +7,7 @@ import { docLine, docSection } from './lib/doc-pins.mjs';
 const block = docSection('### Triage (Haiku, read-only)');
 const step = (n) => {
   const line = block.split('\n').find((l) => l.startsWith(`> ${n}. `));
-  assert.ok(line, `SKILL.md's Triage block has no step ${n}; update this pin to wherever the trust rule moved`);
+  assert.ok(line, `subagent-blocks.md's Triage block has no step ${n}; update this pin to wherever the trust rule moved`);
   return line;
 };
 

@@ -60,7 +60,7 @@ test('step 4 documents recommendedHandoff in the preflight output', () => {
 });
 
 const copies = {
-  "SKILL.md's Implement block": docSection('### Implement (Sonnet, own worktree)'),
+  "subagent-blocks.md's Implement block": docSection('### Implement (Sonnet, own worktree)'),
   "workflow.js's implementPrompt": workflow.split('function implementPrompt')[1].split('function reviewPathFor')[0],
 };
 for (const [name, text] of Object.entries(copies)) {
@@ -68,7 +68,7 @@ for (const [name, text] of Object.entries(copies)) {
 }
 
 const reviewCopies = {
-  "SKILL.md's Review block": [docSection('### Review (Opus, own worktree)'), CLOSING_LINE_RETURN],
+  "subagent-blocks.md's Review block": [docSection('### Review (Opus, own worktree)'), CLOSING_LINE_RETURN],
   "workflow.js's reviewPrompt": [workflow.split('function reviewPrompt')[1], SCHEMA_RETURN],
 };
 for (const [name, [text, ret]] of Object.entries(reviewCopies)) {

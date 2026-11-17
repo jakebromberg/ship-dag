@@ -117,7 +117,8 @@ test('SKILL.md and resource.mjs: --parallel is a per-engine upper bound under th
   assert.match(skill, /per-engine upper bound/);
   assert.match(skill, /Several engines \(other runs\) may run at once/);
   const resource = readFileSync(join(REPO_ROOT, 'scripts', 'lib', 'resource.mjs'), 'utf8');
-  for (const text of [skill, resource]) assert.doesNotMatch(text, /engine adapts live|wave --parallel K`/);
+  const blocks = readFileSync(join(REPO_ROOT, 'references', 'subagent-blocks.md'), 'utf8');
+  for (const text of [skill, blocks, resource]) assert.doesNotMatch(text, /engine adapts live|wave --parallel K`/);
 });
 
 test('escalation-policy.md: point F offers its four choices and starts anyway only through the inline override', () => {
@@ -127,5 +128,5 @@ test('escalation-policy.md: point F offers its four choices and starts anyway on
   assert.ok(pointF.includes('CO_PRESSURE_OVERRIDE=critical-as-warning … run.mts wave --parallel 1'));
   assert.ok(pointF.includes('pressureOverride: true'));
   assert.match(pointF, /reset the summed-wait counter to 0/);
-  assert.doesNotMatch(`${skill}\n${policy}`, /export CO_PRESSURE_OVERRIDE/);
+  assert.doesNotMatch(`${skill}\n${readFileSync(join(REPO_ROOT, 'references', 'subagent-blocks.md'), 'utf8')}\n${policy}`, /export CO_PRESSURE_OVERRIDE/);
 });
