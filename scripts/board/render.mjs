@@ -160,8 +160,6 @@ export function renderBoard(v) {
     h.push(html`<h2>Needs attention</h2><div class="callouts">${notes.callouts.map((c) => html`<div class="callout${c.owner === 'you' ? ' you' : ''}"><b>${c.title}</b>${c.text}</div>`)}</div>`);
   }
 
-  if (ms.size) h.push(milestoneTable(v, byRef, link, owned));
-
   const flight = v.tickets.filter((t) => t.status === 'flight').sort((a, b) => compareRefs(a.ref, b.ref));
   const defaultSubtitle = v.current ? `wave ${v.current.id}` : '';
   h.push(html`<h2>In flight <small>${notes.wave || defaultSubtitle}</small></h2>`);
@@ -180,7 +178,9 @@ export function renderBoard(v) {
   h.push(html`<h2>Shipped <small>${plural(shipped.length, 'ticket')}, newest first</small></h2><details><summary>Show all ${shipped.length}</summary>`
     + html`<div class="tw"><table><thead><tr><th>Ticket</th><th>Title</th><th>PR</th><th>Wave</th><th>Closed</th></tr></thead><tbody>${shipped.map((t) => {
       const merged = prLinks(t, ['merged']);
-      return html`<tr><td class="n">${link(t.ref)}</td><td>${t.title}${t.outside ? html` <span class="owner">${list(['outside this run', owned(t.ref)].filter(Boolean), ' · ')}</span>` : ''}</td><td class="n">${merged.length ? list(merged, ' ') : html`<span class="meta">—</span>`}</td><td class="n">${t.shippedWave || ''}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`;
+      const m = ms.get(t.ref);
+      const reached = m?.state === 'reached' ? html` <span class="ms-tag reached">Milestone${m.name === t.title ? '' : `: ${m.name}`}</span>` : '';
+      return html`<tr><td class="n">${link(t.ref)}</td><td>${t.title}${reached}${t.outside ? html` <span class="owner">${list(['outside this run', owned(t.ref)].filter(Boolean), ' · ')}</span>` : ''}</td><td class="n">${merged.length ? list(merged, ' ') : html`<span class="meta">—</span>`}</td><td class="n">${t.shippedWave || ''}</td><td class="n">${formatPacific(t.closedAt)}</td></tr>`;
     })}</tbody></table></div></details>`);
   for (const g of v.before || []) {
     h.push(html`<details><summary>Shipped before this run: ${link(g.ref, null, g.url)} — ${g.title} `
@@ -215,35 +215,6 @@ function repoBars(tickets, repoLabel) {
 }
 
 /** The Milestones table: one row per milestone, in `milestones`' order, with its state and projected wave. */
-/** How many outside tickets a milestone row names inline before it folds them under a disclosure. */
-const OUTSIDE_INLINE = 3;
-
-function milestoneTable(v, byRef, link, owned) {
-  const state = (m) => {
-    if (m.state === 'reached') return html`Reached ${formatPacific(m.closedAt)}`;
-    if (m.state === 'unorderable') return html`Can't be ordered`;
-    const n = m.before + m.outside.length; // the required tickets before it, the run's and the outside ones (issue #522)
-    const outsideList = list(m.outside.map((r) => list([link(r), owned(r)].filter(Boolean), ' — ')), ', ');
-    // Past a few, the outside tickets fold away: each names its epic, so a long list buries the row under it.
-    const split = !m.outside.length ? ''
-      : m.outside.length <= OUTSIDE_INLINE ? html`: ${m.before} in this run, ${m.outside.length} outside it (${outsideList})`
-        : html`: ${m.before} in this run, ${m.outside.length} outside it<details class="ms-outside"><summary>Show the ${m.outside.length} outside tickets</summary>${outsideList}</details>`;
-    return html`${m.next ? 'Next up: ' : ''}${n ? html`${plural(n, 'open ticket')} before it${split}` : 'nothing open before it'}`;
-  };
-  const wave = (m) => (m.state === 'reached' ? (m.wave?.label ? `shipped in wave ${m.wave.label}` : '—')
-    : !m.wave ? '—' : m.wave.label === null ? 'Yours' : `Wave ${m.wave.label}${m.wave.now ? ' · building now' : ''}`);
-  // A sequence, so an ordered track: a dot on a rail per milestone, its name on one line and the ticket, state and
-  // wave under it. A table gave the name a column no wider than its header word.
-  const rows = v.milestones.map((m) => {
-    const t = byRef.get(m.ref) || {};
-    const name = html`<div class="ms-name">${m.name}${m.next ? html`<span class="chip ms-next">Next</span>` : ''}</div>`;
-    const meta = html`<div class="ms-meta"><span class="ms-ticket">${link(m.ref)} ${chip(t.status, t.stage)}</span><span class="ms-state">${state(m)}</span><span class="ms-wave">${wave(m)}</span></div>`;
-    return html`<li class="ms-row s-${m.state}${m.next ? ' next' : ''}"><span class="ms-dot"></span><div class="ms-body">${name}${meta}</div></li>`;
-  });
-  return html`<h2>Milestones <small>points to audition or sign off, in the order they come</small></h2>`
-    + html`<ol class="ms-track">${rows}</ol>`;
-}
-
 function roadAhead(v, byRef, display, link, gates, badge, owned) {
   const g = v.graph;
   const h = [];
@@ -294,7 +265,10 @@ function roadAhead(v, byRef, display, link, gates, badge, owned) {
   const edges = rows.flat().flatMap((r) => sorted(g.direct.get(r)).map((p) => [p, r, chainEdges.has(`${p}>${r}`), ...(road.size ? [road.has(r)] : [])]));
   h.push(html`<div class="dag" id="dag" data-edges="${JSON.stringify(edges)}"><svg aria-hidden="true"></svg>`);
   rows.forEach((row, i) => {
-    h.push(html`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${rowWaves(row)}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}</div><div class="ns">`);
+    // A milestone is named on the step it finishes in, so reading down the steps reads the milestones in order.
+    const marks = (v.milestones || []).filter((m) => m.state === 'open' && row.includes(m.ref)).sort((a, b) => compareRefs(a.ref, b.ref));
+    const tags = marks.length ? html`<span class="ms-tags">${marks.map((m) => html`<span class="ms-tag${m.next ? ' next' : ''}">${m.next ? 'Next: ' : ''}${m.name}</span>`)}</span>` : '';
+    h.push(html`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${rowWaves(row)}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}${tags}</div><div class="ns">`);
     for (const r of row) {
       const t = byRef.get(r) || {};
       const title = display.get(r)?.title ?? '';

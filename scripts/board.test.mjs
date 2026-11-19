@@ -318,12 +318,13 @@ test('a board.json startedAt that is not a date warns that closed outside blocke
   assert.ok(err.some((m) => /startedAt .*not a date.*closed outside blockers are not counted/.test(m)), err.join('\n'));
 });
 
-test('a milestone counts the open outside tickets before it beside the run\'s (issue #522)', async () => {
+test('a milestone\'s open outside blocker is a node on the road ahead, before the step the milestone is named on (issue #522)', async () => {
   const s = setUp();
   const gh = fakeGh({ ...TABLE, [R(2)]: { blockers: [R(7)], labels: ['hitl-gate'] }, [R(7)]: {} });
   const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
   assert.equal(code, 0, err.join('\n'));
-  assert.match(html, /2 open tickets before it: 1 in this run, 1 outside it \(<a href="https:\/\/github.com\/o\/r\/issues\/7">r#7<\/a> — no epic · not scheduled\)/);
+  assert.match(html, /data-ref="o\/r#7"(?:(?!data-ref)[\s\S])*?<div class="wn">no epic · not scheduled<\/div>/, 'the outside blocker is drawn, with its owner');
+  assert.ok(html.indexOf('data-ref="o/r#7"') < html.indexOf('<span class="ms-tag'), 'the blocker comes in an earlier step than the milestone\'s label');
 });
 
 // ---- the owner label: each outside ticket's top epic and the run shipping it (issue #522) ----
@@ -363,7 +364,7 @@ test('a shipped outside ticket and a milestone\'s outside ticket carry the owner
   const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
   assert.equal(code, 0, err.join('\n'));
   assert.match(shippedRows(html), /Title 8 <span class="owner">outside this run · Title 80 <a href="https:\/\/github.com\/o\/r\/issues\/80">r#80<\/a> · run sd-20261001-090000<\/span>/);
-  assert.match(html, /1 outside it \(<a href="https:\/\/github.com\/o\/r\/issues\/7">r#7<\/a> — Title 70 <a href="https:\/\/github.com\/o\/r\/issues\/70">r#70<\/a> · not scheduled\)/);
+  assert.match(html, /data-ref="o\/r#7"(?:(?!data-ref)[\s\S])*?<div class="wn">Title 70 <a href="https:\/\/github.com\/o\/r\/issues\/70">r#70<\/a> · not scheduled<\/div>/);
 });
 
 test('an outside ticket\'s top epic stops below an ancestor it shares with the run\'s epic (issue #522 review)', async () => {
@@ -974,10 +975,9 @@ test('a hitl-gate ticket is a milestone, its label read in the same batched quer
   assert.equal(code, 0, err.join('\n'));
   assert.deepEqual(gh.calls.map((c) => c.sort()), [[R(1), R(2), R(9)]], 'no extra query');
   assert.ok(queries.every((q) => q.includes('labels(first:100){nodes{name}}')), 'the lookup asks for labels, up to 100 so a crowded ticket keeps its hitl-gate');
-  const section = html.slice(html.indexOf('<h2>Milestones'), html.indexOf('<h2>In flight'));
-  assert.match(section, /<div class="ms-name">Trace tool<span class="chip ms-next">Next<\/span>/);
-  assert.match(section, /Trace tool[\s\S]*?<span class="ms-state">Next up: nothing open before it<\/span>/);
-  assert.match(section, /<div class="ms-name">Title 2<\/div>[\s\S]*?<span class="ms-state">1 open ticket before it<\/span>/);
+  assert.ok(!html.includes('<h2>Milestones'), 'milestones are named in the road ahead, not in a section of their own');
+  assert.match(html, /<span class="ms-tag next">Next: Trace tool<\/span>/);
+  assert.match(html, /<span class="ms-tag">Title 2<\/span>/);
   assert.match(html, /data-ref="o\/r#2"(?:(?!data-ref)[\s\S])*?<div class="ms-badge">Milestone: Title 2<\/div>/);
   assert.ok(err.includes('[board] board-notes milestones names o/r#42, which is not a ticket of this run'), err.join('\n'));
 });
