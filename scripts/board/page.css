@@ -95,7 +95,21 @@ details summary{cursor:pointer;color:var(--ink2);margin:8px 0}footer{margin-top:
 /* Milestones (issue #518): the badge on a milestone's card, its Next chip, and the road to the next one, which a dashed
    outline marks beside the longest chain's accent ring rather than in place of it. */
 .ms-badge{align-self:flex-start;font-size:11.5px;font-weight:600;color:var(--ms);background:var(--ms-bg);border-radius:6px;padding:1px 7px}
-.ms-next{color:var(--ms);background:var(--ms-bg);margin-left:8px}.ms-row.next td{font-weight:600}
+.ms-next{color:var(--ms);background:var(--ms-bg);margin-left:8px;vertical-align:1px}
+.ms-track{list-style:none;margin:0;padding:6px 18px;background:var(--card);border-radius:12px}
+.ms-row{position:relative;display:flex;gap:14px;padding:12px 0}
+.ms-row:not(:last-child)::before{content:"";position:absolute;left:6px;top:28px;bottom:-12px;width:2px;background:var(--line)}
+.ms-row.s-reached:not(:last-child)::before{background:var(--ship)}
+.ms-dot{flex:none;width:14px;height:14px;margin-top:3px;border-radius:50%;border:2px solid var(--muted);background:var(--card);position:relative;z-index:1}
+.ms-row.s-reached .ms-dot{border-color:var(--ship);background:var(--ship)}
+.ms-row.next .ms-dot{border-color:var(--ms);background:var(--ms-bg);box-shadow:0 0 0 4px var(--ms-bg)}
+.ms-row.s-unorderable .ms-dot{border-style:dashed;border-color:var(--block)}
+.ms-body{flex:1;min-width:0}.ms-name{font-weight:600;line-height:1.35}
+.ms-row.s-reached .ms-name{color:var(--ink2);font-weight:500}.ms-row.next .ms-name{font-size:16px}
+.ms-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin-top:4px;font-size:13px;color:var(--ink2)}
+.ms-ticket{white-space:nowrap}.ms-state{flex:1 1 16em;min-width:0}
+.ms-wave{margin-left:auto;white-space:nowrap;color:var(--muted);font-variant-numeric:tabular-nums}
+.ms-outside{margin-top:4px}.ms-outside summary{margin:0;font-size:12.5px;color:var(--accent)}.ms-outside[open]{padding:6px 0 2px;line-height:1.55}
 .node.mpath{outline:2px dashed var(--ms);outline-offset:2px}.path.ms-road a{border-color:var(--ms)}
 .dag path.ms{stroke:var(--ms);stroke-opacity:.85;stroke-width:2.2;stroke-dasharray:5 3}.dag path.ms.crit{stroke:var(--accent);stroke-dasharray:none}
 .owner{color:var(--muted);font-size:12.5px;margin-left:6px}
