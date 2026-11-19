@@ -975,9 +975,9 @@ test('a hitl-gate ticket is a milestone, its label read in the same batched quer
   assert.deepEqual(gh.calls.map((c) => c.sort()), [[R(1), R(2), R(9)]], 'no extra query');
   assert.ok(queries.every((q) => q.includes('labels(first:100){nodes{name}}')), 'the lookup asks for labels, up to 100 so a crowded ticket keeps its hitl-gate');
   const section = html.slice(html.indexOf('<h2>Milestones'), html.indexOf('<h2>In flight'));
-  assert.match(section, /<td>Trace tool<span class="chip ms-next">Next<\/span>/);
-  assert.match(section, /<td>Trace tool[\s\S]*?<td>Next up: nothing open before it<\/td>/);
-  assert.match(section, /<td>Title 2<\/td>[\s\S]*?<td>1 open ticket before it<\/td>/);
+  assert.match(section, /<div class="ms-name">Trace tool<span class="chip ms-next">Next<\/span>/);
+  assert.match(section, /Trace tool[\s\S]*?<span class="ms-state">Next up: nothing open before it<\/span>/);
+  assert.match(section, /<div class="ms-name">Title 2<\/div>[\s\S]*?<span class="ms-state">1 open ticket before it<\/span>/);
   assert.match(html, /data-ref="o\/r#2"(?:(?!data-ref)[\s\S])*?<div class="ms-badge">Milestone: Title 2<\/div>/);
   assert.ok(err.includes('[board] board-notes milestones names o/r#42, which is not a ticket of this run'), err.join('\n'));
 });

@@ -215,22 +215,33 @@ function repoBars(tickets, repoLabel) {
 }
 
 /** The Milestones table: one row per milestone, in `milestones`' order, with its state and projected wave. */
+/** How many outside tickets a milestone row names inline before it folds them under a disclosure. */
+const OUTSIDE_INLINE = 3;
+
 function milestoneTable(v, byRef, link, owned) {
   const state = (m) => {
     if (m.state === 'reached') return html`Reached ${formatPacific(m.closedAt)}`;
     if (m.state === 'unorderable') return html`Can't be ordered`;
     const n = m.before + m.outside.length; // the required tickets before it, the run's and the outside ones (issue #522)
-    const split = m.outside.length ? html`: ${m.before} in this run, ${m.outside.length} outside it (${list(m.outside.map((r) => list([link(r), owned(r)].filter(Boolean), ' — ')), ', ')})` : '';
+    const outsideList = list(m.outside.map((r) => list([link(r), owned(r)].filter(Boolean), ' — ')), ', ');
+    // Past a few, the outside tickets fold away: each names its epic, so a long list buries the row under it.
+    const split = !m.outside.length ? ''
+      : m.outside.length <= OUTSIDE_INLINE ? html`: ${m.before} in this run, ${m.outside.length} outside it (${outsideList})`
+        : html`: ${m.before} in this run, ${m.outside.length} outside it<details class="ms-outside"><summary>Show the ${m.outside.length} outside tickets</summary>${outsideList}</details>`;
     return html`${m.next ? 'Next up: ' : ''}${n ? html`${plural(n, 'open ticket')} before it${split}` : 'nothing open before it'}`;
   };
   const wave = (m) => (m.state === 'reached' ? (m.wave?.label ? `shipped in wave ${m.wave.label}` : '—')
     : !m.wave ? '—' : m.wave.label === null ? 'Yours' : `Wave ${m.wave.label}${m.wave.now ? ' · building now' : ''}`);
+  // A sequence, so an ordered track: a dot on a rail per milestone, its name on one line and the ticket, state and
+  // wave under it. A table gave the name a column no wider than its header word.
   const rows = v.milestones.map((m) => {
     const t = byRef.get(m.ref) || {};
-    return html`<tr class="ms-row${m.next ? ' next' : ''}"><td>${m.name}${m.next ? html`<span class="chip ms-next">Next</span>` : ''}</td><td class="n">${link(m.ref)} ${chip(t.status, t.stage)}</td><td>${state(m)}</td><td class="n">${wave(m)}</td></tr>`;
+    const name = html`<div class="ms-name">${m.name}${m.next ? html`<span class="chip ms-next">Next</span>` : ''}</div>`;
+    const meta = html`<div class="ms-meta"><span class="ms-ticket">${link(m.ref)} ${chip(t.status, t.stage)}</span><span class="ms-state">${state(m)}</span><span class="ms-wave">${wave(m)}</span></div>`;
+    return html`<li class="ms-row s-${m.state}${m.next ? ' next' : ''}"><span class="ms-dot"></span><div class="ms-body">${name}${meta}</div></li>`;
   });
   return html`<h2>Milestones <small>points to audition or sign off, in the order they come</small></h2>`
-    + html`<div class="tw"><table class="ms-table"><thead><tr><th>Milestone</th><th>Ticket</th><th>State</th><th>Wave</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    + html`<ol class="ms-track">${rows}</ol>`;
 }
 
 function roadAhead(v, byRef, display, link, gates, badge, owned) {

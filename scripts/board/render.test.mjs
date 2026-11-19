@@ -500,7 +500,12 @@ test('renderBoard draws a Milestones section before In flight, one row per miles
   const html = renderBoard(msView());
   assert.ok(html.indexOf('<h2>Milestones') > 0 && html.indexOf('<h2>Milestones') < html.indexOf('<h2>In flight'), 'before In flight');
   const s = section(html);
-  assert.equal((s.match(/<tr class="ms-row/g) || []).length, 3);
+  assert.equal((s.match(/<li class="ms-row/g) || []).length, 3);
+  assert.doesNotMatch(s, /<table|<th>/, 'a track, not a table: no header row to size a column by');
+  assert.match(s, /<ol class="ms-track">/);
+  assert.match(s, /<li class="ms-row s-reached">[\s\S]*?Ticket 1/, 'a reached row says so');
+  assert.match(s, /<li class="ms-row s-open next">[\s\S]*?Ticket 3/, 'the next row is marked');
+  assert.match(s, /<li class="ms-row s-unorderable">[\s\S]*?Ticket 7/, 'an unorderable row is marked');
   assert.match(s, /Ticket 1[\s\S]*?href="https:\/\/github.com\/o\/r\/issues\/1"[\s\S]*?Reached Oct 8, 1:02 PM PDT[\s\S]*?shipped in wave 3/);
   assert.match(s, /Ticket 3<span class="chip ms-next">Next<\/span>[\s\S]*?Next up: 1 open ticket before it[\s\S]*?Wave 5</);
   assert.match(s, /Ticket 7[\s\S]*?Can't be ordered/);
@@ -549,7 +554,7 @@ test('renderBoard names a milestone\'s outside blockers and escapes every milest
 
 test('renderBoard shows a dash for a milestone reached outside any wave (issue #518)', () => {
   const html = renderBoard(msView({ labels: { 1: ['hitl-gate'] }, tickets: (ts) => ts.map((t) => (t.ref === 'o/r#1' ? { ...t, shippedWave: undefined } : t)) }));
-  assert.match(section(html), /Reached Oct 8, 1:02 PM PDT<\/td><td class="n">—<\/td>/);
+  assert.match(section(html), /<span class="ms-state">Reached Oct 8, 1:02 PM PDT<\/span><span class="ms-wave">—<\/span>/);
 });
 
 test('renderBoard gives a data-edges triple no road flag when no milestone is next, and a fourth element when one is (issue #518)', () => {
@@ -592,16 +597,25 @@ for (const [name, patch, state, wave] of [
 ]) {
   test(`renderBoard Milestones row: ${name} (issue #518)`, () => {
     const html = renderBoard(blockedView((rows) => rows.map((m) => ({ ...m, ...patch }))));
-    const cells = section(html).match(/<tr class="ms-row[^>]*>(?:<td[^>]*>.*?<\/td>){2}<td>(.*?)<\/td><td class="n">(.*?)<\/td><\/tr>/s);
+    const cells = section(html).match(/<li class="ms-row[^>]*>.*?<span class="ms-state">(.*?)<\/span><span class="ms-wave">(.*?)<\/span><\/div><\/div><\/li>/s);
     assert.ok(cells, 'one row');
     if (state) assert.equal(cells[1], state);
     assert.equal(cells[2], wave);
   });
 }
 
+test('renderBoard folds a long outside-ticket list under a disclosure, so a milestone row stays one or two lines', () => {
+  const outside = ['o/r#9', 'o/r#10', 'o/r#11', 'o/r#12'];
+  const html = renderBoard(blockedView((rows) => rows.map((m) => ({ ...m, next: true, before: 1, outside }))));
+  const state = section(html).match(/<span class="ms-state">(.*?)<\/span><span class="ms-wave">/s)[1];
+  assert.match(state, /^Next up: 5 open tickets before it: 1 in this run, 4 outside it<details class="ms-outside"><summary>Show the 4 outside tickets<\/summary>/);
+  assert.match(state, /<details class="ms-outside">[\s\S]*r#9[\s\S]*r#12[\s\S]*<\/details>$/, 'every outside ticket is inside the disclosure');
+  assert.match(PAGE_CSS, /\.ms-outside\{/);
+});
+
 test('renderBoard marks a building-now milestone and no other (issue #518)', () => {
   const html = renderBoard(blockedView((rows) => rows.map((m) => ({ ...m, wave: { label: '4b', now: true } }))));
-  assert.match(section(html), /<td class="n">Wave 4b · building now<\/td>/);
+  assert.match(section(html), /<span class="ms-wave">Wave 4b · building now<\/span>/);
   assert.doesNotMatch(section(renderBoard(blockedView())), /building now/);
 });
 
