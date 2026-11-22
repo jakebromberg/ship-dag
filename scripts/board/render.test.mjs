@@ -595,13 +595,13 @@ function ftWide(features) {
   return { ...v, graph, waves: projectWaves(graph, new Map(v.tickets.map((t) => [t.ref, t.status])), v.current) };
 }
 
-test('renderBoard tags a step with the feature names of its tickets, most tickets first, ties in step order, a count past one (issue #558)', () => {
-  const ties = stepLabel(renderBoard(ftWide({ [R(4)]: 'C', [R(2)]: 'A', [R(3)]: 'B' })), R(2));
-  assert.match(ties, /can start now<span class="ft-tags"><span class="ft-tag">A<\/span><span class="ft-tag">B<\/span><span class="ft-tag">C<\/span><\/span>$/, 'one ticket each: step order, no counts');
-  const counted = stepLabel(renderBoard(ftWide({ [R(2)]: 'First', [R(3)]: 'Second', [R(4)]: 'Second' })), R(2));
-  assert.match(counted, /<span class="ft-tags"><span class="ft-tag">Second ×2<\/span><span class="ft-tag">First<\/span><\/span>$/, 'the name on two tickets precedes the one seen first');
-  const all = stepLabel(renderBoard(ftWide({ [R(2)]: 'Mods pane', [R(3)]: 'Mods pane', [R(4)]: 'Mods pane' })), R(2));
-  assert.match(all, /<span class="ft-tags"><span class="ft-tag">Mods pane ×3<\/span><\/span>$/);
+test('renderBoard tags a step with the feature names of its tickets in the order the notes name them, a count past one (issue #558)', () => {
+  const label = (features) => stepLabel(renderBoard(ftWide(features)), R(2));
+  assert.match(label({ [R(4)]: 'C', [R(2)]: 'A', [R(3)]: 'B' }), /can start now<span class="ft-tags"><span class="ft-tag">C<\/span><span class="ft-tag">A<\/span><span class="ft-tag">B<\/span><\/span>$/, 'one ticket each: the map order, not the step order, no counts');
+  assert.match(label({ [R(4)]: 'Major', [R(2)]: 'Small', [R(3)]: 'Small' }), /<span class="ft-tags"><span class="ft-tag">Major<\/span><span class="ft-tag">Small ×2<\/span><\/span>$/, 'a name on fewer tickets still leads when the notes name it first');
+  assert.match(label({ [R(2)]: 'First', [R(3)]: 'Second', [R(4)]: 'Second' }), /<span class="ft-tag">First<\/span><span class="ft-tag">Second ×2<\/span><\/span>$/);
+  assert.match(label({ [R(2)]: 'Mods pane', [R(3)]: 'Mods pane', [R(4)]: 'Mods pane' }), /<span class="ft-tags"><span class="ft-tag">Mods pane ×3<\/span><\/span>$/);
+  assert.match(label({ 'o/r#9': 'Off board', [R(3)]: 'Later', [R(2)]: 'Earlier' }), /<span class="ft-tag">Later<\/span><span class="ft-tag">Earlier<\/span>/, 'an entry for a ticket outside the step still ranks nothing it does not show');
 });
 
 test('renderBoard puts the feature tags before the milestone tags and escapes a feature name (issue #558)', () => {
