@@ -98,6 +98,8 @@ details summary{cursor:pointer;color:var(--ink2);margin:8px 0}footer{margin-top:
 .ms-tags{display:inline-flex;flex-wrap:wrap;gap:6px;margin-left:10px;vertical-align:1px}
 .ms-tag{font-size:11.5px;font-weight:600;color:var(--ms);background:var(--ms-bg);border-radius:6px;padding:1px 8px}
 .ms-tag.next{color:var(--card);background:var(--ms)}.ms-tag.reached{margin-left:6px}
+.ft-tags{display:inline-flex;flex-wrap:wrap;gap:6px;margin-left:10px;vertical-align:1px}
+.ft-tag{font-size:11px;font-weight:500;color:var(--ink2);border:1px solid var(--line);border-radius:6px;padding:0 7px}
 .node.mpath{outline:2px dashed var(--ms);outline-offset:2px}.path.ms-road a{border-color:var(--ms)}
 .dag path.ms{stroke:var(--ms);stroke-opacity:.85;stroke-width:2.2;stroke-dasharray:5 3}.dag path.ms.crit{stroke:var(--accent);stroke-dasharray:none}
 .owner{color:var(--muted);font-size:12.5px;margin-left:6px}
