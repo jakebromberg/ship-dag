@@ -269,10 +269,11 @@ function roadAhead(v, byRef, display, link, gates, badge, owned) {
     // A milestone is named on the step it finishes in, so reading down the steps reads the milestones in order.
     const marks = (v.milestones || []).filter((m) => m.state === 'open' && row.includes(m.ref)).sort((a, b) => compareRefs(a.ref, b.ref));
     const tags = marks.length ? html`<span class="ms-tags">${marks.map((m) => html`<span class="ms-tag${m.next ? ' next' : ''}">${m.next ? 'Next: ' : ''}${m.name}</span>`)}</span>` : '';
-    // Feature names are counted over the step's tickets in step order; the sort is stable, so a tie keeps first appearance.
+    // Feature names are counted over the step's tickets; they are listed in the order the notes' map first names them, the author's priority.
     const named = new Map();
     for (const r of row) if (typeof features[r] === 'string' && features[r]) named.set(features[r], (named.get(features[r]) ?? 0) + 1);
-    const feat = named.size ? html`<span class="ft-tags">${[...named].sort((a, b) => b[1] - a[1]).map(([name, n]) => html`<span class="ft-tag">${name}${n > 1 ? ` ×${n}` : ''}</span>`)}</span>` : '';
+    const priority = Object.values(features);
+    const feat = named.size ? html`<span class="ft-tags">${[...named].sort((a, b) => priority.indexOf(a[0]) - priority.indexOf(b[0])).map(([name, n]) => html`<span class="ft-tag">${name}${n > 1 ? ` ×${n}` : ''}</span>`)}</span>` : '';
     h.push(html`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${rowWaves(row)}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}${feat}${tags}</div><div class="ns">`);
     for (const r of row) {
       const t = byRef.get(r) || {};
