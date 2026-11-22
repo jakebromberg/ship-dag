@@ -583,3 +583,55 @@ test('the Road to line lists the road in step order, not ref order, and counts o
   const noOutside = renderBoard(msView()).match(/<div class="path ms-road">.*?<\/div>/s)[0];
   assert.match(noOutside, /\(2 tickets; outlined below\)/, 'no ", N outside" when none is');
 });
+
+// ---- feature tags --------------------------------------------------------
+
+/** The example run with board-notes `features` (when given); #2 and #4 are in step 1 and #3 in step 2. */
+const ftView = (features) => { const v = view(); return features === undefined ? v : { ...v, notes: { ...v.notes, features } }; };
+/** The example run with #2, #3 and #4 all in step 1: no ticket waits on another. */
+function ftWide(features) {
+  const v = ftView(features);
+  const graph = buildGraph([R(2), R(3), R(4)], [], []);
+  return { ...v, graph, waves: projectWaves(graph, new Map(v.tickets.map((t) => [t.ref, t.status])), v.current) };
+}
+
+test('renderBoard tags a step with the feature names of its tickets, most tickets first, ties in step order, a count past one (issue #558)', () => {
+  const ties = stepLabel(renderBoard(ftWide({ [R(4)]: 'C', [R(2)]: 'A', [R(3)]: 'B' })), R(2));
+  assert.match(ties, /waits on earlier steps<span class="ft-tags"><span class="ft-tag">A<\/span><span class="ft-tag">B<\/span><span class="ft-tag">C<\/span><\/span>$/, 'one ticket each: step order, no counts');
+  const counted = stepLabel(renderBoard(ftWide({ [R(2)]: 'First', [R(3)]: 'Second', [R(4)]: 'Second' })), R(2));
+  assert.match(counted, /<span class="ft-tags"><span class="ft-tag">Second ×2<\/span><span class="ft-tag">First<\/span><\/span>$/, 'the name on two tickets precedes the one seen first');
+  const all = stepLabel(renderBoard(ftWide({ [R(2)]: 'Mods pane', [R(3)]: 'Mods pane', [R(4)]: 'Mods pane' })), R(2));
+  assert.match(all, /<span class="ft-tags"><span class="ft-tag">Mods pane ×3<\/span><\/span>$/);
+});
+
+test('renderBoard puts the feature tags before the milestone tags and escapes a feature name (issue #558)', () => {
+  const evil = '<script>alert(1)</script>';
+  const v = msView({ notes: { [R(3)]: 'Wire it up' } });
+  const html = renderBoard({ ...v, notes: { ...v.notes, features: { [R(3)]: evil } } });
+  assert.ok(!html.includes(evil), 'no raw script from a note');
+  assert.match(stepLabel(html, R(3)), /waits on earlier steps<span class="ft-tags"><span class="ft-tag">&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/span><\/span><span class="ms-tags">/);
+});
+
+test('renderBoard draws a step with no feature entries, a board with no features and a ref off the road ahead exactly as before (issue #558)', () => {
+  const plain = renderBoard(ftView());
+  assert.doesNotMatch(plain, /ft-tag/);
+  assert.equal(renderBoard(ftView({})), plain, 'empty features');
+  assert.equal(renderBoard(ftView({ 'o/r#999': 'Elsewhere', [R(5)]: 'Dropped' })), plain, 'refs that are not in an open step add nothing');
+  const some = renderBoard(ftView({ [R(3)]: 'Mods pane' }));
+  assert.equal(stepLabel(some, R(2)), stepLabel(plain, R(2)), 'a step none of whose tickets has an entry is unchanged');
+  assert.match(stepLabel(some, R(3)), /<span class="ft-tag">Mods pane<\/span>/);
+  for (const bad of [null, 'Mods pane', ['Mods pane'], 7]) assert.equal(renderBoard(ftView(bad)), plain, `features ${JSON.stringify(bad)} is ignored`);
+});
+
+test('renderBoard ignores a feature entry whose name is empty or not a string (issue #558)', () => {
+  const plain = renderBoard(ftView());
+  assert.equal(renderBoard(ftView({ [R(2)]: '', [R(4)]: 7, [R(3)]: false })), plain);
+});
+
+test('the feature tags are quieter than the milestone tags and use the page tokens (issue #558)', () => {
+  const rule = (sel) => PAGE_CSS.match(new RegExp(`${sel.replace('.', '\\.')}\\{[^}]*\\}`))?.[0] ?? '';
+  assert.match(rule('.ft-tag'), /color:var\(--ink2\)/);
+  assert.match(rule('.ft-tag'), /border:1px solid var\(--line\)/);
+  assert.doesNotMatch(rule('.ft-tag'), /background|#[0-9a-f]{3,6}/i, 'no fill and no new colors');
+  assert.match(rule('.ft-tags'), /display:inline-flex/);
+});
