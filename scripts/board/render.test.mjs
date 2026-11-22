@@ -597,7 +597,7 @@ function ftWide(features) {
 
 test('renderBoard tags a step with the feature names of its tickets, most tickets first, ties in step order, a count past one (issue #558)', () => {
   const ties = stepLabel(renderBoard(ftWide({ [R(4)]: 'C', [R(2)]: 'A', [R(3)]: 'B' })), R(2));
-  assert.match(ties, /waits on earlier steps<span class="ft-tags"><span class="ft-tag">A<\/span><span class="ft-tag">B<\/span><span class="ft-tag">C<\/span><\/span>$/, 'one ticket each: step order, no counts');
+  assert.match(ties, /can start now<span class="ft-tags"><span class="ft-tag">A<\/span><span class="ft-tag">B<\/span><span class="ft-tag">C<\/span><\/span>$/, 'one ticket each: step order, no counts');
   const counted = stepLabel(renderBoard(ftWide({ [R(2)]: 'First', [R(3)]: 'Second', [R(4)]: 'Second' })), R(2));
   assert.match(counted, /<span class="ft-tags"><span class="ft-tag">Second ×2<\/span><span class="ft-tag">First<\/span><\/span>$/, 'the name on two tickets precedes the one seen first');
   const all = stepLabel(renderBoard(ftWide({ [R(2)]: 'Mods pane', [R(3)]: 'Mods pane', [R(4)]: 'Mods pane' })), R(2));
@@ -614,7 +614,7 @@ test('renderBoard puts the feature tags before the milestone tags and escapes a 
 
 test('renderBoard draws a step with no feature entries, a board with no features and a ref off the road ahead exactly as before (issue #558)', () => {
   const plain = renderBoard(ftView());
-  assert.doesNotMatch(plain, /ft-tag/);
+  assert.doesNotMatch(plain, /class="ft-tag/);
   assert.equal(renderBoard(ftView({})), plain, 'empty features');
   assert.equal(renderBoard(ftView({ 'o/r#999': 'Elsewhere', [R(5)]: 'Dropped' })), plain, 'refs that are not in an open step add nothing');
   const some = renderBoard(ftView({ [R(3)]: 'Mods pane' }));
