@@ -294,7 +294,7 @@ export const FEATURES_IN_FLIGHT = 2;
  * Project the wave each open, orderable ticket ships in. A ticket in the wave
  * building now is that wave (its id, verbatim — `"31b"`); any other ticket goes
  * one after the latest wave among its blockers, counting from the current
- * wave's leading number; a ticket with an open PR is building now too. An `outside` node (an open issue of another run, issue #515) is one wave of
+ * wave's leading number; a ticket with an open PR is building now too, when there is a current wave. An `outside` node (an open issue of another run, issue #515) is one wave of
  * its home run: the current wave when nothing open precedes it, else one after its blockers; it takes no
  * label (`outside: true`), and the run ticket behind it goes one after that. A ticket of the operator's (`status: "you"`) takes no
  * wave, and what waits on it goes after *its* blockers. The projection assumes
@@ -304,7 +304,9 @@ export const FEATURES_IN_FLIGHT = 2;
  * priority), at most `limit` features are in flight (issue #562): a wave takes every ready ticket of an admitted feature,
  * and while a slot is free it admits the highest-priority feature with a ready ticket; a feature leaves once none of
  * its tickets is projected at or after the wave being filled. The features of the tickets building now (the current
- * wave's, and any with an open PR, which count as building now in either mode) start admitted, however many. An
+ * wave's, and any with an open PR, which count as building now in either mode) start admitted, however many; a ticket of
+ * yours or an outside node building now admits nothing, and a feature whose current-wave tickets have all shipped (so
+ * only open tickets are in the graph) is not admitted at the start: it competes for a slot like any other. An
  * admitted feature with no ready ticket of its own gives its slot to the ready blockers of one other feature that its
  * open tickets wait on, without admitting that feature, so two features waiting on a third still finish and a wave
  * never opens a third feature. Outside nodes and tickets of yours are not capped.
@@ -320,7 +322,8 @@ export function projectWaves(g, status, current, { sectionOf = null, limit = FEA
   const eff = new Map();
   const out = new Map();
   const order = g.steps.flat(); // step order: every blocker comes first
-  const now = (r) => !!current?.refs.has(r) || status.get(r) === 'flight'; // an open PR is being built, whatever wave launched it
+  // An open PR is being built, whatever wave launched it; with no current wave it keeps its old wave, one after its blockers.
+  const now = (r) => !!current && (current.refs.has(r) || status.get(r) === 'flight');
   const fixed = (r) => g.outside.has(r) || status.get(r) === 'you' || now(r);
   const capped = (r) => !!sectionOf?.has(r) && !fixed(r);
   const after = (r) => { const ps = [...g.preds.get(r)]; return ps.length ? Math.max(...ps.map((p) => eff.get(p))) : null; };
@@ -332,18 +335,19 @@ export function projectWaves(g, status, current, { sectionOf = null, limit = FEA
       const base = after(r);
       if (g.outside.has(r)) place(r, base === null ? cur : base + 1, { label: null, now: false, outside: true });
       else if (status.get(r) === 'you') place(r, base ?? cur, { label: null, now: false });
-      else if (now(r)) place(r, cur, { label: String(current?.id ?? cur), now: true });
+      else if (now(r)) place(r, cur, { label: String(current.id), now: true });
       else place(r, (base ?? cur) + 1, { label: String((base ?? cur) + 1), now: false });
       pending.delete(r);
     }
   };
   settle();
+  const counts = (r) => !!sectionOf?.has(r) && !g.outside.has(r) && status.get(r) !== 'you'; // a run ticket the cap weighs
   const members = new Map(); // section → its run tickets that count toward its being in flight
   for (const r of order) {
-    if (!sectionOf?.has(r) || g.outside.has(r) || status.get(r) === 'you') continue;
+    if (!counts(r)) continue;
     members.set(sectionOf.get(r), [...(members.get(sectionOf.get(r)) ?? []), r]);
   }
-  const admitted = new Set(order.filter((r) => now(r) && sectionOf?.has(r)).map((r) => sectionOf.get(r)));
+  const admitted = new Set(order.filter((r) => now(r) && counts(r)).map((r) => sectionOf.get(r)));
   for (let w = cur + 1; order.some((r) => pending.has(r) && capped(r)); w += 1) {
     if (w > cur + 2 * order.length + 2) throw new Error('projectWaves: the feature cap left tickets unplaced'); // a bug, never a slow wave
     for (const s of admitted) if (members.get(s).every((r) => eff.has(r) && eff.get(r) < w)) admitted.delete(s);
