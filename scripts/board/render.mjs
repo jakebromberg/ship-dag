@@ -6,7 +6,7 @@
 // with its zone label. The stylesheet and the page's scripts (road ahead, burn-up keys,
 // reload) are inlined from assets.mjs so the page needs nothing beside it.
 
-import { orderSteps, formatPacific, compareRefs, leadingWaveNumber, roadTo, ticketFeature, featureSections } from './model.mjs';
+import { orderSteps, formatPacific, compareRefs, leadingWaveNumber, roadTo, boardSections } from './model.mjs';
 import { STAGES } from './stage.mjs';
 import { parseRef } from '../lib/ref.mjs';
 import { PAGE_CSS, ROAD_JS, BURN_JS, RELOAD_JS } from './assets.mjs';
@@ -73,6 +73,9 @@ export const hostLine = (remote) => {
 // only the fallback for a browser with scripting off, since a background tab can leave its one timer unfired.
 const RELOAD_SECONDS = 120;
 
+/** Small counts in words, for prose. */
+const COUNT_WORDS = { 1: 'one', 2: 'two', 3: 'three', 4: 'four' };
+
 /** `1 ticket`, `2 tickets`. */
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
@@ -120,6 +123,7 @@ export function stepSpan(steps) {
  *   `shippedBefore`'s result: what the predecessor epics shipped before this run. Counted in the headline, listed in a collapsed section.
  * @param {ReturnType<import('./model.mjs').milestones>} [v.milestones]  the run's milestones, in order: a Milestones section,
  *   a badge on each one's card, and the road to the `next` one highlighted in the road ahead
+ * @param {number} [v.featureCap]  the most features `projectWaves` let be in flight at once, when it capped the waves; named in the how-to
  * @param {string} v.rebuild  the command that rebuilds this page
  * @param {string} [v.startedAt]  ISO instant the run started (board.json); with a parseable one, the page draws the burn-up, which
  *   reads each ticket's `createdAt` (absent: it was in scope from the start)
@@ -237,7 +241,7 @@ function roadAhead(v, byRef, display, link, gates, badge, owned) {
   if (!g.steps.length) return [...h, html`<p class="sub">${g.unorderable.size ? 'Nothing can be ordered.' : 'Nothing left open.'}</p>`].join('\n');
   const rows = orderSteps(g);
   // One section per feature (the notes' entry, else the tracker below the run's epic); a board with only Other draws no heading.
-  const sections = featureSections(rows, (r) => ticketFeature(display.get(r) ?? { ref: r }, v.notes?.features), v.notes?.features);
+  const sections = boardSections(g, (r) => display.get(r), v.notes?.features); // the sections board.mjs capped the waves by
   const headed = !(sections.length === 1 && sections[0].other);
   const secOf = new Map(sections.flatMap((s, k) => s.rows.flatMap(({ refs }) => refs.map((r) => [r, k]))));
   const chain = new Set(g.chain);
@@ -268,7 +272,7 @@ function roadAhead(v, byRef, display, link, gates, badge, owned) {
   const outsideInChain = g.chain.filter((r) => g.outside.has(r)).length;
   const split = outsideInChain ? `: ${g.chain.length - outsideInChain} in this run, ${outsideInChain} outside` : '';
   h.push(html`<p class="road-sum"><b>${left}</b> A step is the earliest a ticket can start: once every ticket it points up to has shipped. Tickets in the same step can be built at the same time.</p>`);
-  h.push(html`<p class="howto"><b>Waves</b> continue the run's count.${v.current && html` Wave ${v.current.id} is building now;`} the later numbers are a projection that assumes each wave ships before the next starts. A ticket moves to a later wave if review sends it back, or if a wave launches without it. A ticket of yours, such as a release you cut, takes no wave: what waits on it goes in the next wave after you finish it. A dashed Outside node is an open issue owned by another run; the waves after it assume that run ships one wave for each step and keeps pace.</p>`);
+  h.push(html`<p class="howto"><b>Waves</b> continue the run's count.${v.current && html` Wave ${v.current.id} is building now;`} the later numbers are a projection that assumes each wave ships before the next starts.${v.featureCap ? html` A wave takes tickets from at most ${COUNT_WORDS[v.featureCap] ?? v.featureCap} features at a time, in the sections' order; a ticket an in-flight feature waits on goes ahead of the cap.` : ''} A ticket moves to a later wave if review sends it back, or if a wave launches without it. A ticket of yours, such as a release you cut, takes no wave: what waits on it goes in the next wave after you finish it. A dashed Outside node is an open issue owned by another run; the waves after it assume that run ships one wave for each step and keeps pace.</p>`);
   h.push(html`<div class="path"><span class="meta tight">Longest chain:</span>${list(g.chain.map((r) => link(r)), '<span class="arr">→</span>')}<span class="meta tight">(${plural(g.chain.length, 'ticket')}, one after another${split})</span></div>`);
   if (road.size) {
     const steps = [...road].sort((a, b) => g.stepOf.get(a) - g.stepOf.get(b) || compareRefs(a, b));
