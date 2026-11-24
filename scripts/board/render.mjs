@@ -6,7 +6,7 @@
 // with its zone label. The stylesheet and the page's scripts (road ahead, burn-up keys,
 // reload) are inlined from assets.mjs so the page needs nothing beside it.
 
-import { orderSteps, formatPacific, compareRefs, leadingWaveNumber, roadTo, boardSections } from './model.mjs';
+import { orderSteps, formatPacific, compareRefs, leadingWaveNumber, roadTo, boardSections, sectionIndex } from './model.mjs';
 import { STAGES } from './stage.mjs';
 import { parseRef } from '../lib/ref.mjs';
 import { PAGE_CSS, ROAD_JS, BURN_JS, RELOAD_JS } from './assets.mjs';
@@ -243,7 +243,7 @@ function roadAhead(v, byRef, display, link, gates, badge, owned) {
   // One section per feature (the notes' entry, else the tracker below the run's epic); a board with only Other draws no heading.
   const sections = boardSections(g, (r) => display.get(r), v.notes?.features); // the sections board.mjs capped the waves by
   const headed = !(sections.length === 1 && sections[0].other);
-  const secOf = new Map(sections.flatMap((s, k) => s.rows.flatMap(({ refs }) => refs.map((r) => [r, k]))));
+  const secOf = sectionIndex(sections);
   const chain = new Set(g.chain);
   const chainEdges = new Set(g.chain.slice(1).map((r, i) => `${g.chain[i]}>${r}`));
   const next = (v.milestones || []).find((m) => m.next);
