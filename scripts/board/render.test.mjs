@@ -735,3 +735,8 @@ test('a section is a grid of its own with no stacking context, and its heading u
   assert.doesNotMatch(rule('.feat-h'), /background|#[0-9a-f]{3,6}/i);
   assert.doesNotMatch(PAGE_CSS, /ft-tag/);
 });
+
+test('the waves how-to names the feature cap only when the projection used one (issue #562)', () => {
+  assert.match(renderBoard(view({ featureCap: 2 })), /A wave takes tickets from at most two features at a time, in the sections' order; a ticket an in-flight feature waits on goes ahead of the cap\./);
+  assert.doesNotMatch(renderBoard(view()), /at most two features/);
+});
