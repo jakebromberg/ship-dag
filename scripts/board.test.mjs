@@ -1032,3 +1032,19 @@ test('the trackers cost no extra query: the parent chain already rides the looku
   };
   assert.deepEqual(await calls({ [R(1)]: { parent: R(80) }, [R(80)]: { parent: R(50) }, [R(2)]: { parent: R(60) }, [R(60)]: {} }), await calls({}));
 });
+
+// ---- waves by feature: at most two features in flight (issue #562) ----
+
+test('render projects the waves by feature: the current wave\'s feature, then two more, then the next (issue #562)', async () => {
+  const spec = { nodes: [1, 2, 3, 4, 5].map((n) => ({ ref: R(n) })), edges: [], done: [] };
+  const s = setUp({ files: { 'board.json': { ...BOARD, issueSet: { epic: R(50) } }, 'dag.json': spec } });
+  const rows = { [R(50)]: {}, [R(1)]: { parent: R(80) }, [R(2)]: { parent: R(80) }, [R(80)]: { parent: R(50) } };
+  for (const n of [3, 4, 5]) Object.assign(rows, { [R(n)]: { parent: R(n + 78) }, [R(n + 78)]: { parent: R(50) } });
+  const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, ...rows }).runGh });
+  assert.equal(code, 0, err.join('\n'));
+  const wave = (n) => Number(html.match(new RegExp(`data-ref="o/r#${n}"(?:(?!data-ref)[\\s\\S])*?<div class="wn[^"]*">Wave (\\d+)`))?.[1]);
+  const cur = wave(1);
+  assert.ok(Number.isFinite(cur) && wave(2) === cur, 'r#1 and r#2 are the wave building now');
+  assert.deepEqual([3, 4, 5].map(wave), [cur + 1, cur + 1, cur + 2], 'two features in the next wave, the third after');
+  assert.match(html, /at most two features at a time/);
+});

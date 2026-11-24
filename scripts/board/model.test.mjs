@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, makeRepoLabel, formatPacific, compareRefs, shippedBefore, closedKind, milestones, roadTo,
-  trackerName, ticketFeature, featureSections,
+  trackerName, ticketFeature, featureSections, boardSections, sectionIndex, FEATURES_IN_FLIGHT,
 } from './model.mjs';
 
 const R = (n) => `o/r#${n}`;
@@ -466,3 +466,58 @@ for (const [name, rows, feat, features, want] of [
 ]) {
   test(`featureSections order: ${name} (issue #560)`, () => assert.deepEqual(sectionsOf(rows, feat, features).map((s) => s.name), want));
 }
+
+// ---- projectWaves by feature: at most FEATURES_IN_FLIGHT features at once (issue #562) ----
+
+/**
+ * Project `open` (numbers) over `pairs` with each ticket's section index in `secs` (number → index, its priority), every
+ * ticket `ready`/`blocked` unless `status` says otherwise; `now` names the current wave's refs (id 5 when given, else none).
+ * Returns number → wave label, and the same graph projected with no sections.
+ */
+function capped({ open, pairs = [], secs, status = {}, now = null, outside = [] }) {
+  const g = buildGraph(open.map(R), edgesOf(pairs), [], { outside: outside.map(R) });
+  const st = new Map(open.map((n) => [R(n), status[n] ?? 'ready']));
+  const current = now ? { id: '5', refs: new Set(now.map(R)) } : null;
+  const sectionOf = new Map(Object.entries(secs).map(([n, k]) => [R(Number(n)), k]));
+  const labels = (w) => Object.fromEntries([...w].map(([r, x]) => [Number(r.split('#')[1]), x.label]));
+  return { capped: labels(projectWaves(g, st, current, { sectionOf })), plain: labels(projectWaves(g, st, current)) };
+}
+
+for (const [name, run, want] of [
+  ['two features fill a wave and a third waits for one to finish',
+    { open: [1, 2, 3, 4], pairs: [[1, 2]], secs: { 1: 0, 2: 0, 3: 1, 4: 2 } }, { 1: '1', 2: '2', 3: '1', 4: '2' }],
+  ['the sections\' priority wins over step order',
+    { open: [1, 2, 3], secs: { 1: 2, 2: 1, 3: 0 } }, { 1: '2', 2: '1', 3: '1' }],
+  ['a feature with no ready ticket takes no slot',
+    { open: [1, 2, 3, 4], pairs: [[3, 1]], secs: { 1: 0, 2: 1, 3: 2, 4: 3 } }, { 1: '2', 2: '1', 3: '1', 4: '2' }],
+  ['a ticket an admitted feature waits on goes ahead of the cap, without admitting its feature',
+    { open: [1, 5, 2, 3, 4], pairs: [[3, 5]], secs: { 1: 0, 5: 0, 2: 1, 3: 2, 4: 2 } }, { 1: '1', 5: '2', 2: '1', 3: '1', 4: '2' }],
+  ['the current wave\'s features stay admitted, even three of them, until each has no ticket left',
+    { open: [1, 2, 3, 4, 6, 7, 8], pairs: [[1, 6], [2, 7], [3, 8]], secs: { 1: 0, 6: 0, 2: 1, 7: 1, 3: 2, 8: 2, 4: 3 }, now: [1, 2, 3], status: { 1: 'flight', 2: 'flight', 3: 'flight' } },
+    { 1: '5', 2: '5', 3: '5', 6: '6', 7: '6', 8: '6', 4: '7' }],
+  ['a feature in flight keeps its slot across a chain of its own',
+    { open: [1, 2, 3, 4], pairs: [[1, 2], [2, 3]], secs: { 1: 0, 2: 0, 3: 0, 4: 1 } }, { 1: '1', 2: '2', 3: '3', 4: '1' }],
+  ['outside nodes and tickets of yours keep their waves and take no slot',
+    { open: [1, 2, 3, 4], outside: [9], pairs: [[9, 1], [2, 3]], secs: { 9: 3, 1: 0, 2: 1, 3: 1, 4: 2 }, status: { 2: 'you' } },
+    { 9: null, 1: '1', 2: null, 3: '1', 4: '2' }],
+]) {
+  test(`projectWaves by feature: ${name} (issue #562)`, () => assert.deepEqual(capped(run).capped, want));
+}
+
+test('projectWaves without sections, or with an empty map, projects as before (issue #562)', () => {
+  const run = { open: [1, 2, 3, 4], pairs: [[1, 2]], secs: {} };
+  const { capped: none, plain } = capped(run);
+  assert.deepEqual(none, plain);
+  assert.deepEqual(plain, { 1: '1', 2: '2', 3: '1', 4: '1' });
+});
+
+test('the feature cap is two (issue #562)', () => assert.equal(FEATURES_IN_FLIGHT, 2));
+
+test('boardSections is featureSections over orderSteps with ticketFeature, and sectionIndex maps each ref to its section (issue #562)', () => {
+  const g = buildGraph([1, 2, 3].map(R), edgesOf([[1, 2]]), []);
+  const tickets = { [R(1)]: { ref: R(1), tracker: { ref: R(80), title: 'Eighty: x', url: 'u' } }, [R(2)]: { ref: R(2) }, [R(3)]: { ref: R(3) } };
+  const features = { [R(3)]: 'Named' };
+  const secs = boardSections(g, (r) => tickets[r], features);
+  assert.deepEqual(secs, featureSections(orderSteps(g), (r) => ticketFeature(tickets[r], features), features));
+  assert.deepEqual([...sectionIndex(secs)].sort(), [[R(1), 1], [R(2), 2], [R(3), 0]]);
+});
