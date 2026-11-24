@@ -591,12 +591,12 @@ const TRACKER = { ref: R(80), title: 'Alpha: the first feature', url: 'https://g
  * The example run with #8 behind #3 (so the chain is #2 → #3 → #8): #2 and #8 sit under tracker #80 ("Alpha"), the notes
  * name #3 "Beta", and #4 has neither, so it is in Other. Sections: Beta (named in the map), Alpha (steps 1 and 3), Other.
  */
-function secView({ features = { [R(3)]: 'Beta' }, trackers = { 2: TRACKER, 8: TRACKER } } = {}) {
+function secView({ features = { [R(3)]: 'Beta' }, trackers = { 2: TRACKER, 8: TRACKER }, edges = [] } = {}) {
   const base = view();
   const tickets = [...base.tickets, ticket(8, 'blocked')].map((t) => ({ ...t, tracker: trackers[t.ref.split('#')[1]] ?? null }));
   const open = tickets.filter((t) => !['shipped', 'dropped'].includes(t.status)).map((t) => t.ref);
   const graph = buildGraph(open, [
-    { blockedBy: R(1), blocked: R(4) }, { blockedBy: R(2), blocked: R(3) }, { blockedBy: R(3), blocked: R(8) }, { blockedBy: R(6), blocked: R(7) }, { blockedBy: R(7), blocked: R(6) },
+    { blockedBy: R(1), blocked: R(4) }, { blockedBy: R(2), blocked: R(3) }, { blockedBy: R(3), blocked: R(8) }, { blockedBy: R(6), blocked: R(7) }, { blockedBy: R(7), blocked: R(6) }, ...edges,
   ], tickets.filter((t) => ['shipped', 'dropped'].includes(t.status)).map((t) => t.ref));
   const waves = projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), base.current);
   return { ...base, tickets, graph, waves, notes: { ...base.notes, ...(features !== undefined && { features }) } };
@@ -642,6 +642,22 @@ for (const [name, ref, want] of [
     assert.match(nodeOf(renderBoard(secView()), ref), new RegExp(`<div class="dep">${want.replace(/[()]/g, '\\$&')}</div>`));
   });
 }
+
+test('a node with a blocker in its own section and one in another names only the other\'s feature, in step order (issue #560)', () => {
+  const html = renderBoard(secView({ trackers: { 2: TRACKER, 4: TRACKER, 8: TRACKER }, edges: [{ blockedBy: R(4), blocked: R(8) }] }));
+  assert.match(nodeOf(html, R(8)), /<div class="dep">after r#4, r#3 \(Beta\)<\/div>/);
+});
+
+test('sections leave the road to the next milestone outlined on the same nodes (issue #560)', () => {
+  const outlined = (v) => {
+    const tickets = v.tickets.map((t) => ({ ...t, labels: t.ref === R(8) ? ['hitl-gate'] : [] }));
+    const w = { ...v, tickets };
+    const html = renderBoard({ ...w, milestones: milestones(w) });
+    return [...html.matchAll(/<div class="node [^"]*\bmpath\b[^"]*"[^>]*data-ref="([^"]+)"/g)].map((m) => m[1]).sort();
+  };
+  assert.deepEqual(outlined(secView()), [R(2), R(3), R(8)]);
+  assert.deepEqual(outlined(secView()), outlined(secView({ features: {}, trackers: {} })), 'the same road with no sections');
+});
 
 test('a blocker in the same section reads as before, with no feature name (issue #560)', () => {
   const html = renderBoard(secView({ trackers: { 2: TRACKER, 3: TRACKER, 8: TRACKER }, features: {} }));
@@ -715,6 +731,7 @@ test('a section is a grid of its own with no stacking context, and its heading u
   assert.match(rule('.feat'), /gap:30px/);
   assert.doesNotMatch(rule('.feat'), /z-index|opacity|transform/);
   assert.match(rule('.feat-h'), /color:var\(--ink2\)/);
+  assert.match(rule('.feat-h'), /margin:6px 0 -14px/, 'the heading sits close to its first step, less than the 30px row gap below it');
   assert.doesNotMatch(rule('.feat-h'), /background|#[0-9a-f]{3,6}/i);
   assert.doesNotMatch(PAGE_CSS, /ft-tag/);
 });

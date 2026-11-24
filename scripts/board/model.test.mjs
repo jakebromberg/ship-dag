@@ -447,6 +447,9 @@ for (const [name, rows, feat, features, want] of [
     [[1], [2]], {}, {},
     [{ name: 'Other', other: true, tracker: null, rows: [[0, [1]], [1, [2]]] }]],
   ['no rows is no sections', [], {}, {}, []],
+  ['a map or tracker name equal to the Other label joins Other instead of making a second Other',
+    [[1, 2, 3]], { 1: 'Other', 2: ['Other', 60] }, {},
+    [{ name: 'Other', other: true, tracker: null, rows: [[0, [1, 2, 3]]] }]],
 ]) {
   test(`featureSections: ${name} (issue #560)`, () => assert.deepEqual(sectionsOf(rows, feat, features), want));
 }
