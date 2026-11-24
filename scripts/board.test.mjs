@@ -994,3 +994,41 @@ for (const [name, value] of [['a string', 'Trace tool'], ['an array', [R(1), R(2
     if (value !== null) assert.ok(warns[0].includes('board-notes milestones must be an object of ref to name'), warns[0]);
   });
 }
+
+// ---- feature sections: each ticket's tracker, from the lookup that already reads its parents (issue #560) ----
+
+const EPIC_SET = { 'board.json': { ...BOARD, issueSet: { epic: R(50) } } };
+/** Each road-ahead section's heading (tags stripped; null for none) and its tickets. */
+const sectionsOf = (html) => [...html.matchAll(/<section class="feat" data-sec="\d+">([\s\S]*?)<\/section>/g)].map(([, body]) => [
+  body.match(/<h3 class="feat-h">([\s\S]*?) <small>/)?.[1].replace(/<[^>]+>/g, '') ?? null,
+  [...body.matchAll(/data-ref="([^"]+)"/g)].map((m) => m[1]),
+]);
+
+for (const [name, rows, files, want] of [
+  ['a ticket under a tracker below the epic is in its section; one right under the epic is in Other',
+    { [R(1)]: { parent: R(80) }, [R(80)]: { parent: R(50) }, [R(2)]: { parent: R(50) } }, {}, [['Title 80', [R(1)]], ['Other', [R(2)]]]],
+  ['a tracker outside the run\'s epic names its section too',
+    { [R(1)]: { parent: R(50) }, [R(2)]: { parent: R(60) }, [R(60)]: {} }, {}, [['Title 60', [R(2)]], ['Other', [R(1)]]]],
+  ['a parent the token cannot read is no tracker',
+    { [R(1)]: { parentForbidden: true }, [R(2)]: { parent: R(50) } }, {}, [[null, [R(1), R(2)]]]],
+  ['the notes\' features entry moves a ticket out of its tracker\'s section',
+    { [R(1)]: { parent: R(80) }, [R(80)]: { parent: R(50) }, [R(2)]: { parent: R(80) } }, { 'board-notes.json': { features: { [R(2)]: 'Named' } } }, [['Named', [R(2)]], ['Title 80', [R(1)]]]],
+]) {
+  test(`render groups the road ahead by tracker: ${name} (issue #560)`, async () => {
+    const s = setUp({ files: { ...EPIC_SET, ...files } });
+    const { code, html, err } = await run(['render', '--run-id', RUN], { ...s, runGh: fakeGh({ ...TABLE, [R(50)]: {}, ...rows }).runGh });
+    assert.equal(code, 0, err.join('\n'));
+    assert.deepEqual(sectionsOf(html), want);
+  });
+}
+
+test('the trackers cost no extra query: the parent chain already rides the lookup (issue #560)', async () => {
+  const calls = async (rows) => {
+    const s = setUp({ files: EPIC_SET });
+    const gh = fakeGh({ ...TABLE, [R(50)]: {}, ...rows });
+    const { code, err } = await run(['render', '--run-id', RUN], { ...s, runGh: gh.runGh });
+    assert.equal(code, 0, err.join('\n'));
+    return [gh.calls.length, gh.rest.length];
+  };
+  assert.deepEqual(await calls({ [R(1)]: { parent: R(80) }, [R(80)]: { parent: R(50) }, [R(2)]: { parent: R(60) }, [R(60)]: {} }), await calls({}));
+});
