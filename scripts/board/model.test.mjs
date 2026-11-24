@@ -490,8 +490,12 @@ for (const [name, run, want] of [
     { open: [1, 2, 3], secs: { 1: 2, 2: 1, 3: 0 } }, { 1: '2', 2: '1', 3: '1' }],
   ['a feature with no ready ticket takes no slot',
     { open: [1, 2, 3, 4], pairs: [[3, 1]], secs: { 1: 0, 2: 1, 3: 2, 4: 3 } }, { 1: '2', 2: '1', 3: '1', 4: '2' }],
-  ['a ticket an admitted feature waits on goes ahead of the cap, without admitting its feature',
-    { open: [1, 5, 2, 3, 4], pairs: [[3, 5]], secs: { 1: 0, 5: 0, 2: 1, 3: 2, 4: 2 } }, { 1: '1', 5: '2', 2: '1', 3: '1', 4: '2' }],
+  ['a blocker from another feature waits while its dependent\'s feature has its own ready tickets, then the slot frees for it',
+    { open: [1, 5, 2, 3, 4], pairs: [[3, 5]], secs: { 1: 0, 5: 0, 2: 1, 3: 2, 4: 2 } }, { 1: '1', 5: '3', 2: '1', 3: '2', 4: '2' }],
+  ['a blocker pulled in for an admitted feature takes that feature\'s slot, so a full wave never holds a third feature',
+    { open: [1, 5, 2, 3, 4], pairs: [[1, 5], [4, 3]], secs: { 1: 0, 5: 0, 2: 1, 3: 1, 4: 2 } }, { 1: '1', 5: '2', 2: '1', 4: '2', 3: '3' }],
+  ['a ticket with an open PR outside the current wave is building now, and its feature starts admitted',
+    { open: [1, 2, 3, 4], pairs: [[1, 2]], secs: { 1: 0, 2: 0, 3: 1, 4: 2 }, status: { 1: 'flight' }, now: [] }, { 1: '5', 2: '6', 3: '6', 4: '7' }],
   ['the current wave\'s features stay admitted, even three of them, until each has no ticket left',
     { open: [1, 2, 3, 4, 6, 7, 8], pairs: [[1, 6], [2, 7], [3, 8]], secs: { 1: 0, 6: 0, 2: 1, 7: 1, 3: 2, 8: 2, 4: 3 }, now: [1, 2, 3], status: { 1: 'flight', 2: 'flight', 3: 'flight' } },
     { 1: '5', 2: '5', 3: '5', 6: '6', 7: '6', 8: '6', 4: '7' }],
@@ -520,4 +524,24 @@ test('boardSections is featureSections over orderSteps with ticketFeature, and s
   const secs = boardSections(g, (r) => tickets[r], features);
   assert.deepEqual(secs, featureSections(orderSteps(g), (r) => ticketFeature(tickets[r], features), features));
   assert.deepEqual([...sectionIndex(secs)].sort(), [[R(1), 1], [R(2), 2], [R(3), 0]]);
+});
+
+test('projectWaves: a ticket with an open PR outside the current wave is building now, without sections too (issue #562)', () => {
+  const g = buildGraph([1, 2].map(R), edgesOf([[1, 2]]), []);
+  const w = projectWaves(g, new Map([[R(1), 'flight'], [R(2), 'blocked']]), { id: '5', refs: new Set() });
+  assert.deepEqual(w.get(R(1)), { label: '5', now: true });
+  assert.deepEqual(w.get(R(2)), { label: '6', now: false });
+});
+
+test('projectWaves by feature never puts more than two capped features in a wave the current wave does not overfill (issue #562)', () => {
+  // A wider graph: four features, chains and cross-feature blockers.
+  const pairs = [[1, 2], [2, 3], [7, 3], [4, 5], [8, 5], [6, 9]];
+  const secs = { 1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 2, 7: 2, 8: 3, 9: 3 };
+  const g = buildGraph(Object.keys(secs).map(Number).map(R), edgesOf(pairs), []);
+  const st = new Map(Object.keys(secs).map((n) => [R(Number(n)), 'ready']));
+  const w = projectWaves(g, st, null, { sectionOf: new Map(Object.entries(secs).map(([n, k]) => [R(Number(n)), k])) });
+  const per = new Map();
+  for (const [r, x] of w) per.set(x.label, new Set([...(per.get(x.label) ?? []), secs[r.split('#')[1]]]));
+  for (const [label, s] of per) assert.ok(s.size <= 2, `wave ${label} holds features ${[...s]}`);
+  assert.equal(w.size, 9, 'every ticket placed');
 });
