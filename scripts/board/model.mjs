@@ -294,7 +294,7 @@ export const FEATURES_IN_FLIGHT = 2;
  * Project the wave each open, orderable ticket ships in. A ticket in the wave
  * building now is that wave (its id, verbatim — `"31b"`); any other ticket goes
  * one after the latest wave among its blockers, counting from the current
- * wave's leading number. An `outside` node (an open issue of another run, issue #515) is one wave of
+ * wave's leading number; a ticket with an open PR is building now too. An `outside` node (an open issue of another run, issue #515) is one wave of
  * its home run: the current wave when nothing open precedes it, else one after its blockers; it takes no
  * label (`outside: true`), and the run ticket behind it goes one after that. A ticket of the operator's (`status: "you"`) takes no
  * wave, and what waits on it goes after *its* blockers. The projection assumes
@@ -303,9 +303,11 @@ export const FEATURES_IN_FLIGHT = 2;
  * With `sectionOf` (ref → road-ahead section index, `sectionIndex(boardSections(…))`, the index being the section's
  * priority), at most `limit` features are in flight (issue #562): a wave takes every ready ticket of an admitted feature,
  * and while a slot is free it admits the highest-priority feature with a ready ticket; a feature leaves once none of
- * its tickets is projected at or after the wave being filled. The current wave's features start admitted, however many.
- * A ready ticket an admitted feature's open ticket waits on goes ahead of the cap without admitting its feature, so
- * two features waiting on a third still finish. Outside nodes and tickets of yours are not capped.
+ * its tickets is projected at or after the wave being filled. The features of the tickets building now (the current
+ * wave's, and any with an open PR, which count as building now in either mode) start admitted, however many. An
+ * admitted feature with no ready ticket of its own gives its slot to the ready blockers of one other feature that its
+ * open tickets wait on, without admitting that feature, so two features waiting on a third still finish and a wave
+ * never opens a third feature. Outside nodes and tickets of yours are not capped.
  *
  * @param {ReturnType<typeof buildGraph>} g
  * @param {Map<string,string>} status  ref → classify() result
@@ -318,7 +320,8 @@ export function projectWaves(g, status, current, { sectionOf = null, limit = FEA
   const eff = new Map();
   const out = new Map();
   const order = g.steps.flat(); // step order: every blocker comes first
-  const fixed = (r) => g.outside.has(r) || status.get(r) === 'you' || !!current?.refs.has(r);
+  const now = (r) => !!current?.refs.has(r) || status.get(r) === 'flight'; // an open PR is being built, whatever wave launched it
+  const fixed = (r) => g.outside.has(r) || status.get(r) === 'you' || now(r);
   const capped = (r) => !!sectionOf?.has(r) && !fixed(r);
   const after = (r) => { const ps = [...g.preds.get(r)]; return ps.length ? Math.max(...ps.map((p) => eff.get(p))) : null; };
   const place = (r, wave, label) => { eff.set(r, wave); out.set(r, label); };
@@ -329,7 +332,7 @@ export function projectWaves(g, status, current, { sectionOf = null, limit = FEA
       const base = after(r);
       if (g.outside.has(r)) place(r, base === null ? cur : base + 1, { label: null, now: false, outside: true });
       else if (status.get(r) === 'you') place(r, base ?? cur, { label: null, now: false });
-      else if (current?.refs.has(r)) place(r, cur, { label: String(current.id), now: true });
+      else if (now(r)) place(r, cur, { label: String(current?.id ?? cur), now: true });
       else place(r, (base ?? cur) + 1, { label: String((base ?? cur) + 1), now: false });
       pending.delete(r);
     }
@@ -340,7 +343,7 @@ export function projectWaves(g, status, current, { sectionOf = null, limit = FEA
     if (!sectionOf?.has(r) || g.outside.has(r) || status.get(r) === 'you') continue;
     members.set(sectionOf.get(r), [...(members.get(sectionOf.get(r)) ?? []), r]);
   }
-  const admitted = new Set(order.filter((r) => current?.refs.has(r) && sectionOf?.has(r)).map((r) => sectionOf.get(r)));
+  const admitted = new Set(order.filter((r) => now(r) && sectionOf?.has(r)).map((r) => sectionOf.get(r)));
   for (let w = cur + 1; order.some((r) => pending.has(r) && capped(r)); w += 1) {
     if (w > cur + 2 * order.length + 2) throw new Error('projectWaves: the feature cap left tickets unplaced'); // a bug, never a slow wave
     for (const s of admitted) if (members.get(s).every((r) => eff.has(r) && eff.get(r) < w)) admitted.delete(s);
@@ -349,8 +352,18 @@ export function projectWaves(g, status, current, { sectionOf = null, limit = FEA
       if (admitted.size >= limit) break;
       admitted.add(s);
     }
-    const needed = new Set([...pending].filter((r) => capped(r) && admitted.has(sectionOf.get(r))).flatMap((r) => [...g.ancestors.get(r)]));
-    for (const r of ready.filter((x) => admitted.has(sectionOf.get(x)) || needed.has(x))) {
+    // Each admitted feature's slot takes its own ready tickets or, with none, the ready blockers of one other feature
+    // that its open tickets wait on, so a pulled-in blocker never opens a third feature.
+    const wave = [];
+    for (const s of [...admitted].sort((a, b) => a - b)) {
+      const own = ready.filter((r) => sectionOf.get(r) === s);
+      if (own.length) { wave.push(...own); continue; }
+      const needed = new Set(members.get(s).filter((r) => pending.has(r)).flatMap((r) => [...g.ancestors.get(r)]));
+      const blockers = ready.filter((r) => needed.has(r) && !admitted.has(sectionOf.get(r)));
+      const first = Math.min(...blockers.map((r) => sectionOf.get(r)));
+      wave.push(...blockers.filter((r) => sectionOf.get(r) === first && !wave.includes(r)));
+    }
+    for (const r of wave) {
       place(r, w, { label: String(w), now: false });
       pending.delete(r);
     }
