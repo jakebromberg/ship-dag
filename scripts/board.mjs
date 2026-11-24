@@ -30,7 +30,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchSpec as planWavesFetchSpec } from './plan-waves.mjs';
 import { renderBoard } from './board/render.mjs';
-import { buildGraph, classify, closedKind, makeRepoLabel, makeShortRef, milestones, projectWaves, shippedBefore } from './board/model.mjs';
+import { FEATURES_IN_FLIGHT, boardSections, buildGraph, classify, closedKind, makeRepoLabel, makeShortRef, milestones, projectWaves, sectionIndex, shippedBefore } from './board/model.mjs';
 import { fetchPredecessors } from './board/predecessors.mjs';
 import { readBoard, readJson, readNotes, readRetros, resolveRun, runBaseDir, runWaves } from './board/run.mjs';
 import { deriveStage, readFamily } from './board/stage.mjs';
@@ -341,12 +341,15 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const shortRef = makeShortRef(repos, board.abbreviations);
   const scope = epic ? { url: info.get(epic).url, label: shortRef(epic), title: info.get(epic).title }
     : board.issueSet?.label ? { url: `https://github.com/${board.issueSet.repo}/issues?q=label%3A${encodeURIComponent(board.issueSet.label)}`, label: board.issueSet.label, title: board.issueSet.repo } : null;
-  const projected = projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), current);
+  // The waves are capped by the same sections the road ahead draws (issue #562).
+  const ticketOf = new Map([...tickets, ...outsideTickets].map((t) => [t.ref, t]));
+  const sectionOf = sectionIndex(boardSections(graph, (r) => ticketOf.get(r), notes.features));
+  const projected = projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), current, { sectionOf });
   return {
     title: board.title, runId: board.runId ?? run.runId, scope, now: deps.now().toISOString(), tickets, outsideTickets, graph, current,
     out: flag('--out') ?? board.out ?? join(dir, 'board.html'),
     waves: projected, milestones: milestones({ tickets, graph, waves: projected, notes }), shortRef,
-    repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild, before, startedAt: board.startedAt,
+    repoLabel: makeRepoLabel(repos, board.abbreviations), notes, rebuild, before, startedAt: board.startedAt, featureCap: FEATURES_IN_FLIGHT,
   };
 }
 

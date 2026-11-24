@@ -266,11 +266,29 @@ export function featureSections(rows, featureOf, features) {
     || b.size - a.size || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
+/**
+ * The road ahead's sections for a graph: `featureSections` over `orderSteps(graph)`, each ticket's feature by
+ * `ticketFeature`. The renderer draws them and `board.mjs` caps the waves by them, so the two never disagree.
+ *
+ * @param {ReturnType<typeof buildGraph>} graph
+ * @param {(ref:string) => {ref:string, tracker?:{ref:string,title:string,url:string}|null}|undefined} ticketOf
+ * @param {unknown} features  board-notes' `features`
+ */
+export function boardSections(graph, ticketOf, features) {
+  return featureSections(orderSteps(graph), (r) => ticketFeature(ticketOf(r) ?? { ref: r }, features), features);
+}
+
+/** Each ref of `sections` → its section's index, which is its priority. */
+export const sectionIndex = (sections) => new Map(sections.flatMap((s, k) => s.rows.flatMap(({ refs }) => refs.map((r) => [r, k]))));
+
 /** The number a wave id starts with: `"31b"` → 31, `"1′"` → 1, none → 0. */
 export function leadingWaveNumber(id) {
   const m = /^(\d+)/.exec(String(id ?? ''));
   return m ? Number(m[1]) : 0;
 }
+
+/** The most features the wave projection lets be in flight at once (the owner's rule for working the queue). */
+export const FEATURES_IN_FLIGHT = 2;
 
 /**
  * Project the wave each open, orderable ticket ships in. A ticket in the wave
@@ -280,33 +298,63 @@ export function leadingWaveNumber(id) {
  * its home run: the current wave when nothing open precedes it, else one after its blockers; it takes no
  * label (`outside: true`), and the run ticket behind it goes one after that. A ticket of the operator's (`status: "you"`) takes no
  * wave, and what waits on it goes after *its* blockers. The projection assumes
- * each wave ships before the next starts.
+ * each wave ships before the next starts. A wave has no width limit.
+ *
+ * With `sectionOf` (ref → road-ahead section index, `sectionIndex(boardSections(…))`, the index being the section's
+ * priority), at most `limit` features are in flight (issue #562): a wave takes every ready ticket of an admitted feature,
+ * and while a slot is free it admits the highest-priority feature with a ready ticket; a feature leaves once none of
+ * its tickets is projected at or after the wave being filled. The current wave's features start admitted, however many.
+ * A ready ticket an admitted feature's open ticket waits on goes ahead of the cap without admitting its feature, so
+ * two features waiting on a third still finish. Outside nodes and tickets of yours are not capped.
  *
  * @param {ReturnType<typeof buildGraph>} g
  * @param {Map<string,string>} status  ref → classify() result
  * @param {{id:string, refs:Set<string>}|null} current  the wave building now, if any
+ * @param {{sectionOf?: Map<string,number>|null, limit?: number}} [options]
  * @returns {Map<string,{label:string|null, now:boolean, outside?:true}>}
  */
-export function projectWaves(g, status, current) {
+export function projectWaves(g, status, current, { sectionOf = null, limit = FEATURES_IN_FLIGHT } = {}) {
   const cur = current ? leadingWaveNumber(current.id) : 0;
   const eff = new Map();
   const out = new Map();
-  for (const r of g.steps.flat()) { // step order: every blocker is projected first
-    const ps = [...g.preds.get(r)];
-    const base = ps.length ? Math.max(...ps.map((p) => eff.get(p))) : null;
-    if (g.outside.has(r)) {
-      eff.set(r, base === null ? cur : base + 1);
-      out.set(r, { label: null, now: false, outside: true });
-    } else if (status.get(r) === 'you') {
-      eff.set(r, base ?? cur);
-      out.set(r, { label: null, now: false });
-    } else if (current && current.refs.has(r)) {
-      eff.set(r, cur);
-      out.set(r, { label: String(current.id), now: true });
-    } else {
-      eff.set(r, (base ?? cur) + 1);
-      out.set(r, { label: String(eff.get(r)), now: false });
+  const order = g.steps.flat(); // step order: every blocker comes first
+  const fixed = (r) => g.outside.has(r) || status.get(r) === 'you' || !!current?.refs.has(r);
+  const capped = (r) => !!sectionOf?.has(r) && !fixed(r);
+  const after = (r) => { const ps = [...g.preds.get(r)]; return ps.length ? Math.max(...ps.map((p) => eff.get(p))) : null; };
+  const place = (r, wave, label) => { eff.set(r, wave); out.set(r, label); };
+  const pending = new Set(order);
+  const settle = () => { // every uncapped ticket whose blockers are all projected, in step order
+    for (const r of order) {
+      if (!pending.has(r) || capped(r) || ![...g.preds.get(r)].every((p) => eff.has(p))) continue;
+      const base = after(r);
+      if (g.outside.has(r)) place(r, base === null ? cur : base + 1, { label: null, now: false, outside: true });
+      else if (status.get(r) === 'you') place(r, base ?? cur, { label: null, now: false });
+      else if (current?.refs.has(r)) place(r, cur, { label: String(current.id), now: true });
+      else place(r, (base ?? cur) + 1, { label: String((base ?? cur) + 1), now: false });
+      pending.delete(r);
     }
+  };
+  settle();
+  const members = new Map(); // section → its run tickets that count toward its being in flight
+  for (const r of order) {
+    if (!sectionOf?.has(r) || g.outside.has(r) || status.get(r) === 'you') continue;
+    members.set(sectionOf.get(r), [...(members.get(sectionOf.get(r)) ?? []), r]);
+  }
+  const admitted = new Set(order.filter((r) => current?.refs.has(r) && sectionOf?.has(r)).map((r) => sectionOf.get(r)));
+  for (let w = cur + 1; order.some((r) => pending.has(r) && capped(r)); w += 1) {
+    if (w > cur + 2 * order.length + 2) throw new Error('projectWaves: the feature cap left tickets unplaced'); // a bug, never a slow wave
+    for (const s of admitted) if (members.get(s).every((r) => eff.has(r) && eff.get(r) < w)) admitted.delete(s);
+    const ready = order.filter((r) => pending.has(r) && capped(r) && [...g.preds.get(r)].every((p) => eff.has(p) && eff.get(p) < w));
+    for (const s of [...new Set(ready.map((r) => sectionOf.get(r)))].sort((a, b) => a - b)) {
+      if (admitted.size >= limit) break;
+      admitted.add(s);
+    }
+    const needed = new Set([...pending].filter((r) => capped(r) && admitted.has(sectionOf.get(r))).flatMap((r) => [...g.ancestors.get(r)]));
+    for (const r of ready.filter((x) => admitted.has(sectionOf.get(x)) || needed.has(x))) {
+      place(r, w, { label: String(w), now: false });
+      pending.delete(r);
+    }
+    settle();
   }
   return out;
 }
