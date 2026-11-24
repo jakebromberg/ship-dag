@@ -6,7 +6,7 @@
 // with its zone label. The stylesheet and the page's scripts (road ahead, burn-up keys,
 // reload) are inlined from assets.mjs so the page needs nothing beside it.
 
-import { orderSteps, formatPacific, compareRefs, leadingWaveNumber, roadTo } from './model.mjs';
+import { orderSteps, formatPacific, compareRefs, leadingWaveNumber, roadTo, ticketFeature, featureSections } from './model.mjs';
 import { STAGES } from './stage.mjs';
 import { parseRef } from '../lib/ref.mjs';
 import { PAGE_CSS, ROAD_JS, BURN_JS, RELOAD_JS } from './assets.mjs';
@@ -82,6 +82,14 @@ export function waveSpan(labels) {
   return sorted.length === 1 ? `wave ${sorted[0]}` : `waves ${sorted[0]}–${sorted[sorted.length - 1]}`;
 }
 
+/** Steps (0-based indexes) as one span, 1-based, runs collapsed: `step 2`, `steps 1–3`, `steps 1, 3–4`. */
+export function stepSpan(steps) {
+  const ns = [...new Set(steps)].sort((a, b) => a - b).map((i) => i + 1);
+  const runs = [];
+  for (const n of ns) { const r = runs[runs.length - 1]; if (r && r[1] === n - 1) r[1] = n; else runs.push([n, n]); }
+  return `${ns.length === 1 ? 'step' : 'steps'} ${runs.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(', ')}`;
+}
+
 /**
  * @param {object} v
  * @param {string} v.title  page title
@@ -90,7 +98,9 @@ export function waveSpan(labels) {
  * @param {string} v.now  ISO instant the page was built
  * @param {Array<{ref:string,title:string,url:string,status:string,stage?:string,note?:string,labels?:string[],
  *   prs:Array<{number:number,url:string,state:'open'|'merged'|'closed'}>,closedAt?:string,shippedWave?:string,
- *   remote?:ReturnType<import('./remote.mjs').remoteSource>}>} v.tickets  `remote`: where a remote host's ticket was read (`hostLine`)
+ *   remote?:ReturnType<import('./remote.mjs').remoteSource>, tracker?:{ref:string,title:string,url:string}|null}>} v.tickets  `remote`: where a
+ *   remote host's ticket was read (`hostLine`); `tracker`: the top of its sub-issue parents below the run's epic, which
+ *   with the notes' `features` puts it in a road-ahead section (`ticketFeature`); none, or absent, is Other
  * @param {ReturnType<import('./model.mjs').buildGraph>} v.graph  over the open tickets and the open blockers outside the run
  * @param {Array<{ref:string,title:string,url:string,status?:'outside'|'shipped',closedAt?:string,prs?:Array<object>}>} [v.outsideTickets]
  *   the required tickets outside the run (issue #522), which `tickets` leaves out: the graph's `outside` nodes (status
@@ -98,12 +108,14 @@ export function waveSpan(labels) {
  *   counts in the headline, tiles, bar and repo bars; a shipped one is listed under Shipped, marked as outside the run.
  *   `owner` (`{home: {ref,title,url}|null, run: string|null}`) names its top epic and the other run shipping it, if any:
  *   shown on its node, its Shipped row and a milestone row that names it (`owned`); a shipped one with no run names none.
+ *   `tracker` is read as a run ticket's is.
  * @param {{id:string, refs:Set<string>}|null} v.current  the wave building now
  * @param {Map<string,{label:string|null,now:boolean,outside?:true}>} v.waves  projectWaves() result
  * @param {(ref:string) => string} v.shortRef
  * @param {(repo:string) => string} v.repoLabel  `makeRepoLabel`'s labeller, over the same repos as `shortRef`
  * @param {{callouts?:Array<{owner?:string,title:string,text?:string}>, wave?:string, gates?:Record<string,string>, features?:Record<string,string>}} v.notes
- *   a callout's `text` is plain text, escaped like everything else
+ *   a callout's `text` is plain text, escaped like everything else; `features` names a ticket's road-ahead section, or a
+ *   tracker's when keyed on the tracker's ref
  * @param {Array<{ref:string,url:string,title:string,dropped:number,shipped:Array<{ref:string,title:string,url:string,closedAt?:string}>}>} [v.before]
  *   `shippedBefore`'s result: what the predecessor epics shipped before this run. Counted in the headline, listed in a collapsed section.
  * @param {ReturnType<import('./model.mjs').milestones>} [v.milestones]  the run's milestones, in order: a Milestones section,
@@ -216,7 +228,6 @@ function repoBars(tickets, repoLabel) {
 
 /** The Milestones table: one row per milestone, in `milestones`' order, with its state and projected wave. */
 function roadAhead(v, byRef, display, link, gates, badge, owned) {
-  const features = v.notes?.features && typeof v.notes.features === 'object' && !Array.isArray(v.notes.features) ? v.notes.features : {};
   const g = v.graph;
   const h = [];
   const sorted = (refs) => [...refs].sort(compareRefs);
@@ -225,6 +236,10 @@ function roadAhead(v, byRef, display, link, gates, badge, owned) {
   }
   if (!g.steps.length) return [...h, html`<p class="sub">${g.unorderable.size ? 'Nothing can be ordered.' : 'Nothing left open.'}</p>`].join('\n');
   const rows = orderSteps(g);
+  // One section per feature (the notes' entry, else the tracker below the run's epic); a board with only Other draws no heading.
+  const sections = featureSections(rows, (r) => ticketFeature(display.get(r) ?? { ref: r }, v.notes?.features), v.notes?.features);
+  const headed = !(sections.length === 1 && sections[0].other);
+  const secOf = new Map(sections.flatMap((s, k) => s.rows.flatMap(({ refs }) => refs.map((r) => [r, k]))));
   const chain = new Set(g.chain);
   const chainEdges = new Set(g.chain.slice(1).map((r, i) => `${g.chain[i]}>${r}`));
   const next = (v.milestones || []).find((m) => m.next);
@@ -260,36 +275,43 @@ function roadAhead(v, byRef, display, link, gates, badge, owned) {
     const away = [...road].filter((r) => g.outside.has(r)).length;
     h.push(html`<div class="path ms-road"><span class="meta tight">Road to ${next.name}:</span>${list(steps.map((r) => link(r)), '<span class="arr">→</span>')}<span class="meta tight">(${plural(road.size - away, 'ticket')}${away ? `, ${away} outside` : ''}; outlined below)</span></div>`);
   }
-  h.push('<p class="howto">Lines show direct dependencies only; one implied by a longer chain is left out. The blue chain is the longest one: nothing finishes before it does. Hover or tab to a ticket to trace everything it waits on and everything waiting on it.</p>');
+  const across = headed ? html` A dependency on another feature's ticket is not drawn as a line; the ticket says "after #N (Feature)", and hovering still traces it.` : '';
+  h.push(html`<p class="howto">Lines show direct dependencies only; one implied by a longer chain is left out. The blue chain is the longest one: nothing finishes before it does. Hover or tab to a ticket to trace everything it waits on and everything waiting on it.${across}</p>`);
   // The road holds a milestone and all its ancestors, so every edge into a road node starts on the road too.
   // The flag is appended only when there is a road, so a run with no milestone renders its edges exactly as before.
   const edges = rows.flat().flatMap((r) => sorted(g.direct.get(r)).map((p) => [p, r, chainEdges.has(`${p}>${r}`), ...(road.size ? [road.has(r)] : [])]));
   h.push(html`<div class="dag" id="dag" data-edges="${JSON.stringify(edges)}"><svg aria-hidden="true"></svg>`);
-  rows.forEach((row, i) => {
-    // A milestone is named on the step it finishes in, so reading down the steps reads the milestones in order.
-    const marks = (v.milestones || []).filter((m) => m.state === 'open' && row.includes(m.ref)).sort((a, b) => compareRefs(a.ref, b.ref));
-    const tags = marks.length ? html`<span class="ms-tags">${marks.map((m) => html`<span class="ms-tag${m.next ? ' next' : ''}">${m.next ? 'Next: ' : ''}${m.name}</span>`)}</span>` : '';
-    // Feature names are counted over the step's tickets; they are listed in the order the notes' map first names them, the author's priority.
-    const named = new Map();
-    for (const r of row) if (typeof features[r] === 'string' && features[r]) named.set(features[r], (named.get(features[r]) ?? 0) + 1);
-    const priority = Object.values(features);
-    const feat = named.size ? html`<span class="ft-tags">${[...named].sort((a, b) => priority.indexOf(a[0]) - priority.indexOf(b[0])).map(([name, n]) => html`<span class="ft-tag">${name}${n > 1 ? ` ×${n}` : ''}</span>`)}</span>` : '';
-    h.push(html`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${rowWaves(row)}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}${feat}${tags}</div><div class="ns">`);
-    for (const r of row) {
-      const t = byRef.get(r) || {};
-      const title = display.get(r)?.title ?? '';
-      const st = status(r);
-      const after = [...g.direct.get(r)].sort((a, b) => g.stepOf.get(a) - g.stepOf.get(b) || compareRefs(a, b)).map((p) => v.shortRef(p)).join(', ');
-      h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}${road.has(r) ? ' mpath' : ''}" tabindex="0" data-ref="${r}"><div class="top">${link(r)}${chip(st, t.stage)}</div>${badge(r)}${hostLine(t.remote)}<div class="t" title="${title}">${title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${runDesc(r) ? `unblocks ${runDesc(r)}` : 'nothing waits on it'}</div></div>`);
+  sections.forEach((s, k) => {
+    h.push(html`<section class="feat" data-sec="${k}">`);
+    if (headed) {
+      const refs = s.rows.flatMap((x) => x.refs);
+      const name = s.tracker ? html`<a href="${s.tracker.url}">${s.name}</a>` : s.name;
+      h.push(html`<h3 class="feat-h">${name} <small>${plural(refs.length, 'ticket')} · ${stepSpan(s.rows.map((x) => x.step))} · ${rowWaves(refs)}</small></h3>`);
     }
-    h.push('</div></div>');
+    for (const { step: i, refs: row } of s.rows) {
+      // A milestone is named on the step it finishes in, so reading down the steps reads the milestones in order.
+      const marks = (v.milestones || []).filter((m) => m.state === 'open' && row.includes(m.ref)).sort((a, b) => compareRefs(a.ref, b.ref));
+      const tags = marks.length ? html`<span class="ms-tags">${marks.map((m) => html`<span class="ms-tag${m.next ? ' next' : ''}">${m.next ? 'Next: ' : ''}${m.name}</span>`)}</span>` : '';
+      h.push(html`<div class="row"><div class="lab"><b>Step ${i + 1}</b><span class="wv">${rowWaves(row)}</span>${plural(row.length, 'ticket')} · ${i === 0 ? 'can start now' : 'waits on earlier steps'}${tags}</div><div class="ns">`);
+      for (const r of row) {
+        const t = byRef.get(r) || {};
+        const title = display.get(r)?.title ?? '';
+        const st = status(r);
+        // A blocker in another section is not drawn as a line, so its feature is named here.
+        const after = [...g.direct.get(r)].sort((a, b) => g.stepOf.get(a) - g.stepOf.get(b) || compareRefs(a, b))
+          .map((p) => (secOf.get(p) === k ? v.shortRef(p) : `${v.shortRef(p)} (${sections[secOf.get(p)].name})`)).join(', ');
+        h.push(html`<div class="node s-${st}${chain.has(r) ? ' crit' : ''}${road.has(r) ? ' mpath' : ''}" tabindex="0" data-ref="${r}" data-sec="${k}"><div class="top">${link(r)}${chip(st, t.stage)}</div>${badge(r)}${hostLine(t.remote)}<div class="t" title="${title}">${title}</div><div class="wn${wave(r).now ? ' now' : ''}">${waveText(r)}</div>${gates[r] && html`<div class="gate">Needs: ${gates[r]}</div>`}<div class="dep">${after ? `after ${after}` : 'nothing open before it'}</div><div class="dep">${runDesc(r) ? `unblocks ${runDesc(r)}` : 'nothing waits on it'}</div></div>`);
+      }
+      h.push('</div></div>');
+    }
+    h.push('</section>');
   });
   h.push('</div>');
-  h.push('<details><summary>Order of work as a table</summary><div class="tw"><table><thead><tr><th>Step</th><th>Wave</th><th>Ticket</th><th>Title</th><th>Waits on</th><th>Unblocks</th></tr></thead><tbody>');
+  h.push('<details><summary>Order of work as a table</summary><div class="tw"><table><thead><tr><th>Step</th><th>Feature</th><th>Wave</th><th>Ticket</th><th>Title</th><th>Waits on</th><th>Unblocks</th></tr></thead><tbody>');
   rows.forEach((row, i) => {
     for (const r of row) {
       const waits = sorted(g.direct.get(r)).map((p) => link(p));
-      h.push(html`<tr><td class="n">${i + 1}</td><td class="n">${g.outside.has(r) ? 'outside' : wave(r).label ?? 'yours'}</td><td class="n">${link(r)}</td><td>${display.get(r)?.title}</td><td>${waits.length ? list(waits, ', ') : '—'}</td><td class="n">${runDesc(r)}</td></tr>`);
+      h.push(html`<tr><td class="n">${i + 1}</td><td>${sections[secOf.get(r)].name}</td><td class="n">${g.outside.has(r) ? 'outside' : wave(r).label ?? 'yours'}</td><td class="n">${link(r)}</td><td>${display.get(r)?.title}</td><td>${waits.length ? list(waits, ', ') : '—'}</td><td class="n">${runDesc(r)}</td></tr>`);
     }
   });
   h.push('</tbody></table></div></details>');
