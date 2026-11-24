@@ -236,7 +236,8 @@ export const OTHER_SECTION = 'Other';
  * The road ahead's sections, one per feature name, from `orderSteps`' rows. Each holds the steps that have any of its
  * tickets, by their run-wide index (`step`), the tickets in the row's order. Sections the map names (a ticket's or a
  * tracker's entry) come first, in the order it first names them; then by earliest step, most tickets, name; Other
- * (`other: true`) last. A section links the lowest-ref tracker that named any of its tickets.
+ * (`other: true`) last, joined by any feature named like its label. A section links the lowest-ref tracker that named any of
+ * its tickets.
  *
  * @param {string[][]} rows  `orderSteps(graph)`
  * @param {(ref:string) => ReturnType<typeof ticketFeature>} featureOf
@@ -248,10 +249,10 @@ export function featureSections(rows, featureOf, features) {
   rows.forEach((row, step) => {
     for (const ref of row) {
       const f = featureOf(ref);
-      const key = f?.name ?? null;
+      const key = f?.name && f.name !== OTHER_SECTION ? f.name : null; // a name equal to the label would make a second Other
       if (!byName.has(key)) byName.set(key, { name: key ?? OTHER_SECTION, other: key === null, tracker: null, rows: [], firstStep: step, size: 0 });
       const s = byName.get(key);
-      if (f?.tracker && (!s.tracker || compareRefs(f.tracker.ref, s.tracker.ref) < 0)) s.tracker = f.tracker;
+      if (key !== null && f?.tracker && (!s.tracker || compareRefs(f.tracker.ref, s.tracker.ref) < 0)) s.tracker = f.tracker;
       const last = s.rows[s.rows.length - 1];
       if (last?.step === step) last.refs.push(ref); else s.rows.push({ step, refs: [ref] });
       s.size += 1;
