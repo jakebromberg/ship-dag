@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildGraph, projectWaves, makeShortRef, makeRepoLabel, classify, milestones } from './model.mjs';
-import { renderBoard, STATUSES, stageStatus, waveSpan } from './render.mjs';
+import { renderBoard, STATUSES, stageStatus, waveSpan, stepSpan } from './render.mjs';
 import * as render from './render.mjs';
 import { STAGES } from './stage.mjs';
 import { PAGE_CSS, RELOAD_JS } from './assets.mjs';
@@ -584,54 +584,137 @@ test('the Road to line lists the road in step order, not ref order, and counts o
   assert.match(noOutside, /\(2 tickets; outlined below\)/, 'no ", N outside" when none is');
 });
 
-// ---- feature tags --------------------------------------------------------
+// ---- feature sections (issue #560) ----------------------------------------
 
-/** The example run with board-notes `features` (when given); #2 and #4 are in step 1 and #3 in step 2. */
-const ftView = (features) => { const v = view(); return features === undefined ? v : { ...v, notes: { ...v.notes, features } }; };
-/** The example run with #2, #3 and #4 all in step 1: no ticket waits on another. */
-function ftWide(features) {
-  const v = ftView(features);
-  const graph = buildGraph([R(2), R(3), R(4)], [], []);
-  return { ...v, graph, waves: projectWaves(graph, new Map(v.tickets.map((t) => [t.ref, t.status])), v.current) };
+const TRACKER = { ref: R(80), title: 'Alpha: the first feature', url: 'https://github.com/o/r/issues/80' };
+/**
+ * The example run with #8 behind #3 (so the chain is #2 → #3 → #8): #2 and #8 sit under tracker #80 ("Alpha"), the notes
+ * name #3 "Beta", and #4 has neither, so it is in Other. Sections: Beta (named in the map), Alpha (steps 1 and 3), Other.
+ */
+function secView({ features = { [R(3)]: 'Beta' }, trackers = { 2: TRACKER, 8: TRACKER } } = {}) {
+  const base = view();
+  const tickets = [...base.tickets, ticket(8, 'blocked')].map((t) => ({ ...t, tracker: trackers[t.ref.split('#')[1]] ?? null }));
+  const open = tickets.filter((t) => !['shipped', 'dropped'].includes(t.status)).map((t) => t.ref);
+  const graph = buildGraph(open, [
+    { blockedBy: R(1), blocked: R(4) }, { blockedBy: R(2), blocked: R(3) }, { blockedBy: R(3), blocked: R(8) }, { blockedBy: R(6), blocked: R(7) }, { blockedBy: R(7), blocked: R(6) },
+  ], tickets.filter((t) => ['shipped', 'dropped'].includes(t.status)).map((t) => t.ref));
+  const waves = projectWaves(graph, new Map(tickets.map((t) => [t.ref, t.status])), base.current);
+  return { ...base, tickets, graph, waves, notes: { ...base.notes, ...(features !== undefined && { features }) } };
+}
+/** Each section's heading text (tags stripped) and the refs of its nodes, in page order. */
+const sectionsIn = (html) => [...html.matchAll(/<section class="feat" data-sec="(\d+)">([\s\S]*?)<\/section>/g)].map(([, k, body]) => ({
+  k, head: body.match(/<h3 class="feat-h">([\s\S]*?)<\/h3>/)?.[1].replace(/<[^>]+>/g, '') ?? null,
+  refs: [...body.matchAll(/data-ref="([^"]+)" data-sec="(\d+)"/g)].map((m) => { assert.equal(m[2], k, 'a node carries its section\'s data-sec'); return m[1]; }),
+}));
+
+test('renderBoard groups the road ahead into a section per feature, the map\'s first, Other last, each with its count, steps and waves (issue #560)', () => {
+  const secs = sectionsIn(renderBoard(secView()));
+  assert.deepEqual(secs.map((s) => s.refs), [[R(3)], [R(2), R(8)], [R(4)]]);
+  assert.deepEqual(secs.map((s) => s.head), [
+    'Beta 1 ticket · step 2 · wave 5',
+    'Alpha 2 tickets · steps 1, 3 · waves 4b–6',
+    'Other 1 ticket · step 1 · wave 5',
+  ]);
+});
+
+test('a tracker\'s section heading links the tracker, and a map section has no link (issue #560)', () => {
+  const html = renderBoard(secView());
+  assert.match(html, /<h3 class="feat-h"><a href="https:\/\/github.com\/o\/r\/issues\/80">Alpha<\/a>/);
+  assert.match(html, /<h3 class="feat-h">Beta <small>/);
+});
+
+test('a section keeps the run\'s step numbers and its rows\' waves cover only its own tickets (issue #560)', () => {
+  const html = renderBoard(secView());
+  const alpha = html.slice(html.indexOf('data-sec="1">'), html.indexOf('</section>', html.indexOf('data-sec="1">')));
+  assert.deepEqual([...alpha.matchAll(/<b>Step (\d+)<\/b><span class="wv">([^<]*)<\/span>/g)].map((m) => [m[1], m[2]]), [['1', 'wave 4b'], ['3', 'wave 6']]);
+});
+
+for (const [stepsIn, want] of [[[0], 'step 1'], [[0, 1, 2], 'steps 1–3'], [[0, 2, 3], 'steps 1, 3–4'], [[3, 0, 0, 1], 'steps 1–2, 4']]) {
+  test(`stepSpan(${JSON.stringify(stepsIn)}) is ${want} (issue #560)`, () => assert.equal(stepSpan(stepsIn), want));
 }
 
-test('renderBoard tags a step with the feature names of its tickets in the order the notes name them, a count past one (issue #558)', () => {
-  const label = (features) => stepLabel(renderBoard(ftWide(features)), R(2));
-  assert.match(label({ [R(4)]: 'C', [R(2)]: 'A', [R(3)]: 'B' }), /can start now<span class="ft-tags"><span class="ft-tag">C<\/span><span class="ft-tag">A<\/span><span class="ft-tag">B<\/span><\/span>$/, 'one ticket each: the map order, not the step order, no counts');
-  assert.match(label({ [R(4)]: 'Major', [R(2)]: 'Small', [R(3)]: 'Small' }), /<span class="ft-tags"><span class="ft-tag">Major<\/span><span class="ft-tag">Small ×2<\/span><\/span>$/, 'a name on fewer tickets still leads when the notes name it first');
-  assert.match(label({ [R(2)]: 'First', [R(3)]: 'Second', [R(4)]: 'Second' }), /<span class="ft-tag">First<\/span><span class="ft-tag">Second ×2<\/span><\/span>$/);
-  assert.match(label({ [R(2)]: 'Mods pane', [R(3)]: 'Mods pane', [R(4)]: 'Mods pane' }), /<span class="ft-tags"><span class="ft-tag">Mods pane ×3<\/span><\/span>$/);
-  assert.match(label({ 'o/r#9': 'Off board', [R(3)]: 'Later', [R(2)]: 'Earlier' }), /<span class="ft-tag">Later<\/span><span class="ft-tag">Earlier<\/span>/, 'an entry for a ticket outside the step still ranks nothing it does not show');
+for (const [name, ref, want] of [
+  ['a blocker in another section names its feature', R(3), 'after r#2 (Alpha)'],
+  ['a blocker in another section, the other way', R(8), 'after r#3 (Beta)'],
+  ['nothing open before it', R(2), 'nothing open before it'],
+]) {
+  test(`a node's dependency line: ${name} (issue #560)`, () => {
+    assert.match(nodeOf(renderBoard(secView()), ref), new RegExp(`<div class="dep">${want.replace(/[()]/g, '\\$&')}</div>`));
+  });
+}
+
+test('a blocker in the same section reads as before, with no feature name (issue #560)', () => {
+  const html = renderBoard(secView({ trackers: { 2: TRACKER, 3: TRACKER, 8: TRACKER }, features: {} }));
+  assert.match(nodeOf(html, R(3)), /<div class="dep">after r#2<\/div>/);
 });
 
-test('renderBoard puts the feature tags before the milestone tags and escapes a feature name (issue #558)', () => {
+test('a feature name in a dependency line and a heading is escaped (issue #560)', () => {
   const evil = '<script>alert(1)</script>';
-  const v = msView({ notes: { [R(3)]: 'Wire it up' } });
-  const html = renderBoard({ ...v, notes: { ...v.notes, features: { [R(3)]: evil } } });
-  assert.ok(!html.includes(evil), 'no raw script from a note');
-  assert.match(stepLabel(html, R(3)), /waits on earlier steps<span class="ft-tags"><span class="ft-tag">&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/span><\/span><span class="ms-tags">/);
+  const html = renderBoard(secView({ features: { [R(3)]: evil } }));
+  assert.ok(!html.includes(evil));
+  assert.match(nodeOf(html, R(8)), /after r#3 \(&lt;script&gt;alert\(1\)&lt;\/script&gt;\)/);
+  assert.match(html, /<h3 class="feat-h">&lt;script&gt;/);
 });
 
-test('renderBoard draws a step with no feature entries, a board with no features and a ref off the road ahead exactly as before (issue #558)', () => {
-  const plain = renderBoard(ftView());
-  assert.doesNotMatch(plain, /class="ft-tag/);
-  assert.equal(renderBoard(ftView({})), plain, 'empty features');
-  assert.equal(renderBoard(ftView({ 'o/r#999': 'Elsewhere', [R(5)]: 'Dropped' })), plain, 'refs that are not in an open step add nothing');
-  const some = renderBoard(ftView({ [R(3)]: 'Mods pane' }));
-  assert.equal(stepLabel(some, R(2)), stepLabel(plain, R(2)), 'a step none of whose tickets has an entry is unchanged');
-  assert.match(stepLabel(some, R(3)), /<span class="ft-tag">Mods pane<\/span>/);
-  for (const bad of [null, 'Mods pane', ['Mods pane'], 7]) assert.equal(renderBoard(ftView(bad)), plain, `features ${JSON.stringify(bad)} is ignored`);
+test('sections leave data-edges whole, so the trace still spans them, and the chain is marked in every section (issue #560)', () => {
+  const v = secView();
+  const edges = (html) => JSON.parse(html.match(/data-edges="([^"]*)"/)[1].replaceAll('&quot;', '"'));
+  assert.deepEqual(edges(renderBoard(v)), edges(renderBoard(secView({ features: {}, trackers: {} }))));
+  assert.deepEqual(edges(renderBoard(v)).filter((e) => e[2]), [[R(2), R(3), true], [R(3), R(8), true]], 'the cross-section chain edges are still listed');
+  const html = renderBoard(v);
+  for (const r of [R(2), R(3), R(8)]) assert.match(html, new RegExp(`<div class="node [^"]*\\bcrit\\b[^"]*"[^>]*data-ref="${r.replace('/', '\\/')}"`), r);
+  assert.match(html, /Longest chain:<\/span><a [^>]*>r#2<\/a><span class="arr">→<\/span><a [^>]*>r#3<\/a><span class="arr">→<\/span><a [^>]*>r#8<\/a>/);
 });
 
-test('renderBoard ignores a feature entry whose name is empty or not a string (issue #558)', () => {
-  const plain = renderBoard(ftView());
-  assert.equal(renderBoard(ftView({ [R(2)]: '', [R(4)]: 7, [R(3)]: false })), plain);
+test('the how-to says a dependency across sections is not drawn but traced, only when there are sections (issue #560)', () => {
+  assert.match(renderBoard(secView()), /A dependency on another feature's ticket is not drawn as a line/);
+  assert.doesNotMatch(renderBoard(view()), /another feature's ticket/);
 });
 
-test('the feature tags are quieter than the milestone tags and use the page tokens (issue #558)', () => {
-  const rule = (sel) => PAGE_CSS.match(new RegExp(`${sel.replace('.', '\\.')}\\{[^}]*\\}`))?.[0] ?? '';
-  assert.match(rule('.ft-tag'), /color:var\(--ink2\)/);
-  assert.match(rule('.ft-tag'), /border:1px solid var\(--line\)/);
-  assert.doesNotMatch(rule('.ft-tag'), /background|#[0-9a-f]{3,6}/i, 'no fill and no new colors');
-  assert.match(rule('.ft-tags'), /display:inline-flex/);
+test('a milestone is tagged on its row in its own section (issue #560)', () => {
+  const v = secView();
+  const tickets = v.tickets.map((t) => ({ ...t, labels: t.ref === R(8) ? ['hitl-gate'] : [] }));
+  const w = { ...v, tickets };
+  const html = renderBoard({ ...w, milestones: milestones(w) });
+  const alpha = html.slice(html.indexOf('data-sec="1">'), html.indexOf('</section>', html.indexOf('data-sec="1">')));
+  assert.match(alpha, /<b>Step 3<\/b>[\s\S]*?<span class="ms-tag next">Next: Ticket 8<\/span>/);
+  assert.match(html, /Road to Ticket 8:/);
+});
+
+test('a board with only Other draws one section with no heading and no feature tags (issue #560)', () => {
+  const plain = renderBoard(view());
+  assert.deepEqual(sectionsIn(plain).map((s) => s.head), [null]);
+  assert.doesNotMatch(plain, /ft-tag|feat-h/);
+  assert.match(stepLabel(plain, R(2)), /<b>Step 1<\/b><span class="wv">[^<]*<\/span>2 tickets · can start now$/);
+  for (const features of [{}, null, 'Mods pane', ['Mods pane'], 7, { 'o/r#999': 'Elsewhere', [R(5)]: 'Dropped' }]) {
+    const v = view();
+    assert.equal(renderBoard({ ...v, notes: { ...v.notes, features } }), plain, `features ${JSON.stringify(features)}`);
+  }
+});
+
+test('the table keeps step order and has a Feature column (issue #560)', () => {
+  const html = renderBoard(secView());
+  const table = html.slice(html.indexOf('Order of work as a table'));
+  assert.match(table, /<th>Step<\/th><th>Feature<\/th><th>Wave<\/th>/);
+  const rows = [...table.matchAll(/<tr><td class="n">(\d+)<\/td><td>([^<]*)<\/td><td class="n">[^<]*<\/td><td class="n"><a [^>]*>([^<]*)<\/a>/g)].map((m) => [m[1], m[2], m[3]]);
+  assert.deepEqual(rows.slice(0, 4), [['1', 'Alpha', 'r#2'], ['1', 'Other', 'r#4'], ['2', 'Beta', 'r#3'], ['3', 'Alpha', 'r#8']]);
+});
+
+test('an outside node sits in its own tracker\'s section (issue #560)', () => {
+  const v = outsideView();
+  const outsideTickets = v.outsideTickets.map((t) => ({ ...t, tracker: { ref: O(70), title: 'Elsewhere: theirs', url: 'https://github.com/x/y/issues/70' } }));
+  const html = renderBoard({ ...v, outsideTickets });
+  const secs = sectionsIn(html);
+  assert.ok(secs.some((s) => s.head?.startsWith('Elsewhere') && s.refs.includes(O(90)) && s.refs.includes(O(91))), JSON.stringify(secs));
+  assert.match(html, /<div class="node s-outside[ "][^>]*data-ref="x\/y#90"/);
+});
+
+test('a section is a grid of its own with no stacking context, and its heading uses the page tokens (issue #560)', () => {
+  const rule = (sel) => PAGE_CSS.match(new RegExp(`(?:^|\\})${sel.replace('.', '\\.')}\\{[^}]*\\}`))?.[0] ?? '';
+  assert.match(rule('.feat'), /display:grid/);
+  assert.match(rule('.feat'), /gap:30px/);
+  assert.doesNotMatch(rule('.feat'), /z-index|opacity|transform/);
+  assert.match(rule('.feat-h'), /color:var\(--ink2\)/);
+  assert.doesNotMatch(rule('.feat-h'), /background|#[0-9a-f]{3,6}/i);
+  assert.doesNotMatch(PAGE_CSS, /ft-tag/);
 });

@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classify, buildGraph, orderSteps, projectWaves, leadingWaveNumber, makeShortRef, makeRepoLabel, formatPacific, compareRefs, shippedBefore, closedKind, milestones, roadTo,
+  trackerName, ticketFeature, featureSections,
 } from './model.mjs';
 
 const R = (n) => `o/r#${n}`;
@@ -387,3 +388,78 @@ test('milestones: a named milestone is stored trimmed (issue #518)', () => {
   const rows = milestones({ ...msRun({ notes: { [R(3)]: '  Trace tool \n' } }) });
   assert.deepEqual(names(rows), [[R(3), 'Trace tool']]);
 });
+
+// ---- feature sections (issue #560) ----------------------------------------
+
+for (const [title, want] of [
+  ['Coherence mod: coupling coherence as a source', 'Coherence mod'],
+  ['Mods pane and the Proximity mod (tracking)', 'Mods pane and the Proximity mod'],
+  ['Preset parts — Sound, Tuning', 'Preset parts'],
+  ['Plain title', 'Plain title'],
+  [': starts with a colon', ': starts with a colon'],
+  ['  Padded: x', 'Padded'],
+  ['Ratio 1:2 stays: cut here', 'Ratio 1:2 stays'],
+]) {
+  test(`trackerName(${JSON.stringify(title)}) is ${JSON.stringify(want)} (issue #560)`, () => assert.equal(trackerName(title), want));
+}
+
+const TR = { ref: R(80), title: 'Tracker eighty: the long tail', url: 'https://github.com/o/r/issues/80' };
+for (const [name, ticket, features, want] of [
+  ['a map entry beats a tracker', { ref: R(1), tracker: TR }, { [R(1)]: 'Mine' }, { name: 'Mine', tracker: null }],
+  ['a map entry for the tracker\'s ref names its section', { ref: R(1), tracker: TR }, { [R(80)]: 'Eighty' }, { name: 'Eighty', tracker: { ref: R(80), url: TR.url } }],
+  ['a tracker with no entry takes its shortened title', { ref: R(1), tracker: TR }, {}, { name: 'Tracker eighty', tracker: { ref: R(80), url: TR.url } }],
+  ['no tracker and no entry is no feature', { ref: R(1), tracker: null }, {}, null],
+  ['no tracker field at all is no feature', { ref: R(1) }, undefined, null],
+  ['an entry that is not a non-empty string is ignored at both levels', { ref: R(1), tracker: TR }, { [R(1)]: '', [R(80)]: 7 }, { name: 'Tracker eighty', tracker: { ref: R(80), url: TR.url } }],
+  ['a blank or false entry is ignored', { ref: R(1), tracker: null }, { [R(1)]: '  ' }, null],
+  ['false is ignored', { ref: R(1), tracker: null }, { [R(1)]: false }, null],
+  ['an entry is stored trimmed', { ref: R(1) }, { [R(1)]: '  Trim me ' }, { name: 'Trim me', tracker: null }],
+  ...[null, 'Mine', ['Mine'], 7].map((bad) => [`features ${JSON.stringify(bad)} is ignored`, { ref: R(1), tracker: null }, bad, null]),
+]) {
+  test(`ticketFeature: ${name} (issue #560)`, () => assert.deepEqual(ticketFeature(ticket, features), want));
+}
+
+/** `featureSections` over `rows` (arrays of numbers) with `feat` (number → name or [name, trackerNumber]); refs not named are Other. */
+function sectionsOf(rows, feat, features) {
+  const featureOf = (ref) => {
+    const f = feat[Number(ref.split('#')[1])];
+    if (f === undefined) return null;
+    return Array.isArray(f) ? { name: f[0], tracker: { ref: R(f[1]), url: `u${f[1]}` } } : { name: f, tracker: null };
+  };
+  return featureSections(rows.map((row) => row.map(R)), featureOf, features)
+    .map((s) => ({ name: s.name, other: s.other, tracker: s.tracker?.ref ?? null, rows: s.rows.map((x) => [x.step, x.refs.map((r) => Number(r.split('#')[1]))]) }));
+}
+
+for (const [name, rows, feat, features, want] of [
+  ['each section holds only its steps, numbered as across the run, in the row\'s order',
+    [[1, 2], [3, 4], [5]], { 1: 'A', 2: 'B', 3: 'B', 4: 'A', 5: 'A' }, {},
+    [{ name: 'A', other: false, tracker: null, rows: [[0, [1]], [1, [4]], [2, [5]]] }, { name: 'B', other: false, tracker: null, rows: [[0, [2]], [1, [3]]] }]],
+  ['a map name and a tracker name that agree make one section, linked to the tracker',
+    [[1, 2]], { 1: 'P', 2: ['P', 60] }, {},
+    [{ name: 'P', other: false, tracker: R(60), rows: [[0, [1, 2]]] }]],
+  ['the lowest tracker ref links a section two trackers share a name with',
+    [[1, 2]], { 1: ['P', 70], 2: ['P', 60] }, {},
+    [{ name: 'P', other: false, tracker: R(60), rows: [[0, [1, 2]]] }]],
+  ['a ticket with no feature is in Other',
+    [[1, 2]], { 1: 'A' }, {},
+    [{ name: 'A', other: false, tracker: null, rows: [[0, [1]]] }, { name: 'Other', other: true, tracker: null, rows: [[0, [2]]] }]],
+  ['no feature anywhere is one Other section',
+    [[1], [2]], {}, {},
+    [{ name: 'Other', other: true, tracker: null, rows: [[0, [1]], [1, [2]]] }]],
+  ['no rows is no sections', [], {}, {}, []],
+]) {
+  test(`featureSections: ${name} (issue #560)`, () => assert.deepEqual(sectionsOf(rows, feat, features), want));
+}
+
+for (const [name, rows, feat, features, want] of [
+  ['the map\'s order leads, even past a section that starts earlier', [[1], [2], [3]], { 1: 'Early', 2: 'Late', 3: 'Mid' }, { [R(9)]: 'Late', [R(8)]: 'Mid' }, ['Late', 'Mid', 'Early']],
+  ['a tracker key in the map ranks its section too', [[1], [2]], { 1: 'A', 2: ['T', 60] }, { [R(60)]: 'T', [R(1)]: 'A' }, ['T', 'A']],
+  ['unnamed sections go by earliest step', [[1], [2], [3]], { 1: 'Z', 2: 'Y', 3: 'X' }, {}, ['Z', 'Y', 'X']],
+  ['then by most tickets', [[1, 2, 3]], { 1: 'Small', 2: 'Big', 3: 'Big' }, {}, ['Big', 'Small']],
+  ['then by name', [[1, 2]], { 1: 'b', 2: 'a' }, {}, ['a', 'b']],
+  ['Other is last whatever its first step', [[1], [2]], { 2: 'Later' }, {}, ['Later', 'Other']],
+  ['a map name with no open ticket makes no section', [[1]], { 1: 'A' }, { [R(9)]: 'Gone', [R(1)]: 'A' }, ['A']],
+  ['a map that is not an object ranks nothing', [[1], [2]], { 1: 'B', 2: 'A' }, ['A'], ['B', 'A']],
+]) {
+  test(`featureSections order: ${name} (issue #560)`, () => assert.deepEqual(sectionsOf(rows, feat, features).map((s) => s.name), want));
+}

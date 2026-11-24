@@ -90,12 +90,12 @@ test('the edge layer takes the dag\'s own size, so it can shrink after a resize'
 
 // A fuller fake: nodes that count measurements and carry classes, paths parsed out of the
 // svg markup the script writes, and an observer-less or observer-ful window.
-function fakeDag({ ro = true, edges = [['a', 'b', 0], ['b', 'c', 1]] } = {}) {
+function fakeDag({ ro = true, edges = [['a', 'b', 0], ['b', 'c', 1]], secs = {} } = {}) {
   const classes = () => { const s = new Set(); return { add: (c) => s.add(c), remove: (c) => s.delete(c), has: (c) => s.has(c), contains: (c) => s.has(c), toggle: (c, on) => (on ? s.add(c) : s.delete(c)), s }; };
   const handlers = {};
   const nodes = {};
   for (const ref of ['a', 'b', 'c', 'd']) {
-    const n = { dataset: { ref }, classList: classes(), measured: 0, h: {} };
+    const n = { dataset: { ref, ...(secs[ref] !== undefined && { sec: secs[ref] }) }, classList: classes(), measured: 0, h: {} };
     n.getBoundingClientRect = () => { n.measured++; return { left: 0, top: 0, width: 10, bottom: 10 }; };
     n.addEventListener = (ev, fn) => { n.h[ev] = fn; };
     // focusVisible: true after keyboard focus, false after a mouse click, null in an engine without :focus-visible.
@@ -144,6 +144,20 @@ test('an edge on the road to the next milestone gets class ms, beside crit, and 
   page.nodes.a.h.mouseleave();
   assert.deepEqual(page.paths().map((p) => p.classList.has('ms')), [true, true, false]);
 });
+
+for (const [name, secs, drawn] of [
+  ['nodes in one section', { a: '0', b: '0', c: '0' }, [['a', 'b'], ['b', 'c']]],
+  ['nodes with no section (a board drawn before sections)', {}, [['a', 'b'], ['b', 'c']]],
+  ['an edge into another section', { a: '0', b: '0', c: '1' }, [['a', 'b']]],
+]) {
+  test(`the road draws an edge only inside a section, and traces across them: ${name} (issue #560)`, () => {
+    const page = fakeDag({ secs });
+    page.run();
+    assert.deepEqual(page.paths().map((p) => [p.dataset.a, p.dataset.b]), drawn);
+    page.nodes.a.h.mouseenter();
+    assert.deepEqual(Object.keys(page.nodes).filter((k) => page.nodes[k].classList.has('dim')), ['d'], 'c is still on a\'s trace');
+  });
+}
 
 test('each node is measured once per draw, however many edges touch it', () => {
   const page = fakeDag();
