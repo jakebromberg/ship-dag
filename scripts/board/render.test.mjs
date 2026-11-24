@@ -328,7 +328,7 @@ test('renderBoard counts only our tickets under "unblocks", in the node and in t
 test('renderBoard writes "outside" in the table\'s Wave column (issue #515)', () => {
   const html = renderBoard(outsideView());
   const row = html.slice(html.indexOf('Order of work as a table')).split('<tr>').find((r) => r.includes('issues/90'));
-  assert.match(row, /^<td class="n">1<\/td><td class="n">outside<\/td>/);
+  assert.match(row, /^<td class="n">1<\/td><td>Other<\/td><td class="n">outside<\/td>/);
 });
 
 test('renderBoard\'s how-to and callout say what an Outside node is and what stays unplaced (issue #515)', () => {
@@ -684,7 +684,7 @@ test('a milestone is tagged on its row in its own section (issue #560)', () => {
 test('a board with only Other draws one section with no heading and no feature tags (issue #560)', () => {
   const plain = renderBoard(view());
   assert.deepEqual(sectionsIn(plain).map((s) => s.head), [null]);
-  assert.doesNotMatch(plain, /ft-tag|feat-h/);
+  assert.doesNotMatch(plain.replace(/<style>[\s\S]*?<\/style>/, ''), /ft-tag|feat-h/);
   assert.match(stepLabel(plain, R(2)), /<b>Step 1<\/b><span class="wv">[^<]*<\/span>2 tickets · can start now$/);
   for (const features of [{}, null, 'Mods pane', ['Mods pane'], 7, { 'o/r#999': 'Elsewhere', [R(5)]: 'Dropped' }]) {
     const v = view();
@@ -710,7 +710,7 @@ test('an outside node sits in its own tracker\'s section (issue #560)', () => {
 });
 
 test('a section is a grid of its own with no stacking context, and its heading uses the page tokens (issue #560)', () => {
-  const rule = (sel) => PAGE_CSS.match(new RegExp(`(?:^|\\})${sel.replace('.', '\\.')}\\{[^}]*\\}`))?.[0] ?? '';
+  const rule = (sel) => PAGE_CSS.match(new RegExp(`(?:^|[}\\n])${sel.replace('.', '\\.')}\\{[^}]*\\}`))?.[0] ?? '';
   assert.match(rule('.feat'), /display:grid/);
   assert.match(rule('.feat'), /gap:30px/);
   assert.doesNotMatch(rule('.feat'), /z-index|opacity|transform/);

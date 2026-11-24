@@ -201,6 +201,70 @@ export function roadTo(graph, ref) {
   return graph.stepOf.has(ref) ? new Set([ref, ...graph.ancestors.get(ref)]) : new Set();
 }
 
+/** board-notes' `features` map as an object, or `{}` for a value that is not one (an array, a string, null). */
+const featureMap = (features) => (features && typeof features === 'object' && !Array.isArray(features) ? features : {});
+/** The map's name for `ref`, trimmed, or null when it gives none that is a non-empty string. */
+const mapName = (map, ref) => (Object.hasOwn(map, ref) && typeof map[ref] === 'string' && map[ref].trim() ? map[ref].trim() : null);
+
+/** A tracker's title as a section name: the text before the first `: `, ` (` or ` — `, trimmed, or the whole title when that leaves nothing. */
+export function trackerName(title) {
+  const whole = String(title ?? '').trim();
+  return whole.split(/: | \(| — /)[0].trim() || whole;
+}
+
+/**
+ * A ticket's feature, first match wins: its board-notes `features` entry (a non-empty string, trimmed); else its tracker
+ * (the top of its sub-issue parents below the run's epic, `tracker`), named by the map's entry for the tracker's ref or by
+ * `trackerName`; else null, for the Other section.
+ *
+ * @param {{ref:string, tracker?:{ref:string,title:string,url:string}|null}} ticket
+ * @param {unknown} features  board-notes' `features`; anything but an object is ignored
+ * @returns {{name:string, tracker:{ref:string,url:string}|null}|null}
+ */
+export function ticketFeature({ ref, tracker }, features) {
+  const map = featureMap(features);
+  const own = mapName(map, ref);
+  if (own) return { name: own, tracker: null };
+  if (!tracker) return null;
+  return { name: mapName(map, tracker.ref) ?? (trackerName(tracker.title) || tracker.ref), tracker: { ref: tracker.ref, url: tracker.url } };
+}
+
+/** The name of the section that holds the tickets with no feature. */
+export const OTHER_SECTION = 'Other';
+
+/**
+ * The road ahead's sections, one per feature name, from `orderSteps`' rows. Each holds the steps that have any of its
+ * tickets, by their run-wide index (`step`), the tickets in the row's order. Sections the map names (a ticket's or a
+ * tracker's entry) come first, in the order it first names them; then by earliest step, most tickets, name; Other
+ * (`other: true`) last. A section links the lowest-ref tracker that named any of its tickets.
+ *
+ * @param {string[][]} rows  `orderSteps(graph)`
+ * @param {(ref:string) => ReturnType<typeof ticketFeature>} featureOf
+ * @param {unknown} features  board-notes' `features`, for the order
+ * @returns {Array<{name:string, other:boolean, tracker:{ref:string,url:string}|null, rows:Array<{step:number,refs:string[]}>, firstStep:number, size:number}>}
+ */
+export function featureSections(rows, featureOf, features) {
+  const byName = new Map();
+  rows.forEach((row, step) => {
+    for (const ref of row) {
+      const f = featureOf(ref);
+      const key = f?.name ?? null;
+      if (!byName.has(key)) byName.set(key, { name: key ?? OTHER_SECTION, other: key === null, tracker: null, rows: [], firstStep: step, size: 0 });
+      const s = byName.get(key);
+      if (f?.tracker && (!s.tracker || compareRefs(f.tracker.ref, s.tracker.ref) < 0)) s.tracker = f.tracker;
+      const last = s.rows[s.rows.length - 1];
+      if (last?.step === step) last.refs.push(ref); else s.rows.push({ step, refs: [ref] });
+      s.size += 1;
+    }
+  });
+  const map = featureMap(features);
+  const rank = new Map();
+  for (const ref of Object.keys(map)) { const n = mapName(map, ref); if (n && !rank.has(n)) rank.set(n, rank.size); }
+  const at = (s) => rank.get(s.name) ?? Infinity;
+  return [...byName.values()].sort((a, b) => a.other - b.other || (at(a) === at(b) ? 0 : at(a) - at(b)) || a.firstStep - b.firstStep
+    || b.size - a.size || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
 /** The number a wave id starts with: `"31b"` → 31, `"1′"` → 1, none → 0. */
 export function leadingWaveNumber(id) {
   const m = /^(\d+)/.exec(String(id ?? ''));

@@ -187,6 +187,13 @@ function topParent(issue, shared) {
   return top && { ref: nodeRef(top), title: top.title, url: top.url };
 }
 
+/**
+ * A ticket's tracker for the road ahead's feature sections: `top` (its `topParent`) unless that is in `shared`, the run's
+ * epic or one of its parents, which names no feature. An outside ticket's `owner.home` may be a shared epic; `tracker`
+ * never is.
+ */
+const featureTracker = (top, shared) => (top && !shared.has(refKey(top.ref)) ? top : null);
+
 /** Whether a ticket closed as shipped (not without shipping) at or after `startedAt` (epoch ms): a null `closedAt` never is. */
 const shippedSince = ({ state, stateReason, closedAt }, startedAt) => state === 'CLOSED' && closedKind(stateReason) === 'shipped' && closedAt != null && Date.parse(closedAt) >= startedAt;
 
@@ -267,6 +274,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const allEdges = [...edges, ...native];
   const family = readFamily(dir, { runId: run.runId, warn, dirs });
   const latest = new Map(waves.flatMap((w) => w.refs.map((ref) => [ref, w]))); // oldest first, so the newest wave wins
+  const shared = new Set((epic ? [epic, ...[...parents(info.get(epic))].map(nodeRef)] : []).map(refKey)); // the run's epic and its parents
   const tickets = refs.map((ref) => {
     const issue = info.get(ref);
     const prs = prsOf(issue);
@@ -283,7 +291,7 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
     const engineDir = remote?.dir && !remote.unreachable ? remote.dir : wave?.dir;
     const derived = wave && deriveStage({ dir: engineDir, ref, waveTs: wave.mtimeMs, family, blockOn: board.blockOn, prOpen: !!open, openPr: open?.number });
     const labels = issue.labels?.nodes.map((l) => l.name) ?? []; // a hitl-gate label makes a milestone (issue #518)
-    return { ref, title: issue.title, url: issue.url, labels, status, stage: derived || item.stage, note: item.note, prs, createdAt: issue.createdAt, closedAt: issue.closedAt, shippedWave: latest.get(ref)?.id, ...(remote && { remote }) };
+    return { ref, title: issue.title, url: issue.url, labels, status, tracker: featureTracker(topParent(issue, shared), shared), stage: derived || item.stage, note: item.note, prs, createdAt: issue.createdAt, closedAt: issue.closedAt, shippedWave: latest.get(ref)?.id, ...(remote && { remote }) };
   });
 
   const openRefs = tickets.filter((t) => t.status !== 'shipped' && t.status !== 'dropped').map((t) => t.ref);
@@ -309,12 +317,12 @@ async function gather({ run, dir, dirs, flag, rebuild, deps, warn }) {
   const emitted = outside.length || done.length ? newestEntries(dirname(dir), {
     warn: (m) => warn(`a wave sidecar read for owner labels: ${m}`), skip: (d, e) => sameRun(entryRunId(d, e), run.runId),
   }) : new Map();
-  const shared = new Set((epic ? [epic, ...[...parents(info.get(epic))].map(nodeRef)] : []).map(refKey)); // the run's epic and its parents
   const outsideTickets = [...outside.map((ref) => [ref, 'outside']), ...done.map((ref) => [ref, 'shipped'])].map(([ref, status]) => {
     const issue = info.get(ref);
     const by = emitted.get(refKey(ref)) ?? (issue.transferredTo && emitted.get(refKey(issue.transferredTo))); // a sidecar may name its new ref
+    const home = topParent(issue, shared);
     return { ref, status, createdAt: issue.createdAt, ...(status === 'shipped' && { closedAt: issue.closedAt }), title: issue.title, url: issue.url, prs: prsOf(issue),
-      owner: { home: topParent(issue, shared), run: by?.runId ?? null } };
+      owner: { home, run: by?.runId ?? null }, tracker: featureTracker(home, shared) };
   });
   const named = notes.milestones;
   if (named !== undefined && named !== null && (typeof named !== 'object' || Array.isArray(named))) {
